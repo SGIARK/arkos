@@ -93,7 +93,10 @@ users_db = {"test_user": {"id": "test_user", "events": []}}
 
 
 def get_current_user():
-    # Simplified auth - always returns test user
+    """
+    Simplified auth - always returns test user
+    """
+    #TODO: implement real authentication
     return "test_user"
 
 
@@ -116,12 +119,19 @@ def parse_command(message: str) -> tuple[str, dict]:
 
 @app.get("/")
 async def read_root():
+    """
+    Implements GET /
+    """
     return {"message": "ARK Calendar API"}
 
 
 # Event endpoints
 @app.post("/api/events/", response_model=Event)
 async def create_event(event: EventCreate, user: str = Depends(get_current_user)):
+    """
+    Implements POST /api/events
+    Create the specified event, returns it as confirmation
+    """
     event_id = str(uuid.uuid4())
     current_time = datetime.now()
 
@@ -147,6 +157,10 @@ async def list_events(
     end_date: Optional[date] = None,
     user: str = Depends(get_current_user),
 ):
+    """
+    Implements GET /api/events
+    Returns a list of events
+    """
     user_events = users_db[user]["events"]
     events = [events_db[event_id] for event_id in user_events]
 
@@ -160,6 +174,10 @@ async def list_events(
 
 @app.get("/api/events/{event_id}", response_model=Event)
 async def get_event(event_id: str, user: str = Depends(get_current_user)):
+    """
+    Implements GET /api/events/{event-id}
+    Returns details of the specific event
+    """
     if event_id not in events_db:
         raise HTTPException(status_code=404, detail="Event not found")
     return events_db[event_id]
@@ -169,6 +187,10 @@ async def get_event(event_id: str, user: str = Depends(get_current_user)):
 async def update_event(
     event_id: str, event_update: EventCreate, user: str = Depends(get_current_user)
 ):
+    """
+    Implements PUT /api/events/{event-id}
+    Changes the specified event
+    """
     if event_id not in events_db:
         raise HTTPException(status_code=404, detail="Event not found")
 
@@ -186,6 +208,10 @@ async def update_event(
 
 @app.delete("/api/events/{event_id}")
 async def delete_event(event_id: str, user: str = Depends(get_current_user)):
+    """
+    Implements DELETE /api/events/{event_id}
+    Deletes the specified event
+    """
     if event_id not in events_db:
         raise HTTPException(status_code=404, detail="Event not found")
 
@@ -200,6 +226,10 @@ async def delete_event(event_id: str, user: str = Depends(get_current_user)):
 async def process_chat_message(
     message: ChatMessage, user: str = Depends(get_current_user)
 ):
+    """
+    Implements POST /api/chat/message
+    Send a message to the AI assistant, and returns a response
+    """
     intent, data = parse_command(message.message)
 
     responses = {
@@ -216,6 +246,11 @@ async def process_chat_message(
 
 @app.get("/api/chat/suggestions")
 async def get_chat_suggestions():
+    """
+    Implements GET /api/chat/suggestions
+    Get a list of suggestions
+    """
+    #TODO: make this dynamic???
     return {
         "suggestions": [
             "Add a meeting tomorrow at 2pm",
