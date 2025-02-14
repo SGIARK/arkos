@@ -11,8 +11,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 import yaml
 
 
-# loads configuration for model 
-with open("../config_module/config.yaml", 'r') as file:
+# loads configuration for model
+with open("../config_module/config.yaml", "r") as file:
     configuration = yaml.safe_load(file)
 
 # isolates path to model on local machine from yaml configuration file
@@ -37,13 +37,13 @@ if end_point_type == "LlamaCpp":
     )
 
 if end_point_type == "OpenAI":
-    
 
-
-    chat_model = ChatOpenAI(temperature=0.5,
-                # model="models/mistral-7b-openorca.Q8_0.gguff", 
-                base_url=model_url, 
-                api_key="ed")
+    chat_model = ChatOpenAI(
+        temperature=0.5,
+        # model="models/mistral-7b-openorca.Q8_0.gguff",
+        base_url=model_url,
+        api_key="ed",
+    )
 
     print(model_url)
 
@@ -52,13 +52,12 @@ if end_point_type == "OpenAI":
 # else:
 #     tokenizer = AutoTokenizer.from_pretrained(model_id)
 #     model = AutoModelForCausalLM.from_pretrained(model_id)
-# 
+#
 #     pipe = pipeline("text-generation", model=model, tokenizer=tokenizer, max_new_tokens=10)
 #     llm = HuggingFacePipeline(pipeline=pipe)
-# 
-# 
+#
+#
 #     chat_model = ChatHuggingFace(llm=llm)
-
 
 
 messages = [

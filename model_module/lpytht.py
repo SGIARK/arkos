@@ -1,23 +1,22 @@
 from llama_cpp import Llama
-import yaml 
+import yaml
 
-with open("../config_module/config.yaml", 'r') as file:
+with open("../config_module/config.yaml", "r") as file:
     configuration = yaml.safe_load(file)
 
 model_id = configuration["model_path"]
 
-llm = Llama(
+llm = Llama(model_path=model_id)
 
-    model_path = model_id
+
+print(
+    llm.create_chat_completion(
+        messages=[
+            {
+                "role": "system",
+                "content": "You are an assistant who does humans bidding",
+            },
+            {"role": "user", "content": "Give me a bedtime story."},
+        ]
+    )
 )
-
-
-print(llm.create_chat_completion(
-      messages = [
-          {"role": "system", "content": "You are an assistant who does humans bidding"},
-          {
-              "role": "user",
-              "content": "Give me a bedtime story."
-          }
-      ]
-))
