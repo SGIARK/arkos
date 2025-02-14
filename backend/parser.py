@@ -1,10 +1,23 @@
+"""
+dependencies:
+* huggingface_hub
+
+classes:
+* Parse
+
+"""
+# TODO: determine what this actually does
+
 from huggingface_hub import InferenceClient
 
-
 class Parse:
-
+    """
+    methods:
+    * __init__(self, message, json)
+    * fill_json(self)
+    """
     client = InferenceClient("")
-
+    
     def __init__(self, message, json):
         self.message = message
         self.json = json
