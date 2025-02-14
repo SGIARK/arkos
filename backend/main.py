@@ -1,3 +1,42 @@
+"""
+This is the official ARK2.0 backend!
+(WARNING: currently in alpha!)
+
+Dependencies:
+* datetime
+* fastapi
+* pydantic
+* typing
+* uuid
+
+Global variables:
+* app
+* event_db
+* user_db
+
+Pydantic models:
+* EventBase
+* EventCreate
+* Event
+* ChatMessage
+* ChatResponse
+
+API routes:
+* GET /
+* POST /api/events
+* GET /api/events
+* GET /api/events/{event-id}
+* PUT /api/events/{event_id}
+* DELETE /api/events/{event_id}
+* POST /api/chat/message
+* GET /api/chat/suggestions
+
+Helper functions:
+* get_current_user()
+* parse_command(message: str) -> tuple[str, dict]
+"""
+
+
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
