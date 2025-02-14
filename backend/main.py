@@ -36,13 +36,12 @@ Helper functions:
 * parse_command(message: str) -> tuple[str, dict]
 """
 
-
-from fastapi import FastAPI, HTTPException, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, date
 import uuid
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 app = FastAPI(title="ARK Calendar API")
 
