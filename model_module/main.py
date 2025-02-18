@@ -1,13 +1,32 @@
-from langchain_huggingface.llms import HuggingFacePipeline
+"""
+Another script to test the model
+
+Dependencies:
+* langchain_huggingface
+* langchain_community
+* langchain_core
+* transformers
+* yaml
+
+Global variables:
+* configuration
+* model_id
+* end_point_type
+* model_url
+* chat_model
+* messages
+* ai_msg
+"""
+
+#import multiprocessing
+#from langchain_huggingface.llms import HuggingFacePipeline
+#from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+
 from langchain_community.chat_models import ChatLlamaCpp, ChatOpenAI
 from langchain_core.messages import (
     HumanMessage,
     SystemMessage,
 )
-import multiprocessing
-
-
-from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 import yaml
 
 
