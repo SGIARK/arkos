@@ -31,7 +31,7 @@ import yaml
 
 
 # loads configuration for model
-with open("../config_module/config.yaml", "r") as file:
+with open("../config_module/config.yaml", "r", encoding = "utf-8") as file:
     configuration = yaml.safe_load(file)
 
 # isolates path to model on local machine from yaml configuration file
