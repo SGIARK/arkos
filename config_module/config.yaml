@@ -1,4 +1,4 @@
-model_path: "/Users/velocity/Documents/Holder/Project/CodingStuff/14VICUNA/llama.cpp/models/Mistral/mistral-7b-instruct-v0.2.Q6_K.gguf"
+model_path: "../mistral-7b-instruct-v0.2.Q6_K.gguf"
 base_prompt: "insert base prompt here"
 endpoint_type: "OpenAI"
 model_url: "http://localhost:8080/v1"
