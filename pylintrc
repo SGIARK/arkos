@@ -1,3 +1,7 @@
+[MASTER]
+# ignore the deprecated folder for now
+ignore-paths = deprecated/*
+
 [MESSAGES-CONTROL]
 disable =
     # this is ok coding style
