@@ -5,7 +5,11 @@ services:
     ports:
       - "5232:5232"
     volumes:
-      - ./collections:/data
-      - ./config:/config
+      - radicale-data:/data
+      - radicale-config:/config
     environment:
       - RADICALE_CONFIG=/config/radicale-config
+
+volumes:
+  radicale-data:
+  radicale-config:
