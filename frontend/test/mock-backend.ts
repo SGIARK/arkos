@@ -3,7 +3,9 @@ import { Ajv, ValidateFunction } from 'ajv';
 import { ChatCompletionRequest } from '../src/lib/schema_types.ts';
 import request_schema from '../../schemas/chatcompletionrequest_schema.json';
 import message_schema from '../../schemas/chatmessage_schema.json';
+import frontend_config from '../../config_module/config_frontend.json';
 
+const BASEURL: string = frontend_config['backend_base_url'];
 const ajv: Ajv = new Ajv();
 // NOTE: you MUST type `request_validator` this way to narrow the type of `reqJSON`, otherwise a priori TypeScript just thinks this is a generic `ValidateFunction` object
 const request_validator: ValidateFunction<ChatCompletionRequest> = ajv
@@ -82,9 +84,9 @@ export async function handleChatCompletions(req: Request): Promise<Response> {
  * @returns the HTTP response to send
  */
 export async function handleMockBackendRequest(req: Request): Promise<Response> {
-	if (req.url === 'https://localhost:3000/vfm-mock') {
+	if (req.url === `${BASEURL}/vfm-mock`) {
 		return new Response('lorem ipsum dolor sit amet', { status: 200 });
-	} else if (req.url === 'https://localhost:3000/v1/chat/completions') {
+	} else if (req.url === `${BASEURL}/v1/chat/completions`) {
 		return await handleChatCompletions(req);
 	} else {
 		return new Response('not found', { status: 404 });

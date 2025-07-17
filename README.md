@@ -60,5 +60,6 @@ This repo is currently a bit chaotic, but from a top-level point of view, here's
 | Joshua Guo            | Frontend       | duck_master     | MIT         |
 | Ilya Gulko            | Backend        | gulkily         | MIT         |
 | Yeabkal Abeje         | (departed)     | Yebe-Abe        | MIT         |
+| Jack Luo              | Backend        |                 |             |
+| Bryce Roberts         | Backend        |                 |             | 
 
-NOTE: we recently added a few other people, but none of them have started working on the codebase yet.

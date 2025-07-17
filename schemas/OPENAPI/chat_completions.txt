@@ -1,0 +1,111 @@
+openapi: 3.0.3
+info:
+  title: Chat Completions API
+  version: 1.0.0
+
+paths:
+  /v1/chat/completions:
+    post:
+      summary: Create a chat completion
+      operationId: createChatCompletion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+      responses:
+        '200':
+          description: A chat completion response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionResponse'
+            text/event-stream:
+              schema:
+                type: string
+              examples:
+                stream:
+                  summary: Streaming response chunk
+                  value: |
+                    data: {"id":"chatcmpl-xyz","object":"chat.completion.chunk","created":1680000000,"model":"gpt-4","choices":[{"delta":{"content":"Hello"},"index":0,"finish_reason":null}]}
+
+                    data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+                    
+                    data: [DONE]
+components:
+  schemas:
+    ChatCompletionRequest:
+      type: object
+      properties:
+        model:
+          type: string
+          example: ark-reason
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        stream:
+          type: boolean
+          description: Whether to stream the response.
+          default: false
+        temperature:
+          type: number
+          format: float
+          default: 1.0
+        thread_id:
+          type: string
+          example: "1"
+      required:
+        - model
+        - messages
+
+    ChatCompletionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          example: chatcmpl-abc123
+        object:
+          type: string
+          example: chat.completion
+        created:
+          type: integer
+          example: 1680000000
+        model:
+          type: string
+          example: ark-reason
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              message:
+                $ref: '#/components/schemas/ChatMessage'
+              finish_reason:
+                type: string
+                nullable: true
+        usage:
+          type: object
+          properties:
+            prompt_tokens:
+              type: integer
+            completion_tokens:
+              type: integer
+            total_tokens:
+              type: integer
+
+    ChatMessage:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        content:
+          type: string
+servers:
+  # Added by API Auto Mocking Plugin
+  - description: SwaggerHub API Auto Mocking
+    url: https://virtserver.swaggerhub.com/NMORGAN/ARK/1.0.0

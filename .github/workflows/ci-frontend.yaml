@@ -1,16 +1,16 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/SchemaStore/schemastore/refs/heads/master/src/schemas/json/github-workflow.json
-name: Pull request CI checks
+name: CI checks for frontend
 
 defaults:
   run:
-    working-directory: "./frontend"
+    working-directory: "frontend"
 
 on:
   pull_request:
     branches:
       - main
     paths:
-      - "./frontend"
+      - "frontend/**" # NOTE: "frontend" alone won't trigger the checks, because it just matches the folder itself
       - "!**/*.{txt,md}"
 
 jobs:
@@ -18,6 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ">=24.3.0" # latest as of July 2025; see https://nodejs.org/en/about/previous-releases for schedule
       - name: install
         run: npm install
 
@@ -29,6 +32,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ">=24.3.0"
       - name: install
         run: npm install
 

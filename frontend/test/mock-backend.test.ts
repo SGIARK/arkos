@@ -4,7 +4,9 @@ import { Ajv, ValidateFunction } from 'ajv';
 import { ChatCompletionResponse } from '../src/lib/schema_types.ts';
 import response_schema from '../../schemas/chatcompletionresponse_schema.json';
 import message_schema from '../../schemas/chatmessage_schema.json';
+import frontend_config from '../../config_module/config_frontend.json';
 
+const BASEURL: string = frontend_config['backend_base_url'];
 const ajv: Ajv = new Ajv();
 const response_validator: ValidateFunction<ChatCompletionResponse> = ajv
 	.addSchema(message_schema)
@@ -32,7 +34,7 @@ describe('environment', () => {
 
 describe('GET /vfm-mock', () => {
 	test('accepts GET', async () => {
-		const response: Response = await fetch('https://localhost:3000/vfm-mock', { method: 'GET' });
+		const response: Response = await fetch(`${BASEURL}/vfm-mock`, { method: 'GET' });
 		assert.strictEqual(response.status, 200);
 		assert.strictEqual(await response.text(), 'lorem ipsum dolor sit amet');
 	});
@@ -44,14 +46,14 @@ describe('POST /v1/chat/completions', () => {
 	// - mandatory parameters: model, messages
 	// - optional parameters: stream, temperature, thread_id
 	test("doesn't accept GET", async () => {
-		const response: Response = await fetch('https://localhost:3000/v1/chat/completions', {
+		const response: Response = await fetch(`${BASEURL}/v1/chat/completions`, {
 			method: 'GET'
 		});
 		assert.strictEqual(response.status, 405); // NOTE: HTTP 405 = "method not allowed"
 	});
 
 	test("doesn't accept POST, wrong Content-Type", async () => {
-		const response: Response = await fetch('https://localhost:3000/v1/chat/completions', {
+		const response: Response = await fetch(`${BASEURL}/v1/chat/completions`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'text/plain' }
 		});
@@ -60,7 +62,7 @@ describe('POST /v1/chat/completions', () => {
 	});
 
 	test("doesn't accept POST, no body", async () => {
-		const response: Response = await fetch('https://localhost:3000/v1/chat/completions', {
+		const response: Response = await fetch(`${BASEURL}/v1/chat/completions`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' }
 		});
@@ -69,7 +71,7 @@ describe('POST /v1/chat/completions', () => {
 	});
 
 	test("doesn't accept POST, wrong body type", async () => {
-		const response: Response = await fetch('https://localhost:3000/v1/chat/completions', {
+		const response: Response = await fetch(`${BASEURL}/v1/chat/completions`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify(42)
@@ -79,7 +81,7 @@ describe('POST /v1/chat/completions', () => {
 	});
 
 	test("doesn't accept POST, empty body", async () => {
-		const response: Response = await fetch('https://localhost:3000/v1/chat/completions', {
+		const response: Response = await fetch(`${BASEURL}/v1/chat/completions`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({})
@@ -89,7 +91,7 @@ describe('POST /v1/chat/completions', () => {
 	});
 
 	test("doesn't accept POST, model, no messages", async () => {
-		const response: Response = await fetch('https://localhost:3000/v1/chat/completions', {
+		const response: Response = await fetch(`${BASEURL}/v1/chat/completions`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ model: 'ark-reason' })
@@ -99,7 +101,7 @@ describe('POST /v1/chat/completions', () => {
 	});
 
 	test("doesn't accept POST, no model, messages", async () => {
-		const response: Response = await fetch('https://localhost:3000/v1/chat/completions', {
+		const response: Response = await fetch(`${BASEURL}/v1/chat/completions`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ messages: [{ role: 'user', content: 'hello world' }] })
@@ -109,7 +111,7 @@ describe('POST /v1/chat/completions', () => {
 	});
 
 	test('POST with model and messages', async () => {
-		const response: Response = await fetch('https://localhost:3000/v1/chat/completions', {
+		const response: Response = await fetch(`${BASEURL}/v1/chat/completions`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
@@ -123,7 +125,7 @@ describe('POST /v1/chat/completions', () => {
 	});
 
 	test('POST with model, messages, temperature', async () => {
-		const response: Response = await fetch('https://localhost:3000/v1/chat/completions', {
+		const response: Response = await fetch(`${BASEURL}/v1/chat/completions`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
@@ -138,7 +140,7 @@ describe('POST /v1/chat/completions', () => {
 	});
 
 	test('POST with model, messages, thread_id', async () => {
-		const response: Response = await fetch('https://localhost:3000/v1/chat/completions', {
+		const response: Response = await fetch(`${BASEURL}/v1/chat/completions`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({

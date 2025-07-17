@@ -7,7 +7,9 @@
 	} from '../lib/schema_types.js';
 	import response_schema from '../../../schemas/chatcompletionresponse_schema.json';
 	import message_schema from '../../../schemas/chatmessage_schema.json';
+	import frontend_config from '../../../config_module/config_frontend.json';
 
+	const BASEURL: string = frontend_config['backend_base_url'];
 	const ajv: Ajv = new Ajv();
 	const response_validator: ValidateFunction<ChatCompletionResponse> = ajv
 		.addSchema(message_schema)
@@ -24,7 +26,7 @@
 	// c.f. https://lightningchart.com/js-charts/api-documentation/v5.2.0/types/MouseEventHandler.html for typing
 	async function handleMessageSending(): Promise<void> {
 		currentMessages = [...currentMessages, { role: 'user', content: currentUserMessage }]; // reassign for better reactivity
-		const response: Response = await fetch('https://localhost:3000/v1/chat/completions', {
+		const response: Response = await fetch(`${BASEURL}/v1/chat/completions`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
@@ -57,7 +59,7 @@
 	}
 
 	async function handleKeydown(event: KeyboardEvent): Promise<void> {
-		if (event.key === "Enter"){
+		if (event.key === 'Enter') {
 			event.preventDefault();
 			await handleMessageSending();
 		}
