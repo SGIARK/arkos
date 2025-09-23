@@ -1,6 +1,5 @@
 import pytest
-import asyncio
-from ArkModelNew import ArkModelLink, UserMessage, AIMessage
+from model_module.ArkModelNew import ArkModelLink, UserMessage
 
 @pytest.mark.asyncio
 async def test_generation_response():
