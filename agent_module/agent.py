@@ -1,17 +1,10 @@
 # agent.py
-
-import os
-import sys
-from pydantic import BaseModel, create_model, Field
 from typing import List, Tuple
 import json
 from enum import Enum
-
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from pydantic import create_model, Field
 from state_module.state_handler import StateHandler
-from state_module.state import State, AgentState
-from model_module.ArkModelNew import ArkModelLink, UserMessage, AIMessage, SystemMessage
+from model_module.ArkModelNew import ArkModelLink, AIMessage, SystemMessage
 from tool_module.tool import Tool
 from memory_module.memory import Memory
 
