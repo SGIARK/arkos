@@ -1,7 +1,5 @@
-# tool_module/tool.py
-
-import requests
 from typing import Dict, Any, Optional
+import requests
 
 class Tool:
     """

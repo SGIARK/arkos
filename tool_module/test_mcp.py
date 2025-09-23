@@ -1,5 +1,4 @@
 import asyncio
-import os
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from mcp_use import MCPAgent, MCPClient
