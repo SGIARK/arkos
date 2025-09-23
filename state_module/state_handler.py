@@ -1,10 +1,5 @@
-import yaml
-import os
-import sys
 from typing import Dict, Any
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
+import yaml
 from state_module.state_registry import STATE_REGISTRY, auto_register_states
 from state_module.state import State
 
