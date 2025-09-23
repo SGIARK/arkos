@@ -4,14 +4,6 @@ import os
 import json
 from typing import Dict, Any
 
-
-import os
-import sys
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from state_module.state import State  # Import State class for managing state names
-
 class Memory:
     def __init__(self, agent_id: str, filename: str = "memory.csv"):
         self.agent_id = agent_id
