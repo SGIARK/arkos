@@ -2,4 +2,5 @@ openai>=1.61.0
 pyyaml>=6.0.2
 pydantic>=2.10.6
 requests>=2.32.3
+mcp-use>=1.13.0
 

@@ -12,6 +12,7 @@ The entire codebase is in Python, except for a few shell scripts. We use the fol
 * `pyyaml`
 * `pydantic` for defining schemas
 * `requests`
+* `mcp-use`
 
 ## File structure
 
