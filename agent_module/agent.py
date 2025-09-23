@@ -1,5 +1,5 @@
 # agent.py
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
 import json
 from enum import Enum
 from pydantic import create_model, Field
