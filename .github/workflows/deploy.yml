@@ -1,0 +1,169 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  DEPLOY_HOST: ark.mit.edu
+  DEPLOY_USER: arkos
+  DEPLOY_PATH: /home/arkos/arkos
+  APP_PORT: 1112
+
+jobs:
+  deploy:
+    name: Deploy to MIT SIPB
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.event.inputs.environment || 'production' }}
+      url: https://ark.mit.edu
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ env.DEPLOY_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Create deployment package
+        run: |
+          tar --exclude='.git' \
+              --exclude='__pycache__' \
+              --exclude='*.pyc' \
+              --exclude='.env' \
+              --exclude='venv' \
+              --exclude='.venv' \
+              --exclude='model_module/models' \
+              --exclude='model_module/hub' \
+              --exclude='**/depricated' \
+              --exclude='.pytest_cache' \
+              --exclude='.coverage' \
+              --exclude='htmlcov' \
+              --exclude='.claude' \
+              -czf deploy.tar.gz .
+
+      - name: Upload to server
+        run: |
+          scp -i ~/.ssh/deploy_key deploy.tar.gz \
+            ${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:/tmp/arkos-deploy.tar.gz
+
+      - name: Deploy application
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }} << 'DEPLOY_SCRIPT'
+            set -e
+
+            DEPLOY_DIR="${{ env.DEPLOY_PATH }}"
+            BACKUP_DIR="${DEPLOY_DIR}_backup_$(date +%Y%m%d_%H%M%S)"
+
+            echo "=== Starting deployment ==="
+
+            # Backup current deployment
+            if [ -d "$DEPLOY_DIR" ]; then
+              echo "Backing up current deployment to $BACKUP_DIR"
+              cp -r "$DEPLOY_DIR" "$BACKUP_DIR"
+            fi
+
+            # Extract new deployment
+            echo "Extracting new deployment..."
+            mkdir -p "$DEPLOY_DIR"
+            cd "$DEPLOY_DIR"
+            tar -xzf /tmp/arkos-deploy.tar.gz
+            rm /tmp/arkos-deploy.tar.gz
+
+            # Restore .env file from backup or create from example
+            if [ -f "${BACKUP_DIR}/.env" ]; then
+              cp "${BACKUP_DIR}/.env" "$DEPLOY_DIR/.env"
+            elif [ ! -f "$DEPLOY_DIR/.env" ] && [ -f "$DEPLOY_DIR/.env.example" ]; then
+              echo "WARNING: No .env found, copying from .env.example"
+              cp "$DEPLOY_DIR/.env.example" "$DEPLOY_DIR/.env"
+            fi
+
+            # Install/update dependencies
+            echo "Installing dependencies..."
+            cd "$DEPLOY_DIR"
+            python3 -m pip install --user -r requirements.txt --quiet
+
+            # Restart the application using systemd
+            echo "Restarting application..."
+            sudo systemctl restart arkos || {
+              echo "systemctl restart failed, trying manual restart..."
+              pkill -f "uvicorn base_module.app:app" || true
+              sleep 2
+              cd "$DEPLOY_DIR"
+              nohup python3 -m uvicorn base_module.app:app \
+                --host 0.0.0.0 --port ${{ env.APP_PORT }} \
+                > /var/log/arkos/app.log 2>&1 &
+            }
+
+            # Wait for application to start
+            echo "Waiting for application to start..."
+            sleep 5
+
+            # Health check
+            echo "Running health check..."
+            for i in {1..6}; do
+              if curl -sf http://localhost:${{ env.APP_PORT }}/health > /dev/null; then
+                echo "Health check passed!"
+                exit 0
+              fi
+              echo "Health check attempt $i failed, retrying..."
+              sleep 5
+            done
+
+            echo "Health check failed after 30 seconds!"
+            exit 1
+          DEPLOY_SCRIPT
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }} << 'ROLLBACK_SCRIPT'
+            set -e
+
+            DEPLOY_DIR="${{ env.DEPLOY_PATH }}"
+            BACKUP_DIR=$(ls -td ${DEPLOY_DIR}_backup_* 2>/dev/null | head -1)
+
+            if [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ]; then
+              echo "=== Rolling back to $BACKUP_DIR ==="
+              rm -rf "$DEPLOY_DIR"
+              mv "$BACKUP_DIR" "$DEPLOY_DIR"
+
+              # Restart with backup
+              sudo systemctl restart arkos || {
+                pkill -f "uvicorn base_module.app:app" || true
+                sleep 2
+                cd "$DEPLOY_DIR"
+                nohup python3 -m uvicorn base_module.app:app \
+                  --host 0.0.0.0 --port ${{ env.APP_PORT }} \
+                  > /var/log/arkos/app.log 2>&1 &
+              }
+
+              echo "Rollback completed"
+            else
+              echo "No backup found for rollback!"
+              exit 1
+            fi
+          ROLLBACK_SCRIPT
+
+      - name: Cleanup old backups
+        if: success()
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }} << 'CLEANUP_SCRIPT'
+            DEPLOY_DIR="${{ env.DEPLOY_PATH }}"
+            # Keep only the 3 most recent backups
+            ls -td ${DEPLOY_DIR}_backup_* 2>/dev/null | tail -n +4 | xargs rm -rf 2>/dev/null || true
+            echo "Cleanup completed"
+          CLEANUP_SCRIPT

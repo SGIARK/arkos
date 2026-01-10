@@ -1,0 +1,66 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
+
+# IDE/Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+.cursor/
+
+# Environment files (secrets)
+.env
+*.env
+!.env.example
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+
+# Documentation
+docs/_build/
+
+# Local development
+*.log
+*.local
+
+# Model cache (large files)
+model_module/models/
+model_module/data/
+model_module/hub/
+
+# Deprecated code
+**/depricated/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Secrets
+tool_module/secrets/
+
+# Plans
+.claude/

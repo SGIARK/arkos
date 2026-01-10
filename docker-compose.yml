@@ -1,0 +1,53 @@
+version: "3.8"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "1112:1112"
+    environment:
+      - DB_URL=postgresql://postgres:postgres@postgres:5432/arkos
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-sk-dummy}
+      - HF_TOKEN=${HF_TOKEN:-}
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - arkos-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:1112/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: arkos
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - arkos-network
+
+volumes:
+  postgres_data:
+
+networks:
+  arkos-network:
+    driver: bridge
