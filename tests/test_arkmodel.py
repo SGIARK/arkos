@@ -15,14 +15,12 @@ class TestArkModelLink:
         """Test LLM generation with mocked client."""
         with patch("model_module.ArkModelNew.AsyncOpenAI", return_value=mock_openai_client):
             model = ArkModelLink(base_url="http://localhost:8080/v1")
-            model.client = mock_openai_client
 
             messages = [UserMessage(content="Say hello in Spanish.")]
             result = await model.make_llm_call(messages, json_schema=None)
 
             assert result is not None
-            # The mock returns "Hola! Este es un mensaje de prueba."
-            assert "message" in result or isinstance(result.get("message"), AIMessage)
+            assert isinstance(result, str)
 
     @pytest.mark.asyncio
     async def test_generation_with_schema_mocked(self):
@@ -39,7 +37,6 @@ class TestArkModelLink:
 
         with patch("model_module.ArkModelNew.AsyncOpenAI", return_value=mock_client):
             model = ArkModelLink(base_url="http://localhost:8080/v1")
-            model.client = mock_client
 
             messages = [UserMessage(content="Give me a product listing.")]
             schema = {

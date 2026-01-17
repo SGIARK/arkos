@@ -68,7 +68,9 @@ test:
         assert result == "custom_default"
 
     def test_missing_env_var_handling(self):
-        """Test handling of missing environment variables."""
+        """Test handling of missing environment variables raises OSError."""
+        import pytest
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write("""
 test:
@@ -78,8 +80,10 @@ test:
 
         try:
             test_loader = ConfigLoader(temp_config_path)
-            # Should return the original ${VAR} syntax if not found
-            result = test_loader.get("test.missing_var")
-            assert result is not None
+            # Should raise OSError when env var is not found
+            with pytest.raises(
+                OSError, match="Environment variable 'DEFINITELY_MISSING_VAR' not found"
+            ):
+                test_loader.get("test.missing_var")
         finally:
             os.unlink(temp_config_path)

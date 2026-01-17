@@ -14,6 +14,15 @@ os.environ.setdefault("DB_URL", "postgresql://postgres:postgres@localhost:5432/a
 os.environ.setdefault("OPENAI_API_KEY", "sk-test-dummy-key")
 os.environ.setdefault("HF_TOKEN", "test-token")
 
+# Mock mem0 before any imports that use it (mem0 requires PostgreSQL vector extension)
+_mock_mem0_memory = MagicMock()
+_mock_mem0_memory.add.return_value = None
+_mock_mem0_memory.search.return_value = {"results": []}
+
+_mock_mem0_module = MagicMock()
+_mock_mem0_module.Memory.from_config.return_value = _mock_mem0_memory
+sys.modules["mem0"] = _mock_mem0_module
+
 
 @pytest.fixture
 def mock_llm_response():
