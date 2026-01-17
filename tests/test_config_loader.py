@@ -3,8 +3,6 @@
 import os
 import tempfile
 
-import pytest
-
 from config_module.loader import ConfigLoader
 
 

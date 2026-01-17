@@ -1,6 +1,6 @@
 """Tests for MCP tool call module with mocked servers."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -19,14 +19,16 @@ class TestMCPClient:
             args=["test"],
         )
 
-        with patch.object(MCPClient, "start", mock_mcp_client.start):
-            with patch.object(MCPClient, "list_tools", mock_mcp_client.list_tools):
-                client = MCPClient(config)
-                client._initialized = True
+        with (
+            patch.object(MCPClient, "start", mock_mcp_client.start),
+            patch.object(MCPClient, "list_tools", mock_mcp_client.list_tools),
+        ):
+            client = MCPClient(config)
+            client._initialized = True
 
-                tools = await mock_mcp_client.list_tools()
-                assert len(tools) > 0
-                assert tools[0]["name"] == "test_tool"
+            tools = await mock_mcp_client.list_tools()
+            assert len(tools) > 0
+            assert tools[0]["name"] == "test_tool"
 
     @pytest.mark.asyncio
     async def test_mcp_client_stop(self, mock_mcp_client):
@@ -53,30 +55,36 @@ class TestMCPToolManager:
         """Test tool manager initialization with mocked servers."""
         config = {"test_server": {"command": "echo", "args": ["test"]}}
 
-        with patch.object(MCPToolManager, "initialize_servers", mock_mcp_manager.initialize_servers):
-            with patch.object(MCPToolManager, "list_all_tools", mock_mcp_manager.list_all_tools):
-                manager = MCPToolManager(config)
-                await mock_mcp_manager.initialize_servers()
+        with (
+            patch.object(MCPToolManager, "initialize_servers", mock_mcp_manager.initialize_servers),
+            patch.object(MCPToolManager, "list_all_tools", mock_mcp_manager.list_all_tools),
+        ):
+            MCPToolManager(config)  # Initialize manager
+            await mock_mcp_manager.initialize_servers()
 
-                tools = await mock_mcp_manager.list_all_tools()
-                assert len(tools) > 0
+            tools = await mock_mcp_manager.list_all_tools()
+            assert len(tools) > 0
 
     @pytest.mark.asyncio
     async def test_tool_execution_mocked(self, mock_mcp_manager):
         """Test tool execution with mocked manager."""
-        config = {"filesystem": {"command": "npx", "args": ["-y", "@mcp/server-filesystem", "/tmp"]}}
+        config = {
+            "filesystem": {"command": "npx", "args": ["-y", "@mcp/server-filesystem", "/tmp"]}
+        }
 
-        with patch.object(MCPToolManager, "initialize_servers", mock_mcp_manager.initialize_servers):
-            with patch.object(MCPToolManager, "call_tool", mock_mcp_manager.call_tool):
-                with patch.object(MCPToolManager, "shutdown", mock_mcp_manager.shutdown):
-                    manager = MCPToolManager(config)
-                    await mock_mcp_manager.initialize_servers()
+        with (
+            patch.object(MCPToolManager, "initialize_servers", mock_mcp_manager.initialize_servers),
+            patch.object(MCPToolManager, "call_tool", mock_mcp_manager.call_tool),
+            patch.object(MCPToolManager, "shutdown", mock_mcp_manager.shutdown),
+        ):
+            MCPToolManager(config)  # Initialize manager
+            await mock_mcp_manager.initialize_servers()
 
-                    result = await mock_mcp_manager.call_tool("list_directory", {"path": "/tmp"})
-                    assert result is not None
-                    assert result["result"] == "success"
+            result = await mock_mcp_manager.call_tool("list_directory", {"path": "/tmp"})
+            assert result is not None
+            assert result["result"] == "success"
 
-                    await mock_mcp_manager.shutdown()
+            await mock_mcp_manager.shutdown()
 
     @pytest.mark.asyncio
     async def test_tool_manager_shutdown(self, mock_mcp_manager):
@@ -84,7 +92,7 @@ class TestMCPToolManager:
         config = {"test_server": {"command": "echo", "args": ["test"]}}
 
         with patch.object(MCPToolManager, "shutdown", mock_mcp_manager.shutdown):
-            manager = MCPToolManager(config)
+            MCPToolManager(config)  # Initialize manager
             await mock_mcp_manager.shutdown()
             mock_mcp_manager.shutdown.assert_called_once()
 

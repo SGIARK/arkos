@@ -1,19 +1,19 @@
-    # agent.py
+# agent.py
 
+import json
 import os
 import sys
-from pydantic import create_model, Field
-from typing import List, Tuple
-import json
 from enum import Enum
+from typing import Any
 
+from pydantic import Field, create_model
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from state_module.state_handler import StateHandler
-# Assuming ArkModelLink.generate_response is actually ArkModelLink.agenerate_response
-from model_module.ArkModelNew import ArkModelLink, AIMessage, SystemMessage
 from memory_module.memory import Memory
 
+# Assuming ArkModelLink.generate_response is actually ArkModelLink.agenerate_response
+from model_module.ArkModelNew import AIMessage, ArkModelLink, SystemMessage
+from state_module.state_handler import StateHandler
 
 MAX_ITER = 10
 
@@ -24,9 +24,7 @@ class Agent:
     Default agent class
     """
 
-    def __init__(
-        self, agent_id: str, flow: StateHandler, memory: Memory, llm: ArkModelLink
-    ):
+    def __init__(self, agent_id: str, flow: StateHandler, memory: Memory, llm: ArkModelLink):
         self.agent_id = agent_id
         self.flow = flow
         self.memory = memory
@@ -34,8 +32,8 @@ class Agent:
         self.current_state = self.flow.get_initial_state()
 
         self.startup_flag = True
-        self.tools = []
-        self.tool_names = []
+        self.tools: list[Any] = []
+        self.tool_names: list[str] = []
 
     # def bind_tool(self, tool):
     #
@@ -47,7 +45,7 @@ class Agent:
     #    self.bind_tool(tool)
     #    self.tool_names.append(tool_name)
 
-    def create_next_state_class(self, options: List[Tuple[str, str]]):
+    def create_next_state_class(self, options: list[tuple[str, str]]):
         """
         options: list of tuples (next_state, description of state)
         Returns a Pydantic model class with a single field 'next_state',
@@ -58,7 +56,7 @@ class Agent:
         enum_dict = {state: state for state, desc in options}
 
         # add desc into enum dict
-        next_state_enum = Enum("NextStateEnum", enum_dict)
+        next_state_enum = Enum("NextStateEnum", enum_dict)  # type: ignore[misc]
 
         # Build the model with a single constrained field
         next_state_model = create_model(
@@ -94,11 +92,9 @@ class Agent:
         Chooses subsequent transition in state graph
         """
 
-        transition_tuples = list(zip(transitions_dict["tt"], transitions_dict["td"]))
-        prompt = f"""given the context of the conversation and the following state options {transition_tuples} output the most reasonable next state. 
+        transition_tuples = list(zip(transitions_dict["tt"], transitions_dict["td"], strict=False))
+        prompt = f"""given the context of the conversation and the following state options {transition_tuples} output the most reasonable next state.
                  do not use tool result to determine the next state"""
-
-
 
         # creates pydantic class and a model dump
         NextStates = self.create_next_state_class(transition_tuples)
@@ -112,12 +108,9 @@ class Agent:
 
         context_text = [SystemMessage(content=prompt)] + messages
 
-        
         output = await self.call_llm(context=context_text, json_schema=json_schema)
 
-        
         structured_output = json.loads(output.content)
-        
 
         next_state_name = structured_output["next_state"]
 
@@ -194,7 +187,7 @@ class Agent:
             # print("MSGS_LIST", messages_list[-1])
 
             context = self.get_context()
-            update = await self.current_state.run(context, self)
+            update = await self.current_state.run(context, self)  # type: ignore[misc, call-arg]
             print("inner_loop_update: ", update)
             if update:
                 # messages_list.append(update)
@@ -210,23 +203,17 @@ class Agent:
 
             messages_list = self.memory.retrieve_short_memory(5)
             if self.current_state.check_transition_ready(messages_list):
-
-                transition_dict = self.flow.get_transitions(
-                    self.current_state, messages_list
-                )
+                transition_dict = self.flow.get_transitions(self.current_state, messages_list)
                 transition_names = transition_dict["tt"]
 
                 if len(transition_names) == 1:
                     next_state_name = transition_names[0]
                 else:
                     # 🟢 FIX 4: Add 'await' to call the async choose_transition method
-                    next_state_name = await self.choose_transition(
-                        transition_dict, messages_list
-                    )
+                    next_state_name = await self.choose_transition(transition_dict, messages_list)
 
                 self.current_state = self.flow.get_state(next_state_name)
                 print("agent.py CURR STATE: ", self.current_state)
-
 
             else:
                 print("REACHED NO NEXT STATE")
@@ -238,4 +225,3 @@ class Agent:
 
 if __name__ == "__main__":
     pass
-

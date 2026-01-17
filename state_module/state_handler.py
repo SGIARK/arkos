@@ -1,19 +1,20 @@
-import yaml
 import os
 import sys
-from typing import Dict, Any
+from typing import Any
+
+import yaml
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from state_module.state_registry import STATE_REGISTRY, auto_register_states
 from state_module.state import State
+from state_module.state_registry import STATE_REGISTRY, auto_register_states
 
 auto_register_states("state_module")
 
 
 class StateHandler:
     def __init__(self, yaml_path: str):
-        with open(yaml_path, "r") as f:
+        with open(yaml_path) as f:
             self.graph = yaml.safe_load(f)
 
         self.states = {}
@@ -29,7 +30,7 @@ class StateHandler:
     def get_initial_state(self) -> State:
         return self.states[self.initial_state_name]
 
-    def get_transitions(self, current_state: str, context: Dict[str, Any]):
+    def get_transitions(self, current_state: State, _context: dict[str, Any]):
         state = current_state
         transition_targets = state.transition.get("next", [])
 

@@ -1,10 +1,12 @@
 import os
 import sys
+
+from model_module.ArkModelNew import (
+    ToolMessage,
+)
 from state_module.state import State
 from state_module.state_registry import register_state
-from model_module.ArkModelNew import ArkModelLink, UserMessage, AIMessage, SystemMessage, ToolMessage
-from tool_module.tool_call import MCPClient, MCPToolManager, MCPServerConfig
-
+from tool_module.tool_call import MCPToolManager
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -17,7 +19,7 @@ class StateCal(State):
         super().__init__(name, config)
         self.is_terminal = False
 
-    def check_transition_ready(self, context):
+    def check_transition_ready(self, _context):
         return True
 
     async def calendar_retrieval(self):
@@ -28,24 +30,27 @@ class StateCal(State):
             "google-calendar": {
                 "command": "npx",
                 "args": ["@cocal/google-calendar-mcp"],
-                "env": env
+                "env": env,
             }
         }
 
         manager = MCPToolManager(config)
         await manager.initialize_servers()
-        
-        result = await manager.call_tool("list-events", {
-            "calendarId": "primary",
-            "timeMin": "2025-11-27T00:00:00",
-            "timeMax": "2025-12-02T00:00:00",
-        })
+
+        result = await manager.call_tool(
+            "list-events",
+            {
+                "calendarId": "primary",
+                "timeMin": "2025-11-27T00:00:00",
+                "timeMax": "2025-12-02T00:00:00",
+            },
+        )
 
         assert result is not None
 
         return result
 
-    async def run(self, context, agent):
+    async def run(self, _context, _agent):
         # calendar_contents = await self.calendar_retrieval()
         calendar_contents = """
             calendar_placeholder = (
@@ -59,4 +64,7 @@ class StateCal(State):
     "Calendar integration is not enabled yet. This is a placeholder result."
             )
             """
-        return ToolMessage(content= f"Calendar Retreival Results \n\n {calendar_contents} \n\n Ensure you return control back to the user now", tool_calls={"CalendarTool": True})
+        return ToolMessage(
+            content=f"Calendar Retreival Results \n\n {calendar_contents} \n\n Ensure you return control back to the user now",
+            tool_calls={"CalendarTool": True},
+        )

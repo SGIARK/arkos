@@ -31,9 +31,9 @@ class TestArkModelLink:
         mock_completion = MagicMock()
         mock_completion.choices = [MagicMock()]
         mock_completion.choices[0].message = MagicMock()
-        mock_completion.choices[0].message.content = (
-            '{"product_name": "Test Widget", "price": 9.99, "in_stock": true}'
-        )
+        mock_completion.choices[
+            0
+        ].message.content = '{"product_name": "Test Widget", "price": 9.99, "in_stock": true}'
         mock_completion.choices[0].message.tool_calls = None
         mock_client.chat.completions.create = AsyncMock(return_value=mock_completion)
 

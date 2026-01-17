@@ -1,29 +1,23 @@
-import os
-import sys
 import asyncio
 import json
+import os
+import sys
 
+from model_module.ArkModelNew import (
+    ToolMessage,
+)
 from state_module.state import State
 from state_module.state_registry import register_state
-from state_module.state_registry import register_state#
-from model_module.ArkModelNew import ArkModelLink, UserMessage, AIMessage, SystemMessage, ToolMessage
-from tool_module.tool_call import MCPClient, MCPToolManager, MCPServerConfig
-
-
+from tool_module.tool_call import MCPToolManager
 
 # from .state import State
 # from .state_registry import register_state
-# 
+#
 # from ..model_module.ArkModelNew import ArkModelLink, UserMessage, AIMessage, SystemMessage, ToolMessage
 # from ..tool_module.tool_call import MCPClient, MCPToolManager, MCPServerConfig
 
 
-
-
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-
-
 
 
 @register_state
@@ -34,7 +28,7 @@ class StateSearch(State):
         super().__init__(name, config)
         self.is_terminal = False  # Stop after this state
 
-    def check_transition_ready(self, context):
+    def check_transition_ready(self, _context):
         # ALWAYS allow transition after user provides input
         return True
 
@@ -42,24 +36,27 @@ class StateSearch(State):
         """Test actual tool execution."""
         env = os.environ.copy()
         # env["BRAVE_API_KEY"] = "BRAVE_API_KEY"
-        config = {   
+        config = {
             "brave-search-mcp-server": {
-            "command": "npx",
-            "args": ["-y", "@brave/brave-search-mcp-server", "--transport", "stdio"],
-            "env": env
+                "command": "npx",
+                "args": ["-y", "@brave/brave-search-mcp-server", "--transport", "stdio"],
+                "env": env,
             }
         }
 
         manager = MCPToolManager(config)
         await manager.initialize_servers()
-        
+
         tools = await manager.list_all_tools()
-        assert len(tools) > 0 
-        
+        assert len(tools) > 0
+
         # Test tool call for brave search mcp(assuming brave_web_search exists)
-        result = await manager.call_tool("brave_web_search", {
-            "query": query,
-            })
+        result = await manager.call_tool(
+            "brave_web_search",
+            {
+                "query": query,
+            },
+        )
 
         assert result is not None
 
@@ -80,7 +77,7 @@ class StateSearch(State):
 
         return parsed[:k]
 
-    def parse_query(self, context, agent):
+    def parse_query(self, context, _agent):
         """
         Extracts the most recent user query from context.
         """
@@ -99,17 +96,16 @@ class StateSearch(State):
             return messages[-1].content
 
         raise ValueError("No valid query found in context")
-            
-
-        return query
 
     async def run(self, context, agent):
-
         query = self.parse_query(context, agent)
         search_results = await self.brave_search(query)
         top_k_results = self.extract_top_k(search_results)
 
-        return ToolMessage(content=f"This is your search result. It is GROUND TRUTH, ignore your previous knowledge \n\n {top_k_results} \n\n Summarize and return control back to the user now", tool_calls={"SearchTool": True}) 
+        return ToolMessage(
+            content=f"This is your search result. It is GROUND TRUTH, ignore your previous knowledge \n\n {top_k_results} \n\n Summarize and return control back to the user now",
+            tool_calls={"SearchTool": True},
+        )
 
 
 if __name__ == "__main__":
@@ -119,4 +115,3 @@ if __name__ == "__main__":
 
     top_k = obj.extract_top_k(result)
     print(top_k)
-

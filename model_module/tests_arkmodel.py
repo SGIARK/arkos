@@ -1,6 +1,6 @@
 import pytest
-import asyncio
-from ArkModelNew import ArkModelLink, UserMessage, AIMessage
+from ArkModelNew import ArkModelLink, UserMessage
+
 
 @pytest.mark.asyncio
 async def test_generation_response():
@@ -9,6 +9,7 @@ async def test_generation_response():
     result = await model.make_llm_call(messages, json_schema=None)
     assert "message" in result
     assert result["message"].content.lower().startswith("hola")
+
 
 @pytest.mark.asyncio
 async def test_generation_with_schema():
@@ -21,10 +22,10 @@ async def test_generation_with_schema():
             "properties": {
                 "product_name": {"type": "string"},
                 "price": {"type": "number"},
-                "in_stock": {"type": "boolean"}
+                "in_stock": {"type": "boolean"},
             },
-            "required": ["product_name", "price", "in_stock"]
-        }
+            "required": ["product_name", "price", "in_stock"],
+        },
     }
     result = await model.make_llm_call(messages, json_schema=schema)
     schema_result = result.get("schema_result")

@@ -1,8 +1,9 @@
 import os
 import re
-import yaml
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
+
+import yaml
 from dotenv import load_dotenv
 
 
@@ -16,7 +17,7 @@ class ConfigLoader:
         port = config.get('app.port', default=8080)
     """
 
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: str | Path | None = None):
         """
         Initialize config loader.
 
@@ -29,16 +30,15 @@ class ConfigLoader:
             config_path = project_root / "config_module" / "config.yaml"
 
         self.config_path = Path(config_path)
-        self._config: Optional[Dict[str, Any]] = None
+        self._config: dict[str, Any] | None = None
 
         # Check if config file exists
         if not self.config_path.exists():
             raise FileNotFoundError(
-                f"Config file not found: {self.config_path}\n"
-                f"Please create config_module/arkos.yaml"
+                f"Config file not found: {self.config_path}\nPlease create config_module/arkos.yaml"
             )
 
-    def load(self) -> Dict[str, Any]:
+    def load(self) -> dict[str, Any]:
         """
         Load config file and substitute environment variables.
 
@@ -50,7 +50,7 @@ class ConfigLoader:
             return self._config
 
         # Load YAML
-        with open(self.config_path, "r") as f:
+        with open(self.config_path) as f:
             config = yaml.safe_load(f)
 
         # Substitute environment variables
@@ -82,7 +82,7 @@ class ConfigLoader:
                 var_value = os.environ.get(var_name)
 
                 if var_value is None:
-                    raise EnvironmentError(
+                    raise OSError(
                         f"Environment variable '{var_name}' not found.\n"
                         f"Required by: {self.config_path}\n"
                         f"Please set it in .env file or export it."
@@ -120,15 +120,16 @@ class ConfigLoader:
 
         for key in keys:
             if isinstance(value, dict):
-                value = value.get(key)
-                if value is None:
+                next_value = value.get(key)
+                if next_value is None:
                     return default
+                value = next_value
             else:
                 return default
 
         return value
 
-    def reload(self) -> Dict[str, Any]:
+    def reload(self) -> dict[str, Any]:
         """Force reload config from disk (useful for testing)."""
         self._config = None
         return self.load()

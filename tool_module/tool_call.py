@@ -8,10 +8,9 @@ and executes tool calls via JSON-RPC 2.0 over stdio.
 import asyncio
 import json
 import logging
-import subprocess
-from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from threading import Lock
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +21,8 @@ class MCPServerConfig:
 
     name: str
     command: str
-    args: List[str]
-    env: Optional[Dict[str, str]] = None
+    args: list[str]
+    env: dict[str, str] | None = None
 
 
 class MCPClient:
@@ -48,7 +47,7 @@ class MCPClient:
 
     def __init__(self, config: MCPServerConfig):
         self.config = config
-        self.process: Optional[asyncio.subprocess.Process] = None
+        self.process: asyncio.subprocess.Process | None = None
         self.request_id = 0
         self._lock = Lock()
         self._initialized = False
@@ -75,18 +74,18 @@ class MCPClient:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=env
+                env=env,
             )
 
             # Initialize MCP connection
-            init_response = await self._send_request("initialize", {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {
-                    "name": "arkos",
-                    "version": "1.0.0"
-                }
-            })
+            init_response = await self._send_request(
+                "initialize",
+                {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "arkos", "version": "1.0.0"},
+                },
+            )
 
             if "error" in init_response:
                 raise RuntimeError(f"MCP initialization failed: {init_response['error']}")
@@ -117,7 +116,7 @@ class MCPClient:
                 self.process = None
                 self._initialized = False
 
-    async def list_tools(self) -> List[Dict[str, Any]]:
+    async def list_tools(self) -> list[dict[str, Any]]:
         """
         Request list of available tools from the MCP server.
 
@@ -143,7 +142,7 @@ class MCPClient:
         logger.debug(f"Server '{self.config.name}' has {len(tools)} tools")
         return tools
 
-    async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         """
         Execute a tool on the MCP server.
 
@@ -170,10 +169,7 @@ class MCPClient:
         logger.info(f"Calling tool '{name}' on server '{self.config.name}'")
         logger.debug(f"Arguments: {arguments}")
 
-        response = await self._send_request("tools/call", {
-            "name": name,
-            "arguments": arguments
-        })
+        response = await self._send_request("tools/call", {"name": name, "arguments": arguments})
 
         if "error" in response:
             error_msg = response["error"]
@@ -184,7 +180,7 @@ class MCPClient:
         logger.debug(f"Tool result: {result}")
         return result
 
-    async def _send_request(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def _send_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """
         Send a JSON-RPC 2.0 request and wait for response.
 
@@ -204,21 +200,18 @@ class MCPClient:
             self.request_id += 1
             req_id = self.request_id
 
-        request = {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "method": method,
-            "params": params
-        }
+        request = {"jsonrpc": "2.0", "id": req_id, "method": method, "params": params}
 
         logger.debug(f"[{self.config.name}] >> {json.dumps(request)}")
 
         # Send request
         request_line = json.dumps(request) + "\n"
+        assert self.process is not None and self.process.stdin is not None
         self.process.stdin.write(request_line.encode())
         await self.process.stdin.drain()
 
         # Read response
+        assert self.process.stdout is not None
         response_line = await self.process.stdout.readline()
         if not response_line:
             raise RuntimeError(f"MCP server '{self.config.name}' closed connection")
@@ -228,17 +221,14 @@ class MCPClient:
 
         return response
 
-    async def _send_notification(self, method: str, params: Dict[str, Any]) -> None:
+    async def _send_notification(self, method: str, params: dict[str, Any]) -> None:
         """Send a JSON-RPC 2.0 notification (no response expected)."""
-        notification = {
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params
-        }
+        notification = {"jsonrpc": "2.0", "method": method, "params": params}
 
         logger.debug(f"[{self.config.name}] >> {json.dumps(notification)}")
 
         notification_line = json.dumps(notification) + "\n"
+        assert self.process is not None and self.process.stdin is not None
         self.process.stdin.write(notification_line.encode())
         await self.process.stdin.drain()
 
@@ -261,10 +251,10 @@ class MCPToolManager:
         Active MCP client connections by server name
     """
 
-    def __init__(self, config: Dict[str, Dict[str, Any]]):
+    def __init__(self, config: dict[str, dict[str, Any]]):
         self.config = config
-        self.clients: Dict[str, MCPClient] = {}
-        self._tool_registry: Dict[str, str] = {}  # tool_name -> server_name
+        self.clients: dict[str, MCPClient] = {}
+        self._tool_registry: dict[str, str] = {}  # tool_name -> server_name
 
     async def initialize_servers(self) -> None:
         """
@@ -285,7 +275,7 @@ class MCPToolManager:
                     name=server_name,
                     command=server_config["command"],
                     args=server_config["args"],
-                    env=server_config.get("env")
+                    env=server_config.get("env"),
                 )
 
                 client = MCPClient(config)
@@ -307,9 +297,11 @@ class MCPToolManager:
         if not self.clients:
             raise RuntimeError("No MCP servers successfully initialized")
 
-        logger.info(f"Initialized {len(self.clients)} servers with {len(self._tool_registry)} total tools")
+        logger.info(
+            f"Initialized {len(self.clients)} servers with {len(self._tool_registry)} total tools"
+        )
 
-    async def list_all_tools(self) -> List[Dict[str, Any]]:
+    async def list_all_tools(self) -> list[dict[str, Any]]:
         """
         Get all available tools from all servers.
 
@@ -331,7 +323,7 @@ class MCPToolManager:
 
         return all_tools
 
-    async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+    async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         """
         Execute a tool by name, routing to the correct server.
 

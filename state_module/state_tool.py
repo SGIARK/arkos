@@ -4,8 +4,7 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 
-from model_module.ArkModelNew import ArkModelLink, UserMessage, AIMessage, SystemMessage
-
+from model_module.ArkModelNew import SystemMessage
 from state_module.state import State
 from state_module.state_registry import register_state
 
@@ -18,21 +17,16 @@ class StateTool(State):
         super().__init__(name, config)
         self.is_terminal = False
 
-    def check_transition_ready(self, context):
+    def check_transition_ready(self, _context):
         return True
 
-    def run(self, context, agent=None):
-
-
-        # extract tool name 
+    def run(self, _context, _agent=None):
+        # extract tool name
 
         # extract tool parameters
 
-
-        # call tool 
-        
+        # call tool
 
         # return tool msg
         print("TOOL RESULT PLACEHOLDER")
         return SystemMessage(content="Result: 3*6 is 18")
-

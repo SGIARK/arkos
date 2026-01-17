@@ -1,26 +1,25 @@
 # memory.py
 import os
-import uuid
 import sys
+import uuid
+from typing import Any
+
 import psycopg2
-from typing import Dict, Any
-from mem0 import Memory as Mem0Memory
 from dotenv import load_dotenv
+from mem0 import Memory as Mem0Memory
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+
 from model_module.ArkModelNew import (
-    Message,
-    UserMessage,
     AIMessage,
+    Message,
     SystemMessage,
     ToolMessage,
+    UserMessage,
 )
 
-
-from typing import Type
-
-ROLE_TO_CLASS: Dict[str, Type[Message]] = {
+ROLE_TO_CLASS: dict[str, type[Message]] = {
     "system": SystemMessage,
     "user": UserMessage,
     "assistant": AIMessage,
@@ -28,7 +27,7 @@ ROLE_TO_CLASS: Dict[str, Type[Message]] = {
 }
 
 
-CLASS_TO_ROLE: Dict[Type[Message], str] = {
+CLASS_TO_ROLE: dict[type[Message], str] = {
     SystemMessage: "system",
     UserMessage: "user",
     AIMessage: "assistant",
@@ -72,7 +71,7 @@ class Memory:
 
     """
 
-    def __init__(self, user_id: str, session_id: str, db_url: str):
+    def __init__(self, user_id: str, session_id: str | None, db_url: str):
         self.user_id = user_id
         self.db_url = db_url
 
@@ -116,9 +115,7 @@ class Memory:
             }
 
             # store in mem0
-            self.mem0.add(
-                messages=message.content, metadata=metadata, user_id=self.user_id
-            )
+            self.mem0.add(messages=message.content, metadata=metadata, user_id=self.user_id)
 
             conn = psycopg2.connect(self.db_url)
             cur = conn.cursor()
@@ -144,9 +141,11 @@ class Memory:
             return False
 
     def retrieve_long_memory(
-        self, context: list = [], mem0_limit: int = 50
-    ) -> Dict[str, Any]:
+        self, context: list | None = None, mem0_limit: int = 50
+    ) -> dict[str, Any]:
         """Retrieve relevant long term memories for the current user."""
+        if context is None:
+            context = []
         try:
             # Mem0 vector retrieval
 
@@ -162,8 +161,7 @@ class Memory:
             )
 
             memory_entries = [
-                f"{r.get('role', 'user')}: {r['memory']}"
-                for r in results.get("results", [])
+                f"{r.get('role', 'user')}: {r['memory']}" for r in results.get("results", [])
             ]
 
             memory_string = "retrieved memories:\n" + "\n".join(memory_entries)

@@ -1,15 +1,12 @@
-import sys
 import os
-
-from model_module.ArkModelNew import ArkModelLink, UserMessage, AIMessage, SystemMessage
+import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 
 from state_module.state import State
-
-
 from state_module.state_registry import register_state
+
 
 @register_state
 class StateAI(State):
@@ -19,7 +16,7 @@ class StateAI(State):
         super().__init__(name, config)
         self.is_terminal = False
 
-    def check_transition_ready(self, context):
+    def check_transition_ready(self, _context):
         return True
 
     async def run(self, context, agent):
