@@ -121,7 +121,7 @@ class ArkModelLink(BaseModel):
                 raise NotImplementedError("Asynchronous streaming not yet implemented.")
 
             # Use the asynchronous client and AWAIT the call
-            chat_completion = await self.client.chat.completions.create(
+            chat_completion = await self.client.chat.completions.create(  # type: ignore[call-overload]
                 model=self.model_name,
                 messages=openai_messages_payload,
                 max_tokens=self.max_tokens,
