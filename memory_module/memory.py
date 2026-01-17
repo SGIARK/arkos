@@ -2,7 +2,6 @@
 import os
 import sys
 import uuid
-from typing import Any
 
 import psycopg2
 from dotenv import load_dotenv
@@ -142,7 +141,7 @@ class Memory:
 
     def retrieve_long_memory(
         self, context: list | None = None, mem0_limit: int = 50
-    ) -> dict[str, Any]:
+    ) -> SystemMessage:
         """Retrieve relevant long term memories for the current user."""
         if context is None:
             context = []

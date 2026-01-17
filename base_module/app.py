@@ -13,7 +13,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from agent_module.agent import Agent
 from config_module.loader import config
 from memory_module.memory import Memory
-from model_module.ArkModelNew import AIMessage, ArkModelLink, SystemMessage, UserMessage
+from model_module.ArkModelNew import AIMessage, ArkModelLink, Message, SystemMessage, UserMessage
 from state_module.state_handler import StateHandler
 
 app = FastAPI(title="ArkOS Agent API", version="1.0.0")
@@ -73,7 +73,7 @@ async def chat_completions(request: Request):
     model = payload.get("model", "ark-agent")
     _ = payload.get("response_format")  # Reserved for future use
 
-    context_msgs = []
+    context_msgs: list[Message] = []
 
     context_msgs.append(SystemMessage(content=config.get("app.system_prompt")))
 
