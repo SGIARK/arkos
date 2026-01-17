@@ -13,14 +13,13 @@ class TestHealthEndpoint:
         """Test health check when LLM server is running."""
         from httpx import ASGITransport, AsyncClient
 
-        # Mock the requests.get call inside health_check
-        with patch("base_module.app.requests.get") as mock_get:
+        from base_module.app import app
+
+        # Mock the requests.get call inside health_check (imported locally in function)
+        with patch("requests.get") as mock_get:
             mock_response = MagicMock()
             mock_response.status_code = 200
             mock_get.return_value = mock_response
-
-            # Import app after patching
-            from base_module.app import app
 
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -36,10 +35,10 @@ class TestHealthEndpoint:
         """Test health check when LLM server is not running."""
         from httpx import ASGITransport, AsyncClient
 
-        with patch("base_module.app.requests.get") as mock_get:
-            mock_get.side_effect = Exception("Connection refused")
+        from base_module.app import app
 
-            from base_module.app import app
+        with patch("requests.get") as mock_get:
+            mock_get.side_effect = Exception("Connection refused")
 
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
