@@ -2,16 +2,14 @@
 Remote MCP (Model Context Protocol) Integration for ARKOS.
 
 This module manages connections to external MCP servers, handles tool discovery,
-and executes tool calls via JSON-RPC 2.0 over stdio.
+and executes tool calls via JSON-RPC 2.0 over various transports (stdio, HTTP).
 """
 
-import asyncio
-import json
 import logging
-import subprocess
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
-from threading import Lock
+
+from .transports import MCPTransport, StdioTransport, HTTPTransport
 
 logger = logging.getLogger(__name__)
 
@@ -21,41 +19,49 @@ class MCPServerConfig:
     """Configuration for an MCP server connection."""
 
     name: str
-    command: str
-    args: List[str]
+    transport: str = "stdio"  # "stdio" or "http"
+
+    # STDIO-specific
+    command: Optional[str] = None
+    args: Optional[List[str]] = None
     env: Optional[Dict[str, str]] = None
+
+    # HTTP-specific
+    url: Optional[str] = None
+    auth: Optional[Dict[str, Any]] = None
 
 
 class MCPClient:
     """
-    Manages a single MCP server connection via subprocess.
+    Manages a single MCP server connection.
 
-    Handles JSON-RPC 2.0 communication over stdin/stdout and implements
-    the MCP protocol for tool discovery and execution.
+    Handles JSON-RPC 2.0 communication and implements the MCP protocol
+    for tool discovery and execution. Transport-agnostic - works with
+    stdio, HTTP, or any transport implementing MCPTransport.
 
     Parameters
     ----------
     config : MCPServerConfig
         Configuration for the MCP server connection
+    transport : MCPTransport
+        Transport layer for communication (stdio, HTTP, etc.)
 
     Attributes
     ----------
-    process : Optional[asyncio.subprocess.Process]
-        The running subprocess for the MCP server
-    request_id : int
-        Counter for JSON-RPC request IDs
+    transport : MCPTransport
+        The active transport connection
+    _initialized : bool
+        Whether the MCP handshake has completed
     """
 
-    def __init__(self, config: MCPServerConfig):
+    def __init__(self, config: MCPServerConfig, transport: MCPTransport):
         self.config = config
-        self.process: Optional[asyncio.subprocess.Process] = None
-        self.request_id = 0
-        self._lock = Lock()
+        self.transport = transport
         self._initialized = False
 
     async def start(self) -> None:
         """
-        Start the MCP server subprocess and perform initialization handshake.
+        Connect to MCP server and perform initialization handshake.
 
         Raises
         ------
@@ -64,35 +70,27 @@ class MCPClient:
         """
         logger.info(f"Starting MCP server: {self.config.name}")
 
-        # Build environment
-        env = dict(self.config.env) if self.config.env else {}
-
         try:
-            # Start subprocess
-            self.process = await asyncio.create_subprocess_exec(
-                self.config.command,
-                *self.config.args,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env
-            )
+            # Connect transport
+            await self.transport.connect()
 
             # Initialize MCP connection
-            init_response = await self._send_request("initialize", {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {
-                    "name": "arkos",
-                    "version": "1.0.0"
-                }
-            })
+            init_response = await self.transport.send_request(
+                "initialize",
+                {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "arkos", "version": "1.0.0"},
+                },
+            )
 
             if "error" in init_response:
-                raise RuntimeError(f"MCP initialization failed: {init_response['error']}")
+                raise RuntimeError(
+                    f"MCP initialization failed: {init_response['error']}"
+                )
 
             # Send initialized notification
-            await self._send_notification("notifications/initialized", {})
+            await self.transport.send_notification("notifications/initialized", {})
 
             self._initialized = True
             logger.info(f"MCP server '{self.config.name}' initialized successfully")
@@ -103,19 +101,12 @@ class MCPClient:
             raise
 
     async def stop(self) -> None:
-        """Stop the MCP server subprocess gracefully."""
-        if self.process:
-            logger.info(f"Stopping MCP server: {self.config.name}")
-            try:
-                self.process.terminate()
-                await asyncio.wait_for(self.process.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                logger.warning(f"Force killing MCP server: {self.config.name}")
-                self.process.kill()
-                await self.process.wait()
-            finally:
-                self.process = None
-                self._initialized = False
+        """Stop the MCP server connection gracefully."""
+        logger.info(f"Stopping MCP server: {self.config.name}")
+        try:
+            await self.transport.close()
+        finally:
+            self._initialized = False
 
     async def list_tools(self) -> List[Dict[str, Any]]:
         """
@@ -134,7 +125,7 @@ class MCPClient:
         if not self._initialized:
             raise RuntimeError(f"MCP server '{self.config.name}' not initialized")
 
-        response = await self._send_request("tools/list", {})
+        response = await self.transport.send_request("tools/list", {})
 
         if "error" in response:
             raise RuntimeError(f"tools/list failed: {response['error']}")
@@ -170,10 +161,9 @@ class MCPClient:
         logger.info(f"Calling tool '{name}' on server '{self.config.name}'")
         logger.debug(f"Arguments: {arguments}")
 
-        response = await self._send_request("tools/call", {
-            "name": name,
-            "arguments": arguments
-        })
+        response = await self.transport.send_request(
+            "tools/call", {"name": name, "arguments": arguments}
+        )
 
         if "error" in response:
             error_msg = response["error"]
@@ -183,64 +173,6 @@ class MCPClient:
         result = response.get("result", {})
         logger.debug(f"Tool result: {result}")
         return result
-
-    async def _send_request(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Send a JSON-RPC 2.0 request and wait for response.
-
-        Parameters
-        ----------
-        method : str
-            JSON-RPC method name
-        params : Dict[str, Any]
-            Method parameters
-
-        Returns
-        -------
-        Dict[str, Any]
-            JSON-RPC response
-        """
-        with self._lock:
-            self.request_id += 1
-            req_id = self.request_id
-
-        request = {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "method": method,
-            "params": params
-        }
-
-        logger.debug(f"[{self.config.name}] >> {json.dumps(request)}")
-
-        # Send request
-        request_line = json.dumps(request) + "\n"
-        self.process.stdin.write(request_line.encode())
-        await self.process.stdin.drain()
-
-        # Read response
-        response_line = await self.process.stdout.readline()
-        if not response_line:
-            raise RuntimeError(f"MCP server '{self.config.name}' closed connection")
-
-        response = json.loads(response_line.decode())
-        logger.debug(f"[{self.config.name}] << {json.dumps(response)}")
-
-        return response
-
-    async def _send_notification(self, method: str, params: Dict[str, Any]) -> None:
-        """Send a JSON-RPC 2.0 notification (no response expected)."""
-        notification = {
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params
-        }
-
-        logger.debug(f"[{self.config.name}] >> {json.dumps(notification)}")
-
-        notification_line = json.dumps(notification) + "\n"
-        self.process.stdin.write(notification_line.encode())
-        await self.process.stdin.drain()
 
 
 class MCPToolManager:
@@ -266,6 +198,41 @@ class MCPToolManager:
         self.clients: Dict[str, MCPClient] = {}
         self._tool_registry: Dict[str, str] = {}  # tool_name -> server_name
 
+    def _create_transport(self, server_config: Dict[str, Any]) -> MCPTransport:
+        """
+        Create appropriate transport based on configuration.
+
+        Parameters
+        ----------
+        server_config : Dict[str, Any]
+            Server configuration dictionary
+
+        Returns
+        -------
+        MCPTransport
+            Configured transport instance
+
+        Raises
+        ------
+        ValueError
+            If transport type is unsupported
+        """
+        transport_type = server_config.get("transport", "stdio")
+
+        if transport_type == "stdio":
+            return StdioTransport(
+                command=server_config["command"],
+                args=server_config["args"],
+                env=server_config.get("env"),
+            )
+        elif transport_type == "http":
+            return HTTPTransport(
+                url=server_config["url"],
+                auth_config=server_config.get("auth")
+            )
+        else:
+            raise ValueError(f"Unsupported transport type: {transport_type}")
+
     async def initialize_servers(self) -> None:
         """
         Initialize all configured MCP server connections.
@@ -281,14 +248,22 @@ class MCPToolManager:
 
         for server_name, server_config in self.config.items():
             try:
+                # Create config object
                 config = MCPServerConfig(
                     name=server_name,
-                    command=server_config["command"],
-                    args=server_config["args"],
-                    env=server_config.get("env")
+                    transport=server_config.get("transport", "stdio"),
+                    command=server_config.get("command"),
+                    args=server_config.get("args"),
+                    env=server_config.get("env"),
+                    url=server_config.get("url"),
+                    auth=server_config.get("auth"),
                 )
 
-                client = MCPClient(config)
+                # Create appropriate transport
+                transport = self._create_transport(server_config)
+
+                # Create client with transport
+                client = MCPClient(config, transport)
                 await client.start()
 
                 # Discover tools
@@ -307,29 +282,9 @@ class MCPToolManager:
         if not self.clients:
             raise RuntimeError("No MCP servers successfully initialized")
 
-        logger.info(f"Initialized {len(self.clients)} servers with {len(self._tool_registry)} total tools")
-
-        # async def list_all_tools(self) -> List[Dict[str, Any]]:
-        #     """
-        #     Get all available tools from all servers.
-
-        #     Returns
-        #     -------
-        #     List[Dict[str, Any]]
-        #         Combined list of all tools with server name added
-        #     """
-        #     all_tools = []
-
-        #     for server_name, client in self.clients.items():
-        #         try:
-        #             tools = await client.list_tools()
-        #             for tool in tools:
-        #                 tool["_server"] = server_name  # Add server metadata
-        #                 all_tools.append(tool)
-        #         except Exception as e:
-        #             logger.error(f"Failed to list tools from '{server_name}': {e}")
-
-        #     return all_tools
+        logger.info(
+            f"Initialized {len(self.clients)} servers with {len(self._tool_registry)} total tools"
+        )
 
     async def list_all_tools(self) -> Dict[str, Dict[str, Any]]:
         """
