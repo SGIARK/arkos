@@ -54,7 +54,6 @@ class Agent:
     #    self.bind_tool(tool)
     #    self.tool_names.append(tool_name)
 
-  
     def fill_tool_args_class(self, tool_name: str, tool_args: Dict[str, Any]):
         """
         Returns a Pydantic object whose .model_dump() is:
@@ -64,36 +63,39 @@ class Agent:
         ToolCall = create_model(
             "ToolCall",
             tool_name=(str, Field(description="Tool name to execute")),
-            tool_args=(Dict[str, Any], Field(default_factory=dict, description="Tool args")),
+            tool_args=(
+                Dict[str, Any],
+                Field(default_factory=dict, description="Tool args"),
+            ),
         )
 
         return ToolCall(tool_name=tool_name, tool_args=tool_args)
 
-    def create_tool_option_class(self):
+    async def create_tool_option_class(self):
         """
         Returns a Pydantic model class with a single field 'tool_name',
         whose value must be one of the available tool IDs.
         """
 
-
-        server_tool_map = self.tool_manager.list_all_tools()
-
+        server_tool_map = await self.tool_manager.list_all_tools()
 
         enum_members = {}
-        for server_name in server_tool_map: 
+        for server_name in server_tool_map:
             for tool_name in server_tool_map[server_name]:
-
                 enum_members[tool_name] = tool_name
 
         ToolEnum = Enum("ToolEnum", enum_members)
 
         ToolOptionsModel = create_model(
             "ToolCall",
-            tool_name=(ToolEnum, Field(description="The name of the tool to execute next")),
+            tool_name=(
+                ToolEnum,
+                Field(description="The name of the tool to execute next"),
+            ),
         )
 
         return ToolOptionsModel
-       
+
     def create_next_state_class(self, options: List[Tuple[str, str]]):
         """
         options: list of tuples (next_state, description of state)
