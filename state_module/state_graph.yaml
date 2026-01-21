@@ -16,25 +16,25 @@ states:
     description: "state used for your reasoning"
     type: agent
     transition:
-      next: [agent_reply, ask_user, cal_tool, search_tool]
+      next: [agent_reply, ask_user, use_tool]
 
 
-  cal_tool:
-    description: "state used for querying users calendar"
-    type: calendar
-    transition:
+      # cal_tool:
+      #   description: "state used for querying users calendar"
+      #   type: calendar
+      #   transition:
+      #     next: [agent_reply]
+
+      # search_tool:
+      #   description: "state used for searching the internet"
+      #   type: search
+      #   transition:
+      #     next: [agent_reply]
+
+
+  use_tool:
+    description: "state used for tool use"
+    type: tool
+    transition: 
       next: [agent_reply]
-
-  search_tool:
-    description: "state used for searching the internet"
-    type: search
-    transition:
-      next: [agent_reply]
-
-
-  # use_tool:
-  #   description: "state used for tool use"
-  #   type: tool
-  #   transition: 
-  #     next: [agent_reply]
-  #     next: ask_user
+      next: ask_user

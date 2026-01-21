@@ -3,7 +3,7 @@
 import os
 import sys
 from pydantic import create_model, Field
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
 import json
 from enum import Enum
 
@@ -54,47 +54,46 @@ class Agent:
     #    self.bind_tool(tool)
     #    self.tool_names.append(tool_name)
 
-    def create_next_tool_class(self, server_tool_registry: Dict[str, Dict[str, Any]]):
+  
+    def fill_tool_args_class(self, tool_name: str, tool_args: Dict[str, Any]):
         """
-        Returns a Pydantic model class with a single field 'tool_call',
+        Returns a Pydantic object whose .model_dump() is:
+          {"tool_name": <tool_name>, "tool_args": <tool_args>}
+        """
+
+        ToolCall = create_model(
+            "ToolCall",
+            tool_name=(str, Field(description="Tool name to execute")),
+            tool_args=(Dict[str, Any], Field(default_factory=dict, description="Tool args")),
+        )
+
+        return ToolCall(tool_name=tool_name, tool_args=tool_args)
+
+    def create_tool_option_class(self):
+        """
+        Returns a Pydantic model class with a single field 'tool_name',
         whose value must be one of the available tool IDs.
         """
 
-        # 1. Flatten the registry to create Enum members
-        # We use the unique tool ID (server.tool_name) or just the tool name
-        # based on your call_tool logic.
-        enum_members = {}
 
-        for server_name, tools in server_tool_registry.items():
-            for tool_name, tool_spec in tools.items():
-                # Use the tool_name as the Enum key/value because
-                # call_tool(self, tool_name, ...) expects it.
-                description = tool_spec.get("description", "No description provided")
+        server_tool_map = self.tool_manager.list_all_tools()
+
+
+        enum_members = {}
+        for server_name in server_tool_map: 
+            for tool_name in server_tool_map[server_name]:
+
                 enum_members[tool_name] = tool_name
 
-        # 2. Dynamically build the Enum
-        # This allows the LLM to see valid options via the schema
         ToolEnum = Enum("ToolEnum", enum_members)
 
-        # 3. Build the model with the single field
-        # Field description helps the LLM understand what to select
-        tool_call_args = create_model(
-            "ToolAndArgs",
-            tool_name=(
-                ToolEnum,
-                Field(description="The name of the tool to execute next"),
-            ),
-            arguments=(
-                Dict[str, Any],
-                Field(
-                    default_factory=dict,
-                    description="The arguments to pass to the tool",
-                ),
-            ),
+        ToolOptionsModel = create_model(
+            "ToolCall",
+            tool_name=(ToolEnum, Field(description="The name of the tool to execute next")),
         )
 
-        return tool_call_args
-
+        return ToolOptionsModel
+       
     def create_next_state_class(self, options: List[Tuple[str, str]]):
         """
         options: list of tuples (next_state, description of state)

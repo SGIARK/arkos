@@ -42,14 +42,17 @@ mcp_servers:
       env:
         BRAVE_API_KEY: "${BRAVE_API_KEY}"
 
-    google-calendar:
-      command: npx
-      args: ["@cocal/google-calendar-mcp"]
-      env:
-        GOOGLE_OAUTH_CREDENTIALS: "${GOOGLE_OAUTH_CREDENTIALS}"
-        GOOGLE_CALENDAR_MCP_TOKEN_PATH: "${GOOGLE_CALENDAR_MCP_TOKEN_PATH}"
+        # google-calendar:
+        #   command: npx
+        #   args: ["@cocal/google-calendar-mcp"]
+        #   env:
+        #     GOOGLE_OAUTH_CREDENTIALS: "${GOOGLE_OAUTH_CREDENTIALS}"
+        #     GOOGLE_CALENDAR_MCP_TOKEN_PATH: "${GOOGLE_CALENDAR_MCP_TOKEN_PATH}"
 
-    filesystem:
-      command: npx
-      args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+        # filesystem:
+        #   command: npx
+        #   args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+
+
 
