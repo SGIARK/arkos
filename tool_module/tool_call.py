@@ -338,23 +338,14 @@ class MCPToolManager:
             f"{len(getattr(self, '_per_user_configs', {}))} per-user services"
         )
 
-    async def list_all_tools(self, include_per_user: bool = True) -> Dict[str, Dict[str, Any]]:
+    async def list_all_tools(self) -> Dict[str, Dict[str, Any]]:
         """
-        Get all available tools from all servers.
-
-        Parameters
-        ----------
-        include_per_user : bool
-            If True, also discover tools from per-user services
+        Get all available tools from all connected servers.
 
         Returns
         -------
         Dict[str, Dict[str, Any]]
-            {
-                server_name: {
-                    tool_name: tool_spec_with_metadata
-                }
-            }
+            {server_name: {tool_name: tool_spec_with_metadata}}
         """
         all_tools: Dict[str, Dict[str, Any]] = {}
 
@@ -370,7 +361,6 @@ class MCPToolManager:
 
                     tool["_server"] = server_name
                     tool["_id"] = f"{server_name}.{tool_name}"
-
                     server_tools[tool_name] = tool
 
                 all_tools[server_name] = server_tools
@@ -378,55 +368,7 @@ class MCPToolManager:
             except Exception as e:
                 logger.error(f"Failed to list tools from '{server_name}': {e}")
 
-        # Discover tools from per-user services
-        if include_per_user:
-            per_user_configs = getattr(self, '_per_user_configs', {})
-            for server_name, server_config in per_user_configs.items():
-                if server_name in all_tools:
-                    continue
-                try:
-                    tools = await self._discover_per_user_tools(server_name, server_config)
-                    if tools:
-                        all_tools[server_name] = tools
-                except Exception as e:
-                    logger.error(f"Failed to discover per-user tools from '{server_name}': {e}")
-
         return all_tools
-
-    async def _discover_per_user_tools(self, server_name: str, server_config: dict) -> Dict[str, Any]:
-        """Temporarily start a per-user service to discover its tools."""
-        env = os.environ.copy()
-        if server_config.get("env"):
-            env.update(server_config.get("env"))
-
-        transport = StdioTransport(
-            command=server_config["command"],
-            args=server_config["args"],
-            env=env,
-        )
-        config = MCPServerConfig(
-            name=f"{server_name}:discovery",
-            transport="stdio",
-            command=server_config.get("command"),
-            args=server_config.get("args"),
-        )
-        client = MCPClient(config, transport)
-        try:
-            await client.start()
-            tools = await client.list_tools()
-            server_tools: Dict[str, Any] = {}
-            for tool in tools:
-                tool_name = tool.get("name")
-                if not tool_name:
-                    continue
-                tool["_server"] = server_name
-                tool["_id"] = f"{server_name}.{tool_name}"
-                tool["_requires_auth"] = True
-                self._tool_registry[tool_name] = server_name
-                server_tools[tool_name] = tool
-            return server_tools
-        finally:
-            await client.stop()
 
     async def _get_user_client(self, user_id: str, server_name: str) -> Optional[MCPClient]:
         """

@@ -145,16 +145,7 @@ class Agent:
         """
 
         transition_tuples = list(zip(transitions_dict["tt"], transitions_dict["td"]))
-
-        # Include available tools in prompt if use_tool is an option
-        tool_info = ""
-        if "use_tool" in transitions_dict["tt"] and self.available_tools:
-            tool_names = []
-            for server_tools in self.available_tools.values():
-                tool_names.extend(server_tools.keys())
-            tool_info = f"\nAvailable tools: {tool_names}"
-
-        prompt = f"""given the context of the conversation and the following state options {transition_tuples} output the most reasonable next state.{tool_info}
+        prompt = f"""given the context of the conversation and the following state options {transition_tuples} output the most reasonable next state.
                  do not use tool result to determine the next state"""
 
         # creates pydantic class and a model dump
