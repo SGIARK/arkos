@@ -43,6 +43,7 @@ class Agent:
         self.tools = []
         self.tool_names = []
         self.available_tools = {}
+        self.current_user_id = None  # Set per-request for per-user tool auth
 
     # def bind_tool(self, tool):
     #
@@ -199,11 +200,20 @@ class Agent:
 
         return output
 
-    async def step(self, messages):
+    async def step(self, messages, user_id: str = None):
         """
         Runs the agent until reaching a terminal state or completion.
         Returns the last AIMessage produced.
+
+        Parameters
+        ----------
+        messages : list
+            List of messages to process
+        user_id : str, optional
+            User ID for per-user tool authentication
         """
+        # Set current user for per-user tool auth
+        self.current_user_id = user_id
 
         # agent.context["messages"].extend(messages)
 

@@ -15,9 +15,12 @@ from state_module.state_handler import StateHandler
 from memory_module.memory import Memory
 from model_module.ArkModelNew import ArkModelLink, UserMessage, SystemMessage, AIMessage
 from tool_module.tool_call import MCPToolManager
+from tool_module.token_store import UserTokenStore
+from base_module.auth import router as auth_router
 
 
 app = FastAPI(title="ArkOS Agent API", version="1.0.0")
+app.include_router(auth_router)
 
 
 # Initialize the agent and dependencies once
@@ -35,8 +38,12 @@ memory = Memory(
 
 # ArkModelLink now uses AsyncOpenAI internally
 llm = ArkModelLink(base_url=config.get("llm.base_url"))
+
+# Token store for per-user MCP authentication
+token_store = UserTokenStore(config.get("database.url"))
+
 mcp_config = config.get("mcp_servers")
-tool_manager = MCPToolManager(mcp_config) if mcp_config else None
+tool_manager = MCPToolManager(mcp_config, token_store=token_store) if mcp_config else None
 agent = Agent(
     agent_id=config.get("memory.user_id"),
     flow=flow,
@@ -84,6 +91,9 @@ async def chat_completions(request: Request):
     model = payload.get("model", "ark-agent")
     response_format = payload.get("response_format")
 
+    # Extract user_id from header or body for per-user tool auth
+    user_id = request.headers.get("X-User-ID") or payload.get("user") or payload.get("user_id")
+
     context_msgs = []
 
     context_msgs.append(SystemMessage(content=config.get("app.system_prompt")))
@@ -110,7 +120,7 @@ async def chat_completions(request: Request):
 
     # *** THE CRITICAL CHANGE: AWAIT the agent's step method ***
     # This prevents the 'coroutine' object has no attribute 'content' error.
-    agent_response = await agent.step(context_msgs)
+    agent_response = await agent.step(context_msgs, user_id=user_id)
 
     # Handle the case where the agent might return None (though it should return an AIMessage)
     final_msg = agent_response or AIMessage(content="(no response)")

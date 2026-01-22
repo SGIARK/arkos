@@ -5,6 +5,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 
 from model_module.ArkModelNew import SystemMessage
+from tool_module.tool_call import AuthRequiredError
 
 from state_module.state import State
 from state_module.state_registry import register_state
@@ -48,22 +49,28 @@ class StateTool(State):
     async def execute_tool(self, tool_call, agent):
         """
         Parses and fills args for chosen tool for tool call execution
-
-
         """
-
         tool_name = tool_call["tool_name"]
         tool_args = tool_call["tool_args"]
 
         tool_result = await agent.tool_manager.call_tool(
-            tool_name=tool_name, arguments=tool_args
+            tool_name=tool_name,
+            arguments=tool_args,
+            user_id=agent.current_user_id,
         )
 
         return tool_result
 
     async def run(self, context, agent=None):
-        tool_arg_dict = await self.choose_tool(context=context, agent=agent)
+        try:
+            tool_arg_dict = await self.choose_tool(context=context, agent=agent)
+            tool_result = await self.execute_tool(tool_call=tool_arg_dict, agent=agent)
+            return SystemMessage(content=str(tool_result))
 
-        tool_result = await self.execute_tool(tool_call=tool_arg_dict, agent=agent)
-
-        return SystemMessage(content=tool_result)
+        except AuthRequiredError as e:
+            # Return friendly message with connect link
+            return SystemMessage(
+                content=f"To complete this request, please connect your {e.service_info.get('name', e.service)}:\n\n"
+                        f"👉 {e.connect_url}\n\n"
+                        f"After connecting, try your request again."
+            )

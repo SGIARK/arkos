@@ -10,3 +10,4 @@ mem0ai
 sentence-transformers
 python-dotenv>=1.0.0
 aiohttp>=3.9.0
+google-auth-oauthlib>=1.2.0

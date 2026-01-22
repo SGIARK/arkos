@@ -5,13 +5,46 @@ This module manages connections to external MCP servers, handles tool discovery,
 and executes tool calls via JSON-RPC 2.0 over various transports (stdio, HTTP).
 """
 
+import os
 import logging
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
+from pathlib import Path
 
 from .transports import MCPTransport, StdioTransport, HTTPTransport
 
 logger = logging.getLogger(__name__)
+
+# Services that require per-user authentication
+PER_USER_SERVICES = {
+    "google-calendar": {
+        "name": "Google Calendar",
+        "auth_path": "/auth/google/login",
+        "scopes": ["calendar"],
+    }
+}
+
+
+class AuthRequiredError(Exception):
+    """Raised when a tool requires user authentication."""
+
+    def __init__(self, service: str, user_id: str, message: str = None):
+        self.service = service
+        self.user_id = user_id
+        self.service_info = PER_USER_SERVICES.get(service, {})
+        self.connect_url = f"{self.service_info.get('auth_path', '/auth/connect')}?user_id={user_id}"
+        self.message = message or f"Please connect {self.service_info.get('name', service)} to continue"
+        super().__init__(self.message)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return structured error for API responses."""
+        return {
+            "error": "auth_required",
+            "service": self.service,
+            "service_name": self.service_info.get("name", self.service),
+            "connect_url": self.connect_url,
+            "message": self.message,
+        }
 
 
 @dataclass
@@ -180,23 +213,31 @@ class MCPToolManager:
     Manages multiple MCP server connections and provides unified tool interface.
 
     Coordinates tool discovery across all servers and routes tool execution
-    to the appropriate server.
+    to the appropriate server. Supports per-user authentication for services
+    like Google Calendar.
 
     Parameters
     ----------
     config : Dict[str, Dict[str, Any]]
         MCP servers configuration from config file
+    token_store : Optional[UserTokenStore]
+        Token store for per-user authentication
 
     Attributes
     ----------
     clients : Dict[str, MCPClient]
-        Active MCP client connections by server name
+        Active MCP client connections by server name (shared/agent-level)
+    user_clients : Dict[str, Dict[str, MCPClient]]
+        Per-user MCP clients: {user_id: {server_name: MCPClient}}
     """
 
-    def __init__(self, config: Dict[str, Dict[str, Any]]):
+    def __init__(self, config: Dict[str, Dict[str, Any]], token_store=None):
         self.config = config
+        self.token_store = token_store
         self.clients: Dict[str, MCPClient] = {}
+        self.user_clients: Dict[str, Dict[str, MCPClient]] = {}
         self._tool_registry: Dict[str, str] = {}  # tool_name -> server_name
+        self._user_token_dir = Path.home() / ".arkos" / "user_tokens"
 
     def _create_transport(self, server_config: Dict[str, Any]) -> MCPTransport:
         """
@@ -238,6 +279,8 @@ class MCPToolManager:
         Initialize all configured MCP server connections.
 
         Starts each server, performs handshake, and builds tool registry.
+        Per-user services (like google-calendar) are skipped during init
+        but their tools are still registered for later per-user instantiation.
 
         Raises
         ------
@@ -247,6 +290,14 @@ class MCPToolManager:
         logger.info(f"Initializing {len(self.config)} MCP servers")
 
         for server_name, server_config in self.config.items():
+            # Skip per-user services during agent-level init
+            if server_name in PER_USER_SERVICES:
+                logger.info(f"Skipping per-user service '{server_name}' (will init per-user)")
+                # Register placeholder so we know this service exists
+                self._per_user_configs = getattr(self, '_per_user_configs', {})
+                self._per_user_configs[server_name] = server_config
+                continue
+
             try:
                 # Create config object
                 config = MCPServerConfig(
@@ -279,11 +330,12 @@ class MCPToolManager:
                 logger.error(f"Failed to initialize server '{server_name}': {e}")
                 # Continue with other servers
 
-        if not self.clients:
+        if not self.clients and not getattr(self, '_per_user_configs', {}):
             raise RuntimeError("No MCP servers successfully initialized")
 
         logger.info(
-            f"Initialized {len(self.clients)} servers with {len(self._tool_registry)} total tools"
+            f"Initialized {len(self.clients)} shared servers, "
+            f"{len(getattr(self, '_per_user_configs', {}))} per-user services"
         )
 
     async def list_all_tools(self) -> Dict[str, Dict[str, Any]]:
@@ -323,7 +375,84 @@ class MCPToolManager:
 
         return all_tools
 
-    async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+    async def _get_user_client(self, user_id: str, server_name: str) -> Optional[MCPClient]:
+        """
+        Get or create a per-user MCP client for a service.
+
+        Parameters
+        ----------
+        user_id : str
+            The user ID
+        server_name : str
+            Name of the MCP server (e.g., 'google-calendar')
+
+        Returns
+        -------
+        Optional[MCPClient]
+            User-specific client, or None if user has no token
+        """
+        # Check if we already have a client for this user
+        if user_id in self.user_clients and server_name in self.user_clients[user_id]:
+            return self.user_clients[user_id][server_name]
+
+        # Check if user has a token
+        if not self.token_store or not self.token_store.has_token(user_id, server_name):
+            return None
+
+        # Write user's token to a file
+        self._user_token_dir.mkdir(parents=True, exist_ok=True)
+        token_file = self._user_token_dir / f"{user_id}_{server_name}.json"
+        self.token_store.write_token_file(user_id, server_name, str(token_file))
+
+        # Create a new MCP client with user's token
+        server_config = self.config.get(server_name, {})
+        if not server_config:
+            return None
+
+        # Build env: start with system env, then config env, then user token
+        env = os.environ.copy()
+        if server_config.get("env"):
+            env.update(server_config.get("env"))
+        # Point to user's token file
+        env["GOOGLE_CALENDAR_MCP_TOKEN_PATH"] = str(token_file)
+
+        config = MCPServerConfig(
+            name=f"{server_name}:{user_id}",
+            transport=server_config.get("transport", "stdio"),
+            command=server_config.get("command"),
+            args=server_config.get("args"),
+            env=env,
+        )
+
+        transport = StdioTransport(
+            command=server_config["command"],
+            args=server_config["args"],
+            env=env,
+        )
+
+        client = MCPClient(config, transport)
+        try:
+            await client.start()
+
+            # Discover and register tools from this per-user service
+            tools = await client.list_tools()
+            for tool in tools:
+                tool_name = tool["name"]
+                self._tool_registry[tool_name] = server_name
+                logger.info(f"Registered per-user tool '{tool_name}' from '{server_name}'")
+
+            # Cache the client
+            if user_id not in self.user_clients:
+                self.user_clients[user_id] = {}
+            self.user_clients[user_id][server_name] = client
+            return client
+        except Exception as e:
+            logger.error(f"Failed to start per-user client for {user_id}/{server_name}: {e}")
+            return None
+
+    async def call_tool(
+        self, tool_name: str, arguments: Dict[str, Any], user_id: Optional[str] = None
+    ) -> Any:
         """
         Execute a tool by name, routing to the correct server.
 
@@ -333,6 +462,8 @@ class MCPToolManager:
             Name of the tool to execute
         arguments : Dict[str, Any]
             Tool arguments
+        user_id : Optional[str]
+            User ID for per-user authenticated services
 
         Returns
         -------
@@ -347,24 +478,101 @@ class MCPToolManager:
             If tool execution fails
         """
         server_name = self._tool_registry.get(tool_name)
+
+        # If tool not in registry, check if it might be from a per-user service
+        if not server_name:
+            per_user_configs = getattr(self, '_per_user_configs', {})
+            if per_user_configs:
+                # Check if user needs to auth first
+                for service_name in per_user_configs:
+                    if not self.token_store or not self.token_store.has_token(user_id or "", service_name):
+                        # User hasn't connected this service - raise auth error
+                        raise AuthRequiredError(
+                            service=service_name,
+                            user_id=user_id or "unknown",
+                        )
+                    # User has token, try to connect and discover tools
+                    client = await self._get_user_client(user_id, service_name)
+                    if client and tool_name in self._tool_registry:
+                        server_name = self._tool_registry[tool_name]
+                        break
+
         if not server_name:
             raise ValueError(f"Unknown tool: {tool_name}")
 
+        # Check if this is a per-user service
+        if server_name in PER_USER_SERVICES:
+            if not user_id:
+                raise AuthRequiredError(
+                    service=server_name,
+                    user_id="unknown",
+                    message=f"Tool '{tool_name}' requires user authentication"
+                )
+            client = await self._get_user_client(user_id, server_name)
+            if client:
+                return await client.call_tool(tool_name, arguments)
+            else:
+                raise AuthRequiredError(
+                    service=server_name,
+                    user_id=user_id,
+                )
+
+        # Fall back to shared client
         client = self.clients.get(server_name)
         if not client:
             raise RuntimeError(f"Server '{server_name}' not connected")
 
         return await client.call_tool(tool_name, arguments)
 
+    def get_user_service_status(self, user_id: str) -> Dict[str, Dict[str, Any]]:
+        """
+        Check which per-user services a user has connected.
+
+        Returns
+        -------
+        Dict[str, Dict]
+            {service_name: {connected: bool, connect_url: str, name: str}}
+        """
+        status = {}
+        for service, info in PER_USER_SERVICES.items():
+            connected = bool(
+                self.token_store and self.token_store.has_token(user_id, service)
+            )
+            status[service] = {
+                "connected": connected,
+                "name": info.get("name", service),
+                "connect_url": f"{info.get('auth_path', '/auth/connect')}?user_id={user_id}",
+            }
+        return status
+
+    def get_missing_services(self, user_id: str) -> List[Dict[str, Any]]:
+        """Get list of services user hasn't connected yet."""
+        status = self.get_user_service_status(user_id)
+        return [
+            {"service": svc, **info}
+            for svc, info in status.items()
+            if not info["connected"]
+        ]
+
     async def shutdown(self) -> None:
         """Gracefully shutdown all MCP server connections."""
         logger.info("Shutting down all MCP servers")
 
+        # Shutdown shared clients
         for client in self.clients.values():
             try:
                 await client.stop()
             except Exception as e:
                 logger.error(f"Error stopping server: {e}")
 
+        # Shutdown per-user clients
+        for user_id, user_clients in self.user_clients.items():
+            for server_name, client in user_clients.items():
+                try:
+                    await client.stop()
+                except Exception as e:
+                    logger.error(f"Error stopping user client {user_id}/{server_name}: {e}")
+
         self.clients.clear()
+        self.user_clients.clear()
         self._tool_registry.clear()
