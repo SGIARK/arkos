@@ -395,10 +395,14 @@ class MCPToolManager:
 
     async def _discover_per_user_tools(self, server_name: str, server_config: dict) -> Dict[str, Any]:
         """Temporarily start a per-user service to discover its tools."""
+        env = os.environ.copy()
+        if server_config.get("env"):
+            env.update(server_config.get("env"))
+
         transport = StdioTransport(
             command=server_config["command"],
             args=server_config["args"],
-            env=server_config.get("env"),
+            env=env,
         )
         config = MCPServerConfig(
             name=f"{server_name}:discovery",
