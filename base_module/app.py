@@ -60,16 +60,17 @@ Always stay in character as ARK when responding."""
 @app.get("/health")
 async def health_check():
     """Health check endpoint to verify server and dependencies."""
-    import requests
+    import httpx
 
     llm_status = "unknown"
     try:
-        response = requests.get("http://localhost:30000/v1/models", timeout=2)
-        llm_status = "running" if response.status_code == 200 else "error"
+        async with httpx.AsyncClient() as client:
+            response = await client.get("http://localhost:30000/v1/models", timeout=2.0)
+            llm_status = "running" if response.status_code == 200 else "error"
     except Exception:
         llm_status = "not_running"
 
-    return JSONResponse(content={"status": "ok", "llm_server": llm_status, "port": 1111})
+    return JSONResponse(content={"status": "ok", "llm_server": llm_status, "port": config.get("app.port")})
 
 
 @app.post("/v1/chat/completions")
