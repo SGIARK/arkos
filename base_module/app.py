@@ -1,12 +1,15 @@
+import logging
 import os
 import sys
 import time
 import uuid
+from typing import Literal, Optional
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 # Standard boilerplate for module imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -16,6 +19,20 @@ from config_module.loader import config
 from memory_module.memory import Memory
 from model_module.ArkModelNew import AIMessage, ArkModelLink, Message, SystemMessage, UserMessage
 from state_module.state_handler import StateHandler
+
+logger = logging.getLogger(__name__)
+
+
+# Pydantic models for request/response validation
+class ChatMessage(BaseModel):
+    role: Literal["system", "user", "assistant"]
+    content: str
+
+
+class ChatCompletionRequest(BaseModel):
+    model: str = "ark-agent"
+    messages: list[ChatMessage] = Field(..., min_length=1)
+    session_id: Optional[str] = None  # Optional session ID for conversation continuity
 
 app = FastAPI(title="ArkOS Agent API", version="1.0.0")
 
@@ -61,54 +78,44 @@ async def health_check():
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(request: Request):
+async def chat_completions(request: ChatCompletionRequest):
     """OAI-compatible endpoint wrapping the full ArkOS agent."""
-    # Awaiting request.json() is correct for FastAPI's async handling of the request body
-    payload = await request.json()
+    try:
+        context_msgs: list[Message] = []
+        context_msgs.append(SystemMessage(content=config.get("app.system_prompt")))
 
-    messages = payload.get("messages", [])
-    model = payload.get("model", "ark-agent")
-    _ = payload.get("response_format")  # Reserved for future use
+        # Convert OAI messages into internal message objects
+        for msg in request.messages:
+            if msg.role == "system":
+                context_msgs.append(SystemMessage(content=msg.content))
+            elif msg.role == "user":
+                context_msgs.append(UserMessage(content=msg.content))
+            elif msg.role == "assistant":
+                context_msgs.append(AIMessage(content=msg.content))
 
-    context_msgs: list[Message] = []
+        agent_response = await agent.step(context_msgs)
+        final_msg = agent_response or AIMessage(content="(no response)")
 
-    context_msgs.append(SystemMessage(content=config.get("app.system_prompt")))
+        # Format as OpenAI chat completion response
+        completion = {
+            "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": request.model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": final_msg.content},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
 
-    # Convert OAI messages into internal message objects
-    for msg in messages:
-        role = msg["role"]
-        content = msg["content"]
-        if role == "system":
-            context_msgs.append(SystemMessage(content=content))
-        elif role == "user":
-            context_msgs.append(UserMessage(content=content))
-        elif role == "assistant":
-            context_msgs.append(AIMessage(content=content))
+        return JSONResponse(content=completion)
 
-    # *** THE CRITICAL CHANGE: AWAIT the agent's step method ***
-    # This prevents the 'coroutine' object has no attribute 'content' error.
-    agent_response = await agent.step(context_msgs)
-
-    # Handle the case where the agent might return None (though it should return an AIMessage)
-    final_msg = agent_response or AIMessage(content="(no response)")
-
-    # Format as OpenAI chat completion response
-    completion = {
-        "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": model,
-        "choices": [
-            {
-                "index": 0,
-                # Now final_msg is guaranteed to be an AIMessage object (or placeholder)
-                "message": {"role": "assistant", "content": final_msg.content},
-                "finish_reason": "stop",
-            }
-        ],
-    }
-
-    return JSONResponse(content=completion)
+    except Exception as e:
+        logger.exception("Error processing chat completion request")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 if __name__ == "__main__":
