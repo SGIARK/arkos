@@ -5,6 +5,7 @@ import uuid
 
 import uvicorn
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 # Standard boilerplate for module imports
@@ -18,6 +19,14 @@ from state_module.state_handler import StateHandler
 
 app = FastAPI(title="ArkOS Agent API", version="1.0.0")
 
+# Enable CORS for frontend access
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure appropriately for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Initialize the agent and dependencies once
 
