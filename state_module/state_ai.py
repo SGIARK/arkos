@@ -63,6 +63,8 @@ class StateAI(State):
             not msg.content.startswith("You are")  # Skip system prompts
             for msg in messages
         )
+        if has_tool_result:
+            print(f"[StateAI] TOOL RESULT DETECTED in context - instructing LLM to use it")
 
         json_schema = {
             "type": "json_schema",
@@ -72,6 +74,19 @@ class StateAI(State):
             },
         }
 
+        # Build system prompt with tool result detection
+        tool_result_guidance = ""
+        if has_tool_result:
+            tool_result_guidance = (
+                "\n\n🚨 CRITICAL: A SystemMessage with TOOL_RESULT is present in the conversation. "
+                "You MUST:\n"
+                "1. Set has_tool_result=true\n"
+                "2. Extract data from the TOOL_RESULT SystemMessage\n"
+                "3. Present that data in the 'final' field\n"
+                "4. Do NOT make up data, ONLY use what's in the tool result\n"
+                "5. Do NOT include reasoning steps (approach will be hidden)\n"
+            )
+
         system = SystemMessage(
             content=(
                 "You are the agent reasoning state.\n"
@@ -79,10 +94,8 @@ class StateAI(State):
                 "Never repeat yourself.\n"
                 "Produce a JSON object matching the provided schema.\n"
                 "Do not reveal chain-of-thought.\n"
-                "Use concise, high-level reasoning steps only.\n\n"
-                "IMPORTANT: If there is a SystemMessage in the conversation containing tool output/results, "
-                "set has_tool_result=true and use that data to answer the user's question. "
-                "Present the tool results clearly in the 'final' field. Do NOT make up data.\n"
+                "Use concise, high-level reasoning steps only."
+                f"{tool_result_guidance}"
             )
         )
 
@@ -96,6 +109,7 @@ class StateAI(State):
 
         try:
             data = ReasonedOutput.model_validate_json(output.content)
+            print(f"[StateAI] Parsed output - has_tool_result={data.has_tool_result}")
         except Exception as e:
             # If JSON parsing fails, return the raw content as fallback
             print(f"Failed to parse structured output: {e}")

@@ -107,6 +107,9 @@ Choose the most appropriate tool."""
             tool_name = tool_arg_dict.get("tool_name", "unknown")
             formatted_result = f"TOOL_RESULT from '{tool_name}':\n{json.dumps(tool_result, indent=2)}"
 
+            print(f"[StateTool] Returning tool result ({len(formatted_result)} chars):")
+            print(formatted_result[:500])  # Print first 500 chars
+
             return SystemMessage(content=formatted_result)
 
         except AuthRequiredError as e:

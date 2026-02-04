@@ -331,17 +331,18 @@ Do not use tool results to determine the next state."""
                 update = AIMessage(content=f"Error: {str(e)[:200]}")
                 self.current_state = self.flow.get_state("agent_reply")
 
-            # Stream the state's output character by character
+            # Add update to memory
             if update and hasattr(update, 'content') and update.content:
                 self.add_context([update])
-                print(f"agent.py [STREAM] Streaming {len(update.content)} chars")
 
-                # Stream character by character for smooth output
-                for char in update.content:
-                    yield char
-
+                # Only stream AIMessages (user-facing responses), not SystemMessages (internal tool results)
                 if isinstance(update, AIMessage):
-                    print("agent.py [STREAM] AIMessage streamed")
+                    print(f"agent.py [STREAM] Streaming AIMessage ({len(update.content)} chars)")
+                    # Stream character by character for smooth output
+                    for char in update.content:
+                        yield char
+                elif isinstance(update, SystemMessage):
+                    print(f"agent.py [STREAM] SystemMessage added to memory ({len(update.content)} chars) - not streamed")
 
             # Check terminal
             if self.current_state.is_terminal:
