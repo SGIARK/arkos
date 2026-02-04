@@ -237,6 +237,7 @@ class MCPToolManager:
         self.clients: Dict[str, MCPClient] = {}
         self.user_clients: Dict[str, Dict[str, MCPClient]] = {}
         self._tool_registry: Dict[str, str] = {}  # tool_name -> server_name
+        self._per_user_tools: Dict[str, Dict[str, Any]] = {}  # server_name -> {tool_name: tool_spec}
         self._user_token_dir = Path.home() / ".arkos" / "user_tokens"
 
     def _create_transport(self, server_config: Dict[str, Any]) -> MCPTransport:
@@ -290,12 +291,15 @@ class MCPToolManager:
         logger.info(f"Initializing {len(self.config)} MCP servers")
 
         for server_name, server_config in self.config.items():
-            # Skip per-user services during agent-level init
+            # Discover tools from per-user services without keeping connection
             if server_name in PER_USER_SERVICES:
-                logger.info(f"Skipping per-user service '{server_name}' (will init per-user)")
-                # Register placeholder so we know this service exists
+                logger.info(f"Discovering tools from per-user service '{server_name}'")
                 self._per_user_configs = getattr(self, '_per_user_configs', {})
                 self._per_user_configs[server_name] = server_config
+                try:
+                    await self._discover_per_user_tools(server_name, server_config)
+                except Exception as e:
+                    logger.warning(f"Could not discover tools from '{server_name}': {e}")
                 continue
 
             try:
@@ -338,6 +342,42 @@ class MCPToolManager:
             f"{len(getattr(self, '_per_user_configs', {}))} per-user services"
         )
 
+    async def _discover_per_user_tools(self, server_name: str, server_config: dict) -> None:
+        """Discover tools from a per-user service by starting a temporary client."""
+        env = os.environ.copy()
+        if server_config.get("env"):
+            env.update(server_config.get("env"))
+
+        transport = StdioTransport(
+            command=server_config["command"],
+            args=server_config["args"],
+            env=env,
+        )
+        config = MCPServerConfig(
+            name=f"{server_name}:discovery",
+            transport="stdio",
+            command=server_config.get("command"),
+            args=server_config.get("args"),
+        )
+        client = MCPClient(config, transport)
+        try:
+            await client.start()
+            tools = await client.list_tools()
+            server_tools = {}
+            for tool in tools:
+                tool_name = tool.get("name")
+                if not tool_name:
+                    continue
+                self._tool_registry[tool_name] = server_name
+                tool["_server"] = server_name
+                tool["_id"] = f"{server_name}.{tool_name}"
+                tool["_requires_auth"] = True
+                server_tools[tool_name] = tool
+                logger.info(f"Registered per-user tool '{tool_name}' from '{server_name}'")
+            self._per_user_tools[server_name] = server_tools
+        finally:
+            await client.stop()
+
     async def list_all_tools(self) -> Dict[str, Dict[str, Any]]:
         """
         Get all available tools from all connected servers.
@@ -367,6 +407,10 @@ class MCPToolManager:
 
             except Exception as e:
                 logger.error(f"Failed to list tools from '{server_name}': {e}")
+
+        # Include per-user service tools (marked as requiring auth)
+        for server_name, tools in self._per_user_tools.items():
+            all_tools[server_name] = tools
 
         return all_tools
 
