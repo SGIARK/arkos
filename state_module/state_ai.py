@@ -28,6 +28,9 @@ class ReasonedOutput(BaseModel):
     clarifying_question: Optional[str] = Field(
         None, description="Single clarifying question if needed"
     )
+    has_tool_result: bool = Field(
+        False, description="Whether responding with a tool result (if true, final should present the tool output)"
+    )
     final: str = Field(..., description="User-facing response")
 
 
@@ -53,6 +56,14 @@ class StateAI(State):
 
         messages = context if isinstance(context, list) else context.get("messages", [])
 
+        # Check if there's a tool result in the context (SystemMessage from tool execution)
+        has_tool_result = any(
+            isinstance(msg, SystemMessage) and
+            msg.content and
+            not msg.content.startswith("You are")  # Skip system prompts
+            for msg in messages
+        )
+
         json_schema = {
             "type": "json_schema",
             "json_schema": {
@@ -64,11 +75,14 @@ class StateAI(State):
         system = SystemMessage(
             content=(
                 "You are the agent reasoning state.\n"
-                "No tools are available.\n"
-                "Never repeat yourself \n"
+                "No tools are available in THIS state.\n"
+                "Never repeat yourself.\n"
                 "Produce a JSON object matching the provided schema.\n"
                 "Do not reveal chain-of-thought.\n"
-                "Use concise, high-level reasoning steps only.\n"
+                "Use concise, high-level reasoning steps only.\n\n"
+                "IMPORTANT: If there is a SystemMessage in the conversation containing tool output/results, "
+                "set has_tool_result=true and use that data to answer the user's question. "
+                "Present the tool results clearly in the 'final' field. Do NOT make up data.\n"
             )
         )
 
@@ -95,10 +109,12 @@ class StateAI(State):
         # Build response including the approach/reasoning
         response_parts = []
 
-        # Include approach if it has substantive content
-        if data.approach:
-            for step in data.approach:
-                response_parts.append(f"• {step}")
+        # If presenting tool results, skip showing reasoning steps
+        if not data.has_tool_result:
+            # Include approach if it has substantive content
+            if data.approach:
+                for step in data.approach:
+                    response_parts.append(f"• {step}")
 
         # Add final answer
         if data.final:

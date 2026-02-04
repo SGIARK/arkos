@@ -102,7 +102,12 @@ Choose the most appropriate tool."""
         try:
             tool_arg_dict = await self.choose_tool(context=context, agent=agent)
             tool_result = await self.execute_tool(tool_call=tool_arg_dict, agent=agent)
-            return SystemMessage(content=str(tool_result))
+
+            # Format tool result with clear marker
+            tool_name = tool_arg_dict.get("tool_name", "unknown")
+            formatted_result = f"TOOL_RESULT from '{tool_name}':\n{json.dumps(tool_result, indent=2)}"
+
+            return SystemMessage(content=formatted_result)
 
         except AuthRequiredError as e:
             # Return friendly message with connect link
