@@ -148,8 +148,22 @@ class Agent:
         """
 
         transition_tuples = list(zip(transitions_dict["tt"], transitions_dict["td"]))
-        prompt = f"""given the context of the conversation and the following state options {transition_tuples} output the most reasonable next state.
-                 do not use tool result to determine the next state"""
+
+        # Build tool info if use_tool is an option
+        tool_guidance = ""
+        if "use_tool" in transitions_dict["tt"] and self.available_tools:
+            tool_names = []
+            for server_tools in self.available_tools.values():
+                tool_names.extend(server_tools.keys())
+            tool_guidance = f"""
+
+Available tools: {', '.join(tool_names)}
+
+IMPORTANT: If the user's request can be directly satisfied by calling a tool (e.g., listing calendars, searching, reading files), choose 'use_tool'. Only choose 'ask_user' if you need clarification or cannot proceed with available tools."""
+
+        prompt = f"""Given the conversation context and available state options {transition_tuples}, choose the most appropriate next state.{tool_guidance}
+
+Do not use tool results to determine the next state."""
 
         # creates pydantic class and a model dump
         NextStates = self.create_next_state_class(transition_tuples)
