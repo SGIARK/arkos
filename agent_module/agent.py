@@ -327,9 +327,13 @@ Do not use tool results to determine the next state."""
                 update = await self.current_state.run(context, self)
                 print(f"agent.py [STREAM] State returned: {type(update).__name__}")
             except Exception as e:
-                print(f"agent.py [STREAM] State error: {e}")
-                update = AIMessage(content=f"Error: {str(e)[:200]}")
-                self.current_state = self.flow.get_state("agent_reply")
+                print(f"agent.py [STREAM] State error in {self.current_state.name}: {e}")
+                # Return error message to user and transition to terminal
+                update = AIMessage(content=f"I encountered an error: {str(e)[:200]}. Please try rephrasing your request.")
+                # Force transition to terminal state to stop infinite loops
+                self.current_state = self.flow.get_state("ask_user")
+                yield update.content
+                break
 
             # Add update to memory
             if update and hasattr(update, 'content') and update.content:

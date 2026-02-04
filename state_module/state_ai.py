@@ -56,15 +56,18 @@ class StateAI(State):
 
         messages = context if isinstance(context, list) else context.get("messages", [])
 
-        # Check if there's a tool result in the context (SystemMessage from tool execution)
-        has_tool_result = any(
-            isinstance(msg, SystemMessage) and
-            msg.content and
-            not msg.content.startswith("You are")  # Skip system prompts
-            for msg in messages
-        )
-        if has_tool_result:
-            print(f"[StateAI] TOOL RESULT DETECTED in context - instructing LLM to use it")
+        # Check if there's a FRESH tool result (last message in context)
+        # Only flag if the most recent message is a tool result (not old ones from memory)
+        has_tool_result = False
+        if messages:
+            last_msg = messages[-1]
+            if (isinstance(last_msg, SystemMessage) and
+                last_msg.content and
+                last_msg.content.startswith("TOOL_RESULT from")):
+                has_tool_result = True
+                print(f"[StateAI] FRESH TOOL RESULT detected (last message) - instructing LLM to use it")
+            else:
+                print(f"[StateAI] No fresh tool result (last msg type: {type(last_msg).__name__})")
 
         json_schema = {
             "type": "json_schema",
@@ -109,7 +112,13 @@ class StateAI(State):
 
         try:
             data = ReasonedOutput.model_validate_json(output.content)
-            print(f"[StateAI] Parsed output - has_tool_result={data.has_tool_result}")
+            print(f"[StateAI] LLM set has_tool_result={data.has_tool_result}")
+
+            # OVERRIDE: If we detected tool result but LLM didn't flag it, force it
+            if has_tool_result and not data.has_tool_result:
+                print(f"[StateAI] ⚠️  Overriding has_tool_result to True (LLM ignored instructions)")
+                data.has_tool_result = True
+
         except Exception as e:
             # If JSON parsing fails, return the raw content as fallback
             print(f"Failed to parse structured output: {e}")

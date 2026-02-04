@@ -75,11 +75,31 @@ Choose the most appropriate tool."""
             },
         }
 
-        args_prompt = f"Fill in the arguments for the tool '{tool_name}' based on the user's request."
+        args_prompt = f"""Fill in the arguments for the tool '{tool_name}' based on the user's request.
+
+IMPORTANT DATE/TIME FORMATTING:
+- For any date/time fields (timeMin, timeMax, start, end, etc.), use ISO 8601 format with timezone
+- Format: YYYY-MM-DDTHH:MM:SS (e.g., "2026-02-04T00:00:00")
+- For "today", use the current date with 00:00:00 for start and 23:59:59 for end
+- For date ranges, ensure both start and end times are properly formatted"""
+
         args_context = context + [SystemMessage(content=args_prompt)]
 
         args_output = await agent.call_llm(args_context, tool_args_schema)
-        tool_args = json.loads(args_output.content)
+
+        # Handle None or empty response
+        if not args_output or not args_output.content:
+            print(f"[StateTool] ERROR: LLM returned None/empty for tool args")
+            raise ValueError("Failed to generate tool arguments")
+
+        try:
+            tool_args = json.loads(args_output.content)
+        except json.JSONDecodeError as e:
+            print(f"[StateTool] ERROR: Invalid JSON from LLM: {e}")
+            print(f"[StateTool] LLM output: {args_output.content[:200]}")
+            raise
+
+        print(f"[StateTool] Calling '{tool_name}' with args: {json.dumps(tool_args, indent=2)}")
 
         return {"tool_name": tool_name, "tool_args": tool_args}
 
@@ -105,7 +125,28 @@ Choose the most appropriate tool."""
 
             # Format tool result with clear marker
             tool_name = tool_arg_dict.get("tool_name", "unknown")
-            formatted_result = f"TOOL_RESULT from '{tool_name}':\n{json.dumps(tool_result, indent=2)}"
+
+            # Extract actual content from MCP format if present
+            if isinstance(tool_result, dict) and "content" in tool_result:
+                # MCP format: {"content": [{"type": "text", "text": "..."}]}
+                content_items = tool_result.get("content", [])
+                if content_items and isinstance(content_items, list):
+                    # Extract text from first content item
+                    first_item = content_items[0]
+                    if isinstance(first_item, dict) and "text" in first_item:
+                        actual_data = first_item["text"]
+                        # Try to parse as JSON for pretty printing
+                        try:
+                            parsed = json.loads(actual_data)
+                            formatted_result = f"TOOL_RESULT from '{tool_name}':\n{json.dumps(parsed, indent=2)}"
+                        except:
+                            formatted_result = f"TOOL_RESULT from '{tool_name}':\n{actual_data}"
+                    else:
+                        formatted_result = f"TOOL_RESULT from '{tool_name}':\n{json.dumps(tool_result, indent=2)}"
+                else:
+                    formatted_result = f"TOOL_RESULT from '{tool_name}':\n{json.dumps(tool_result, indent=2)}"
+            else:
+                formatted_result = f"TOOL_RESULT from '{tool_name}':\n{json.dumps(tool_result, indent=2)}"
 
             print(f"[StateTool] Returning tool result ({len(formatted_result)} chars):")
             print(formatted_result[:500])  # Print first 500 chars
