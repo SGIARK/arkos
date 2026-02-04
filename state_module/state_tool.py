@@ -28,7 +28,22 @@ class StateTool(State):
         Chooses tool to use based on the context and server
         """
 
-        prompt = "based on the above user request, choose the tool which best satisfies the users request"
+        # Get all tools with descriptions
+        all_tools = await agent.tool_manager.list_all_tools()
+        tool_descriptions = []
+        for server_name, tools in all_tools.items():
+            for tool_name, tool_spec in tools.items():
+                desc = tool_spec.get('description', 'No description')
+                tool_descriptions.append(f"- {tool_name}: {desc}")
+
+        tools_list = "\n".join(tool_descriptions)
+        prompt = f"""Based on the user request, choose the tool that best satisfies it.
+
+Available tools:
+{tools_list}
+
+Choose the most appropriate tool."""
+
         instructions = context + [SystemMessage(content=prompt)]
 
         # Get Pydantic class and convert to JSON schema format
