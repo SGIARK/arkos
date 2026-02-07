@@ -50,7 +50,7 @@ mcp_servers:
     args: ["-y", "@cocal/google-calendar-mcp"]
     env:
       GOOGLE_OAUTH_CREDENTIALS: "${GOOGLE_OAUTH_CREDENTIALS}"
-
+      
   filesystem:
     transport: stdio
     command: npx
