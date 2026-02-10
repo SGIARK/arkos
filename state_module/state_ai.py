@@ -120,9 +120,10 @@ class StateAI(State):
                 data.has_tool_result = True
 
         except Exception as e:
-            # If JSON parsing fails, return the raw content as fallback
-            print(f"Failed to parse structured output: {e}")
-            return AIMessage(content=output.content)
+            # If JSON parsing fails, return user-friendly error instead of raw JSON
+            print(f"[StateAI] Failed to parse structured output: {e}")
+            print(f"[StateAI] Raw output (first 200 chars): {output.content[:200]}")
+            return AIMessage(content="I encountered an issue processing that request. Could you rephrase it?")
 
 
 

@@ -310,6 +310,7 @@ Do not use tool results to determine the next state."""
         print("agent.py [STREAM] IS TERMINAL?:", self.current_state.is_terminal)
 
         retry_count = 0
+        last_ai_message = None  # Track the final message to stream
 
         while not self.current_state.is_terminal:
             print(f"agent.py [STREAM] Inner loop - State: {self.current_state.name}")
@@ -339,12 +340,10 @@ Do not use tool results to determine the next state."""
             if update and hasattr(update, 'content') and update.content:
                 self.add_context([update])
 
-                # Only stream AIMessages (user-facing responses), not SystemMessages (internal tool results)
+                # Track AIMessages but don't stream yet (wait for final one)
                 if isinstance(update, AIMessage):
-                    print(f"agent.py [STREAM] Streaming AIMessage ({len(update.content)} chars)")
-                    # Stream character by character for smooth output
-                    for char in update.content:
-                        yield char
+                    last_ai_message = update
+                    print(f"agent.py [STREAM] AIMessage buffered ({len(update.content)} chars) - will stream at end")
                 elif isinstance(update, SystemMessage):
                     print(f"agent.py [STREAM] SystemMessage added to memory ({len(update.content)} chars) - not streamed")
 
@@ -371,17 +370,19 @@ Do not use tool results to determine the next state."""
 
                 print(f"agent.py [STREAM] -> {next_state_name}")
                 self.current_state = self.flow.get_state(next_state_name)
-
-                # Separator between states (if continuing)
-                if not self.current_state.is_terminal:
-                    yield "\n\n"
             else:
                 print("agent.py [STREAM] No transition ready")
                 break
 
-        print("agent.py [STREAM] Complete")
-        self.current_state = self.flow.get_state("agent_reply")
+        # Stream the final AIMessage to user
+        if last_ai_message and last_ai_message.content:
+            print(f"agent.py [STREAM] Streaming final response ({len(last_ai_message.content)} chars)")
+            for char in last_ai_message.content:
+                yield char
+        else:
+            print("agent.py [STREAM] No final message to stream")
 
+        print("agent.py [STREAM] Complete")
         self.current_state = self.flow.get_state("agent_reply")
 
 
