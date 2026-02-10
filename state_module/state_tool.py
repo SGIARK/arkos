@@ -101,21 +101,46 @@ IMPORTANT DATE/TIME FORMATTING:
         if "CRITICAL CALENDAR" in args_prompt:
             print(f"[StateTool] Applied calendar account guidance for '{tool_name}'")
 
-        args_context = context + [SystemMessage(content=args_prompt)]
+        # Use minimal context to avoid token limits (only last 2 messages)
+        minimal_context = context[-2:] if len(context) > 2 else context
+        args_context = minimal_context + [SystemMessage(content=args_prompt)]
+
+        print(f"[StateTool] Context length for args: {len(args_context)} messages")
 
         args_output = await agent.call_llm(args_context, tool_args_schema)
 
-        # Handle None or empty response
+        # Handle None or empty response with retry
         if not args_output or not args_output.content:
-            print(f"[StateTool] ERROR: LLM returned None/empty for tool args")
-            raise ValueError("Failed to generate tool arguments")
+            print(f"[StateTool] WARN: LLM returned None/empty for tool args, retrying with simpler prompt")
+            # Retry with minimal context (just the user's last message)
+            simple_context = [context[-1], SystemMessage(content=args_prompt)]
+            args_output = await agent.call_llm(simple_context, tool_args_schema)
+
+            if not args_output or not args_output.content:
+                print(f"[StateTool] ERROR: LLM returned None/empty even after retry")
+                raise ValueError("Failed to generate tool arguments after retry")
 
         try:
             tool_args = json.loads(args_output.content)
         except json.JSONDecodeError as e:
             print(f"[StateTool] ERROR: Invalid JSON from LLM: {e}")
             print(f"[StateTool] LLM output: {args_output.content[:200]}")
-            raise
+
+            # Try to extract partial JSON or provide defaults
+            print(f"[StateTool] Attempting to use default values for missing fields")
+            # For calendar tools, provide sensible defaults
+            if tool_name == "list-events":
+                from datetime import datetime, timedelta
+                today = datetime.now().strftime("%Y-%m-%dT00:00:00")
+                tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
+                tool_args = {
+                    "account": "normal",
+                    "timeMin": today,
+                    "timeMax": tomorrow
+                }
+                print(f"[StateTool] Using fallback args: {tool_args}")
+            else:
+                raise
 
         print(f"[StateTool] Calling '{tool_name}' with args: {json.dumps(tool_args, indent=2)}")
 
