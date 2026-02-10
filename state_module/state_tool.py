@@ -75,13 +75,31 @@ Choose the most appropriate tool."""
             },
         }
 
-        args_prompt = f"""Fill in the arguments for the tool '{tool_name}' based on the user's request.
+        # Build context-aware args prompt
+        args_guidance = """Fill in the arguments for the tool '{tool_name}' based on the user's request.
 
 IMPORTANT DATE/TIME FORMATTING:
 - For any date/time fields (timeMin, timeMax, start, end, etc.), use ISO 8601 format with timezone
 - Format: YYYY-MM-DDTHH:MM:SS (e.g., "2026-02-04T00:00:00")
 - For "today", use the current date with 00:00:00 for start and 23:59:59 for end
 - For date ranges, ensure both start and end times are properly formatted"""
+
+        # Add calendar-specific guidance
+        if "calendar" in tool_name.lower() or tool_name in ["manage-accounts", "list-events", "create-event", "list-calendars"]:
+            args_guidance += """
+
+🚨 CRITICAL CALENDAR ACCOUNT GUIDANCE:
+- The ONLY valid account ID is: "normal" (do NOT make up account IDs)
+- For manage-accounts with action="list": OMIT the account_id parameter entirely (set to null or don't include it)
+- For list-events, list-calendars, create-event: Use account="normal" or account_id="normal"
+- NEVER use placeholder values like "user-account-12345" or "user_google_calendar..."
+- If unsure, use "normal" as the account identifier"""
+
+        args_prompt = args_guidance.format(tool_name=tool_name)
+
+        # Log if calendar guidance is applied
+        if "CRITICAL CALENDAR" in args_prompt:
+            print(f"[StateTool] Applied calendar account guidance for '{tool_name}'")
 
         args_context = context + [SystemMessage(content=args_prompt)]
 
