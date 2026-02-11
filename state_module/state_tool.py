@@ -6,7 +6,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 
 from model_module.ArkModelNew import SystemMessage
-from tool_module.tool_call import AuthRequiredError
+from tool_module.tool_call import AuthRequiredError, PER_USER_SERVICES
 
 from state_module.state import State
 from state_module.state_registry import register_state
@@ -30,7 +30,7 @@ class StateTool(State):
         """
         try:
             # Check if this is a per-user service
-            if server_name not in agent.tool_manager.PER_USER_SERVICES:
+            if server_name not in PER_USER_SERVICES:
                 return []
 
             # Check if user is authenticated
@@ -159,7 +159,7 @@ IMPORTANT FORMATTING GUIDELINES:
 
         # Add per-user service guidance dynamically
         server_name = agent.tool_manager._tool_registry.get(tool_name)
-        if server_name and server_name in agent.tool_manager.PER_USER_SERVICES:
+        if server_name and server_name in PER_USER_SERVICES:
             # Get available accounts for this user
             available_accounts = await self._get_available_accounts(server_name, agent)
             if available_accounts:
