@@ -144,7 +144,35 @@ class StateAI(State):
         if data.final:
             if response_parts:
                 response_parts.append("")  # blank line
-            response_parts.append(data.final)
+
+            # Check if final contains raw JSON and format it
+            final_content = data.final
+            if final_content.strip().startswith('{"') or final_content.strip().startswith("{\\"):
+                try:
+                    # Try to parse and format the JSON
+                    import json
+                    parsed = json.loads(final_content)
+                    print(f"[StateAI] Detected raw JSON in final field, formatting...")
+
+                    # Format calendar events if present
+                    if "events" in parsed and isinstance(parsed["events"], list):
+                        event_count = len(parsed["events"])
+                        if event_count == 0:
+                            final_content = "No events found for that time period."
+                        else:
+                            events_text = []
+                            for event in parsed["events"]:
+                                summary = event.get("summary", "Untitled Event")
+                                start = event.get("start", {}).get("dateTime", "Unknown time")
+                                events_text.append(f"• {summary} at {start}")
+                            final_content = f"Found {event_count} event(s):\n" + "\n".join(events_text)
+                    else:
+                        # Generic JSON formatting
+                        final_content = json.dumps(parsed, indent=2)
+                except:
+                    pass  # Not valid JSON, use as-is
+
+            response_parts.append(final_content)
 
         # Add clarifying question if needed
         if data.needs_clarification and data.clarifying_question:

@@ -361,7 +361,16 @@ Do not use tool results to determine the next state."""
                 transition_names = transition_dict["tt"]
                 print(f"agent.py [STREAM] Transitions: {transition_names}")
 
-                if len(transition_names) == 1:
+                # If we just presented a tool result, go directly to ask_user (don't loop)
+                if (last_ai_message and
+                    isinstance(update, AIMessage) and
+                    messages_list and
+                    len(messages_list) >= 2 and
+                    isinstance(messages_list[-2], SystemMessage) and
+                    "TOOL_RESULT" in messages_list[-2].content):
+                    print(f"agent.py [STREAM] Just presented tool result -> forcing ask_user")
+                    next_state_name = "ask_user"
+                elif len(transition_names) == 1:
                     next_state_name = transition_names[0]
                 else:
                     next_state_name = await self.choose_transition(
