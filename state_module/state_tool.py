@@ -23,6 +23,69 @@ class StateTool(State):
     def check_transition_ready(self, context):
         return True
 
+    async def _get_available_accounts(self, server_name: str, agent) -> list:
+        """
+        Dynamically discover available accounts for per-user services.
+        Returns list of account IDs that can be used.
+        """
+        try:
+            # Check if this is a per-user service
+            if server_name not in agent.tool_manager.PER_USER_SERVICES:
+                return []
+
+            # Check if user is authenticated
+            if not agent.current_user_id:
+                return []
+
+            # Try to get user's client to see if they're authenticated
+            client = await agent.tool_manager._get_user_client(agent.current_user_id, server_name)
+            if not client:
+                return []
+
+            # For MCP services, "normal" is the standard account ID
+            # In the future, this could call a manage-accounts tool to list actual accounts
+            return ["normal"]
+
+        except Exception as e:
+            print(f"[StateTool] Failed to get accounts for {server_name}: {e}")
+            return []
+
+    async def _get_schema_defaults(self, input_schema: dict, agent) -> dict:
+        """
+        Generate default values based on JSON schema.
+        Uses schema properties, types, and defaults to create minimal valid args.
+        """
+        if not input_schema or "properties" not in input_schema:
+            return {}
+
+        defaults = {}
+        properties = input_schema.get("properties", {})
+        required = input_schema.get("required", [])
+
+        for field_name, field_spec in properties.items():
+            # Only include required fields in defaults
+            if field_name not in required:
+                continue
+
+            field_type = field_spec.get("type", "string")
+
+            # Generate type-appropriate defaults
+            if field_name in ["account", "account_id"]:
+                # For account fields, use discovered accounts
+                defaults[field_name] = "normal"  # Standard MCP account
+            elif "time" in field_name.lower() or "date" in field_name.lower():
+                # For date/time fields, use current time
+                from datetime import datetime
+                defaults[field_name] = datetime.now().strftime("%Y-%m-%dT00:00:00")
+            elif field_type == "string":
+                defaults[field_name] = field_spec.get("default", "")
+            elif field_type == "boolean":
+                defaults[field_name] = field_spec.get("default", False)
+            elif field_type == "integer" or field_type == "number":
+                defaults[field_name] = field_spec.get("default", 0)
+
+        return defaults if defaults else None
+
     async def choose_tool(self, context, agent):
         """
         Chooses tool to use based on the context and server
@@ -86,33 +149,30 @@ Choose the most appropriate tool."""
             },
         }
 
-        # Build context-aware args prompt
+        # Build schema-driven args prompt
         args_guidance = """Fill in the arguments for the tool '{tool_name}' based on the user's request.
 
-IMPORTANT DATE/TIME FORMATTING:
-- For any date/time fields (timeMin, timeMax, start, end, etc.), use ISO 8601 format with timezone
-- Format: YYYY-MM-DDTHH:MM:SS (e.g., "2026-02-04T00:00:00")
-- For "today", use the current date with 00:00:00 for start and 23:59:59 for end
-- For date ranges, ensure both start and end times are properly formatted"""
+IMPORTANT FORMATTING GUIDELINES:
+- For date/time fields: Use ISO 8601 format (YYYY-MM-DDTHH:MM:SS)
+- For "today": Use current date with appropriate time bounds
+- Follow the schema requirements carefully"""
 
-        # Add calendar-specific guidance
-        if "calendar" in tool_name.lower() or tool_name in ["manage-accounts", "list-events", "create-event", "list-calendars"]:
-            args_guidance += """
+        # Add per-user service guidance dynamically
+        server_name = agent.tool_manager._tool_registry.get(tool_name)
+        if server_name and server_name in agent.tool_manager.PER_USER_SERVICES:
+            # Get available accounts for this user
+            available_accounts = await self._get_available_accounts(server_name, agent)
+            if available_accounts:
+                account_list = ", ".join(f'"{acc}"' for acc in available_accounts)
+                args_guidance += f"""
 
-🚨 CRITICAL CALENDAR ACCOUNT GUIDANCE:
-- The ONLY valid account ID is: "normal" (do NOT make up account IDs)
-- For manage-accounts with action="list": OMIT the account_id parameter entirely (set to null or don't include it)
-- For list-events, list-calendars, create-event: Use account="normal" or account_id="normal"
-- NEVER use placeholder values like "user-account-12345" or "user_google_calendar..."
-- If unsure, use "normal" as the account identifier"""
+ACCOUNT PARAMETER:
+- Available accounts for this service: {account_list}
+- Use one of these account IDs when required
+- Do NOT make up account IDs"""
+                print(f"[StateTool] Available accounts for {server_name}: {available_accounts}")
 
         args_prompt = args_guidance.format(tool_name=tool_name)
-
-        # Log if calendar guidance is applied
-        if "CRITICAL CALENDAR" in args_prompt:
-            print(f"[StateTool] Applied calendar account guidance for '{tool_name}'")
-
-        # Use full context for arg generation
         args_context = context + [SystemMessage(content=args_prompt)]
 
         print(f"[StateTool] Context length for args: {len(args_context)} messages")
@@ -139,21 +199,13 @@ IMPORTANT DATE/TIME FORMATTING:
             print(args_output.content)
             print(f"---")
 
-            # Try to extract partial JSON or provide defaults
-            print(f"[StateTool] Attempting to use default values for missing fields")
-            # For calendar tools, provide sensible defaults
-            if tool_name == "list-events":
-                from datetime import datetime, timedelta
-                today = datetime.now().strftime("%Y-%m-%dT00:00:00")
-                tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
-                tool_args = {
-                    "account": "normal",
-                    "timeMin": today,
-                    "timeMax": tomorrow
-                }
-                print(f"[StateTool] Using fallback args: {tool_args}")
+            # Try to use schema defaults
+            print(f"[StateTool] Attempting to use schema defaults")
+            tool_args = await self._get_schema_defaults(tool_spec.get("inputSchema", {}), agent)
+            if tool_args:
+                print(f"[StateTool] Using schema-based fallback args: {tool_args}")
             else:
-                raise
+                raise ValueError(f"Failed to generate valid arguments for {tool_name}")
 
         print(f"[StateTool] Calling '{tool_name}' with args: {json.dumps(tool_args, indent=2)}")
 

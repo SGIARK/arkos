@@ -11,6 +11,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 
 from state_module.state import State
+from state_module.result_formatters import format_tool_result
 
 
 from state_module.state_registry import register_state
@@ -154,22 +155,10 @@ class StateAI(State):
                     parsed = json.loads(final_content)
                     print(f"[StateAI] Detected raw JSON in final field, formatting...")
 
-                    # Format calendar events if present
-                    if "events" in parsed and isinstance(parsed["events"], list):
-                        event_count = len(parsed["events"])
-                        if event_count == 0:
-                            final_content = "No events found for that time period."
-                        else:
-                            events_text = []
-                            for event in parsed["events"]:
-                                summary = event.get("summary", "Untitled Event")
-                                start = event.get("start", {}).get("dateTime", "Unknown time")
-                                events_text.append(f"• {summary} at {start}")
-                            final_content = f"Found {event_count} event(s):\n" + "\n".join(events_text)
-                    else:
-                        # Generic JSON formatting
-                        final_content = json.dumps(parsed, indent=2)
-                except:
+                    # Use formatter registry for generic formatting
+                    final_content = format_tool_result(parsed)
+                except Exception as e:
+                    print(f"[StateAI] Failed to parse/format JSON: {e}")
                     pass  # Not valid JSON, use as-is
 
             response_parts.append(final_content)
