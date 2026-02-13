@@ -30,7 +30,7 @@ class ReasonedOutput(BaseModel):
         None, description="Single clarifying question if needed"
     )
     has_tool_result: bool = Field(
-        False, description="Whether responding with a tool result (if true, final should present the tool output)"
+        False, description="True ONLY if presenting data from a TOOL_RESULT SystemMessage in this conversation. False if reasoning about what to do or answering without tool data."
     )
     final: str = Field(..., description="User-facing response")
 
@@ -98,7 +98,8 @@ class StateAI(State):
                 "Never repeat yourself.\n"
                 "Produce a JSON object matching the provided schema.\n"
                 "Do not reveal chain-of-thought.\n"
-                "Use concise, high-level reasoning steps only."
+                "Use concise, high-level reasoning steps only.\n"
+                "IMPORTANT: Set has_tool_result=false unless you see a TOOL_RESULT SystemMessage in the conversation."
                 f"{tool_result_guidance}"
             )
         )
