@@ -1,6 +1,6 @@
 app:
   host: "0.0.0.0"
-  port: "1112"
+  port: "1113"
   reload: true
   system_prompt: |
     THIS IS A NEW CONVERSATION (past converation info is above)
@@ -24,7 +24,7 @@ database:
 
 
 memory:
-  user_id: "ark-agent"        
+  user_id: "arkos-agent"        
   short_term_turns: 50
   long_term_limit: 5
   use_long_term: true

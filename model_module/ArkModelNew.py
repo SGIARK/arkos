@@ -64,6 +64,7 @@ class ArkModelLink(BaseModel):
     max_tokens: int = Field(default=4096)  # Increased from 1024 to handle complex structured outputs
     temperature: float = Field(default=0.7)
 
+
     # Use a property or method to initialize the client asynchronously if needed,
     # or just create it in the async method, as AsyncOpenAI handles the session.
     
@@ -93,6 +94,7 @@ class ArkModelLink(BaseModel):
         """
         
         # Convert custom Message objects into the format expected by the OpenAI API.
+
         openai_messages_payload = []
         for msg in messages:
             if isinstance(msg, UserMessage):

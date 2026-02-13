@@ -39,7 +39,9 @@ memory = Memory(
 # Default system prompt for the agent
 
 # ArkModelLink now uses AsyncOpenAI internally
-llm = ArkModelLink(base_url=config.get("llm.base_url"))
+llm = ArkModelLink(base_url=config.get("llm.base_url"), max_tokens=config.get("llm.max_tokens"))
+
+
 
 # Token store for per-user MCP authentication
 token_store = UserTokenStore(config.get("database.url"))
@@ -118,7 +120,7 @@ async def health_check():
         llm_status = "not_running"
 
     return JSONResponse(
-        content={"status": "ok", "llm_server": llm_status, "port": 1111}
+        content={"status": "ok", "llm_server": llm_status, "port": 1112}
     )
 
 
