@@ -62,6 +62,8 @@ class StateAI(State):
         has_tool_result = False
         if messages:
             last_msg = messages[-1]
+            if isinstance(last_msg, SystemMessage):
+                print(f"[StateAI] Last message is SystemMessage, content preview: {last_msg.content[:100]}")
             if (isinstance(last_msg, SystemMessage) and
                 last_msg.content and
                 last_msg.content.startswith("TOOL_RESULT from")):

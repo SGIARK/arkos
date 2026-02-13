@@ -150,11 +150,14 @@ Choose the most appropriate tool."""
         }
 
         # Build schema-driven args prompt
-        args_guidance = """Fill in the arguments for the tool '{tool_name}' based on the user's request.
+        from datetime import datetime
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        args_guidance = f"""Fill in the arguments for the tool '{{tool_name}}' based on the user's request.
 
 IMPORTANT FORMATTING GUIDELINES:
 - For date/time fields: Use ISO 8601 format (YYYY-MM-DDTHH:MM:SS)
-- For "today": Use current date with appropriate time bounds
+- Current date is {current_date}
+- For "today": Use {current_date} with appropriate time bounds (00:00:00 to 23:59:59)
 - Follow the schema requirements carefully"""
 
         # Add per-user service guidance dynamically
