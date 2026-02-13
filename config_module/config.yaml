@@ -16,7 +16,7 @@ app:
 llm:
   base_url: "http://localhost:30000/v1"
   model_name: "tgi"
-  max_tokens: 4096
+  max_tokens: 8192
   temperature: 0.7
 
 database:

@@ -129,12 +129,17 @@ async def chat_completions(request: Request):
     """OAI-compatible endpoint wrapping the full ArkOS agent."""
     payload = await request.json()
 
+    # Debug: print entire payload to verify user parameter
+    print(f"[app.py] Full payload keys: {list(payload.keys())}")
+    print(f"[app.py] Payload user field: {payload.get('user')}")
+
     messages = payload.get("messages", [])
     model = payload.get("model", "ark-agent")
     stream = payload.get("stream", False)
 
     # Extract user_id from header or body for per-user tool auth
     user_id = request.headers.get("X-User-ID") or payload.get("user") or payload.get("user_id")
+    print(f"[app.py] Extracted user_id: {user_id}")
 
     context_msgs = []
     context_msgs.append(SystemMessage(content=agent.system_prompt))

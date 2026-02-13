@@ -13,14 +13,15 @@ client = OpenAI(
 )
 
 
-def chat_stream(prompt: str):
+def chat_stream(prompt: str, user_id: str = "anonymous"):
     """Send a message and stream the response."""
     print("ARK: ", end="", flush=True)
 
     stream = client.chat.completions.create(
         model="ark-agent",
         messages=[{"role": "user", "content": prompt}],
-        stream=True
+        stream=True,
+        user=user_id  # Standard OpenAI parameter
     )
 
     full_response = ""
@@ -34,12 +35,13 @@ def chat_stream(prompt: str):
     return full_response
 
 
-def chat(prompt: str):
+def chat(prompt: str, user_id: str = "anonymous"):
     """Send a message and get full response (no streaming)."""
     response = client.chat.completions.create(
         model="ark-agent",
         messages=[{"role": "user", "content": prompt}],
-        stream=False
+        stream=False,
+        user=user_id  # Standard OpenAI parameter
     )
 
     message = response.choices[0].message.content
@@ -49,6 +51,15 @@ def chat(prompt: str):
 
 if __name__ == "__main__":
     print("ArkOS Chat Interface (type 'exit' to quit)")
+    print("-" * 40)
+
+    # Get user_id at startup (use email or unique identifier)
+    user_id = input("Enter your user ID (e.g., email): ").strip()
+    if not user_id:
+        user_id = "anonymous"
+        print(f"Using default user_id: {user_id}")
+    else:
+        print(f"Authenticated as: {user_id}")
     print("-" * 40)
 
     use_streaming = True  # Set to False to disable streaming
@@ -62,9 +73,9 @@ if __name__ == "__main__":
                 continue
 
             if use_streaming:
-                chat_stream(user_input)
+                chat_stream(user_input, user_id=user_id)
             else:
-                chat(user_input)
+                chat(user_input, user_id=user_id)
 
         except KeyboardInterrupt:
             print("\nGoodbye!")
