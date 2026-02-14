@@ -32,7 +32,13 @@ class AuthRequiredError(Exception):
         self.service = service
         self.user_id = user_id
         self.service_info = PER_USER_SERVICES.get(service, {})
-        self.connect_url = f"{self.service_info.get('auth_path', '/auth/connect')}?user_id={user_id}"
+
+        # Build full URL instead of relative path
+        from config_module.loader import config
+        port = config.get('app.port', '1112')
+        auth_path = self.service_info.get('auth_path', '/auth/connect')
+        self.connect_url = f"http://localhost:{port}{auth_path}?user_id={user_id}"
+
         self.message = message or f"Please connect {self.service_info.get('name', service)} to continue"
         super().__init__(self.message)
 

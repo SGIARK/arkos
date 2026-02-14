@@ -90,10 +90,13 @@ class StateTool(State):
         """
         Chooses tool to use based on the context and server
         """
+        import time
+        t0 = time.time()
         print(f"[StateTool] Phase 1: Choosing tool...")
 
         # Get all tools with descriptions
         all_tools = await agent.tool_manager.list_all_tools()
+        print(f"[StateTool] list_all_tools took {time.time() - t0:.2f}s")
         tool_descriptions = []
         for server_name, tools in all_tools.items():
             for tool_name, tool_spec in tools.items():
@@ -101,6 +104,8 @@ class StateTool(State):
                 tool_descriptions.append(f"- {tool_name}: {desc}")
 
         tools_list = "\n".join(tool_descriptions)
+        print(f"[StateTool] Built tool list with {len(tool_descriptions)} tools, {len(tools_list)} chars")
+
         prompt = f"""Based on the user request, choose the tool that best satisfies it.
 
 Available tools:
@@ -109,6 +114,7 @@ Available tools:
 Choose the most appropriate tool."""
 
         instructions = context + [SystemMessage(content=prompt)]
+        print(f"[StateTool] Total context: {len(context)} messages + prompt = {len(instructions)} messages")
 
         # Get Pydantic class and convert to JSON schema format
         tool_option_class = await agent.create_tool_option_class()
@@ -122,7 +128,10 @@ Choose the most appropriate tool."""
 
         # Call LLM and parse response
         try:
+            t1 = time.time()
+            print(f"[StateTool] Calling LLM for tool choice with context of {len(instructions)} messages...")
             output = await agent.call_llm(instructions, json_schema)
+            print(f"[StateTool] LLM call took {time.time() - t1:.2f}s")
             print(f"[StateTool] Tool choice output: {output.content[:100]}")
             structured_output = json.loads(output.content)
             tool_name = structured_output["tool_name"]
@@ -180,7 +189,10 @@ ACCOUNT PARAMETER:
 
         print(f"[StateTool] Context length for args: {len(args_context)} messages")
 
+        t2 = time.time()
+        print(f"[StateTool] Calling LLM for tool args...")
         args_output = await agent.call_llm(args_context, tool_args_schema)
+        print(f"[StateTool] Args LLM call took {time.time() - t2:.2f}s")
 
         # Handle None or empty response with retry
         if not args_output or not args_output.content:
