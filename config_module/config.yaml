@@ -1,6 +1,7 @@
 app:
   host: "0.0.0.0"
   port: "1113"
+  base_url: "http://ark.mit.edu:1113"
   reload: true
   system_prompt: |
     THIS IS A NEW CONVERSATION (past converation info is above)

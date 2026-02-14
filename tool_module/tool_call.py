@@ -35,9 +35,13 @@ class AuthRequiredError(Exception):
 
         # Build full URL instead of relative path
         from config_module.loader import config
-        port = config.get('app.port', '1112')
+        base_url = config.get('app.base_url')
+        if not base_url:
+            # Fallback to localhost if base_url not configured
+            port = config.get('app.port', '1112')
+            base_url = f"http://localhost:{port}"
         auth_path = self.service_info.get('auth_path', '/auth/connect')
-        self.connect_url = f"http://localhost:{port}{auth_path}?user_id={user_id}"
+        self.connect_url = f"{base_url}{auth_path}?user_id={user_id}"
 
         self.message = message or f"Please connect {self.service_info.get('name', service)} to continue"
         super().__init__(self.message)
