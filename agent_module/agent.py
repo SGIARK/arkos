@@ -159,7 +159,10 @@ class Agent:
 
 Available tools: {', '.join(tool_names)}
 
-IMPORTANT: If the user's request can be directly satisfied by calling a tool (e.g., listing calendars, searching, reading files), choose 'use_tool'. Only choose 'ask_user' if you need clarification or cannot proceed with available tools."""
+CRITICAL: If the user's request requires a tool (e.g., calendar events, search, file operations), ALWAYS choose 'use_tool'.
+- Tools handle authentication automatically - do NOT tell users to authenticate first
+- Do NOT manually generate auth URLs - the tool system handles that
+- Only choose 'ask_user' if you need to clarify what the user wants, not for technical issues"""
 
         prompt = f"""Given the conversation context and available state options {transition_tuples}, choose the most appropriate next state.{tool_guidance}
 
