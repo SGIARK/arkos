@@ -85,9 +85,13 @@ async def startup():
     system_prompt=None
 
     if tool_manager:
-        await tool_manager.initialize_servers()
+        print(f"[startup] Initializing MCP servers...")
+        try:
+            await tool_manager.initialize_servers()
+        except Exception as e:
+            print(f"[startup] ERROR during initialization: {e}")
 
-        print(f"Initialized {len(tool_manager.clients)} MCP servers")
+        print(f"[startup] Initialized {len(tool_manager.clients)} MCP servers")
         # Cache tools on agent
         agent.available_tools = await tool_manager.list_all_tools()
         print(f"Initialized {len(tool_manager.clients)} MCP servers")

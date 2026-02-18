@@ -51,6 +51,14 @@ class StdioTransport(MCPTransport):
         full_env = dict(os.environ)
         full_env.update(self.env)
 
+        # Ensure system paths are always present so subprocesses (like sh) can be found
+        system_paths = ["/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+        current_path = full_env.get("PATH", "")
+        for p in system_paths:
+            if p not in current_path:
+                current_path = current_path + ":" + p
+        full_env["PATH"] = current_path
+
         try:
             self.process = await asyncio.create_subprocess_exec(
                 self.command,
