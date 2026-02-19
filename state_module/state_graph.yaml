@@ -1,23 +1,28 @@
 
 
-initial: agent_reply
+initial: router
 
 states:
+  router:
+    description: "routing state - decides tool vs direct answer"
+    type: router
+    transition:
+      next: [agent_reply, use_tool]
+
   ask_user:
     description: "state used for input from user"
-    type: user 
+    type: user
     transition:
-      next: [agent_reply]
+      next: [router]
 
   agent_reply:
     description: "state used for your reasoning"
     type: agent
     transition:
-      next: [ask_user, use_tool]
+      next: [ask_user]
 
   use_tool:
     description: "state used for tool use"
     type: tool
-    transition: 
+    transition:
       next: [agent_reply]
-   

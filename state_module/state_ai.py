@@ -95,13 +95,10 @@ class StateAI(State):
 
         system = SystemMessage(
             content=(
-                "You are the agent reasoning state.\n"
-                "No tools are available in THIS state.\n"
-                "Never repeat yourself.\n"
-                "Produce a JSON object matching the provided schema.\n"
-                "Do not reveal chain-of-thought.\n"
-                "Use concise, high-level reasoning steps only.\n"
-                "IMPORTANT: Set has_tool_result=false unless you see a TOOL_RESULT SystemMessage in the conversation."
+                "You are the agent reasoning state. Respond with a JSON object matching the schema.\n"
+                "Set has_tool_result=false unless a TOOL_RESULT SystemMessage exists in the conversation.\n"
+                "NEVER fabricate tool results or external data (calendar events, search results, etc.).\n"
+                "If a TOOL_RESULT is present, extract and present that data in 'final'."
                 f"{tool_result_guidance}"
             )
         )

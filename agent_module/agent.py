@@ -295,7 +295,7 @@ Do not use tool results to determine the next state."""
 
         print(f"[TIMING] step total: {time.time() - step_start:.3f}s")
         print("LAST_AI_MSG", last_ai_message)
-        self.current_state = self.flow.get_state("agent_reply")
+        self.current_state = self.flow.get_initial_state()
         return last_ai_message
 
     async def step_stream(self, messages, user_id: str = None):
@@ -395,7 +395,7 @@ Do not use tool results to determine the next state."""
             print("agent.py [STREAM] No final message to stream")
 
         print("agent.py [STREAM] Complete")
-        self.current_state = self.flow.get_state("agent_reply")
+        self.current_state = self.flow.get_initial_state()
 
 
 if __name__ == "__main__":

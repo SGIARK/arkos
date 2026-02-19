@@ -101,6 +101,9 @@ class StateTool(State):
         for server_name, tools in all_tools.items():
             for tool_name, tool_spec in tools.items():
                 desc = tool_spec.get('description', 'No description')
+                # Truncate long descriptions to keep prompt small
+                if len(desc) > 80:
+                    desc = desc[:80] + "..."
                 tool_descriptions.append(f"- {tool_name}: {desc}")
 
         tools_list = "\n".join(tool_descriptions)
