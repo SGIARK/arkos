@@ -193,7 +193,8 @@ ACCOUNT PARAMETER:
         # Use only the most recent user message for args - full history causes slow/truncated LLM output
         from model_module.ArkModelNew import UserMessage
         recent_user_msgs = [m for m in context if isinstance(m, UserMessage)]
-        args_context = recent_user_msgs[-1:] + [SystemMessage(content=args_prompt)] if recent_user_msgs else context[-1:] + [SystemMessage(content=args_prompt)]
+        json_only = SystemMessage(content="Output ONLY a valid JSON object. No explanation, no prose, no markdown. Just the JSON.")
+        args_context = recent_user_msgs[-1:] + [json_only, SystemMessage(content=args_prompt)] if recent_user_msgs else context[-1:] + [json_only, SystemMessage(content=args_prompt)]
 
         print(f"[StateTool] Context length for args: {len(args_context)} messages")
 
