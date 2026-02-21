@@ -77,6 +77,8 @@ class StateTool(State):
                 # For date/time fields, use current time
                 from datetime import datetime
                 defaults[field_name] = datetime.now().strftime("%Y-%m-%dT00:00:00")
+            elif field_name in ["calendarId", "calendar_id"]:
+                defaults[field_name] = "primary"
             elif field_type == "string":
                 defaults[field_name] = field_spec.get("default", "")
             elif field_type == "boolean":
@@ -188,7 +190,10 @@ ACCOUNT PARAMETER:
                 print(f"[StateTool] Available accounts for {server_name}: {available_accounts}")
 
         args_prompt = args_guidance.format(tool_name=tool_name)
-        args_context = context + [SystemMessage(content=args_prompt)]
+        # Use only the most recent user message for args - full history causes slow/truncated LLM output
+        from model_module.ArkModelNew import UserMessage
+        recent_user_msgs = [m for m in context if isinstance(m, UserMessage)]
+        args_context = recent_user_msgs[-1:] + [SystemMessage(content=args_prompt)] if recent_user_msgs else context[-1:] + [SystemMessage(content=args_prompt)]
 
         print(f"[StateTool] Context length for args: {len(args_context)} messages")
 
