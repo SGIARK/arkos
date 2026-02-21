@@ -160,9 +160,10 @@ class Agent:
 Available tools: {', '.join(tool_names)}
 
 CRITICAL: If the user's request requires a tool (e.g., calendar events, search, file operations), ALWAYS choose 'use_tool'.
+- If the user says "try again", "check again", "look again", or similar retry phrases, ALWAYS choose 'use_tool'
 - Tools handle authentication automatically - do NOT tell users to authenticate first
 - Do NOT manually generate auth URLs - the tool system handles that
-- Only choose 'ask_user' if you need to clarify what the user wants, not for technical issues"""
+- Only choose 'agent_reply' if the request is purely conversational and needs NO external data"""
 
         prompt = f"""Given the conversation context and available state options {transition_tuples}, choose the most appropriate next state.{tool_guidance}
 
