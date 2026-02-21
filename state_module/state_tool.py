@@ -165,7 +165,12 @@ Choose the most appropriate tool."""
 
         # Build schema-driven args prompt
         from datetime import datetime
-        current_date = datetime.now().strftime("%Y-%m-%d")
+        try:
+            from zoneinfo import ZoneInfo
+            current_date = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        except Exception:
+            from datetime import timezone, timedelta
+            current_date = datetime.now(timezone(timedelta(hours=-5))).strftime("%Y-%m-%d")
         args_guidance = f"""Fill in the arguments for the tool '{{tool_name}}' based on the user's request.
 
 IMPORTANT FORMATTING GUIDELINES:
