@@ -8,8 +8,7 @@ from config_module.loader import config
 
 # Point to your running ArkOS agent
 client = OpenAI(
-    base_url=f"http://localhost:{config.get('app.port')}/v1",
-    api_key="not-needed"
+    base_url=f"http://localhost:{config.get('app.port')}/v1", api_key="not-needed"
 )
 
 
@@ -21,7 +20,7 @@ def chat_stream(prompt: str, user_id: str = "anonymous"):
         model="ark-agent",
         messages=[{"role": "user", "content": prompt}],
         stream=True,
-        user=user_id  # Standard OpenAI parameter
+        user=user_id,  # Standard OpenAI parameter
     )
 
     full_response = ""
@@ -41,7 +40,7 @@ def chat(prompt: str, user_id: str = "anonymous"):
         model="ark-agent",
         messages=[{"role": "user", "content": prompt}],
         stream=False,
-        user=user_id  # Standard OpenAI parameter
+        user=user_id,  # Standard OpenAI parameter
     )
 
     message = response.choices[0].message.content
@@ -53,13 +52,8 @@ if __name__ == "__main__":
     print("ArkOS Chat Interface (type 'exit' to quit)")
     print("-" * 40)
 
-    # Get user_id at startup (use email or unique identifier)
-    user_id = input("Enter your user ID (e.g., email): ").strip()
-    if not user_id:
-        user_id = "anonymous"
-        print(f"Using default user_id: {user_id}")
-    else:
-        print(f"Authenticated as: {user_id}")
+    user_id = config.get("app.user_id") or "anonymous"
+    print(f"Authenticated as: {user_id}")
     print("-" * 40)
 
     use_streaming = True  # Set to False to disable streaming

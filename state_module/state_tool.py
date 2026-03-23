@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from model_module.ArkModelNew import SystemMessage, UserMessage
-from tool_module.tool_call import AuthRequiredError, PER_USER_SERVICES
+from tool_module.tool_call import AuthRequiredError
 
 from state_module.state import State
 from state_module.state_registry import register_state
@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 def _get_eastern_date() -> str:
     try:
         from zoneinfo import ZoneInfo
+
         return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
     except Exception:
         return datetime.now(timezone(timedelta(hours=-5))).strftime("%Y-%m-%d")
@@ -34,22 +35,9 @@ class StateTool(State):
     def check_transition_ready(self, context):
         return True
 
-    async def _get_available_accounts(self, server_name: str, agent) -> list:
-        """Return list of authenticated account IDs for a per-user service."""
-        try:
-            if server_name not in PER_USER_SERVICES:
-                return []
-            if not agent.current_user_id:
-                return []
-            client = await agent.tool_manager._get_user_client(agent.current_user_id, server_name)
-            if not client:
-                return []
-            return ["normal"]
-        except Exception as e:
-            logger.error("Failed to get accounts for %s: %s", server_name, e)
-            return []
-
-    async def _get_schema_defaults(self, input_schema: dict, agent) -> dict:
+    async def _get_schema_defaults(
+        self, input_schema: dict, arg_hints: dict = {}
+    ) -> dict:
         """Generate minimal valid args from JSON schema required fields."""
         if not input_schema or "properties" not in input_schema:
             return {}
@@ -64,10 +52,8 @@ class StateTool(State):
 
             field_type = field_spec.get("type", "string")
 
-            if field_name in ["account", "account_id"]:
-                defaults[field_name] = "normal"
-            elif field_name in ["calendarId", "calendar_id"]:
-                defaults[field_name] = "primary"
+            if field_name in arg_hints:
+                defaults[field_name] = arg_hints[field_name]
             elif "time" in field_name.lower() or "date" in field_name.lower():
                 defaults[field_name] = datetime.now().strftime("%Y-%m-%dT00:00:00")
             elif field_type == "string":
@@ -114,7 +100,11 @@ Choose the most appropriate tool."""
             tool_name = structured_output["tool_name"]
             logger.info("Selected tool: %s", tool_name)
         except json.JSONDecodeError as e:
-            logger.error("Tool selection JSON error: %s\nOutput: %s", e, output.content if output else "None")
+            logger.error(
+                "Tool selection JSON error: %s\nOutput: %s",
+                e,
+                output.content if output else "None",
+            )
             raise
 
         server_name = agent.tool_manager._tool_registry[tool_name]
@@ -138,21 +128,16 @@ IMPORTANT FORMATTING GUIDELINES:
 - For "today": Use {current_date} with appropriate time bounds (00:00:00 to 23:59:59)
 - Follow the schema requirements carefully"""
 
-        server_name = agent.tool_manager._tool_registry.get(tool_name)
-        if server_name and server_name in PER_USER_SERVICES:
-            available_accounts = await self._get_available_accounts(server_name, agent)
-            if available_accounts:
-                account_list = ", ".join(f'"{acc}"' for acc in available_accounts)
-                args_guidance += f"""
-
-ACCOUNT PARAMETER:
-- Available accounts for this service: {account_list}
-- Use one of these account IDs when required
-- Do NOT make up account IDs"""
-
+        server_config = agent.tool_manager.config.get(server_name, {})
+        arg_hints = server_config.get("arg_hints", {})
+        if arg_hints:
+            hints_text = "\n".join(f'- {k}: use "{v}"' for k, v in arg_hints.items())
+            args_guidance += f"\n\nDEFAULT PARAMETER VALUES:\n{hints_text}"
         args_prompt = args_guidance.format(tool_name=tool_name)
         recent_user_msgs = [m for m in context if isinstance(m, UserMessage)]
-        json_only = SystemMessage(content="Output ONLY a valid JSON object. No explanation, no prose, no markdown. Just the JSON.")
+        json_only = SystemMessage(
+            content="Output ONLY a valid JSON object. No explanation, no prose, no markdown. Just the JSON."
+        )
         args_context = (
             recent_user_msgs[-1:] + [json_only, SystemMessage(content=args_prompt)]
             if recent_user_msgs
@@ -171,8 +156,15 @@ ACCOUNT PARAMETER:
         try:
             tool_args = json.loads(args_output.content)
         except json.JSONDecodeError as e:
-            logger.warning("Invalid JSON for tool args (%s), falling back to schema defaults", e)
-            tool_args = await self._get_schema_defaults(tool_spec.get("inputSchema", {}), agent)
+            logger.warning(
+                "Invalid JSON for tool args (%s), falling back to schema defaults", e
+            )
+            server_config = agent.tool_manager.config.get(server_name, {})
+            arg_hints = server_config.get("arg_hints", {})
+            tool_args = await self._get_schema_defaults(
+                tool_spec.get("inputSchema", {}), arg_hints
+            )
+
             if not tool_args:
                 raise ValueError(f"Failed to generate valid arguments for {tool_name}")
 
@@ -195,30 +187,12 @@ ACCOUNT PARAMETER:
 
             tool_name = tool_arg_dict.get("tool_name", "unknown")
 
-            # Unwrap MCP content format: {"content": [{"type": "text", "text": "..."}]}
-            if isinstance(tool_result, dict) and "content" in tool_result:
-                content_items = tool_result.get("content", [])
-                if content_items and isinstance(content_items, list):
-                    first_item = content_items[0]
-                    if isinstance(first_item, dict) and "text" in first_item:
-                        actual_data = first_item["text"]
-                        try:
-                            parsed = json.loads(actual_data)
-                            formatted_result = f"TOOL_RESULT from '{tool_name}':\n{json.dumps(parsed, indent=2)}"
-                        except Exception:
-                            formatted_result = f"TOOL_RESULT from '{tool_name}':\n{actual_data}"
-                    else:
-                        formatted_result = f"TOOL_RESULT from '{tool_name}':\n{json.dumps(tool_result, indent=2)}"
-                else:
-                    formatted_result = f"TOOL_RESULT from '{tool_name}':\n{json.dumps(tool_result, indent=2)}"
-            else:
-                formatted_result = f"TOOL_RESULT from '{tool_name}':\n{json.dumps(tool_result, indent=2)}"
-
+            formatted_result = f"TOOL_RESULT from '{tool_name}':\n{tool_result}"
             return SystemMessage(content=formatted_result)
 
         except AuthRequiredError as e:
             return SystemMessage(
                 content=f"To complete this request, please connect your {e.service_info.get('name', e.service)}:\n\n"
-                        f"👉 {e.connect_url}\n\n"
-                        f"After connecting, try your request again."
+                f"👉 {e.connect_url}\n\n"
+                f"After connecting, try your request again."
             )

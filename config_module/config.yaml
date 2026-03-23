@@ -3,6 +3,7 @@ app:
   port: "1113"
   base_url: "http://ark.mit.edu:1113"
   reload: true
+  user_id: "${USER}"
   system_prompt: |
     THIS IS A NEW CONVERSATION (past converation info is above)
 
@@ -51,6 +52,9 @@ mcp_servers:
     args: ["-y", "@cocal/google-calendar-mcp"]
     env:
       GOOGLE_OAUTH_CREDENTIALS: "${GOOGLE_OAUTH_CREDENTIALS}"
+    arg_hints:
+      account: "normal"
+      calendarId: "primary"
 
   # filesystem:
   #   transport: stdio
