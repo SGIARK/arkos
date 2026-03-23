@@ -100,8 +100,8 @@ class TestToolResultDetection:
 
         result = await state.run(context, mock_agent)
 
-        # Should NOT detect tool result (not the last message)
-        assert result is not None
+        assert isinstance(result, AIMessage)
+        assert "Test response" in result.content
 
 
 class TestOverrideLogic:
@@ -171,6 +171,7 @@ class TestResponseFormatting:
 
         assert isinstance(result, AIMessage)
         assert "Final answer" in result.content
+        assert "Step 1" in result.content or "Step 2" in result.content
 
     @pytest.mark.asyncio
     async def test_hide_bullets_with_tool_result(self, mock_agent):

@@ -1,11 +1,10 @@
 """
 Unit tests for StateTool (tool selection and execution)
-Tests the specific issues we've been debugging with tool calling.
 """
 
 import pytest
 import json
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import Mock, AsyncMock
 from model_module.ArkModelNew import AIMessage, SystemMessage, UserMessage
 from state_module.state_tool import StateTool
 
@@ -20,6 +19,7 @@ def mock_agent():
         "list-events": "google-calendar",
         "list-calendars": "google-calendar"
     }
+    agent.tool_manager.config = {}
 
     # Mock list_all_tools
     agent.tool_manager.list_all_tools = AsyncMock(return_value={
@@ -41,10 +41,10 @@ def mock_agent():
         }
     })
 
-    # Mock call_tool
-    agent.tool_manager.call_tool = AsyncMock(return_value={
-        "events": [{"summary": "Test Event"}]
-    })
+    # call_tool returns plain text (MCP unwrapping happens inside call_tool)
+    agent.tool_manager.call_tool = AsyncMock(
+        return_value='{"events": [{"summary": "Test Event"}]}'
+    )
 
     return agent
 
@@ -73,14 +73,6 @@ def mock_llm_valid():
 
 
 @pytest.fixture
-def mock_llm_none():
-    """Mock LLM that returns None"""
-    async def call_llm(context, json_schema=None):
-        return None
-    return call_llm
-
-
-@pytest.fixture
 def mock_llm_malformed():
     """Mock LLM that returns malformed JSON"""
     async def call_llm(context, json_schema=None):
@@ -91,10 +83,14 @@ def mock_llm_malformed():
 
 @pytest.fixture
 def mock_llm_truncated():
-    """Mock LLM that returns truncated JSON"""
+    """Mock LLM that returns truncated JSON for tool args"""
     async def call_llm(context, json_schema=None):
-        # Simulates token limit truncation
+        schema_name = (json_schema or {}).get('json_schema', {}).get('name', '')
+        if schema_name == 'tool_choice':
+            return AIMessage(content='{"tool_name": "list-events"}')
+        # Simulates token limit truncation in args generation
         return AIMessage(content='{"account": "normal", "timeMin": "2026-02-09T00:')
+
     return call_llm
 
 
@@ -136,8 +132,6 @@ class TestToolSelection:
         result = await state.choose_tool(context, mock_agent)
 
         assert result["tool_name"] == "list-events"
-        # Verify full context was passed (not truncated to 2 messages)
-        assert mock_agent.call_llm.call_count > 0
 
     @pytest.mark.asyncio
     async def test_choose_tool_malformed_json(self, mock_agent, mock_llm_malformed):
@@ -187,37 +181,51 @@ class TestToolArgGeneration:
         assert "timeMax" in result["tool_args"]
 
     @pytest.mark.asyncio
-    async def test_args_with_calendar_guidance(self, mock_agent, mock_llm_valid):
-        """Test that calendar tools get account guidance"""
-        mock_agent.call_llm = mock_llm_valid
+    async def test_args_with_config_hints(self, mock_agent):
+        """Test that arg_hints from config appear in the prompt sent to the LLM"""
+        captured_contexts = []
+
+        async def capturing_llm(context, json_schema=None):
+            captured_contexts.append(context)
+            schema_name = (json_schema or {}).get('json_schema', {}).get('name', '')
+            if schema_name == 'tool_choice':
+                return AIMessage(content='{"tool_name": "list-events"}')
+            return AIMessage(content='{"account": "normal", "calendarId": "primary"}')
+
+        mock_agent.call_llm = capturing_llm
         mock_agent.create_tool_option_class = AsyncMock(
             return_value=self._create_tool_enum()
         )
+        mock_agent.tool_manager.config = {
+            "google-calendar": {"arg_hints": {"account": "normal", "calendarId": "primary"}}
+        }
 
         state = StateTool("use_tool", {"type": "tool"})
-        context = [UserMessage(content="list calendars")]
+        context = [UserMessage(content="list my events")]
 
-        result = await state.choose_tool(context, mock_agent)
+        await state.choose_tool(context, mock_agent)
 
-        # Verify calendar guidance was applied
-        # (Check that call_llm was called with guidance in prompt)
-        call_args = mock_agent.call_llm.call_args_list
-        assert len(call_args) > 0
+        # Verify hint values (not just key names) appeared in the args prompt
+        all_content = " ".join(
+            msg.content for ctx in captured_contexts for msg in ctx
+            if hasattr(msg, "content")
+        )
+        assert 'use "normal"' in all_content
+        assert 'use "primary"' in all_content
 
     @pytest.mark.asyncio
     async def test_args_none_response_retry(self, mock_agent):
-        """Test retry logic when LLM returns None"""
-        # First call returns None, second call returns valid
-        call_count = [0]
+        """Test retry logic when args LLM call returns None"""
+        args_call_count = [0]
 
         async def mock_call_llm_with_retry(context, json_schema=None):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return None  # First call returns None
-            elif json_schema and json_schema.get('json_schema', {}).get('name') == 'tool_choice':
+            schema_name = (json_schema or {}).get('json_schema', {}).get('name', '')
+            if schema_name == 'tool_choice':
                 return AIMessage(content='{"tool_name": "list-events"}')
-            else:
-                return AIMessage(content='{"account": "normal"}')
+            args_call_count[0] += 1
+            if args_call_count[0] == 1:
+                return None  # First args call returns None, triggering retry
+            return AIMessage(content='{"account": "normal"}')
 
         mock_agent.call_llm = mock_call_llm_with_retry
         mock_agent.create_tool_option_class = AsyncMock(
@@ -229,13 +237,12 @@ class TestToolArgGeneration:
 
         result = await state.choose_tool(context, mock_agent)
 
-        # Should succeed after retry
         assert result["tool_name"] == "list-events"
-        assert call_count[0] >= 2  # Verify retry happened
+        assert args_call_count[0] >= 2  # Verify retry happened
 
     @pytest.mark.asyncio
     async def test_args_truncated_fallback(self, mock_agent, mock_llm_truncated):
-        """Test fallback defaults when JSON is truncated"""
+        """Test fallback to schema defaults when args JSON is truncated"""
         mock_agent.call_llm = mock_llm_truncated
         mock_agent.create_tool_option_class = AsyncMock(
             return_value=self._create_tool_enum()
@@ -246,9 +253,8 @@ class TestToolArgGeneration:
 
         result = await state.choose_tool(context, mock_agent)
 
-        # Should fall back to defaults for list-events
         assert result["tool_name"] == "list-events"
-        # Note: Fallback logic applies after arg generation fails
+        assert "tool_args" in result
 
     def _create_tool_enum(self):
         """Helper to create mock tool enum"""
@@ -312,41 +318,27 @@ class TestToolExecution:
         )
 
 
-class TestMCPResponseFormatting:
-    """Tests for MCP response format extraction"""
+class TestMCPTextExtraction:
+    """Tests for MCPToolManager._extract_mcp_text"""
 
-    @pytest.mark.asyncio
-    async def test_extract_mcp_content(self, mock_agent, mock_llm_valid):
-        """Test extraction of actual data from MCP wrapper"""
-        mock_agent.call_llm = mock_llm_valid
-        mock_agent.create_tool_option_class = AsyncMock(
-            return_value=self._create_tool_enum()
-        )
-
-        # Mock tool manager to return MCP format
-        mock_agent.tool_manager.call_tool = AsyncMock(return_value={
-            "content": [{
-                "type": "text",
-                "text": '{"events": [{"summary": "Test"}]}'
-            }]
+    def test_extracts_text_from_mcp_format(self):
+        from tool_module.tool_call import MCPToolManager
+        result = MCPToolManager._extract_mcp_text({
+            "content": [{"type": "text", "text": '{"events": []}'}]
         })
+        assert result == '{"events": []}'
 
-        state = StateTool("use_tool", {"type": "tool"})
-        context = [UserMessage(content="show my events")]
+    def test_falls_back_to_json_dumps_for_unknown_format(self):
+        from tool_module.tool_call import MCPToolManager
+        result = MCPToolManager._extract_mcp_text({"some": "data"})
+        assert json.loads(result) == {"some": "data"}
 
-        result = await state.run(context, mock_agent)
+    def test_falls_back_when_content_list_is_empty(self):
+        from tool_module.tool_call import MCPToolManager
+        result = MCPToolManager._extract_mcp_text({"content": []})
+        assert json.loads(result) == {"content": []}
 
-        # Should extract the inner JSON, not the MCP wrapper
-        assert "TOOL_RESULT" in result.content
-        assert '"events"' in result.content  # Actual data extracted
-
-    def _create_tool_enum(self):
-        """Helper to create mock tool enum"""
-        from pydantic import create_model, Field
-        from enum import Enum
-
-        ToolEnum = Enum("ToolEnum", {"list-events": "list-events"})
-        return create_model(
-            "ToolCall",
-            tool_name=(ToolEnum, Field(description="Tool name"))
-        )
+    def test_falls_back_when_no_text_key(self):
+        from tool_module.tool_call import MCPToolManager
+        result = MCPToolManager._extract_mcp_text({"content": [{"type": "image"}]})
+        assert json.loads(result) == {"content": [{"type": "image"}]}
