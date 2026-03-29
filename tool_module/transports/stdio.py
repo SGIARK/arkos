@@ -42,6 +42,7 @@ class StdioTransport(MCPTransport):
         self.process: Optional[asyncio.subprocess.Process] = None
         self.request_id = 0
         self._lock = Lock()
+        self._stderr_task: Optional[asyncio.Task] = None
 
     async def connect(self) -> None:
         """Start the MCP server subprocess."""
@@ -70,11 +71,16 @@ class StdioTransport(MCPTransport):
             )
             logger.info("STDIO subprocess started successfully")
 
+            # Start background stderr reader so we can see server output in real-time
+            self._stderr_task = asyncio.create_task(self._read_stderr())
+
         except Exception as e:
             logger.error(f"Failed to start STDIO subprocess: {e}")
             raise RuntimeError(f"STDIO transport connection failed: {e}")
 
-    async def send_request(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def send_request(
+        self, method: str, params: Dict[str, Any], timeout: float = 30.0
+    ) -> Dict[str, Any]:
         """Send JSON-RPC request via stdin and read response from stdout."""
         if not self.process:
             raise RuntimeError("STDIO transport not connected")
@@ -94,20 +100,19 @@ class StdioTransport(MCPTransport):
         self.process.stdin.write(request_line.encode())
         await self.process.stdin.drain()
 
-        # Read response from stdout
-        response_line = await self.process.stdout.readline()
+        # Read response from stdout with timeout to prevent hanging
+        try:
+            response_line = await asyncio.wait_for(
+                self.process.stdout.readline(), timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            raise RuntimeError(
+                f"STDIO server timed out after {timeout}s waiting for response to '{method}'. "
+                "Check server stderr logs above for details (e.g. OAuth callback URL)."
+            )
+
         if not response_line:
-            # Capture stderr to show actual error
-            stderr_output = ""
-            if self.process.stderr:
-                try:
-                    stderr_output = (await self.process.stderr.read()).decode()
-                except Exception:
-                    pass
-            error_msg = "STDIO server closed connection"
-            if stderr_output:
-                error_msg += f"\nServer stderr: {stderr_output}"
-            raise RuntimeError(error_msg)
+            raise RuntimeError("STDIO server closed connection unexpectedly")
 
         response = json.loads(response_line.decode())
         logger.debug(f"STDIO << {json.dumps(response)}")
@@ -127,8 +132,22 @@ class StdioTransport(MCPTransport):
         self.process.stdin.write(notification_line.encode())
         await self.process.stdin.drain()
 
+    async def _read_stderr(self) -> None:
+        """Continuously read and log stderr from the subprocess."""
+        try:
+            while self.process and self.process.stderr:
+                line = await self.process.stderr.readline()
+                if not line:
+                    break
+                logger.warning(f"[{self.command}] stderr: {line.decode().rstrip()}")
+        except Exception:
+            pass
+
     async def close(self) -> None:
         """Terminate the subprocess gracefully."""
+        if self._stderr_task:
+            self._stderr_task.cancel()
+            self._stderr_task = None
         if self.process:
             logger.info("Stopping STDIO subprocess")
             try:

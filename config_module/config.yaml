@@ -1,7 +1,6 @@
 app:
   host: "0.0.0.0"
   port: "1113"
-  base_url: "http://ark.mit.edu:1113"
   reload: true
   user_id: "${USER}"
   system_prompt: |
@@ -56,6 +55,19 @@ mcp_servers:
       account: "normal"
       calendarId: "primary"
 
+
+
+  notion:
+    transport: stdio
+    command: "npx"
+    args: ["-y", "mcp-remote", "https://mcp.notion.com/mcp"]
+    
+    
+      
+  filesystem:
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 
 
 
