@@ -113,6 +113,26 @@ You need to create a .env and set DB_URL before starting the application
    DB_URL=postgresql://postgres:your-super-secret-and-long-postgres-password@localhost:54322/postgres
    ```
    
+### Google Calendar Setup
+
+To enable Google Calendar for a user:
+
+1. Add the following to `.env` on the server (both credential files must come from the same Google Cloud project):
+   ```
+   GOOGLE_OAUTH_CREDENTIALS=/path/to/google_credentials.json
+   GOOGLE_MCP_CREDENTIALS=/path/to/google_credentials_mcp.json
+   ```
+   The first is a web application credential, the second is a desktop/installed application credential.
+
+2. Add the user's email as a Test User in Google Cloud Console under OAuth consent screen > Test Users.
+
+3. Have the user make any calendar request. The agent will reply with an auth link:
+   ```
+   http://ark.mit.edu:1114/auth/connect?user_id=nmorgan@mit.edu
+   ```
+
+4. The user clicks the link, signs in with Google, and their token is saved. All future calendar requests work automatically.
+
 ### Running the Application
 
 You need to run both the API server and the test interface:
