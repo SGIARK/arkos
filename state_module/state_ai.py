@@ -11,7 +11,6 @@ from model_module.ArkModelNew import UserMessage, AIMessage, SystemMessage
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from state_module.state import State
-from state_module.result_formatters import format_tool_result
 from state_module.state_registry import register_state
 
 logger = logging.getLogger(__name__)
@@ -106,15 +105,7 @@ class StateAI(State):
             if response_parts:
                 response_parts.append("")
 
-            final_content = data.final
-            if final_content.strip().startswith('{"') or final_content.strip().startswith("{\\"):
-                try:
-                    parsed = json.loads(final_content)
-                    final_content = format_tool_result(parsed)
-                except Exception:
-                    pass
-
-            response_parts.append(final_content)
+            response_parts.append(data.final)
 
         if data.needs_clarification and data.clarifying_question:
             response_parts.append("")

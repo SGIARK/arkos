@@ -79,7 +79,7 @@ class StateTool(State):
         prompt = f"""Based on the user request, choose the tool that best satisfies it.
 
 Available tools:
-{chr(10).join(tool_descriptions)}
+{"\n".join(tool_descriptions)}
 
 Choose the most appropriate tool."""
 
@@ -108,7 +108,6 @@ Choose the most appropriate tool."""
             raise
 
         server_name = agent.tool_manager._tool_registry[tool_name]
-        all_tools = await agent.tool_manager.list_all_tools()
         tool_spec = all_tools[server_name][tool_name]
 
         tool_args_schema = {
@@ -159,8 +158,6 @@ IMPORTANT FORMATTING GUIDELINES:
             logger.warning(
                 "Invalid JSON for tool args (%s), falling back to schema defaults", e
             )
-            server_config = agent.tool_manager.config.get(server_name, {})
-            arg_hints = server_config.get("arg_hints", {})
             tool_args = await self._get_schema_defaults(
                 tool_spec.get("inputSchema", {}), arg_hints
             )
