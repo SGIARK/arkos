@@ -72,8 +72,6 @@ class StateTool(State):
         for server_name, tools in all_tools.items():
             for tool_name, tool_spec in tools.items():
                 desc = tool_spec.get("description", "No description")
-                if len(desc) > 80:
-                    desc = desc[:80] + "..."
                 tool_descriptions.append(f"- {tool_name}: {desc}")
 
         prompt = f"""Based on the user request, choose the tool that best satisfies it.
