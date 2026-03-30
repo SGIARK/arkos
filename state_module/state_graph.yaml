@@ -1,23 +1,21 @@
-
-
 initial: agent_reply
+entry_transitions: [agent_reply, use_tool]
 
 states:
   ask_user:
     description: "state used for input from user"
-    type: user 
+    type: user
     transition:
-      next: [agent_reply]
+      next: [agent_reply, use_tool]
 
   agent_reply:
     description: "state used for your reasoning"
     type: agent
     transition:
-      next: [ask_user, use_tool]
+      next: [ask_user]
 
   use_tool:
     description: "state used for tool use"
     type: tool
-    transition: 
+    transition:
       next: [agent_reply]
-   

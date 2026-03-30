@@ -21,3 +21,10 @@
 
 # cursor
 .cursor/*
+
+# logs and test artifacts
+*.log
+venv/
+test_*.py
+mock_*.py
+start_server.sh

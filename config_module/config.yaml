@@ -2,8 +2,9 @@ app:
   host: "0.0.0.0"
   port: "1113"
   reload: true
+  user_id: "${USER}"
   system_prompt: |
-    THIS IS A NEW CONVERSATION (past converation info is above)
+    THIS IS A NEW CONVERSATION (past conversation info is above)
 
     You are ARK, a helpful assistant with memory
 
@@ -16,7 +17,7 @@ app:
 llm:
   base_url: "http://localhost:30000/v1"
   model_name: "tgi"
-  max_tokens: 40000
+  max_tokens: 8192
   temperature: 0.7
 
 database:
@@ -40,7 +41,7 @@ mcp_servers:
   brave-search:
     transport: stdio
     command: npx
-    args: ["-y", "@brave/brave-search-mcp-server", "--transport", "stdio"]#   
+    args: ["-y", "@brave/brave-search-mcp-server", "--transport", "stdio"]
     env:
       BRAVE_API_KEY: "${BRAVE_API_KEY}"
 
@@ -50,7 +51,19 @@ mcp_servers:
     args: ["-y", "@cocal/google-calendar-mcp"]
     env:
       GOOGLE_OAUTH_CREDENTIALS: "${GOOGLE_OAUTH_CREDENTIALS}"
+    arg_hints:
+      account: "normal"
+      calendarId: "primary"
 
+
+
+  notion:
+    transport: stdio
+    command: "npx"
+    args: ["-y", "mcp-remote", "https://mcp.notion.com/mcp"]
+    
+    
+      
   filesystem:
     transport: stdio
     command: npx

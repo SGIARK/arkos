@@ -40,5 +40,10 @@ class StateHandler:
 
         return {"td": transition_descs, "tt": transition_targets}
 
+    def get_entry_transitions(self):
+        targets = self.graph.get("entry_transitions", [self.initial_state_name])
+        descs = [(t, getattr(self.states[t], "description", None)) for t in targets]
+        return {"tt": targets, "td": descs}
+
     def get_state(self, state_name: str) -> State:
         return self.states[state_name]

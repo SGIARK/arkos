@@ -57,7 +57,7 @@ class ArkModelLink(BaseModel):
 
     model_name: str = Field(default="tgi")
     base_url: str = Field(default="http://0.0.0.0:30000/v1")
-    max_tokens: int = Field(default=1024)
+    max_tokens: int = Field(default=4096)  # Increased from 1024 to handle complex structured outputs
     temperature: float = Field(default=0.7)
 
     # Use a property or method to initialize the client asynchronously if needed,

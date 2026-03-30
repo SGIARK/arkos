@@ -10,6 +10,7 @@ import logging
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
 from pathlib import Path
+import json
 
 from .transports import MCPTransport, StdioTransport, HTTPTransport
 
@@ -32,9 +33,18 @@ class AuthRequiredError(Exception):
         self.service = service
         self.user_id = user_id
         self.service_info = PER_USER_SERVICES.get(service, {})
-        self.connect_url = (
-            f"{self.service_info.get('auth_path', '/auth/connect')}?user_id={user_id}"
-        )
+
+        # Build full URL instead of relative path
+        from config_module.loader import config
+
+        base_url = config.get("app.base_url")
+        if not base_url:
+            # Fallback to localhost if base_url not configured
+            port = config.get("app.port", "1112")
+            base_url = f"http://localhost:{port}"
+        auth_path = self.service_info.get("auth_path", "/auth/connect")
+        self.connect_url = f"{base_url}{auth_path}?user_id={user_id}"
+
         self.message = (
             message
             or f"Please connect {self.service_info.get('name', service)} to continue"
@@ -242,6 +252,9 @@ class MCPToolManager:
         self.clients: Dict[str, MCPClient] = {}
         self.user_clients: Dict[str, Dict[str, MCPClient]] = {}
         self._tool_registry: Dict[str, str] = {}  # tool_name -> server_name
+        self._per_user_tools: Dict[
+            str, Dict[str, Any]
+        ] = {}  # server_name -> {tool_name: tool_spec}
         self._user_token_dir = Path.home() / ".arkos" / "user_tokens"
 
     def _create_transport(self, server_config: Dict[str, Any]) -> MCPTransport:
@@ -294,14 +307,17 @@ class MCPToolManager:
         logger.info(f"Initializing {len(self.config)} MCP servers")
 
         for server_name, server_config in self.config.items():
-            # Skip per-user services during agent-level init
+            # Discover tools from per-user services without keeping connection
             if server_name in PER_USER_SERVICES:
-                logger.info(
-                    f"Skipping per-user service '{server_name}' (will init per-user)"
-                )
-                # Register placeholder so we know this service exists
+                logger.info(f"Discovering tools from per-user service '{server_name}'")
                 self._per_user_configs = getattr(self, "_per_user_configs", {})
                 self._per_user_configs[server_name] = server_config
+                try:
+                    await self._discover_per_user_tools(server_name, server_config)
+                except Exception as e:
+                    logger.warning(
+                        f"Could not discover tools from '{server_name}': {e}"
+                    )
                 continue
 
             try:
@@ -344,6 +360,46 @@ class MCPToolManager:
             f"{len(getattr(self, '_per_user_configs', {}))} per-user services"
         )
 
+    async def _discover_per_user_tools(
+        self, server_name: str, server_config: dict
+    ) -> None:
+        """Discover tools from a per-user service by starting a temporary client."""
+        env = os.environ.copy()
+        if server_config.get("env"):
+            env.update(server_config.get("env"))
+
+        transport = StdioTransport(
+            command=server_config["command"],
+            args=server_config["args"],
+            env=env,
+        )
+        config = MCPServerConfig(
+            name=f"{server_name}:discovery",
+            transport="stdio",
+            command=server_config.get("command"),
+            args=server_config.get("args"),
+        )
+        client = MCPClient(config, transport)
+        try:
+            await client.start()
+            tools = await client.list_tools()
+            server_tools = {}
+            for tool in tools:
+                tool_name = tool.get("name")
+                if not tool_name:
+                    continue
+                self._tool_registry[tool_name] = server_name
+                tool["_server"] = server_name
+                tool["_id"] = f"{server_name}.{tool_name}"
+                tool["_requires_auth"] = True
+                server_tools[tool_name] = tool
+                logger.info(
+                    f"Registered per-user tool '{tool_name}' from '{server_name}'"
+                )
+            self._per_user_tools[server_name] = server_tools
+        finally:
+            await client.stop()
+
     async def list_all_tools(self) -> Dict[str, Dict[str, Any]]:
         """
         Get all available tools from all connected servers.
@@ -373,6 +429,10 @@ class MCPToolManager:
 
             except Exception as e:
                 logger.error(f"Failed to list tools from '{server_name}': {e}")
+
+        # Include per-user service tools (marked as requiring auth)
+        for server_name, tools in self._per_user_tools.items():
+            all_tools[server_name] = tools
 
         return all_tools
 
@@ -457,6 +517,17 @@ class MCPToolManager:
             )
             return None
 
+    @staticmethod
+    def _extract_mcp_text(result: Any) -> str:
+        """Extract plain text from MCP tool result format."""
+        if isinstance(result, dict) and "content" in result:
+            items = result.get("content", [])
+            if items and isinstance(items, list):
+                first = items[0]
+                if isinstance(first, dict) and "text" in first:
+                    return first["text"]
+        return json.dumps(result)
+
     async def call_tool(
         self, tool_name: str, arguments: Dict[str, Any], user_id: Optional[str] = None
     ) -> Any:
@@ -519,7 +590,9 @@ class MCPToolManager:
                 )
             client = await self._get_user_client(user_id, server_name)
             if client:
-                return await client.call_tool(tool_name, arguments)
+                return self._extract_mcp_text(
+                    await client.call_tool(tool_name, arguments)
+                )
             else:
                 raise AuthRequiredError(
                     service=server_name,
@@ -531,7 +604,7 @@ class MCPToolManager:
         if not client:
             raise RuntimeError(f"Server '{server_name}' not connected")
 
-        return await client.call_tool(tool_name, arguments)
+        return self._extract_mcp_text(await client.call_tool(tool_name, arguments))
 
     def get_user_service_status(self, user_id: str) -> Dict[str, Dict[str, Any]]:
         """
