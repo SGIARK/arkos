@@ -24,10 +24,6 @@ class ReasonedOutput(BaseModel):
     clarifying_question: Optional[str] = Field(
         None, description="Single clarifying question if needed"
     )
-    has_tool_result: bool = Field(
-        False,
-        description="True ONLY if presenting data from a TOOL_RESULT SystemMessage in this conversation."
-    )
     final: str = Field(..., description="User-facing response")
 
 
@@ -73,7 +69,6 @@ class StateAI(State):
         system = SystemMessage(
             content=(
                 "You are the agent reasoning state. Respond with a JSON object matching the schema.\n"
-                "Set has_tool_result=false unless a TOOL_RESULT SystemMessage exists in the conversation.\n"
                 "NEVER fabricate tool results or external data (calendar events, search results, etc.).\n"
                 "If a TOOL_RESULT is present, extract and present that data in 'final'."
                 f"{tool_result_guidance}"
@@ -88,16 +83,13 @@ class StateAI(State):
 
         try:
             data = ReasonedOutput.model_validate_json(output.content)
-            if has_tool_result and not data.has_tool_result:
-                logger.warning("LLM did not set has_tool_result=true despite tool result present — overriding")
-                data.has_tool_result = True
         except Exception as e:
             logger.error("Failed to parse structured output: %s | Raw: %s", e, output.content[:200])
             return AIMessage(content="I encountered an issue processing that request. Could you rephrase it?")
 
         response_parts = []
 
-        if not data.has_tool_result and data.approach:
+        if not has_tool_result and data.approach:
             for step in data.approach:
                 response_parts.append(f"• {step}")
 
