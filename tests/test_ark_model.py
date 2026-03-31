@@ -18,7 +18,7 @@ class TestArkModelLinkInit:
         model = ArkModelLink()
         assert model.model_name == "tgi"
         assert model.base_url == "http://0.0.0.0:30000/v1"
-        assert model.max_tokens == 1024
+        assert model.max_tokens == 4096
         assert model.temperature == 0.7
 
     def test_custom_values(self):

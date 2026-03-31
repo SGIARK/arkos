@@ -274,7 +274,7 @@ class TestMCPToolManager:
         mgr._tool_registry = {"search": "brave"}
 
         result = await mgr.call_tool("search", {"q": "test"})
-        assert result == {"result": "ok"}
+        assert result == '{"result": "ok"}'
         mock_client.call_tool.assert_called_once_with("search", {"q": "test"})
 
     @pytest.mark.asyncio

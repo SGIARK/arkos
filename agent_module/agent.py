@@ -60,6 +60,17 @@ class Agent:
 
         return ToolOptionsModel
 
+    def fill_tool_args_class(self, tool_name: str, tool_args: Dict[str, Any]):
+        """
+        Returns a Pydantic model instance capturing a tool call with its arguments.
+        """
+        ToolCall = create_model(
+            "ToolCall",
+            tool_name=(str, tool_name),
+            tool_args=(Dict[str, Any], tool_args),
+        )
+        return ToolCall()
+
     def create_next_state_class(self, options: List[Tuple[str, str]]):
         """
         options: list of tuples (next_state, description of state)

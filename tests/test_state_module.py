@@ -145,7 +145,7 @@ class TestStateAI:
 
         result = await sa.run([], mock_agent)
         assert isinstance(result, AIMessage)
-        assert result.content == "not valid json at all"
+        assert result.content == "I encountered an issue processing that request. Could you rephrase it?"
 
     @pytest.mark.asyncio
     async def test_run_with_none_content(self):
