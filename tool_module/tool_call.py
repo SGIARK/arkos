@@ -29,19 +29,11 @@ PER_USER_SERVICES = {
 class AuthRequiredError(Exception):
     """Raised when a tool requires user authentication."""
 
-    def __init__(self, service: str, user_id: str, message: str = None):
+    def __init__(self, service: str, user_id: str, message: str = None, base_url: str = "http://localhost:1112"):
         self.service = service
         self.user_id = user_id
         self.service_info = PER_USER_SERVICES.get(service, {})
 
-        # Build full URL instead of relative path
-        from config_module.loader import config
-
-        base_url = config.get("app.base_url")
-        if not base_url:
-            # Fallback to localhost if base_url not configured
-            port = config.get("app.port", "1112")
-            base_url = f"http://localhost:{port}"
         auth_path = self.service_info.get("auth_path", "/auth/connect")
         self.connect_url = f"{base_url}{auth_path}?user_id={user_id}"
 
@@ -246,9 +238,10 @@ class MCPToolManager:
         Per-user MCP clients: {user_id: {server_name: MCPClient}}
     """
 
-    def __init__(self, config: Dict[str, Dict[str, Any]], token_store=None):
+    def __init__(self, config: Dict[str, Dict[str, Any]], token_store=None, base_url: str = "http://localhost:1112"):
         self.config = config
         self.token_store = token_store
+        self.base_url = base_url
         self.clients: Dict[str, MCPClient] = {}
         self.user_clients: Dict[str, Dict[str, MCPClient]] = {}
         self._tool_registry: Dict[str, str] = {}  # tool_name -> server_name
@@ -570,6 +563,7 @@ class MCPToolManager:
                         raise AuthRequiredError(
                             service=service_name,
                             user_id=user_id or "unknown",
+                            base_url=self.base_url,
                         )
                     # User has token, try to connect and discover tools
                     client = await self._get_user_client(user_id, service_name)
@@ -587,6 +581,7 @@ class MCPToolManager:
                     service=server_name,
                     user_id="unknown",
                     message=f"Tool '{tool_name}' requires user authentication",
+                    base_url=self.base_url,
                 )
             client = await self._get_user_client(user_id, server_name)
             if client:
@@ -597,6 +592,7 @@ class MCPToolManager:
                 raise AuthRequiredError(
                     service=server_name,
                     user_id=user_id,
+                    base_url=self.base_url,
                 )
 
         # Fall back to shared client

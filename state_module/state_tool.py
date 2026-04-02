@@ -68,18 +68,8 @@ class StateTool(State):
     async def choose_tool(self, context, agent):
         """Select the best tool and generate its arguments."""
         all_tools = await agent.tool_manager.list_all_tools()
-        tool_descriptions = []
-        for server_name, tools in all_tools.items():
-            for tool_name, tool_spec in tools.items():
-                desc = tool_spec.get("description", "No description")
-                tool_descriptions.append(f"- {tool_name}: {desc}")
 
-        prompt = f"""Based on the user request, choose the tool that best satisfies it.
-
-Available tools:
-{"\n".join(tool_descriptions)}
-
-Choose the most appropriate tool."""
+        prompt = "Based on the user request, choose the tool that best satisfies it."
 
         instructions = context + [SystemMessage(content=prompt)]
 

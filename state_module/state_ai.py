@@ -19,16 +19,16 @@ logger = logging.getLogger(__name__)
 class ReasonedOutput(BaseModel):
     """Enforced reasoning contract for the agent state."""
     intent: str = Field(..., description="What the agent is trying to accomplish")
-    approach: List[str] = Field(..., description="High-level reasoning steps")
-    needs_clarification: bool = Field(..., description="Whether more user input is required")
-    clarifying_question: Optional[str] = Field(
-        None, description="Single clarifying question if needed"
-    )
+    final: str = Field(..., description="User-facing response")
     has_tool_result: bool = Field(
         False,
         description="True ONLY if presenting data from a TOOL_RESULT SystemMessage in this conversation."
     )
-    final: str = Field(..., description="User-facing response")
+    needs_clarification: bool = Field(..., description="Whether more user input is required")
+    clarifying_question: Optional[str] = Field(
+        None, description="Single clarifying question if needed"
+    )
+    approach: List[str] = Field(..., description="High-level reasoning steps")
 
 
 @register_state
@@ -72,7 +72,7 @@ class StateAI(State):
 
         system = SystemMessage(
             content=(
-                "You are the agent reasoning state. Respond with a JSON object matching the schema.\n"
+                "You are the agent reasoning state. Respond with a JSON object matching the schema. Keep approach to 1-2 short items max.\n"
                 "Set has_tool_result=false unless a TOOL_RESULT SystemMessage exists in the conversation.\n"
                 "NEVER fabricate tool results or external data (calendar events, search results, etc.).\n"
                 "If a TOOL_RESULT is present, extract and present that data in 'final'."
@@ -93,6 +93,10 @@ class StateAI(State):
                 data.has_tool_result = True
         except Exception as e:
             logger.error("Failed to parse structured output: %s | Raw: %s", e, output.content[:200])
+            import re
+            match = re.search(r'"final"\s*:\s*"((?:[^"\\]|\\.)*)"', output.content)
+            if match:
+                return AIMessage(content=match.group(1))
             return AIMessage(content="I encountered an issue processing that request. Could you rephrase it?")
 
         response_parts = []

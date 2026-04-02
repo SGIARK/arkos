@@ -54,8 +54,10 @@ async def google_login(request: Request, user_id: str):
         "created_at": datetime.utcnow(),
     }
 
-    # Build redirect URI
-    redirect_uri = str(request.url_for("google_callback"))
+    # Build redirect URI from configured base_url to ensure correct scheme/host
+    from config_module.loader import config
+    base_url = config.get("app.base_url", str(request.base_url)).rstrip("/")
+    redirect_uri = f"{base_url}/auth/google/callback"
     flow = get_google_flow(redirect_uri)
 
     auth_url, _ = flow.authorization_url(
@@ -92,7 +94,9 @@ async def google_callback(
     user_id = state_data["user_id"]
 
     # Exchange code for tokens
-    redirect_uri = str(request.url_for("google_callback"))
+    from config_module.loader import config
+    base_url = config.get("app.base_url", str(request.base_url)).rstrip("/")
+    redirect_uri = f"{base_url}/auth/google/callback"
     flow = get_google_flow(redirect_uri)
 
     try:

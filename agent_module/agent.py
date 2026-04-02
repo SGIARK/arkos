@@ -96,19 +96,12 @@ class Agent:
         transition_tuples = list(zip(transitions_dict["tt"], transitions_dict["td"]))
 
         tool_guidance = ""
-        if "use_tool" in transitions_dict["tt"] and self.available_tools:
+        if "use_tool" in transitions_dict["tt"] and self.tool_manager:
             tool_names = []
             for server_tools in self.available_tools.values():
                 tool_names.extend(server_tools.keys())
-            tool_guidance = f"""
-
-Available tools: {', '.join(tool_names)}
-
-CRITICAL: If the user's request requires a tool (e.g., calendar events, search, file operations), ALWAYS choose 'use_tool'.
-- If the user says "try again", "check again", "look again", or similar retry phrases, ALWAYS choose 'use_tool'
-- Tools handle authentication automatically - do NOT tell users to authenticate first
-- Do NOT manually generate auth URLs - the tool system handles that
-- Only choose 'agent_reply' if the request is purely conversational and needs NO external data"""
+            if tool_names:
+                tool_guidance = f"\n\nAvailable tools: {', '.join(tool_names)}\nChoose use_tool if the request requires real-time or external data."
 
         prompt = f"""Given the conversation context and available state options {transition_tuples}, choose the most appropriate next state.{tool_guidance}
 

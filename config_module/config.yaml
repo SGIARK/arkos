@@ -1,6 +1,7 @@
 app:
   host: "0.0.0.0"
   port: "1113"
+  base_url: "http://localhost:1113"
   reload: true
   user_id: "${USER}"
   system_prompt: |
@@ -50,25 +51,26 @@ mcp_servers:
     command: npx
     args: ["-y", "@cocal/google-calendar-mcp"]
     env:
-      GOOGLE_OAUTH_CREDENTIALS: "${GOOGLE_OAUTH_CREDENTIALS}"
+      GOOGLE_OAUTH_CREDENTIALS: "${GOOGLE_MCP_CREDENTIALS}"
     arg_hints:
       account: "normal"
       calendarId: "primary"
+      query: ""
 
 
 
-  notion:
-    transport: stdio
-    command: "npx"
-    args: ["-y", "mcp-remote", "https://mcp.notion.com/mcp"]
-    
-    
-      
+
+#  notion:
+#     transport: stdio
+#     command: "npx"
+#     args: ["-y", "mcp-remote", "https://mcp.notion.com/mcp"]
+#     
+#     
+#       
   filesystem:
     transport: stdio
     command: npx
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-
 
 
 

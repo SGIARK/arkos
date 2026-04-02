@@ -164,8 +164,9 @@ class Memory:
             finally:
                 self._pool.putconn(conn)
 
-            # Store in mem0 in background (non-blocking)
-            if self.use_long_term and self._mem0:
+            # Store in mem0 in background — only user/tool messages, not AI responses
+            # AI responses may be hallucinated; storing them poisons future routing
+            if self.use_long_term and self._mem0 and not isinstance(message, AIMessage):
                 metadata = {
                     "user_id": self.user_id,
                     "session_id": self.session_id,

@@ -21,6 +21,7 @@ from tool_module.token_store import UserTokenStore
 from base_module.auth import router as auth_router
 
 
+logging.basicConfig(level=logging.INFO, format="%(name)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="ArkOS Agent API", version="1.0.0")
@@ -40,7 +41,7 @@ llm = ArkModelLink(base_url=config.get("llm.base_url"), max_tokens=config.get("l
 token_store = UserTokenStore(config.get("database.url"))
 
 mcp_config = config.get("mcp_servers")
-tool_manager = MCPToolManager(mcp_config, token_store=token_store) if mcp_config else None
+tool_manager = MCPToolManager(mcp_config, token_store=token_store, base_url=config.get("app.base_url", "http://localhost:1112")) if mcp_config else None
 agent = Agent(
     agent_id=config.get("memory.user_id"),
     flow=flow,
