@@ -112,30 +112,82 @@ class SmitheryClient:
         Returns the parsed JSON body. Callers should inspect .status to decide
         whether the connection is `connected`, `auth_required`, or `input_required`.
 
-        When `return_url` is provided we forward it to Smithery as both the
-        top-level `returnUrl` field AND inside metadata, so whichever the
-        current Smithery API accepts picks it up. After the user finishes the
-        hosted OAuth flow Smithery will redirect them to this URL.
+        `return_url`, when provided, is forwarded to Smithery so the user is
+        redirected back to our OAuth callback after completing the hosted OAuth.
+        If Smithery's current API version rejects the returnUrl fields with a
+        5xx we transparently retry once without them so the caller still gets
+        a working connection and a setupUrl. The client just loses the
+        automatic bounce-back and will rely on popup-close polling.
         """
         url = f"{self.base_url}/connect/{self.namespace}/{connection_id}"
-        body: dict[str, Any] = {"mcpUrl": mcp_url}
-        if name:
-            body["name"] = name
-        meta = dict(metadata or {})
-        if return_url:
-            body["returnUrl"] = return_url
-            meta.setdefault("returnUrl", return_url)
-        if meta:
-            body["metadata"] = meta
-        if headers:
-            body["headers"] = headers
 
-        logger.debug("smithery PUT %s", url)
-        async with session.put(url, json=body, headers=self._headers()) as resp:
+        def _build_body(include_return_url: bool) -> dict[str, Any]:
+            body: dict[str, Any] = {"mcpUrl": mcp_url}
+            if name:
+                body["name"] = name
+            meta = dict(metadata or {})
+            if include_return_url and return_url:
+                body["returnUrl"] = return_url
+                meta.setdefault("returnUrl", return_url)
+            if meta:
+                body["metadata"] = meta
+            if headers:
+                body["headers"] = headers
+            return body
+
+        async def _do(include_return_url: bool) -> tuple[int, str]:
+            body = _build_body(include_return_url)
+            logger.debug("smithery PUT %s body_keys=%s", url, list(body.keys()))
+            async with session.put(url, json=body, headers=self._headers()) as resp:
+                return resp.status, await resp.text()
+
+        # First attempt: full payload.
+        status, text = await _do(include_return_url=True)
+        if status >= 500 and return_url:
+            # Retry once without returnUrl. Some Smithery API versions return
+            # 500 on unknown top-level fields; dropping it gets us a connection.
+            logger.warning(
+                "smithery upsert returned %s with returnUrl; retrying without it. body=%s",
+                status, text[:200],
+            )
+            status, text = await _do(include_return_url=False)
+
+        if status >= 400:
+            raise SmitheryError(f"upsert_connection {status}: {text}")
+
+        import json as _json
+        try:
+            return _json.loads(text) if text else {}
+        except _json.JSONDecodeError as e:
+            raise SmitheryError(f"upsert_connection: invalid JSON response: {e}: {text[:200]}")
+
+    async def get_connection(
+        self,
+        session: aiohttp.ClientSession,
+        connection_id: str,
+    ) -> dict[str, Any] | None:
+        """
+        GET /connect/{namespace}/{connection_id}
+
+        Returns the parsed JSON body for the connection, or None if it
+        doesn't exist yet. This is used as a fast path before upserting so
+        a temporary outage on PUT doesn't knock out already-live
+        connections.
+        """
+        url = f"{self.base_url}/connect/{self.namespace}/{connection_id}"
+        async with session.get(url, headers=self._headers()) as resp:
             text = await resp.text()
+            if resp.status == 404:
+                return None
             if resp.status >= 400:
-                raise SmitheryError(f"upsert_connection {resp.status}: {text}")
-            return await resp.json() if text else {}
+                raise SmitheryError(f"get_connection {resp.status}: {text}")
+            import json as _json
+            try:
+                return _json.loads(text) if text else {}
+            except _json.JSONDecodeError as e:
+                raise SmitheryError(
+                    f"get_connection: invalid JSON response: {e}: {text[:200]}"
+                )
 
     async def jsonrpc(
         self,
@@ -294,13 +346,33 @@ class SmitheryManager:
 
                 connection_id = self._shared_conn_id(server_name)
                 try:
-                    conn = await self.client.upsert_connection(
-                        session,
-                        connection_id,
-                        mcp_url=spec["mcp_url"],
-                        name=spec.get("name", server_name),
-                        headers=spec.get("headers"),
-                    )
+                    # GET-first. Shared connections almost never need a PUT
+                    # after first startup, and this keeps us running through
+                    # transient Smithery PUT outages.
+                    conn: dict[str, Any] | None = None
+                    try:
+                        conn = await self.client.get_connection(session, connection_id)
+                    except SmitheryError as e:
+                        logger.warning(
+                            "smithery: GET shared '%s' failed (%s); will try PUT",
+                            server_name, e,
+                        )
+                        conn = None
+
+                    needs_upsert = True
+                    if conn:
+                        state_probe, _ = _parse_status(conn.get("status"))
+                        if state_probe == "connected":
+                            needs_upsert = False
+
+                    if needs_upsert:
+                        conn = await self.client.upsert_connection(
+                            session,
+                            connection_id,
+                            mcp_url=spec["mcp_url"],
+                            name=spec.get("name", server_name),
+                            headers=spec.get("headers"),
+                        )
                     state, setup_url = _parse_status(conn.get("status"))
                     if state != "connected":
                         logger.warning(
@@ -343,8 +415,14 @@ class SmitheryManager:
         Returns the list of tools for that connection. On auth_required /
         input_required, raises AuthRequiredError with the setup URL.
 
+        GET-first: if the connection already exists and is connected, skip the
+        upsert PUT entirely. This keeps us resilient to Smithery's PUT endpoint
+        having transient outages that wouldn't otherwise affect already-live
+        connections.
+
         `return_url`, when provided, is passed through to Smithery so that the
-        user is redirected back to the ark app after completing OAuth.
+        user is redirected back to the ark app after completing OAuth. Only
+        used on the PUT path (new or not-yet-connected connections).
         """
         spec = self.servers.get(server_name)
         if not spec:
@@ -352,15 +430,34 @@ class SmitheryManager:
 
         connection_id = self._user_conn_id(user_id, server_name)
 
-        conn = await self.client.upsert_connection(
-            session,
-            connection_id,
-            mcp_url=spec["mcp_url"],
-            name=spec.get("name", server_name),
-            metadata={"userId": user_id},
-            headers=spec.get("headers"),
-            return_url=return_url,
-        )
+        conn: dict[str, Any] | None = None
+        # Try GET first. A live, connected row means we don't have to touch PUT.
+        try:
+            conn = await self.client.get_connection(session, connection_id)
+        except SmitheryError as e:
+            logger.warning(
+                "smithery: GET connection '%s' failed (%s); falling through to PUT",
+                connection_id, e,
+            )
+            conn = None
+
+        needs_upsert = True
+        if conn:
+            state_probe, _ = _parse_status(conn.get("status"))
+            if state_probe == "connected":
+                needs_upsert = False
+
+        if needs_upsert:
+            conn = await self.client.upsert_connection(
+                session,
+                connection_id,
+                mcp_url=spec["mcp_url"],
+                name=spec.get("name", server_name),
+                metadata={"userId": user_id},
+                headers=spec.get("headers"),
+                return_url=return_url,
+            )
+
         state, setup_url = _parse_status(conn.get("status"))
 
         if state == "connected":
