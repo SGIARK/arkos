@@ -7,12 +7,12 @@ import pytest
 import yaml
 
 from model_module.ArkModelNew import AIMessage, SystemMessage
-from state_module.base_state import StateOutput
-from state_module.state import State
-from state_module.state_ai import ReasonedOutput, StateAI
-from state_module.state_registry import STATE_REGISTRY, register_state
-from state_module.state_tool import StateTool
-from state_module.state_user import StateUser
+from state_module.core.base_state import StateOutput
+from state_module.core.state import State
+from state_module.agent_main.state_ai import ReasonedOutput, StateAI
+from state_module.core.state_registry import STATE_REGISTRY, register_state
+from state_module.agent_main.state_tool import StateTool
+from state_module.agent_main.state_user import StateUser
 
 # --- State base class ---
 
@@ -387,14 +387,14 @@ class TestStateHandler:
         return str(f)
 
     def test_init_loads_states(self, state_graph_yaml):
-        from state_module.state_handler import StateHandler
+        from state_module.core.state_handler import StateHandler
 
         handler = StateHandler(state_graph_yaml)
         assert "agent_reply" in handler.states
         assert "wait_for_user" in handler.states
 
     def test_get_initial_state(self, state_graph_yaml):
-        from state_module.state_handler import StateHandler
+        from state_module.core.state_handler import StateHandler
 
         handler = StateHandler(state_graph_yaml)
         initial = handler.get_initial_state()
@@ -402,7 +402,7 @@ class TestStateHandler:
         assert isinstance(initial, StateAI)
 
     def test_get_state(self, state_graph_yaml):
-        from state_module.state_handler import StateHandler
+        from state_module.core.state_handler import StateHandler
 
         handler = StateHandler(state_graph_yaml)
         user_state = handler.get_state("wait_for_user")
@@ -410,7 +410,7 @@ class TestStateHandler:
         assert user_state.is_terminal is True
 
     def test_unknown_state_type_raises(self, tmp_path):
-        from state_module.state_handler import StateHandler
+        from state_module.core.state_handler import StateHandler
 
         graph = {
             "initial": "bad",

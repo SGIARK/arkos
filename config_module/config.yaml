@@ -36,7 +36,7 @@ embedding:
   provider: "huggingface"  
 
 state:
-  graph_path: "state_module/state_graph.yaml"
+  graph_path: "state_module/agent_main/state_graph.yaml"
 
 # All MCP traffic flows through Smithery Connect. No local subprocesses, no
 # per-provider OAuth plumbing on our side. Smithery maintains the OAuth apps,

@@ -1,0 +1,26 @@
+initial: executor
+
+states:
+  executor:
+    description: "decides the next plan step: tool call, human question, or done"
+    type: executor
+    transition:
+      next: [use_tool, ask_human, executor_done]
+
+  use_tool:
+    description: "executes the tool chosen for the current plan step"
+    type: executor_tool
+    transition:
+      next: [executor]
+
+  ask_human:
+    description: "pauses the subagent and asks the human a question"
+    type: approval
+    transition:
+      next: [executor, executor_done]
+
+  executor_done:
+    description: "final summary; marks the task completed"
+    type: executor_done
+    transition:
+      next: []

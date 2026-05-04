@@ -34,14 +34,14 @@ from base_module.task_store import (  # noqa: E402
 from config_module.loader import config  # noqa: E402
 from memory_module.memory import Memory  # noqa: E402
 from model_module.ArkModelNew import SystemMessage, UserMessage  # noqa: E402
-from state_module.state_handler import StateHandler  # noqa: E402
+from state_module.core.state_handler import StateHandler  # noqa: E402
 from tool_module.scoped import ScopedToolManager  # noqa: E402
 
 # Keep strong refs to in-flight tasks so GC doesn't cancel them.
 _RUNNING: dict[str, asyncio.Task] = {}
 
 EXECUTOR_GRAPH_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "state_module", "graphs", "executor.yaml")
+    os.path.join(os.path.dirname(__file__), "..", "state_module", "agent_executor", "executor.yaml")
 )
 
 EXECUTOR_SYSTEM_PROMPT = """\

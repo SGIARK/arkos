@@ -14,8 +14,8 @@ from memory_module.memory import Memory
 
 # Assuming ArkModelLink.generate_response is actually ArkModelLink.agenerate_response
 from model_module.ArkModelNew import AIMessage, ArkModelLink, SystemMessage
-from state_module.base_state import StateOutput
-from state_module.state_handler import StateHandler
+from state_module.core.base_state import StateOutput
+from state_module.core.state_handler import StateHandler
 
 MAX_ITER = 10
 
