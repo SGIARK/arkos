@@ -265,9 +265,27 @@ class Agent:
                 transition_dict = self.flow.get_transitions(self.current_state, messages_list)
                 transition_names = transition_dict["tt"]
 
-                # Deterministic override: a state can force the next transition
-                # by putting "next_state" into StateOutput.structured_data. This is
-                # how executor-style graphs bypass LLM-guided transition choice.
+                # Forced transition override
+                #
+                # Any state can bypass LLM-guided transition choice by setting
+                # structured_data["next_state"] in its StateOutput. The agent
+                # checks this first and skips the LLM call if a valid override
+                # is present.
+                #
+                # WHY: the executor graph (executor → tool → approval →
+                # executor_done) is a fixed sequence — the next step is never
+                # context-dependent, so running the LLM to "decide" would add
+                # latency and non-determinism. States that know their successor
+                # declare it explicitly instead.
+                #
+                # INVARIANT: the forced state must be a declared transition in
+                # state_graph.yaml for the current state. If it isn't,
+                # `forced in transition_names` is False and the agent falls back
+                # to normal LLM-guided choice — it never blindly jumps.
+                #
+                # STATES THAT USE THIS: state_executor, state_tool,
+                # state_approval, state_plan, state_ai. See
+                # docs/adr/001-forced-state-transition.md for full rationale.
                 forced = None
                 if update and isinstance(update.structured_data, dict):
                     forced = update.structured_data.get("next_state")
@@ -351,6 +369,7 @@ class Agent:
                 transition_names = transition_dict["tt"]
                 print(f"agent.py [STREAM] Transitions: {transition_names}")
 
+                # Forced transition override — see step() above for full explanation.
                 forced = None
                 if update and isinstance(update.structured_data, dict):
                     forced = update.structured_data.get("next_state")
