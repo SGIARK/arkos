@@ -1,0 +1,431 @@
+================================================================================
+ ARKOS — STATE MACHINE AND HARNESS
+================================================================================
+
+ARKOS is a Python async agent framework: a FastAPI backend drives one or more
+LLM agents, each of which is a finite state machine (FSM) defined by a YAML
+graph. States are Python classes discovered per-agent package; transitions are
+resolved by deterministic router functions keyed on a "route" signal that each
+state emits in its StateOutput.
+
+Two FSM agents exist today, plus one non-FSM agent:
+
+  1. buddy    (state_module/agent_buddy)    — the interactive chat agent
+  2. executor (state_module/agent_executor) — the background subagent that
+                                              runs an approved plan
+  3. computer (computer_module/)            — a sandboxed computer-use agent;
+                                              NOT an FSM, it has its own runner
+
+--------------------------------------------------------------------------------
+ 1. CORE STATE-MACHINE MACHINERY (state_module/core + agent_module)
+--------------------------------------------------------------------------------
+
+  State (state_module/core/state.py)
+    - Base class. Holds name, is_terminal, transition (from graph.yaml).
+    - Instances are SHARED across all concurrent requests/users, so after
+      construction StateHandler calls _freeze(); any attribute write at
+      runtime raises. Per-request data lives on the Agent, never on a state.
+    - Subclasses implement:
+        async run(context, agent) -> StateOutput
+        check_transition_ready(context) -> bool   (deterministic, no LLM)
+
+  StateOutput (state_module/core/base_state.py) — Pydantic model
+    - content            : str  (user-visible text)
+    - completion_signal  : "complete" | "incomplete" | "error" | "needs_input"
+    - structured_data    : dict (must carry {"route": "<signal>"} when the
+                           state has a registered router)
+    - error_detail       : str | None
+
+  TerminalReason (same file) — why the agent loop stopped:
+    completed | max_steps | model_error | needs_input
+
+  StateHandler (state_module/core/state_handler.py)
+    - StateHandler(yaml_path, agent_pkg, routers=...)  (agent_pkg REQUIRED)
+    - Auto-discovers states: imports every non-package module ONE level below
+      agent_pkg (pkgutil.iter_modules) and registers every class that
+      (a) subclasses State, (b) has a `type` attr, and (c) is defined in that
+      module (obj.__module__ == mod.__name__ guard). Each agent gets its own
+      isolated type map — no global registry is consulted.
+      (state_registry.py / @register_state still exists but is vestigial;
+      discovery does not use it.)
+    - Loads graph.yaml, instantiates one frozen State per graph node, exposes
+      get_initial_state / get_state / get_transitions / get_router.
+
+  Routers (state_module/agent_*/routers.py)
+    - Pure functions StateOutput -> next-state-name, collected in a ROUTERS
+      dict keyed by the state NAME as declared in graph.yaml.
+    - States emit signal strings ("tool", "ask", "continue", "done", ...);
+      only routers know concrete state names.
+
+  Agent (agent_module/agent.py) — the FSM driver ("the loop")
+    - Agent(agent_id, flow=StateHandler, memory, llm, tool_manager)
+    - Per-request fields: current_user_id, system_prompt, last_state_output,
+      and subagent-only fields task_id / plan_steps / step_idx / max_iter.
+    - step(messages, user_id)  and  step_stream(messages, user_id):
+        1. add_context(messages) -> Memory
+        2. loop (bounded by max_iter, default MAX_ITER=10):
+           a. context = get_context()  (short-term turns + optional mem0
+              long-term; also counts tokens for tool-result budgeting)
+           b. _run_state(context): runs current_state.run().
+              - retryable ModelError  -> re-run same state ("retry")
+              - non-retryable / other exception -> synthesized StateOutput
+                with completion_signal="error", route="ask"
+           c. output.content is appended to memory (step_stream also yields
+              it char-by-char, plus {"type":"status"} activity labels)
+           d. completion_signal == "error" and state not terminal:
+              hop to "agent_reply" IF the graph has one (buddy), else fall
+              through; terminal_reason = model_error; break
+           e. current_state.is_terminal -> terminal_reason = completed; break
+           f. check_transition_ready(): if False -> needs_input; break.
+              If True, pick next state by priority:
+                 (1) registered router(update)          — deterministic
+                 (2) single declared transition          — deterministic
+                 (3) choose_transition()                 — LLM multi-choice
+                     fallback with a schema-constrained enum of next states
+        3. on exit, current_state resets to the graph's initial state
+    - Tool-result rendering: render_tool_result() clips large tool output to
+      the remaining context budget (head+tail with an omission marker), using
+      tiktoken counts * 1.15 fudge and a 2048-token safety margin.
+
+--------------------------------------------------------------------------------
+ 2. BUDDY — THE CHAT AGENT FSM (state_module/agent_buddy/graph.yaml)
+--------------------------------------------------------------------------------
+
+  initial: agent_reply
+
+  Graph nodes (name / type / class / terminal):
+    agent_reply    agent          StateAI            no
+    ask_user       user           StateUser          YES (hands back to user)
+    workshop_plan  plan           StatePlan          YES (plan card, awaits
+                                                          approval)
+    computer_plan  computer_plan  StateComputerPlan  YES (plan card, awaits
+                                                          approval)
+    use_tool       tool           StateTool          no   (declared in graph;
+                                  reachable from agent_reply per YAML, but the
+                                  agent_reply router never emits it — tool use
+                                  in practice happens in the executor subagent)
+
+  ASCII diagram (labels are route signals; [T] = terminal):
+
+                            +-------------------+
+             user message   |                   |
+             ------------->>|    agent_reply    |<---------------------+
+                            | (StateAI, LLM     |                      |
+                            |  picks a route)   |                      |
+                            +---+----+-----+----+                      |
+                                |    |     |                           |
+                     "plan"     |    |     | "computer"                |
+                    +-----------+    |     +-----------+               |
+                    |                |                 |               |
+                    v          "ask"/"reply"/          v               |
+        +-----------------+     default        +----------------+     |
+        |  workshop_plan  |         |          | computer_plan  |     |
+        |  (StatePlan)[T] |         v          | (StateComputer |     |
+        |  emits ark-plan |   +-----------+    |  Plan)     [T] |     |
+        |  card, waits    |   | ask_user  |    | emits ark-plan |     |
+        +--------+--------+   | (StateUser|    | card (target=  |     |
+                 |            |  ) [T]    |    | computer)      |     |
+                 |            +-----------+    +-------+--------+     |
+                 |    (graph edge back to agent_reply on next turn)   |
+                 +---------------------------+-------------------------+
+                                             |
+                            +----------------+---------------+
+                            |   use_tool (StateTool)         |
+                            |   LLM picks tool + args, runs  |
+                            |   it, -> back to agent_reply   |
+                            +--------------------------------+
+
+  Router (routers.py): only agent_reply has one.
+      route "plan"     -> workshop_plan
+      route "computer" -> computer_plan
+      anything else    -> ask_user        (safe default; "ask"/"reply" too)
+  ask_user / workshop_plan / computer_plan are terminal, so their graph edges
+  back to agent_reply are traversed only conceptually — the loop ends and the
+  next user turn starts fresh at agent_reply (step() resets to initial).
+  use_tool has a single edge -> agent_reply (deterministic, no router).
+
+  State behavior summary:
+    agent_reply (StateAI): one schema-constrained LLM call returning
+      ReasonedOutput {intent, approach[], route, final}. Only `final` is shown.
+      route=ask -> completion_signal needs_input; else complete.
+    workshop_plan (StatePlan): LLM drafts WorkshopOutput {title, plan_steps,
+      required_tools, needs_clarification, clarifying_question}. Guardrails:
+      clarification short-circuit, and a token-based filter that rejects
+      "pseudo-plans" whose steps merely ask the user for info (converted back
+      into a question). Emits a ```ark-plan``` JSON sentinel the frontend
+      renders as an approve/decline plan card. Nothing is persisted here.
+    computer_plan (StateComputerPlan): same shape, but payload carries
+      target=computer + the original user prompt; approval POSTs to
+      /computer/tasks instead of /tasks.
+    use_tool (StateTool): two LLM calls (choose tool from enum of the live
+      registry, then fill args against the tool's inputSchema), executes via
+      tool_manager, returns clipped result. AuthRequiredError becomes a
+      needs_input message with a Smithery connect link.
+    ask_user (StateUser): returns empty content + needs_input; pure hand-back.
+
+--------------------------------------------------------------------------------
+ 3. EXECUTOR — THE SUBAGENT FSM (state_module/agent_executor/graph.yaml)
+--------------------------------------------------------------------------------
+
+  Runs inside TaskRunner for one approved plan. Walks plan_steps literally,
+  one step at a time. NEVER re-plans; anything it can't do routes to a human.
+
+  initial: executor
+
+  Graph nodes (name / type / class / terminal):
+    executor       executor       StateExecutor      no
+    use_tool       executor_tool  StateExecutorTool  no
+    ask_human      approval       StateApproval      no
+    executor_done  executor_done  StateExecutorDone  YES
+
+  ASCII diagram (labels are route signals; [T] = terminal):
+
+        kickoff (plan seeded into memory)
+                 |
+                 v
+        +-----------------+   "continue" (advance to next step,
+        |    executor     |<-------------------------------+------+
+        | (StateExecutor) |                                |      |
+        | LLM decision:   |   "tool"    +---------------+  |      |
+        | tool/ask/advance+----------->>|   use_tool    |--+      |
+        +---+--------+----+             | (StateExecutor|         |
+            |        |                  |  Tool) runs   | "ask"   |
+            |        | "ask"            | pending_tool  +---+     |
+     "done" |        +------------+     +---------------+   |     |
+            |                     v                         v     |
+            |               +-----------------------------------+ |
+            |               |            ask_human              | |
+            |               |  (StateApproval) writes approval  | |
+            |               |  row, task -> awaiting_approval,  | |
+            |               |  Slack DM, DB-polls for answer    | |
+            |               +----+-------------------------+----+ |
+            |                    | "done" (declined/        |      |
+            |                    |  cancelled/timeout)      +------+
+            v                    v              "continue" (answered)
+        +--------------------------------+
+        |         executor_done  [T]     |
+        |  (StateExecutorDone) LLM       |
+        |  summary gated on tool         |
+        |  evidence; all_steps_done =    |
+        |  step_idx >= len(plan_steps)   |
+        +--------------------------------+
+
+  Routers (routers.py):
+    executor_router:   "tool"->use_tool  "ask"->ask_human
+                       "continue"->executor  else->executor_done
+    use_tool_router:   "ask"->ask_human  else->executor
+    ask_human_router:  "continue"->executor  else->executor_done
+
+  State behavior summary:
+    executor (StateExecutor): for plan_steps[step_idx], builds a tool catalog
+      (names + required/optional params from each inputSchema) and asks the
+      LLM for an ExecutorDecision {action: tool|ask|advance, reason,
+      tool_name, ask_kind, ask_prompt}. tool_name is enum-constrained to the
+      real tool list so it cannot be hallucinated.
+        - advance: programmatic guard _last_tool_was_error() blocks advancing
+          over a failed tool result (scans context for "tool ... -> ..." and
+          error signals) and forces an ask instead. Otherwise step_idx += 1;
+          route "done" if past the last step else "continue".
+        - tool: a second schema-constrained call fills args from the tool's
+          own inputSchema; the call is stashed on agent.pending_tool and the
+          state routes "tool". Invalid/unknown tool name -> fallback ask.
+        - ask: stashes agent.pending_ask {kind: binary|text, prompt}.
+      step_idx past the end -> immediate route "done".
+    use_tool (StateExecutorTool): executes agent.pending_tool. Success ->
+      "tool `name` -> <clipped result>", route "continue" (step_idx is NOT
+      advanced here — the executor judges completion from the result).
+      AuthRequiredError or any other failure -> pending_ask + route "ask".
+    ask_human (StateApproval): persists a task_approvals row, flips the task
+      to awaiting_approval, sends a Slack DM with the app URL, then polls the
+      DB (default every 2s, timeout 24h) until resolved. Approved/answered ->
+      answer written into memory as a UserMessage, task back to running,
+      route "continue" (back to the SAME step — approval is permission, not
+      proof). Declined binary / cancelled / timeout -> route "done".
+    executor_done (StateExecutorDone): LLM summary constrained to report only
+      tool-confirmed outcomes; deterministic success gate all_steps_done =
+      step_idx >= len(plan_steps) decides completion_signal complete vs
+      incomplete (and, in TaskRunner, completed vs failed).
+
+--------------------------------------------------------------------------------
+ 4. THE HARNESS — EVERYTHING AROUND THE FSMs
+--------------------------------------------------------------------------------
+
+  Big picture:
+
+    browser/frontend (/app static files)
+        |  Bearer JWT (jwt_utils; ARK_DEMO_MODE allows X-User-ID)
+        v
+    FastAPI app (base_module/app.py, singletons built at import/startup)
+        |-- /v1/chat/completions  -> per-request buddy Agent.step[_stream]()
+        |-- /tasks ...            -> tasks.py: create/list/cancel/approvals
+        |-- /services ...         -> Smithery per-user OAuth connect flow
+        |-- /computer/...         -> computer_module router
+        |-- /browser/...          -> browser streaming routes
+        |-- /health               -> sglang / tei / postgres probes
+        |
+        +-- task_runner.spawn(task_id) --> asyncio.Task per approved plan
+                 |                          (executor FSM subagent)
+                 +-- sweep_orphans() at startup respawns running/
+                     awaiting_approval tasks after a restart
+
+    Postgres: tasks, task_events, task_approvals, conversation_context,
+              memories (mem0 vector store)  — the durable spine.
+    LLM: ArkModelLink -> OpenAI-compatible SGLang server (Qwen2.5-7B, :30000),
+         embeddings via TEI (:4444). Structured output via json_schema.
+    Tools: Smithery Connect MCP gateway (+ local browser_task tool).
+
+  4.1 FastAPI app (base_module/app.py)
+    - Shared singletons: one buddy StateHandler (BUDDY_ROUTERS), one
+      ArkModelLink, one MCPToolManager (None if Smithery key/config missing).
+    - Per-request: _make_agent(user_id, session_id) builds a FRESH Agent per
+      chat call; Memory is cached per (user_uuid, session_id); the system
+      prompt is rebuilt per user = date line + config app.system_prompt +
+      live tool catalog (shared tools + this user's connected per-user tools
+      + "configured but not connected" deferred services).
+    - /v1/chat/completions (OpenAI-compatible, streaming + non-streaming):
+      identity from the JWT; conversation isolation via X-Session-ID header;
+      lazily connects already-authorized per-user OAuth servers; streams SSE
+      chunks including a non-standard `ark_status` delta ("thinking",
+      "drafting a plan", "waiting for you") derived from the active state.
+    - Startup: config.validate_required, JWT secret check (refuses forgeable
+      default outside demo mode), MCP server init + browser tool
+      registration, system prompt assembly, then sweep_orphans().
+
+  4.2 Task lifecycle (base_module/tasks.py + task_store.py + task_runner.py)
+    1. buddy's workshop_plan emits an ark-plan card in chat.
+    2. User approves -> frontend POST /tasks -> row in `tasks`
+       (status=running), session_id minted, task_runner.spawn(task_id).
+    3. run_task builds the subagent:
+         - Memory: NEW session_id (private short-term), same user_id
+           (shared mem0 long-term)
+         - StateHandler over agent_executor + EXECUTOR_ROUTERS
+         - ScopedToolManager wrapping the shared manager, restricted to the
+           plan's required_tools (empty list = unrestricted)
+         - task_id / plan_steps / step_idx=0 stamped on the agent;
+           max_iter = max(10, 4*steps + 8)
+         - per-user OAuth tools are pre-loaded (chat does this lazily; the
+           runner must do it explicitly)
+       then seeds memory with the plan and awaits subagent.step().
+    4. ask_human pauses the FSM: approvals surface in the desk's Pending
+       Approvals panel (/tasks/approvals/pending) and via Slack DM; the
+       state DB-polls until resolve_approval() flips the row.
+    5. After step() returns, TaskRunner trusts the FSM's own signal:
+       all_steps_done -> mark_task_completed, else mark_task_failed.
+       CancelledError -> status cancelled. Exceptions -> failed + traceback
+       event. Every stage appends task_events rows (log_event) so the UI can
+       replay progress.
+    - Task statuses: pending, running, awaiting_approval, completed, failed,
+      cancelled. update_task_status() is the atomic status+event writer.
+    - _RUNNING keeps strong refs to asyncio.Tasks (spawn/cancel/is_running);
+      sweep_orphans() respawns interrupted tasks on boot — survivable because
+      approvals/answers live in the DB, not in process memory.
+
+  4.3 Tooling (tool_module/)
+    - tool_call.MCPToolManager is a back-compat alias for SmitheryManager:
+      all MCP traffic flows through Smithery Connect; per-user OAuth and
+      credential storage happen on Smithery's side.
+    - Per-user services (requires_auth) use the /services/{svc}/connect ->
+      Smithery hosted OAuth -> /oauth/callback/{svc} flow (popup posts an
+      ark-oauth-callback message back to the app and closes).
+    - ScopedToolManager (scoped.py): filters the visible/callable tool set
+      for subagents to the plan's required_tools; call_tool outside the
+      allowed set raises PermissionError.
+    - browser_tool/browser_stream: a locally-registered `browser_task` tool
+      plus streaming routes so plans can drive a browser.
+    - AuthRequiredError carries setup_url; both FSMs convert it into a
+      "connect this service" prompt instead of failing the run.
+
+  4.4 Memory (memory_module/memory.py)
+    - Memory(user_id, session_id, db_url, use_long_term)
+    - Short-term: conversation_context rows in Postgres, scoped to the
+      session (config memory.short_term_turns, default 50 turns retrieved 5
+      at a time by the loop).
+    - Long-term: mem0 with a Supabase/pgvector store + TEI embeddings,
+      keyed by user_id so buddy and subagents share it. Retrieval is wrapped
+      into a synthetic message prepended to context.
+    - Agent.get_context() assembles [long_term?] + short_term and records an
+      approximate token count used for tool-result clipping.
+
+  4.5 Model layer (model_module/)
+    - ArkModelLink: AsyncOpenAI client against an OpenAI-compatible endpoint
+      (SGLang, config llm.base_url, 32k context / 8k output reserve).
+      generate_response(messages, json_schema) -> str; json_schema uses the
+      response_format json_schema mechanism for structured output.
+    - errors.ModelError has a `retryable` flag: the agent loop re-runs the
+      state on transient errors and converts terminal ones into an error
+      StateOutput routed to the user.
+    - llm_json.parse_llm_json: repairs (json_repair) then validates LLM JSON
+      into Pydantic models; raises OutputValidationError which _run_state
+      catches — ValidationError never reaches the loop raw.
+
+  4.6 Computer agent (computer_module/) — companion, not an FSM
+    - buddy's computer_plan card, once approved, POSTs /computer/tasks; the
+      runner drives ComputerAgent.run() inside a per-user Linux sandbox,
+      streams events to computer_task_events, and on completion injects the
+      result into the originating chat session via Memory.add_memory(), then
+      pauses the sandbox.
+
+  4.7 Config & auth
+    - config_module/loader: YAML config with ${ENV} interpolation and
+      dot-path get(); validate_required at startup. Key blocks: app (port
+      1121, system_prompt), llm, database.url, memory, smithery, approval
+      (poll interval/timeout), embedding.
+    - jwt_utils: Bearer JWT identity (CurrentUser dependency); demo mode
+      (ARK_DEMO_MODE) permits X-User-ID impersonation for local demos and is
+      loudly warned against; assert_secure_secret() refuses to boot with the
+      default secret outside demo mode.
+    - logging_module: structured JSON-lines logging (LogEvent / emit_log).
+
+--------------------------------------------------------------------------------
+ 5. THE CONTRACTS THAT HOLD IT TOGETHER (enforced, not aspirational)
+--------------------------------------------------------------------------------
+
+  - state.run() returns StateOutput, never a raw AIMessage; the loop asserts.
+  - check_transition_ready() is deterministic — no LLM calls in gates.
+  - Routing = route SIGNALS in structured_data, translated by routers.py;
+    states never name their successor. LLM choose_transition() exists only
+    as the fallback for multi-edge states with no router.
+  - Each agent's states live in its own agent_* package; StateHandler
+    auto-discovers them (agent_pkg required); type strings are scoped per
+    agent, so both graphs can own a "use_tool" node without conflict.
+  - State instances are frozen after construction; per-request state lives
+    on the Agent (pending_tool, pending_ask, plan_steps, step_idx, ...).
+  - Progress is evidence-gated: step_idx only advances on an executor
+    `advance` decision, which is blocked programmatically if the last tool
+    result was an error; approval answers alone never advance a step; the
+    done-state summary only reports tool-confirmed outcomes; TaskRunner only
+    marks a task completed when the FSM itself said all_steps_done.
+  - Durable coordination goes through Postgres (tasks/approvals/events), so
+    web-process restarts can resume in-flight subagents (sweep_orphans).
+
+================================================================================
+ File map (quick index)
+================================================================================
+  agent_module/agent.py                     Agent loop: step/step_stream,
+                                            _run_state, choose_transition,
+                                            context/token budgeting
+  state_module/core/state.py                State base class (frozen)
+  state_module/core/base_state.py           StateOutput, TerminalReason
+  state_module/core/state_handler.py        YAML graph + auto-discovery
+  state_module/agent_buddy/graph.yaml       buddy FSM definition
+  state_module/agent_buddy/routers.py       agent_reply router
+  state_module/agent_buddy/state_*.py       StateAI, StateUser, StatePlan,
+                                            StateComputerPlan, StateTool
+  state_module/agent_executor/graph.yaml    executor FSM definition
+  state_module/agent_executor/routers.py    executor/use_tool/ask_human routers
+  state_module/agent_executor/state_*.py    StateExecutor, StateExecutorTool,
+                                            StateApproval, StateExecutorDone
+  base_module/app.py                        FastAPI app, chat endpoint,
+                                            Smithery OAuth, startup
+  base_module/tasks.py                      /tasks HTTP API + lifecycle docs
+  base_module/task_store.py                 Postgres task/approval/event store
+  base_module/task_runner.py                subagent spawner + orphan sweep
+  base_module/jwt_utils.py                  JWT auth, demo mode
+  tool_module/tool_call.py, smithery.py     Smithery MCP manager
+  tool_module/scoped.py                     per-plan tool scoping
+  memory_module/memory.py                   short-term (Postgres) + mem0
+  model_module/ArkModelNew.py               ArkModelLink + message classes
+  model_module/llm_json.py, errors.py       JSON repair/validation, ModelError
+  computer_module/                          sandboxed computer agent (non-FSM)
+  config_module/loader.py, config.yaml      config
+================================================================================
