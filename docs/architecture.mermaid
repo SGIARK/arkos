@@ -1,0 +1,62 @@
+flowchart TB
+    subgraph SURF["Surfaces"]
+        UI["Chat UI (SSE)"]
+        TRAY["Task + Approval tray"]
+    end
+
+    subgraph HARNESS["Harness — control plane (stateless, ~300 lines)"]
+        DISP["Dispatcher<br/>lease + wake(task_id)"]
+        FSM["Lifecycle FSM — the only state machine<br/>pending → running → awaiting_approval<br/>→ completed | failed | cancelled"]
+        MAN["Manifest builder<br/>per run: (agent, user, surface)"]
+        CTX["Context assembly<br/>view transforms + recovery ladder"]
+        ANN["Announce-back<br/>(idempotency keys)"]
+        STEER["Steering handle<br/>(queue_message, abort)"]
+    end
+
+    subgraph BRAIN["Brain — run_turn, one loop for buddy and subagent"]
+        LOOP["run_turn<br/>call → tool_calls → execute → append → repeat<br/>budgets: hops · per-tool attempts · wall clock<br/>typed continue + terminal reasons"]
+        CLIENT["Model client — the only retry layer<br/>classified errors · source-tagged · hard timeout"]
+    end
+
+    VLLM["vLLM · Qwen 2.5<br/>native tool calling · token streaming"]
+
+    subgraph SESSION["Session — append-only Postgres log, the only durable truth"]
+        LOG["Events<br/>messages · tool_call/result · lifecycle · view decisions"]
+        BLOB["Full-result blobs<br/>(preview + ref in event)"]
+    end
+
+    subgraph HANDS["Hands — execute(name, input) → result envelope, never raises"]
+        SMITH["Smithery proxy<br/>OAuth vault — creds never in brain or sandbox"]
+        SBX["e2b sandbox — lazy provisioned<br/>run_command · read/edit/write · grep · glob"]
+        BT["browser_task<br/>(budgets passed per call)"]
+        RR["read_result(ref, offset, limit)"]
+    end
+
+    MCPS["MCP services<br/>Notion · Linear · GCal · ..."]
+    BU["browser_use inner loop<br/>(delegated, leashed)"]
+    BLESS["Browserless CDP"]
+    MEM["mem0 long-term memory<br/>(retrieved once per turn)"]
+
+    UI -- "user message" --> DISP
+    TRAY -- "approval response" --> DISP
+    DISP -- "spawn / wake at cursor" --> LOOP
+    STEER -. "mid-run message → next hop" .-> LOOP
+    MAN -- "tool manifest (replaces, never inherits)" --> LOOP
+    CTX -- "context slice (session ≠ context window)" --> LOOP
+    LOG --> CTX
+    MEM --> CTX
+    LOOP <--> CLIENT
+    CLIENT <--> VLLM
+    LOOP -- "tool_calls (readonly parallel, mutating serial)" --> HANDS
+    HANDS -- "result envelope (ok | error_kind, model-readable)" --> LOOP
+    LOOP -- "append every hop" --> LOG
+    LOOP -- "typed events" --> FSM
+    FSM -- "transition events" --> LOG
+    FSM --> ANN
+    ANN -- "announce event → parent session" --> LOG
+    LOOP -- "token stream" --> UI
+    SMITH --> MCPS
+    BT --> BU
+    BU --> BLESS
+    RR --> BLOB
+    BLOB --- LOG

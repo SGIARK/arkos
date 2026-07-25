@@ -1,0 +1,330 @@
+ Light editing for readability.
+
+
+--------------------------------------------------------------------------------
+1. SYMPTOM: THE NEW FRONTEND ISN'T SURFACING TASKS
+--------------------------------------------------------------------------------
+
+USER:
+The old frontend had only MCP; we recently added computer use through an E2B
+filesystem. The original MCP flow was: send a request, buddy makes a plan, the
+user approves the plan, a subagent spawns and appears in the task list, the
+subagent requests approval (which shows in the approval window), and when it
+finishes a "done" message appears in the approval window. This is now broken for
+both the original MCP flow and the computer-use flow: tasks aren't reaching the
+task list, and we can't see what the agent is doing. Please diagnose the problem;
+don't write any code.
+
+ASSISTANT:
+Mapped the full task/approval pipeline end to end. Source is largely coherent and
+unit tests pass, so the breakage is at integration boundaries. Four defects plus
+one deployment risk:
+
+  1. The frontend hides everything that goes wrong. It polls only
+     status=running and status=awaiting_approval, never completed/failed, and
+     every fetch wrapper swallows errors. A task that fails fast or sticks in
+     "pending" never appears, and server 500s are invisible.
+  2. Executor subagents fail instantly on any error: agent.py's error path sets
+     current_state to "agent_reply", a buddy-only state that doesn't exist in the
+     executor graph, raising KeyError so the task is marked failed.
+  3. Executor can never call MCP tools: ScopedToolManager.list_all_tools() took no
+     user_id, but the executor called it with one, raising TypeError that degraded
+     every step to "ask the human."
+  4. agent.py error path crashes as in (2).
+  5. Migrations are manual; if the unified schema wasn't applied, every query 500s,
+     and (1) hides it.
+
+
+--------------------------------------------------------------------------------
+2. CROSS-CHECK AGAINST docs/specs/ISSUES.md
+--------------------------------------------------------------------------------
+
+USER:
+Look under docs/specs at ISSUES.md. Does this align with it?
+
+ASSISTANT:
+Strong alignment. My finding #1 is the spec's Mechanism 1 almost verbatim
+(app.jsx polls only running + awaiting_approval). The spec also documents a second
+root cause I had under-weighted: an identity-keyspace split where reads scope by
+the JWT subject but some writes scope by an X-User-ID header, so a row is written
+under one identity and listed under another. My execution-layer findings (the
+scoped-tools signature and the agent.py error path) aren't in the spec; it scopes
+itself to surfacing. Recommended running the spec's own diagnostic query to decide
+which dominates.
+
+
+--------------------------------------------------------------------------------
+3. "THIS CODEBASE FEELS LIKE A MESS"
+--------------------------------------------------------------------------------
+
+USER:
+At this point it feels like this codebase is a mess.
+
+ASSISTANT:
+It's not a mess in the usual sense. It's heavily specced, has a risk register, and
+has a contract doc. What you're feeling is a half-finished migration: a fast
+refactor folded computer tasks into one shared task backbone, and the surrounding
+callers didn't fully catch up. Every bug sits along that one fault line, and they
+all fail silently, so each feels like fresh chaos when it's really four traceable
+issues. Fix visibility first and the "mess" collapses into a short, finite list.
+
+
+--------------------------------------------------------------------------------
+4. CONSOLIDATED PUNCH LIST + DESIGN DECISIONS
+--------------------------------------------------------------------------------
+
+USER:
+Write a consolidated punch list into ISSUES.md. The new frontend isn't showing
+finished tasks and things are getting missed. Is the plan using JSON-constrained
+generation parsed by JS? How do we know what commands the computer agent runs —
+are those surfaced? And again, why don't finished tasks surface to "done"?
+
+ASSISTANT:
+Added a ranked punch list. Direct answers:
+  - Finished tasks never surface because refreshAll only requests running and
+    awaiting_approval; there is no fetch for completed/failed anywhere.
+  - The plan is schema-constrained on the backend (the model emits JSON under a
+    schema), but it's then re-serialized into a fenced "ark-plan" block in the chat
+    text and recovered on the frontend with a regex plus JSON.parse — not
+    constrained decode. Generation is structured; the channel back to JS is an
+    unstructured scrape, so any drift silently drops the plan.
+  - The computer agent does emit every shell command into the shared events table,
+    readable at /tasks/{id}/events. The only gap is the same surfacing bug: the UI
+    fetches events only for live tasks, so the command log vanishes the moment a
+    task finishes.
+
+USER:
+Decisions: yes to replacing the 6-second polling with the existing SSE stream
+pattern (as a fast follow); bound the finished-task list to the last 15 minutes;
+and consolidate onto the single UUID keyspace.
+
+ASSISTANT:
+Recorded all three in the spec: SSE as Task 6 (after the identity and writer
+fixes), a server-side 15-minute window for terminal tasks in Task 1, and keyspace
+consolidation as a new Task 5. Marked the matching open questions resolved and
+added acceptance tests.
+
+
+--------------------------------------------------------------------------------
+5. CENTRALIZE JSON PARSING WITH REPAIR
+--------------------------------------------------------------------------------
+
+USER:
+Wherever we parse JSON, we should use a JSON-repair step. And apply it in one
+place — the function it stems from — not at every call site.
+
+ASSISTANT:
+Agreed, and to be clear, nothing in the codebase had been changed yet; only the
+spec doc. There are two origins: in Python, every structured parse comes from the
+model client, so one helper (parse_llm_json) runs json-repair then validates, and
+the five state call sites switch to it. In JS, one safeJsonParse helper covers both
+parse sites. Recorded as Task 7.
+
+USER:
+Where's the actual JSON-repair library? It fixes JSON when the model fails even
+under constrained generation.
+
+ASSISTANT:
+Right — constrained decoding still emits invalid JSON when output is truncated at
+the token cap, a stop sequence fires early, or the model wraps it in a fence.
+Named the concrete libraries: json_repair (pip) inside the Python helper and
+jsonrepair (npm) inside the JS helper, both added to the dependency manifests.
+
+
+--------------------------------------------------------------------------------
+6. CONNECTIONS: SETTINGS SAYS CONNECTED, BUDDY SAYS IT ISN'T
+--------------------------------------------------------------------------------
+
+USER:
+Linear shows connected in settings, but buddy says it isn't.
+
+ASSISTANT:
+This is a per-user prompt bug. The settings panel reads connection state live and
+per-user, so it's correct. But buddy's system prompt was built once at startup
+into a global string that unconditionally marks every per-user service as "not yet
+connected," and every user received that same stale prompt. So buddy never checked;
+it just parroted the boot-time text.
+
+
+--------------------------------------------------------------------------------
+7. WIRE IN MORE SMITHERY CONNECTORS
+--------------------------------------------------------------------------------
+
+USER:
+We need to wire in more MCPs from Smithery: Gmail, Slack, GitHub, Notion, and
+Parallel web search. Can you find the Smithery MCP URLs?
+
+ASSISTANT:
+Confirmed the URL format your config already uses is a real Smithery convention.
+Verified each endpoint resolves:
+  - Gmail:   https://gmail.run.tools
+  - Slack:   https://slack.run.tools
+  - GitHub:  https://github.run.tools
+  - Notion:  https://notion.run.tools
+  - Parallel Web Search: https://search--parallel.run.tools
+The first four use Smithery's hosted OAuth. Parallel's config schema is empty, so
+it needs no typed API key (its credential is granted through OAuth).
+
+USER:
+Update the config, and the frontend so the user can actually choose which ones
+they want. Keep it minimal — just name, status, and a connect button, like the
+existing tools-and-connections panel.
+
+ASSISTANT:
+Added all six servers to config (name only, no descriptions). No frontend change
+was needed: the connections panel is already data-driven, so every configured
+service renders with a connect/disconnect control automatically.
+
+
+--------------------------------------------------------------------------------
+8. PARALLEL: MAKE IT A CONNECT TOGGLE
+--------------------------------------------------------------------------------
+
+USER:
+Where's Parallel web search? We should be able to connect it; "connect" here just
+means turn it on in settings. (Later: there IS an OAuth callback for Parallel —
+keep the same flow as the others.)
+
+ASSISTANT:
+First attempt treated Parallel as a no-OAuth toggle, then reverted per your
+correction so it uses the exact same OAuth connect flow as the others. The consent
+screen you saw ("Grant access to your Parallel API key / Share new key") is just
+Parallel's own OAuth consent UX; the callback path is identical to Gmail, Linear,
+and the rest.
+
+
+--------------------------------------------------------------------------------
+9. PLAN RENDERED TWICE; STREAM TEXT FUSED
+--------------------------------------------------------------------------------
+
+USER:
+Why is the plan repeated twice?
+
+ASSISTANT:
+The plan state put the title and steps into the message both as prose and inside
+the ark-plan JSON block. The frontend stripped only the JSON block, leaving the
+prose copy, and then rendered the card from the JSON — so it appeared twice. Fixed
+in state_plan.py: the message is now just a one-line intro plus the sentinel, so
+the card is the single source of truth.
+
+
+--------------------------------------------------------------------------------
+10. PLAN OMITS THE EMAIL STEP
+--------------------------------------------------------------------------------
+
+USER:
+That plan only says "search the web and compile a summary"; it doesn't mention
+sending the email — even though Gmail is connected.
+
+ASSISTANT:
+Confirmed Gmail is connected, so this is the per-user prompt bug again. The prompt
+buddy plans against was a frozen, global, shared-only snapshot that reports Gmail
+as not connected, so buddy silently planned only what it believed it could do and
+dropped the email step while its prose still promised it. The fix is to build the
+prompt per-user, which a later change put in place.
+
+
+--------------------------------------------------------------------------------
+11. GLOBAL STATE AUDIT (RACE CONDITIONS)
+--------------------------------------------------------------------------------
+
+USER:
+I thought the prompt was per-user. What is global that should be per-user? I'm
+looking for race conditions, as outlined in ISSUES.md.
+
+ASSISTANT:
+The prompt is per-user now. What remains:
+  1. The module globals for the system prompt and tool list, rewritten on every
+     chat request — a cross-user write race and redundant work.
+  2. The agent is handed the global shared-only tool dict, not the per-user set.
+  3. The shared tool-manager's per-user dicts are mutated across awaits — a
+     same-user race.
+  4. The single shared StateHandler holds shared State instances — safe only while
+     states stay stateless.
+  5. The per-user Memory object is shared across a user's concurrent requests.
+The identity-keyspace mismatch from ISSUES.md is largely resolved; every endpoint
+now derives identity from the verified token.
+
+
+--------------------------------------------------------------------------------
+12. FIXES 1, 4, AND 5 (and a confirmed memory bleed)
+--------------------------------------------------------------------------------
+
+USER:
+How do we fix items 1, 4, and 5? I think I've seen memory bleed.
+
+ASSISTANT:
+Implemented and verified all three:
+  - Fix 1: Removed the per-request global prompt rebuild and all its call sites.
+    The prompt is already assembled per-user, so the global rewrite was pure race
+    surface plus an extra round trip per message.
+  - Fix 4: State objects now freeze after construction, and the handler freezes
+    each one. Any attribute write at runtime raises immediately instead of bleeding
+    one user's data into another. Verified construction still works and post-freeze
+    writes raise.
+  - Fix 5 (the bleed): short-term memory retrieval filtered by user only, never by
+    session, so unrelated conversations mixed. Scoped retrieval to (user, session),
+    threaded a per-conversation session id from the client through to a
+    per-(user, session) Memory, and had the frontend generate and reset that id.
+
+Recorded as CM1–CM3 in ISSUES.md.
+
+
+--------------------------------------------------------------------------------
+13. DESK LAYOUT LOOKS SQUISHED
+--------------------------------------------------------------------------------
+
+USER:
+Why is the desk squished, as if there's supposed to be another column? Center it.
+Actually, give the desk full width so the watching column stops truncating.
+
+ASSISTANT:
+It wasn't a missing column. The view container was capped at 1320px and pinned
+left, so on a wide monitor the three zones filled only the left portion. Centered
+the container, then switched the desk to the existing full-width class so the
+watching column no longer truncates.
+
+
+--------------------------------------------------------------------------------
+14. PRODUCTION CODE-QUALITY REVIEW
+--------------------------------------------------------------------------------
+
+USER:
+This should be a production codebase with high standards. Flag every unclean
+practice and instance of sloppy code; comb through it thoroughly. Disregard
+CLAUDE.md for this review — treat it as potentially unreliable too.
+
+ASSISTANT:
+Agreed, and CLAUDE.md's drift from reality is itself a finding. Full report saved
+to docs/specs/CODE_REVIEW.md. Headlines:
+  - A dead, parallel state-registration subsystem (a decorator and global registry
+    that nothing reads) that also prints to stdout on every import.
+  - CLAUDE.md documents a logging module that doesn't exist and forbids a decorator
+    the code uses everywhere.
+  - Cross-module reach-ins to the tool manager's private attributes.
+  - Stray print() calls in hot paths; broad exception swallowing.
+  - Several functions well over 100 lines (one is 241).
+  - Committed dead code and two misspelled "depricated" directories.
+  - Hardcoded placeholder "watching" data presented as real in the desk UI.
+  - Scattered in-function imports, a hardcoded default secret, inconsistent typing,
+    manual migrations with no boot gate, and a brittle keyword-matching heuristic.
+The report ranks everything by impact and suggests an order of attack.
+
+
+================================================================================
+ARTIFACTS PRODUCED THIS SESSION
+================================================================================
+  - docs/specs/ISSUES.md        Consolidated punch list, design decisions,
+                                concurrency/memory fixes (CM1–CM3).
+  - docs/specs/CODE_REVIEW.md   Full code-quality review.
+  - config_module/config.yaml   Six Smithery connectors wired in.
+  - base_module/app.py          Removed global prompt-refresh race; per-(user,
+                                session) memory.
+  - memory_module/memory.py     Session-scoped short-term memory.
+  - state_module/core/          State instances frozen after construction.
+  - state_module/agent_buddy/state_plan.py  Plan no longer duplicated in chat.
+  - frontend/                   Per-conversation session id; desk full-width.
+
+================================================================================
+END OF TRANSCRIPT
+================================================================================

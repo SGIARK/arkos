@@ -1,0 +1,24 @@
+-- 002_waitlist_role.sql  (COPY to 002_waitlist_role.sql and set a real secret)
+-- The ONLY role the public-facing intake service uses. It can INSERT into
+-- waitlist and nothing else: no SELECT (so a compromised service still cannot
+-- read the email list), no access to any other table. RLS is on, so an
+-- insert-only policy is scoped to exactly this role.
+
+do $$
+begin
+  if not exists (select 1 from pg_roles where rolname = 'waitlist_writer') then
+    create role waitlist_writer login password 'REPLACE_WITH_A_LONG_RANDOM_SECRET';
+  end if;
+end $$;
+
+grant usage  on schema public       to waitlist_writer;
+grant insert on public.waitlist     to waitlist_writer;
+-- deliberately NO select/update/delete, and NO grants on other tables.
+
+drop policy if exists waitlist_insert on public.waitlist;
+create policy waitlist_insert on public.waitlist
+  for insert to waitlist_writer
+  with check (true);
+
+-- Optional: an admin read path for YOU (run manually as owner, not via the app):
+--   select email, created_at from public.waitlist order by created_at desc;
