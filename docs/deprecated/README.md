@@ -10,6 +10,13 @@ context. If a docstring or comment in the codebase points here, that pointer is
 stale and should be deleted, not followed. `ENVIRONMENT_SPEC` in particular is
 referenced by `agent_module/agent.py` and was never written at all.
 
+Also here, and equally off limits:
+`STATE_MACHINE_AND_HARNESS.txt` (the FSM / `StateOutput` / YAML-graph write-up),
+`ARKOS_Working_Session_Transcript.txt` (a June debugging session),
+`CLAUDE_pre_redesign.md` (the 552-line guidelines that mandated the deleted
+architecture), and `PROPOSED_CHANGES.md` (the retired G1-G21 gap log; the live
+one is `docs/GAPS_2026-08-06.md`).
+
 The law is:
 
 | Question | Doc |
