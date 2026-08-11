@@ -1,0 +1,121 @@
+# Auth Spec
+
+Companion to `docs/contracts.md` (which states the invariants the system relies
+on) and the redesign spec. Scope: identity, authorization, trust boundaries.
+**Gate:** `/app` does not go public until everything in "Rollout gate" is done.
+
+**Status:** Not started | **Author:** John Wallace | **Last updated:** 2026-08-01
+
+---
+
+# The problem, plainly
+
+Token *verification* works today (signed JWTs, checked on every request, queries
+scoped to the token's user). Token *issuance* is broken: `POST /auth/demo-login`
+hands a valid token to anyone who types a username — no password, no email.
+Anyone who can reach the server can become any user, including their connected
+OAuth services (Google, Linear...) through the agent. Plus: `ARK_DEMO_MODE`
+allows tokenless header impersonation, and CORS is `*`.
+
+---
+
+# Identity: Supabase Auth (GoTrue) — plugin, not hand-rolled
+
+Already in the stack (same Supabase project). It owns signup, login, password
+reset, and OAuth-social login if we ever want it.
+
+- **Frontend:** logs in with `supabase-js`; posts that JWT ONCE to
+  `/auth/session`; thereafter holds nothing — the cookie does the work.
+- **Backend:** `jwt_utils.py` stops minting tokens and instead VERIFIES
+  Supabase's JWT (their JWKS / JWT secret). `sub` claim → our `users` row
+  (create-on-first-login, keyed by Supabase user id; username becomes profile
+  data, not identity).
+- **Deleted:** `demo-login`, `issue_token`, `ARK_DEMO_MODE` and the `X-User-ID`
+  fallback. CORS pinned to the real origin with `allow_credentials=True` (see below).
+
+# The session cookie (and why SSE needs nothing special)
+
+`EventSource` cannot send an `Authorization` header, so a bearer design needs a
+workaround for live streams. We avoid it entirely: after verifying Supabase's
+JWT once, **we set our own session cookie** — httpOnly, Secure, SameSite=Lax.
+The browser attaches it to every request including `EventSource`, so streams
+authenticate with no token in the URL and `Last-Event-ID` reconnect works out of
+the box. httpOnly also means XSS cannot read the session at all.
+
+Bearer-only existed because wildcard CORS (`allow_origins=["*"]`, a demo
+convenience for `file://` frontends) forbids credentials. In production the
+frontend is same-origin, so that constraint is gone.
+
+**Cost:** CSRF. Handled by SameSite=Lax plus an `Origin` check on every
+POST/PATCH/DELETE. Non-browser clients (CLI, mobile) would need bearer
+alongside — a small addition when one appears, not a redesign.
+
+**Work:** pin CORS to the real origin + `allow_credentials=True`; read the token
+from a cookie in `jwt_utils`; set on login, clear on logout; origin-check
+mutations; delete localStorage token handling and `authHeaders()` from the
+frontend. `POST /auth/stream-token` is never built.
+
+# Authorization invariants (what contracts.md relies on)
+
+- Every query/subscribe/command is scoped to the verified user. No endpoint
+  accepts a user id from headers, body, or query (the OAuth callback's
+  `fallback_user_id` path is removed).
+- Ownership checked on: sessions (snapshot, events, messages, cancel),
+  projects + files, approvals (respond), blob refs (`read_result` — refs are
+  unguessable UUIDs AND ownership-checked; unguessable alone is not access
+  control), the browser frame stream (`GET /sessions/{id}/browser/frames`).
+- Quotas: max concurrently running sessions per user (default 5), max new
+  sessions per hour (default 20), upload size caps. Enforced in the
+  harness at command time; exceeding returns the standard error shape.
+- Grants and approvals are never shared across sessions (peer isolation).
+
+# Trust boundaries (prompt injection + secrets)
+
+Three classes of untrusted input reach the model: user suggestions (steering),
+web content via `browser_task`, and MCP tool results. Stance:
+
+- The model may be manipulated by any of them; the mitigation is NOT trusting
+  the model's judgment but the tool boundary: write-effect tools carry
+  `requires_approval` where consequential, budgets bound the blast radius, and
+  the manifest bounds capability. A hijacked session can waste its budget; it
+  cannot exceed its manifest.
+- No secrets in event payloads: tool args are redacted against a denylist
+  (tokens, passwords, connection strings) BEFORE `append()` — the log is
+  durable and rendered in the UI. Credentials stay behind the Smithery
+  vault+proxy and never enter the brain or sandbox (contracts.md).
+- Sandbox env carries no credentials (verified in redesign Task 8).
+- **The persistent browser profile is credential-equivalent at rest.** Because
+  the browser is leased per user and keeps its profile (D18), that directory
+  holds live logged-in session cookies for whatever the user signed into. It is
+  as sensitive as a password store: encrypted at rest, never copied between
+  users, never surfaced in events, logs, or `tool_result` payloads, and deleted
+  with the account. This is new sensitive state the pre-lease design did not
+  have — a fresh-context-per-call browser had nothing to steal.
+
+# Rollout gate (all boxes before /app is public)
+
+1. Supabase Auth wired; demo-login + ARK_DEMO_MODE deleted from the codebase.
+2. CORS pinned + credentials allowed; session cookie set on login; origin check on mutations.
+3. Ownership checks on every resource above; `test_authz_scoping` green.
+4. Quotas enforced.
+5. Redaction in the appender.
+6. Off-box verification: app port unreachable except via Caddy; landing's
+   `steps/` hardening still in place.
+
+# Conformance
+
+- `test_authz_scoping` — user A cannot read/steer/subscribe/resolve user B's
+  anything (sessions, refs, files, approvals, streams).
+- `test_token_issuance` — no code path issues a token without Supabase
+  verification; grep-level check that demo-login/ARK_DEMO_MODE are gone.
+- `test_cookie_session` — no cookie or a foreign cookie is rejected on every endpoint including both SSE streams; mutations reject a bad `Origin`.
+
+# Open questions
+
+1. Email+password vs magic-link-only at launch? (GoTrue does both; magic link
+   is less code and no password-reset surface.)
+2. Do we need refresh-token handling in the frontend beyond what supabase-js
+   does automatically? (Likely no — verify token expiry UX under a long
+   Looking Glass session.)
+3. Team/multi-user projects are out of scope here — single-owner everything
+   until a sharing spec exists.
