@@ -13,7 +13,9 @@ docker run --gpus '"device=1"' \
   --entrypoint "" \
   lmsysorg/sglang:latest \
   python3 -m sglang.launch_server \
-    --model-path Qwen/Qwen2.5-7B-Instruct \
+    --model-path Qwen/Qwen3-8B \
+    --tool-call-parser qwen25 \
+    --reasoning-parser qwen3 \
     --host 0.0.0.0 \
     --port 30000
 

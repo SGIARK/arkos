@@ -32,11 +32,11 @@ _DEFAULT_TIMEOUT = 300
 
 
 def _sbx_timeout() -> int:
-    return int(config.get("computer_agent.sandbox.timeout_seconds") or _DEFAULT_TIMEOUT)
+    return int(config.get("sandbox.timeout_seconds") or _DEFAULT_TIMEOUT)
 
 
 def _sbx_template() -> str | None:
-    t = config.get("computer_agent.sandbox.template")
+    t = config.get("sandbox.template")
     # "base" is the SDK default; pass nothing so we don't risk an invalid-template error.
     return t if t and t != "base" else None
 

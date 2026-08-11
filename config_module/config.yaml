@@ -15,11 +15,12 @@ app:
 
 llm:
   base_url: "http://localhost:30000/v1"
-  model_name: "tgi"
+  model_name: "Qwen/Qwen3-8B"
   max_tokens: 8192          # output reserve (max completion tokens), NOT the context limit
-  context_window: 32768     # total in+out the model accepts. SGLang on :30000 launched without
-                            # --context-length, so it defaults to Qwen2.5-7B's native 32k.
-                            # If --context-length is ever set below this, lower to match.
+  context_window: 40960     # total in+out the model accepts. SGLang on :30000 launched without
+                            # --context-length, so it defaults to Qwen3-8B's native 40960
+                            # (verified via /v1/models max_model_len). If --context-length is
+                            # ever set below this, lower to match.
   temperature: 0.7
 
 database:
@@ -41,23 +42,13 @@ embedding:
 state:
   graph_path: "state_module/agent_buddy/graph.yaml"
 
-# The computer-agent does real work in a per-user e2b sandbox (files + shell).
-# For the MVP it runs on the LOCAL model (kept as a separate key so swapping to a
-# frontier model later is one line). The E2B SDK reads E2B_API_KEY from the
+# Per-user e2b sandbox (files + shell). The E2B SDK reads E2B_API_KEY from the
 # environment directly, so it is intentionally NOT referenced here -- that keeps
 # config load from crashing when the key is unset during early setup.
-computer_agent:
-  llm:
-    base_url: "http://localhost:30000/v1"   # local model now; point at a frontier endpoint later
-    model_name: "Qwen/Qwen3-8B"
-    max_tokens: 4096
-    temperature: 0.7
-    # To enable native tool-calling: restart SGLang with --tool-call-parser qwen3
-    # Without it, the agent falls back to constrained-JSON action format automatically.
-  sandbox:
-    template: "base"                         # e2b template
-    timeout_seconds: 300                     # keep-alive while working
-    idle_timeout_seconds: 900                # pause after this much idle (lifecycle, later)
+sandbox:
+  template: "base"                         # e2b template
+  timeout_seconds: 300                     # keep-alive while working
+  idle_timeout_seconds: 900                # pause after this much idle (lifecycle, later)
 
 # All MCP traffic flows through Smithery Connect. No local subprocesses, no
 # per-provider OAuth plumbing on our side. Smithery maintains the OAuth apps,
