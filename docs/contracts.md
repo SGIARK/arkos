@@ -292,11 +292,28 @@ because it costs nothing and fails closed.
 ```
 run_turn(messages: list[Message],
          tools: list[ToolSpec],
-         budgets: {max_hops, per_tool_attempts, wall_clock},
-         mode: "attended"|"unattended") -> AsyncIterator[Event]
+         budgets: {max_hops, per_tool_attempts, wall_clock_s, model_retries},
+         mode: "attended"|"unattended",
+         *, dispatch: (name, args) -> ResultEnvelope,
+         hops_used: int = 0,
+         options: dict|None = None) -> AsyncIterator[Event]
+# dispatch is INJECTED and required. Importing tool_module here would give the
+# loop MCP sessions, the sandbox and the browser, and "pure brain" would be false.
+# hops_used is CALLER-SUPPLIED for the same reason: hops are cumulative across a
+# resume and counted from the log, which the loop cannot read.
+# No `source` param: unattended IS the background source, derived from mode.
 # Never touches Postgres. Only caller of the model.
-# Hops cumulative across resume (counted from the log); wall clock per active
-# segment (parked time free). Per-tool attempts cap 3, then the failure stands.
+# Hops cumulative across resume (counted from the log); wall clock bounds the
+# WHOLE hop, model plus tools, not just the gap between hops.
+# Per-tool attempts cap 3, then the failure stands. The count is CONSECUTIVE
+# FAILURES, not calls, and a success clears the streak: a tool that recovers is
+# not punished for an earlier bad patch. In-flight calls count against the cap,
+# so a parallel fan-out of five cannot outrun a cap of two.
+# Malformed tool args buy ONE repair round trip per turn, NOT charged as a hop:
+# the hop produced no usable work, and charging it would let bad JSON eat budget
+# the task needs.
+# Completion is set from the finish_task RESULT, never from the call. A
+# finish_task that errors, has bad args, or is capped does NOT complete the run.
 # model_retry semantics: the client retries WITHIN one generate() call; the loop
 # re-attempts the HOP at most 3 consecutive times (with backoff) after a
 # retryable exhaustion, then done{model_error}. Two bounded layers, not nested

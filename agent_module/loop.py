@@ -3,8 +3,7 @@ The agent loop. One `run_turn`, replacing Agent.step/step_stream/choose_transiti
 all of state_module, and ComputerAgent.run.
 
 Never touches Postgres. Only caller of the model. Errors are model input, not
-control flow: a failed tool comes back as a tool_result the model can read and
-react to. Only cancellation propagates.
+control flow: a failed tool comes back as a tool_result the model can read.
 """
 
 from __future__ import annotations
@@ -27,18 +26,22 @@ from agent_module.events import (
     ToolResultEvent,
     UserEvent,
 )
+from config_module.loader import config
 from model_module import client as model_client
 from model_module.errors import ModelError
 
 logger = logging.getLogger(__name__)
 
 Mode = Literal["attended", "unattended"]
+Profile = Literal["interactive", "worker"]
 
 # The control tool that makes an unattended exit safe.
 FINISH_TOOL = "finish_task"
 
-# View cap for tool_result.content. The full text goes to a blob and rides `ref`.
-RESULT_VIEW_CAP = 2000
+
+def _cfg(key: str, default: Any) -> Any:
+    value = config.get(key)
+    return default if value is None else value
 
 
 @dataclass(slots=True)
@@ -75,11 +78,21 @@ class ResultEnvelope:
 
 @dataclass(slots=True)
 class Budgets:
-    max_hops: int = 15
-    per_tool_attempts: int = 3
-    wall_clock_s: float = 300.0
-    # Consecutive hop re-attempts after the client exhausts its own retries.
-    model_retries: int = 3
+    max_hops: int
+    wall_clock_s: float
+    per_tool_attempts: int
+    model_retries: int
+
+    @classmethod
+    def load(cls, profile: Profile = "interactive") -> Budgets:
+        """Budgets come from config; a caller naming a profile gets that profile."""
+        fallback = {"interactive": (6, 300.0), "worker": (15, 1800.0)}[profile]
+        return cls(
+            max_hops=int(_cfg(f"budgets.{profile}.max_hops", fallback[0])),
+            wall_clock_s=float(_cfg(f"budgets.{profile}.wall_clock_s", fallback[1])),
+            per_tool_attempts=int(_cfg("budgets.per_tool_attempts", 3)),
+            model_retries=int(_cfg("budgets.model_retries", 3)),
+        )
 
 
 Dispatch = Callable[[str, dict[str, Any]], Awaitable[ResultEnvelope]]
@@ -87,8 +100,6 @@ Dispatch = Callable[[str, dict[str, Any]], Awaitable[ResultEnvelope]]
 
 @dataclass(slots=True)
 class _PartialCall:
-    """Tool-call fragments accumulate here, keyed by the stream's index."""
-
     id: str = ""
     name: str = ""
     arguments: str = ""
@@ -99,14 +110,15 @@ class _State:
     """Carried across hops within one turn."""
 
     budgets: Budgets
-    # Consecutive failures per tool. Reset by a success, so a tool that works
-    # again is not punished for an earlier bad patch.
+    # Consecutive failures; a success clears the streak.
     failures: dict[str, int] = field(default_factory=dict)
-    # One malformed-args round trip per turn is free, so a repair does not eat
-    # a hop the work needs. 0a measured zero malformed calls, so this is a
-    # safety net, not a hot path.
+    # Counts dispatches in flight, so a parallel fan-out cannot outrun the cap.
+    in_flight: dict[str, int] = field(default_factory=dict)
+    # One malformed-args round trip per turn is not charged as a hop.
     repair_available: bool = True
     repair_pending: bool = False
+    # Set when finish_task actually returns ok, never from the call alone.
+    finished: bool = False
 
 
 async def run_turn(
@@ -117,7 +129,6 @@ async def run_turn(
     *,
     dispatch: Dispatch,
     hops_used: int = 0,
-    source: model_client.Source = "interactive",
     options: dict[str, Any] | None = None,
 ) -> AsyncIterator[Event]:
     """
@@ -129,97 +140,120 @@ async def run_turn(
     Args:
         messages: OpenAI-shape history, built by the fold.
         tools: the manifest for this session.
-        budgets: hop, attempt and wall-clock caps.
+        budgets: hop, attempt and wall-clock caps, from `Budgets.load`.
         mode: attended turns may end on bare text; unattended may not.
         dispatch: executes one tool and returns an envelope.
         hops_used: hops already spent, counted from the log across a resume.
-        source: passed to the model client.
         options: per-call model params from config.
 
     Yields:
         Events from the vocabulary, ending with exactly one `done`.
     """
+    # An unattended run is the background source: no human is waiting, so it
+    # yields the GPU slot on overload rather than queueing for it.
+    source: model_client.Source = "background" if mode == "unattended" else "interactive"
     by_name = {t.name: t for t in tools}
     schemas = [t.to_openai() for t in tools]
-    started = time.monotonic()
+    deadline = time.monotonic() + budgets.wall_clock_s
     state = _State(budgets=budgets)
+    seen_ids: set[str] = set()
     nudged = False
     model_retries = 0
+    reattempt = False
 
     while True:
         if hops_used >= budgets.max_hops:
             yield DoneEvent(reason="max_hops")
             return
-        if time.monotonic() - started >= budgets.wall_clock_s:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             yield DoneEvent(reason="wall_clock")
             return
 
-        # A repair round trip is not charged: the previous hop produced no
-        # usable work, only malformed arguments.
-        if state.repair_pending:
-            state.repair_pending = False
-        else:
+        # A repair round trip and a model re-attempt are both the same hop
+        # trying again, so neither is charged and neither re-emits the meter.
+        charged = not state.repair_pending and not reattempt
+        state.repair_pending = False
+        reattempt = False
+        if charged:
             hops_used += 1
             yield BudgetEvent(hops_used=hops_used, hops_max=budgets.max_hops)
 
+        hop = _Hop()
         try:
-            hop = _Hop()
-            async for delta in model_client.generate(messages, schemas, source=source, options=options):
-                event = hop.absorb(delta)
-                if event is not None:
-                    yield event
+            # The budget bounds the whole hop, model plus tools. Checking only
+            # between hops would let one slow tool overrun it without limit.
+            async with asyncio.timeout(remaining):
+                async for delta in model_client.generate(messages, schemas, source=source, options=options):
+                    event = hop.absorb(delta)
+                    if event is not None:
+                        yield event
+
+                calls = hop.finish(seen_ids)
+
+                if hop.truncated and not calls:
+                    messages.append({"role": "assistant", "content": hop.text})
+                    yield DoneEvent(reason="context_overflow")
+                    return
+
+                if not calls:
+                    if hop.text:
+                        messages.append({"role": "assistant", "content": hop.text})
+                    if mode == "attended":
+                        # The human is the continuation, so stopping is safe.
+                        yield DoneEvent(reason="turn_end")
+                        return
+                    if not hop.text:
+                        # No text and no calls. Looping on that just spends the
+                        # budget on more nothing.
+                        yield DoneEvent(reason="model_error")
+                        return
+                    if not nudged and hops_used == budgets.max_hops - 1:
+                        nudged = True
+                        nudge = (
+                            f"You have 1 hop left and have not called {FINISH_TOOL}. "
+                            f"Finish the work and call {FINISH_TOOL}, or explain what blocked you."
+                        )
+                        messages.append({"role": "user", "content": nudge})
+                        yield UserEvent(text=nudge, source="system")
+                    model_retries = 0
+                    continue
+
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": hop.text or None,
+                        "tool_calls": [
+                            {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": c.arguments}}
+                            for c in calls
+                        ],
+                    }
+                )
+
+                for batch in _batch_by_readonly(calls, by_name):
+                    async for event in _run_batch(batch, by_name, dispatch, state, messages):
+                        yield event
+
+        except TimeoutError:
+            yield DoneEvent(reason="wall_clock")
+            return
         except ModelError as e:
-            # Two bounded layers: the client retried within its own call, this
-            # re-attempts the hop, and neither nests unbounded.
             if e.retryable and model_retries < budgets.model_retries:
                 model_retries += 1
-                hops_used -= 1
+                reattempt = True
                 logger.warning("hop failed (%s), re-attempting %d/%d", e.kind, model_retries, budgets.model_retries)
                 continue
             logger.error("model error ends the run: %s", e)
             yield DoneEvent(reason="model_error")
             return
+        except asyncio.CancelledError:
+            # Cancel exits through done{cancelled} rather than propagating a
+            # bare error, so the transcript records why the run stopped.
+            yield DoneEvent(reason="cancelled")
+            raise
 
         model_retries = 0
-        calls = hop.finish()
-
-        if not calls:
-            messages.append({"role": "assistant", "content": hop.text})
-            if mode == "attended":
-                # The human is the continuation, so stopping is always safe.
-                yield DoneEvent(reason="turn_end")
-                return
-            # Unattended: bare text is not an exit. One nudge near the cap, then
-            # keep going until a budget stops us.
-            if not nudged and hops_used >= budgets.max_hops - 1:
-                nudged = True
-                nudge = (
-                    f"You have {budgets.max_hops - hops_used} hop(s) left and have not called "
-                    f"{FINISH_TOOL}. Finish the work and call {FINISH_TOOL}, or explain what blocked you."
-                )
-                messages.append({"role": "user", "content": nudge})
-                yield UserEvent(text=nudge, source="system")
-            continue
-
-        messages.append(
-            {
-                "role": "assistant",
-                "content": hop.text or None,
-                "tool_calls": [
-                    {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": c.arguments}}
-                    for c in calls
-                ],
-            }
-        )
-
-        finished = any(c.name == FINISH_TOOL and c.name in by_name for c in calls)
-        # readonly drives concurrency: reads go together, a write runs alone and
-        # in order, since a write may depend on the reads before it.
-        for batch in _batch_by_readonly(calls, by_name):
-            async for event in _run_batch(batch, by_name, dispatch, state, messages):
-                yield event
-
-        if finished and mode == "unattended":
+        if state.finished and mode == "unattended":
             yield DoneEvent(reason="completed")
             return
 
@@ -229,7 +263,9 @@ class _Hop:
 
     def __init__(self) -> None:
         self.text = ""
+        self.truncated = False
         self._calls: dict[int, _PartialCall] = {}
+        self._next_synthetic = 0
 
     def absorb(self, delta: model_client.Delta) -> Event | None:
         """Map one delta to at most one event. Tool-call fragments buffer instead."""
@@ -246,26 +282,40 @@ class _Hop:
             if delta.name:
                 partial.name = delta.name
             partial.arguments += delta.arguments
+        elif isinstance(delta, model_client.Finish):
+            # "length" means max_tokens cut the reply off mid-thought.
+            self.truncated = delta.reason == "length"
         return None
 
-    def finish(self) -> list[_PartialCall]:
-        return [self._calls[i] for i in sorted(self._calls)]
+    def finish(self, seen_ids: set[str]) -> list[_PartialCall]:
+        """
+        Ordered calls, with ids made unique.
+
+        An id that is empty or already used cannot be paired with its result,
+        and a repeat is a 400 from the server on the next hop.
+        """
+        calls = [self._calls[i] for i in sorted(self._calls)]
+        for call in calls:
+            if not call.id or call.id in seen_ids:
+                self._next_synthetic += 1
+                call.id = f"call_{len(seen_ids)}_{self._next_synthetic}"
+            seen_ids.add(call.id)
+        return calls
 
 
 def _batch_by_readonly(calls: list[_PartialCall], by_name: dict[str, ToolSpec]) -> list[list[_PartialCall]]:
     """Group consecutive readonly calls; anything else stands alone."""
     batches: list[list[_PartialCall]] = []
+    open_batch = False
     for call in calls:
         spec = by_name.get(call.name)
-        if spec is not None and spec.readonly and batches and _all_readonly(batches[-1], by_name):
+        readonly = spec is not None and spec.readonly
+        if readonly and open_batch:
             batches[-1].append(call)
         else:
             batches.append([call])
+        open_batch = readonly
     return batches
-
-
-def _all_readonly(batch: list[_PartialCall], by_name: dict[str, ToolSpec]) -> bool:
-    return all((spec := by_name.get(c.name)) is not None and spec.readonly for c in batch)
 
 
 async def _run_batch(
@@ -279,8 +329,8 @@ async def _run_batch(
     Validate the batch, then dispatch what survives concurrently.
 
     Results are yielded as they land rather than in call order, so a slow read
-    does not hold up a fast one on screen. Every call is still closed by exactly
-    one result before this returns.
+    does not hold up a fast one. Every call is closed by exactly one result
+    before this returns, on every exit path.
     """
     runnable: list[tuple[_PartialCall, dict[str, Any]]] = []
 
@@ -302,22 +352,25 @@ async def _run_batch(
             continue
 
         cap = state.budgets.per_tool_attempts
-        if state.failures.get(call.name, 0) >= cap:
+        # in_flight counts this batch, so five parallel calls to one tool cannot
+        # all dispatch under a cap of two.
+        if state.failures.get(call.name, 0) + state.in_flight.get(call.name, 0) >= cap:
             yield _close(
                 call,
                 "upstream_error",
-                f"{call.name} has failed {cap} times. Do not call it again; try another approach.",
+                f"{call.name} is at its {cap}-attempt cap. Do not call it again; try another approach.",
                 messages,
             )
             continue
 
+        state.in_flight[call.name] = state.in_flight.get(call.name, 0) + 1
         runnable.append((call, args))
 
     if not runnable:
         return
 
-    # asyncio.wait, not as_completed: it hands back the task objects themselves,
-    # which is how a result is matched to its call.
+    # asyncio.wait, not as_completed: it hands back the task objects, which is
+    # how a result is matched to its call.
     tasks = {asyncio.create_task(dispatch(c.name, a)): c for c, a in runnable}
     pending = set(tasks)
     try:
@@ -325,26 +378,57 @@ async def _run_batch(
             done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 call = tasks[task]
-                envelope = task.result()
-                if envelope.ok:
-                    state.failures.pop(call.name, None)
-                else:
-                    state.failures[call.name] = state.failures.get(call.name, 0) + 1
-
-                content, total = _cap_view(envelope.content)
-                messages.append({"role": "tool", "tool_call_id": call.id, "content": envelope.content})
-                yield ToolResultEvent(
-                    id=call.id,
-                    ok=envelope.ok,
-                    content=content,
-                    error_kind=envelope.error_kind,
-                    total_chars=total,
-                    ref=envelope.ref,
-                )
-    finally:
-        # Covers the consumer abandoning the generator mid-batch.
+                yield _settle(call, _envelope_of(task, call), state, messages)
+    except (asyncio.CancelledError, GeneratorExit):
+        # Close every open call before leaving, or the transcript has a
+        # tool_call with no result and the session cannot be resumed.
         for task in pending:
             task.cancel()
+        for task in pending:
+            call = tasks[task]
+            state.in_flight[call.name] = max(0, state.in_flight.get(call.name, 1) - 1)
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": _INTERRUPTED})
+        raise
+
+
+_INTERRUPTED = "Interrupted before this returned. The outcome is unknown; verify before retrying."
+
+
+def _envelope_of(task: asyncio.Task[ResultEnvelope], call: _PartialCall) -> ResultEnvelope:
+    """A dispatch that raises is a failed tool, not a failed run."""
+    try:
+        return task.result()
+    except asyncio.CancelledError:
+        return ResultEnvelope(ok=False, content=_INTERRUPTED, error_kind="interrupted")
+    except Exception as e:
+        logger.exception("dispatch raised for %s", call.name)
+        return ResultEnvelope(ok=False, content=f"{call.name} failed: {e}", error_kind="upstream_error")
+
+
+def _settle(
+    call: _PartialCall,
+    envelope: ResultEnvelope,
+    state: _State,
+    messages: list[dict[str, Any]],
+) -> ToolResultEvent:
+    state.in_flight[call.name] = max(0, state.in_flight.get(call.name, 1) - 1)
+    if envelope.ok:
+        state.failures.pop(call.name, None)
+        if call.name == FINISH_TOOL:
+            state.finished = True
+    else:
+        state.failures[call.name] = state.failures.get(call.name, 0) + 1
+
+    content, total = _cap_view(envelope.content)
+    messages.append({"role": "tool", "tool_call_id": call.id, "content": envelope.content})
+    return ToolResultEvent(
+        id=call.id,
+        ok=envelope.ok,
+        content=content,
+        error_kind=envelope.error_kind,
+        total_chars=total,
+        ref=envelope.ref,
+    )
 
 
 def _close(call: _PartialCall, error_kind: str, message: str, messages: list[dict[str, Any]]) -> ToolResultEvent:
@@ -367,7 +451,8 @@ def _parse_args(raw: str) -> tuple[dict[str, Any], str | None]:
 
 
 def _cap_view(content: str) -> tuple[str, int | None]:
-    """View-cap the result; the caller stores the full text and sets `ref`."""
-    if len(content) <= RESULT_VIEW_CAP:
+    """View-cap the result. `ref` comes from the envelope when a blob was stored."""
+    cap = int(_cfg("tools.result_view_cap_chars", 4000))
+    if len(content) <= cap:
         return content, None
-    return content[:RESULT_VIEW_CAP], len(content)
+    return content[:cap], len(content)

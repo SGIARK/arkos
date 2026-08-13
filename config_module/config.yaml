@@ -31,6 +31,15 @@ llm:
   retry_backoff_s: 0.5      # first backoff; doubles, with jitter
   retry_backoff_max_s: 8.0
 
+budgets:
+  interactive: {max_hops: 6,  wall_clock_s: 300}
+  worker:      {max_hops: 15, wall_clock_s: 1800}
+  per_tool_attempts: 3
+  model_retries: 3          # consecutive hop re-attempts after the client gives up
+
+tools:
+  result_view_cap_chars: 4000   # over this -> blob + ref
+
 database:
   url: "${DB_URL}"
 

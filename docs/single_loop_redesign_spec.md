@@ -362,10 +362,12 @@ retry; honest hop/attempt counters; streams structurally.
 **Touch:** `agent_module/loop.py`, `events.py` | **P0, 2-3d** | **Blockers:** 1
 **Test:** mocked model, 2 tool calls then text → exactly 3 LLM calls, parallel
 readonly execution, `done{completed}`.
-**Status:** done in three commits: 2a events vocabulary, 2b run_turn with serial
-tools, 2c parallel readonly. 38 tests. `run_turn` takes `dispatch` as a keyword
-argument, which the contracts signature omits; without it the loop would have to
-import `tool_module` and would stop being pure.
+**Status:** done in commits 2a (events), 2b (run_turn), 2c (parallel readonly),
+2d (review fixes). 45 tests. `run_turn` takes three parameters the contracts
+signature omits: `dispatch` (required, or the loop must import `tool_module` and
+stops being pure) plus `hops_used` and the model pass-throughs.
+**Not done here:** `tool_result.ref` is only ever what the envelope supplies, so
+an oversized result with no blob loses its tail. The blob store is Task 4/5.
 
 ## Task 3: Tool layer slim-down
 **Done when:** envelope + manifest per contracts.md; one ClientSession; TTL

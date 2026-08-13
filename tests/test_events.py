@@ -59,3 +59,14 @@ def test_turn_end_is_not_terminal():
     """It is the attended 'I have said my piece', the only trigger for idle."""
     assert not ev.DoneEvent(reason="turn_end").is_terminal()
     assert ev.DoneEvent(reason="max_hops").is_terminal()
+
+
+def test_a_newer_writers_extra_keys_are_dropped_not_fatal():
+    """An old reader must still render a v2 row; that is what version is for."""
+    event = ev.parse_event("content", {"text": "hi", "sentiment": "warm"}, version=2)
+    assert event.text == "hi" and event.version == 2
+
+
+def test_a_missing_required_field_is_loud():
+    with pytest.raises(ValueError):
+        ev.parse_event("tool_call", {"id": "c1"})

@@ -8,7 +8,7 @@ frontend. `to_row()` and `parse_event()` are the only serialisation boundary.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, ClassVar, Literal
 
 EventKind = Literal[
@@ -138,7 +138,6 @@ class LifecycleEvent(Event):
     reason: str | None = None
 
     def payload(self) -> dict[str, Any]:
-        # `from` is a keyword, so the field is from_ and the wire name is from.
         return {"from": self.from_, "to": self.to, "reason": self.reason}
 
 
@@ -182,9 +181,12 @@ def parse_event(kind: str, payload: dict[str, Any], version: int = 1) -> Event:
     """
     Rebuild an event from a stored row.
 
+    A newer writer's extra payload keys are dropped rather than raising, which
+    is what `version` is for: an old reader must still render a v2 row.
+
     Raises:
-        ValueError: on an unknown kind, so an out-of-vocabulary row is loud
-            rather than a silently dropped transcript entry.
+        ValueError: on an unknown kind, or a payload missing a required field.
+            An out-of-vocabulary row is loud rather than silently absent.
     """
     cls = _BY_KIND.get(kind)
     if cls is None:
@@ -192,4 +194,9 @@ def parse_event(kind: str, payload: dict[str, Any], version: int = 1) -> Event:
     data = dict(payload)
     if cls is LifecycleEvent:
         data["from_"] = data.pop("from", None)
-    return cls(**data, version=version)
+    known = {f.name for f in fields(cls)}
+    data = {k: v for k, v in data.items() if k in known}
+    try:
+        return cls(**data, version=version)
+    except TypeError as e:
+        raise ValueError(f"bad payload for {kind!r}: {e}") from e

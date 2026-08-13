@@ -40,7 +40,12 @@ stand-in IS the "tool call failed" record nobody was alive to write.
 | Model output | mode | Action |
 |---|---|---|
 | tool calls | any | execute (readonly parallel, mutating serial), append, loop |
-| `finish_task` | unattended | `done{completed}` |
+| `finish_task` returns ok | unattended | `done{completed}` |
+| `finish_task` errors, has bad args, or is at its attempt cap | unattended | closed as a failed `tool_result`, run CONTINUES; completion comes from the result, never the call |
+| malformed tool args | any | `tool_result{invalid_args}`, one free repair round trip per turn (not charged as a hop), then charged like any hop |
+| a tool fails `per_tool_attempts` times in a row | any | further calls closed `upstream_error` without dispatch; a success at any point clears the streak |
+| empty completion (no text, no calls) | any | `done{model_error}`; looping on nothing just spends the budget |
+| `finish_reason: length` with no calls | any | `done{context_overflow}` |
 | `request_approval` / `ask` | any | park → `awaiting_approval`, exit loop, leave the tool_call open |
 | `todo_write` | any | replace the current list (latest-wins); emit `todo` event; older todo results drop out of the view |
 | text only | attended | `done{turn_end}` → `idle` (non-terminal: no `terminal_reason`, no `ended_at`) |
