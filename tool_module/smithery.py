@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 import aiohttp
@@ -206,6 +207,8 @@ class Smithery:
         self._ttl_s = float(_cfg("tools.mcp_cache_ttl_s", 3600))
         # mcp_url -> Connection, per user. `None` holds the shared (no-auth) ones.
         self._cache: dict[str | None, dict[str, Connection]] = {}
+        self._locks: dict[str | None, asyncio.Lock] = {}
+        self._generation: dict[str | None, int] = {}
         # Setup URLs live in memory only: they expire, and a stale one in the DB
         # is worse than none.
         self._setup_urls: dict[tuple[str | None, str], str] = {}
@@ -231,25 +234,60 @@ class Smithery:
 
     # ---------- cache ----------
 
-    async def _load(self, user_id: str | None) -> dict[str, Connection]:
-        """One DB read per user per process; the rows carry everything else."""
-        if user_id not in self._cache:
-            self._cache[user_id] = await conns.load(user_id)
-        return self._cache[user_id]
+    def _lock_for(self, owner: str | None) -> asyncio.Lock:
+        lock = self._locks.get(owner)
+        if lock is None:
+            lock = self._locks[owner] = asyncio.Lock()
+        return lock
 
-    async def _revalidate(self, user_id: str | None, conn: Connection) -> None:
+    def _invalidate(self, owner: str | None) -> None:
+        """
+        Drop the cached rows AND bump the generation.
+
+        Popping alone is not enough: a `_load` already awaiting its query would
+        install its pre-write snapshot afterwards, and since `_load` only reads
+        when the key is absent, that stale entry would never be revisited.
+        """
+        self._generation[owner] = self._generation.get(owner, 0) + 1
+        self._cache.pop(owner, None)
+
+    async def _load(self, owner: str | None) -> dict[str, Connection]:
+        """One DB read per owner per process; the rows carry everything else."""
+        cached = self._cache.get(owner)
+        if cached is not None:
+            return cached
+
+        async with self._lock_for(owner):
+            # Someone may have filled it while we waited; two concurrent misses
+            # would otherwise both query and build divergent Connection graphs.
+            cached = self._cache.get(owner)
+            if cached is not None:
+                return cached
+            generation = self._generation.get(owner, 0)
+            rows = await conns.load(owner)
+            # An invalidation that landed during the read wins over this result.
+            if self._generation.get(owner, 0) == generation:
+                self._cache[owner] = rows
+            return rows
+
+    async def _revalidate(self, owner: str | None, conn: Connection) -> None:
         """Refresh a connected server's tool list once its TTL is up. No PUT."""
         if not conn.connected or not conn.stale(self._ttl_s):
             return
         try:
             tools = await self._list_tools(conn.connection_id)
-        except (SmitheryError, AuthRequiredError, aiohttp.ClientError) as e:
+        except (SmitheryError, AuthRequiredError, aiohttp.ClientError, TimeoutError) as e:
             # The cached list is still the best thing we have; a refresh failing
-            # must not take away tools the user already connected.
+            # must not take away tools the user already connected. Re-arm anyway,
+            # or a server that is down costs a timeout on every manifest build.
+            conn.refreshed_at = datetime.now(UTC)
             logger.warning("tools/list refresh failed for %s: %s", conn.mcp_url, e)
             return
         conn.tools = tools
-        await conns.save(user_id, conn.mcp_url, status=CONNECTED, tools=tools)
+        # Re-arm the in-memory clock too. Writing only the DB leaves the cached
+        # object permanently stale, so every later manifest build re-fetches.
+        conn.refreshed_at = datetime.now(UTC)
+        await conns.save(owner, conn.mcp_url, status=CONNECTED, tools=tools)
 
     async def _list_tools(self, connection_id: str) -> list[dict[str, Any]]:
         result = await self.client.jsonrpc(connection_id, "tools/list", {})
@@ -266,7 +304,7 @@ class Smithery:
         """
         mcp_url = self._url(label)
         spec = self.servers[label]
-        owner = None if not spec.get("requires_auth") else user_id
+        owner = _owner_for(spec, user_id)
         connection_id = await conns.claim(owner, mcp_url)
 
         response = await self.client.upsert(
@@ -282,13 +320,13 @@ class Smithery:
         if state != CONNECTED:
             await conns.save(owner, mcp_url, status=state, tools=None)
             self._setup_urls[(owner, mcp_url)] = setup_url or ""
-            self._cache.pop(owner, None)
+            self._invalidate(owner)
             raise AuthRequiredError(service=label, setup_url=setup_url, state=state)
 
         tools = await self._list_tools(connection_id)
         await conns.save(owner, mcp_url, status=CONNECTED, tools=tools)
         self._setup_urls.pop((owner, mcp_url), None)
-        self._cache.pop(owner, None)
+        self._invalidate(owner)
         return Connection(mcp_url, connection_id, CONNECTED, tools)
 
     async def initialize_shared(self) -> None:
@@ -314,14 +352,14 @@ class Smithery:
     async def disconnect(self, user_id: str, label: str) -> None:
         """Revoke at Smithery and drop the row, so the next connect is a fresh grant."""
         mcp_url = self._url(label)
-        owner = None if not self.servers[label].get("requires_auth") else user_id
+        owner = _owner_for(self.servers[label], user_id)
         stored = await self._load(owner)
         conn = stored.get(mcp_url)
         if conn is not None:
             await self.client.delete(conn.connection_id)
         await conns.forget(owner, mcp_url)
         self._setup_urls.pop((owner, mcp_url), None)
-        self._cache.pop(owner, None)
+        self._invalidate(owner)
 
     # ---------- the manifest half ----------
 
@@ -333,7 +371,10 @@ class Smithery:
         remote `read_file` cannot shadow ours.
         """
         specs: list[ToolSpec] = []
-        for owner in (None, user_id):
+        # User-first, matching `_resolve`. If the two disagree the model is shown
+        # one server's schema and dispatched to another's, because
+        # `registry.manifest` keeps the first of a duplicated name.
+        for owner in (user_id, None):
             for conn in list((await self._load(owner)).values()):
                 if not conn.connected:
                     continue
@@ -369,9 +410,20 @@ class Smithery:
         try:
             result = await self.client.jsonrpc(conn.connection_id, "tools/call", {"name": name, "arguments": args})
         except AuthRequiredError as e:
-            # The grant died under us. Mark it so the manifest stops offering it.
-            await conns.save(owner, conn.mcp_url, status="auth_required", tools=None)
-            self._cache.pop(owner, None)
+            if e.setup_url:
+                self._setup_urls[(owner, conn.mcp_url)] = e.setup_url
+            # The grant died under us. Mark it so the manifest stops offering it,
+            # but KEEP tools_cache: the tool names are how a later call resolves
+            # to this connection, and dropping them makes the next attempt a bare
+            # not_found instead of this actionable answer. Failing to record the
+            # status must not turn "do not retry" into a retryable error, so the
+            # write is allowed to fail on its own.
+            try:
+                await conns.set_status(owner, conn.mcp_url, "auth_required")
+            except Exception:
+                logger.exception("could not record dead grant for %s", conn.mcp_url)
+            else:
+                self._invalidate(owner)
             return fail(
                 "auth_required",
                 f"{self._display(conn.mcp_url)} needs to be reconnected"
@@ -381,7 +433,9 @@ class Smithery:
             )
         except SmitheryError as e:
             return fail("upstream_error", f"{name} failed: {e}")
-        except aiohttp.ClientError as e:
+        except (aiohttp.ClientError, TimeoutError) as e:
+            # aiohttp's total-timeout raises bare TimeoutError, which is NOT a
+            # ClientError, so it would otherwise escape the envelope promise.
             return fail("upstream_error", f"{name} could not reach the server: {type(e).__name__}: {e}")
 
         return await _envelope(name, result, ctx)
@@ -421,6 +475,21 @@ class Smithery:
         await self.client.close()
         self._cache.clear()
         self._setup_urls.clear()
+
+
+def _owner_for(spec: dict[str, Any], user_id: str | None) -> str | None:
+    """
+    Which table a connection belongs in. `None` means shared.
+
+    A `requires_auth` server with no user would otherwise land in
+    `shared_connections`, handing one person's OAuth grant to everybody. That is
+    a bug in the caller, so it raises rather than guessing.
+    """
+    if not spec.get("requires_auth"):
+        return None
+    if not user_id:
+        raise SmitheryError(f"{spec.get('mcp_url')} requires per-user auth, but no user_id was given")
+    return user_id
 
 
 def _to_specs(tools: list[dict[str, Any]]) -> list[ToolSpec]:

@@ -160,6 +160,30 @@ async def save(
     )
 
 
+async def set_status(user_id: str | None, mcp_url: str, status: str) -> None:
+    """
+    Change the status and nothing else.
+
+    `save(tools=None)` NULLs `tools_cache`, which is right for a connection that
+    never came up but wrong for one whose grant died: the tool names are how a
+    later call resolves to this connection at all, and losing them turns an
+    actionable `auth_required` into a bare `not_found`.
+    """
+    if user_id is None:
+        await pool.execute(
+            "UPDATE shared_connections SET status = $2, refreshed_at = now() WHERE mcp_url = $1",
+            mcp_url,
+            status,
+        )
+        return
+    await pool.execute(
+        "UPDATE user_connections SET status = $3, refreshed_at = now() WHERE user_id = $1 AND mcp_url = $2",
+        _uid(user_id),
+        mcp_url,
+        status,
+    )
+
+
 async def forget(user_id: str | None, mcp_url: str) -> None:
     """Drop the row so the next connect mints a fresh id and a fresh OAuth flow."""
     if user_id is None:

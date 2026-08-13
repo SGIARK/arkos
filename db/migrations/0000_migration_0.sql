@@ -41,7 +41,12 @@ DROP TABLE IF EXISTS user_oauth_tokens     CASCADE;
 -- mem0 goes through the `vecs` extension: the real tables live in the vecs
 -- schema and public.memories is only a view over vecs.memories. Dropping the
 -- public name alone leaves every vector behind.
-DROP VIEW  IF EXISTS memories             CASCADE;
+-- Both forms, because which one `public.memories` is depends on whether mem0
+-- was pointed through `vecs`. DROP TABLE on a view (or vice versa) is a hard
+-- error, not a no-op, so dropping only the form we happened to have here would
+-- abort this migration on the other kind of database.
+DROP VIEW  IF EXISTS memories               CASCADE;
+DROP TABLE IF EXISTS memories               CASCADE;
 DROP TABLE IF EXISTS vecs.memories          CASCADE;
 DROP TABLE IF EXISTS vecs.memories_entities CASCADE;
 DROP TABLE IF EXISTS vecs.mem0migrations    CASCADE;
