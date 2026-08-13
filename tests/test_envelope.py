@@ -132,3 +132,104 @@ async def _allow(name, args):
 
 async def _deny(name, args):
     return False
+
+
+# --- gaps found by review ---------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_nothing_escapes_execute():
+    """The one promise this function makes, on every path that can raise."""
+
+    def boom_lookup(name):
+        raise RuntimeError("registry exploded")
+
+    result = await env.execute("x", {}, _ctx(), lookup=boom_lookup)
+    assert result.error_kind == "upstream_error"
+
+    async def boom_approve(name, args):
+        raise RuntimeError("park write failed")
+
+    tool = _Tool(name="send_email", requires_approval=True)
+    result = await env.execute("send_email", {"path": "/x"}, _ctx(approve=boom_approve), lookup=_lookup(tool))
+    assert result.error_kind == "upstream_error"
+
+    tool = _Tool()
+    tool.validate = lambda args, ctx: 1 / 0
+    result = await env.execute("read_file", {"path": "/x"}, _ctx(), lookup=_lookup(tool))
+    assert result.error_kind == "upstream_error"
+
+
+@pytest.mark.asyncio
+async def test_a_sync_approve_is_tolerated():
+    tool = _Tool(name="send_email", requires_approval=True)
+    result = await env.execute(
+        "send_email", {"path": "/x"}, _ctx(approve=lambda n, a: True), lookup=_lookup(tool), timeout_s=1
+    )
+    assert result.ok is True
+
+
+@pytest.mark.asyncio
+async def test_a_tool_returning_junk_does_not_reach_the_loop():
+    tool = _Tool(result={"not": "an envelope"})
+    result = await env.execute("read_file", {"path": "/x"}, _ctx(), lookup=_lookup(tool))
+    assert result.ok is False and "malformed" in result.content
+
+
+@pytest.mark.asyncio
+async def test_useless_failures_are_not_marked_retryable():
+    """Retrying these burns the per-tool cap for nothing."""
+    tool = _Tool(name="send_email", requires_approval=True)
+    declined = await env.execute("send_email", {"path": "/x"}, _ctx(approve=_deny), lookup=_lookup(tool))
+    cannot_ask = await env.execute("send_email", {"path": "/x"}, _ctx(), lookup=_lookup(tool))
+
+    assert declined.retryable is False
+    assert cannot_ask.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_third_party_schemas_do_not_become_uncallable():
+    """A key marked required but never declared used to be rejected both ways."""
+
+    class _Remote:
+        spec = env.ToolSpec(
+            name="remote",
+            input_schema={"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a", "b"]},
+        )
+
+        async def call(self, args, ctx):
+            return env.ok("fine")
+
+    result = await env.execute("remote", {"a": "x", "b": "y"}, _ctx(), lookup=_lookup(_Remote()))
+    assert result.ok is True
+
+
+@pytest.mark.parametrize("schema_extra", [{"additionalProperties": True}, {"oneOf": [{}]}])
+@pytest.mark.asyncio
+async def test_open_schemas_skip_unknown_key_rejection(schema_extra):
+    class _Remote:
+        spec = env.ToolSpec(
+            name="remote",
+            input_schema={"type": "object", "properties": {"a": {"type": "string"}}, **schema_extra},
+        )
+
+        async def call(self, args, ctx):
+            return env.ok("fine")
+
+    result = await env.execute("remote", {"a": "x", "extra": 1}, _ctx(), lookup=_lookup(_Remote()))
+    assert result.ok is True
+
+
+@pytest.mark.asyncio
+async def test_a_nullable_type_union_is_accepted():
+    class _Remote:
+        spec = env.ToolSpec(
+            name="remote",
+            input_schema={"type": "object", "properties": {"a": {"type": ["string", "null"]}}},
+        )
+
+        async def call(self, args, ctx):
+            return env.ok("fine")
+
+    assert (await env.execute("remote", {"a": None}, _ctx(), lookup=_lookup(_Remote()))).ok is True
+    assert (await env.execute("remote", {"a": 5}, _ctx(), lookup=_lookup(_Remote()))).error_kind == "invalid_args"

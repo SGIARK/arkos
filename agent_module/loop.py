@@ -29,6 +29,7 @@ from agent_module.events import (
 from config_module.loader import config
 from model_module import client as model_client
 from model_module.errors import ModelError
+from tool_module.envelope import ResultEnvelope, ToolSpec
 
 logger = logging.getLogger(__name__)
 
@@ -42,38 +43,6 @@ FINISH_TOOL = "finish_task"
 def _cfg(key: str, default: Any) -> Any:
     value = config.get(key)
     return default if value is None else value
-
-
-@dataclass(slots=True)
-class ToolSpec:
-    """Mirrors tool_module's ToolSpec; Task 3 owns the real one."""
-
-    name: str
-    description: str = ""
-    input_schema: dict[str, Any] = field(default_factory=dict)
-    readonly: bool = False
-    requires_approval: bool = False
-
-    def to_openai(self) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.input_schema or {"type": "object", "properties": {}},
-            },
-        }
-
-
-@dataclass(slots=True)
-class ResultEnvelope:
-    """Mirrors tool_module's envelope; dispatch returns this and never raises."""
-
-    ok: bool
-    content: str
-    error_kind: str | None = None
-    retryable: bool = False
-    ref: str | None = None
 
 
 @dataclass(slots=True)
@@ -425,7 +394,7 @@ def _settle(
         id=call.id,
         ok=envelope.ok,
         content=content,
-        error_kind=envelope.error_kind,
+        error_kind=envelope.error_kind if envelope.error_kind != "none" else None,
         total_chars=total,
         ref=envelope.ref,
     )

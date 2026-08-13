@@ -49,8 +49,6 @@ class Ask:
     )
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
-        # The runner parks the session on this envelope; the answer arrives as a
-        # user event on the next hop.
         return ok(args["question"])
 
 
@@ -133,11 +131,15 @@ class ReadResult:
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
         if ctx.read_blob is None:
-            return fail("upstream_error", "Stored results are not available in this session.")
+            return fail("upstream_error", "Stored results are not available in this session.", retryable=False)
         text = await ctx.read_blob(args["ref"], args.get("offset", 0), args.get("limit", 2000))
         if text is None:
             return fail("not_found", f"No stored result for ref {args['ref']!r}.")
         return ok(text)
 
+
+# The runner parks on these instead of continuing. Named here so it does not
+# have to hardcode strings; nothing parks yet, that is Task 6.
+PARK_TOOLS = frozenset({Ask.spec.name, RequestApproval.spec.name})
 
 TOOLS = [FinishTask(), Ask(), RequestApproval(), TodoWrite(), ReadResult()]

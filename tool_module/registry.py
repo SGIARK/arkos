@@ -8,13 +8,24 @@ remote `read_file` cannot shadow ours.
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import logging
 import pkgutil
+from collections.abc import Awaitable, Callable
 from typing import Any
 
+from config_module.loader import config
 from tool_module import tools as tools_package
 from tool_module.envelope import ResultEnvelope, Tool, ToolContext, ToolSpec, execute, fail
+
+McpCall = Callable[[str, dict[str, Any], ToolContext], Awaitable[ResultEnvelope]]
+
+
+def _cfg(key: str, default: Any) -> Any:
+    value = config.get(key)
+    return default if value is None else value
+
 
 logger = logging.getLogger(__name__)
 
@@ -52,18 +63,31 @@ def manifest(mcp_specs: list[ToolSpec] | None = None) -> list[ToolSpec]:
     every hand. An MCP tool whose name collides with ours keeps its prefix and
     therefore cannot displace it.
     """
-    specs = [t.spec for t in local_tools().values()]
+    # Copies, always. ToolSpec is mutable and the local ones are process-cached,
+    # so handing out references lets one session's edit poison every session.
+    specs = [_copy(t.spec) for t in local_tools().values()]
+    taken = {s.name for s in specs}
+
     for spec in mcp_specs or []:
-        if not spec.name.startswith(MCP_PREFIX):
-            spec = ToolSpec(
-                name=f"{MCP_PREFIX}{spec.name}",
-                description=spec.description,
-                input_schema=spec.input_schema,
-                readonly=spec.readonly,
-                requires_approval=spec.requires_approval,
-            )
-        specs.append(spec)
+        # Prefix unconditionally. A remote tool genuinely called mcp_foo would
+        # otherwise be dispatched as foo, a name its server does not have.
+        name = f"{MCP_PREFIX}{spec.name}"
+        if name in taken:
+            logger.warning("dropping MCP tool %s: name collides with %s", spec.name, name)
+            continue
+        taken.add(name)
+        specs.append(_copy(spec, name=name))
     return specs
+
+
+def _copy(spec: ToolSpec, *, name: str | None = None) -> ToolSpec:
+    return ToolSpec(
+        name=name or spec.name,
+        description=spec.description,
+        input_schema=dict(spec.input_schema),
+        readonly=spec.readonly,
+        requires_approval=spec.requires_approval,
+    )
 
 
 async def dispatch(
@@ -71,7 +95,7 @@ async def dispatch(
     args: dict[str, Any],
     ctx: ToolContext,
     *,
-    mcp_call: Any = None,
+    mcp_call: McpCall | None = None,
     timeout_s: float = 120.0,
 ) -> ResultEnvelope:
     """
@@ -85,9 +109,39 @@ async def dispatch(
             return fail("not_found", f"No MCP transport available for {name!r}.")
         bare = name[len(MCP_PREFIX) :]
         try:
-            return await mcp_call(bare, args, ctx)
+            # The remote tools are the ones that actually hang, so they need the
+            # cap more than the local ones do.
+            async with asyncio.timeout(timeout_s):
+                result = await mcp_call(bare, args, ctx)
+        except asyncio.CancelledError:
+            raise
+        except TimeoutError:
+            return fail("timeout", f"{name} did not finish within {timeout_s:.0f}s. It may have taken effect.")
         except Exception as e:
             logger.exception("mcp dispatch failed for %s", name)
             return fail("upstream_error", f"{name} failed: {type(e).__name__}: {e}")
+        if not isinstance(result, ResultEnvelope):
+            return fail("upstream_error", f"{name} returned a malformed result.", retryable=False)
+        return result
 
     return await execute(name, args, ctx, lookup=local_tools().get, timeout_s=timeout_s)
+
+
+def bind(
+    ctx: ToolContext,
+    *,
+    mcp_call: McpCall | None = None,
+    timeout_s: float | None = None,
+) -> Callable[[str, dict[str, Any]], Awaitable[ResultEnvelope]]:
+    """
+    Adapt `dispatch` to the `(name, args)` shape `run_turn` requires.
+
+    The loop must not know about contexts or transports, so the session binds
+    them here once and hands the loop a two-argument function.
+    """
+    cap = float(_cfg("tools.call_timeout_s", 120.0)) if timeout_s is None else timeout_s
+
+    async def dispatch_bound(name: str, args: dict[str, Any]) -> ResultEnvelope:
+        return await dispatch(name, args, ctx, mcp_call=mcp_call, timeout_s=cap)
+
+    return dispatch_bound

@@ -379,6 +379,18 @@ minted once and stored (D24); scoped.py deleted; tools/call timeout 120s.
 **Test:** warm per-user tool call = exactly 1 HTTP request; restart = 1 DB read,
 0 Smithery PUTs for connected servers; renaming a key under `mcp_servers:`
 changes no row and prompts no reconnect.
+**Status:** PARTIAL. Done: 3a envelope, 3b registry + manifest + the five
+control tools, 3c review fixes. `ToolSpec`/`ResultEnvelope` are now defined once
+in `tool_module/envelope.py` and imported by the loop, so the mirrors cannot
+drift. `registry.bind()` adapts dispatch to the loop's `(name, args)` shape.
+**NOT done, carry into the next session:** the Smithery half. `user_connections`
+persistence keyed by `(user_id, mcp_url)`, D24 (delete `_user_conn_id` /
+`_shared_conn_id`, mint the id once and store it), one `ClientSession`, TTL
+revalidation, and deleting `scoped.py`. `smithery.py` is untouched, so nothing
+yet produces the `mcp_specs` that `manifest()` accepts.
+**Deviation:** contracts says `manifest(user_id)`. Built as `manifest(mcp_specs)`
+because resolving user to specs is the Smithery half, which does not exist yet.
+Reconcile when it lands.
 
 ## Task 4: Chat on the new loop
 **No flag.** A flag whose off position 500s is not a rollback, it is dead config

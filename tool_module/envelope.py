@@ -50,12 +50,13 @@ def ok(content: str, *, ref: str | None = None) -> ResultEnvelope:
     return ResultEnvelope(ok=True, content=content, ref=ref)
 
 
-def fail(error_kind: ErrorKind, content: str) -> ResultEnvelope:
+def fail(error_kind: ErrorKind, content: str, *, retryable: bool | None = None) -> ResultEnvelope:
+    """`retryable` overrides the default when retrying is known to be useless."""
     return ResultEnvelope(
         ok=False,
         content=content,
         error_kind=error_kind,
-        retryable=error_kind in _RETRYABLE,
+        retryable=error_kind in _RETRYABLE if retryable is None else retryable,
     )
 
 
@@ -67,7 +68,7 @@ class ToolSpec:
     """
 
     name: str
-    description: str
+    description: str = ""
     input_schema: dict[str, Any] = field(default_factory=dict)
     readonly: bool = False
     requires_approval: bool = False
@@ -130,31 +131,40 @@ async def execute(
     Returns:
         A ResultEnvelope, always.
     """
-    tool = lookup(name)
-    if tool is None:
-        return fail("not_found", f"No tool named {name!r}.")
-
-    problem = _check_schema(args, tool.spec.input_schema)
-    if problem is not None:
-        return fail("invalid_args", f"{problem} Call {name} again with corrected arguments.")
-
-    if tool.spec.requires_approval:
-        if ctx.approve is None:
-            return fail("upstream_error", f"{name} needs approval but this session cannot ask for it.")
-        if not await ctx.approve(name, args):
-            return fail("upstream_error", f"The human declined {name}. Do not retry it; choose another approach.")
-
-    validate = getattr(tool, "validate", None)
-    if validate is not None:
-        result = validate(args, ctx)
-        if inspect.isawaitable(result):
-            result = await result
-        if result is not None:
-            return fail("invalid_args", str(result))
-
+    # Everything is inside the try. Lookup, schema checking, approval and
+    # validate can all raise, and any of them escaping breaks the one promise
+    # this function makes.
     try:
+        tool = lookup(name)
+        if tool is None:
+            return fail("not_found", f"No tool named {name!r}.")
+
+        problem = _check_schema(args, tool.spec.input_schema)
+        if problem is not None:
+            return fail("invalid_args", f"{problem} Call {name} again with corrected arguments.")
+
+        if tool.spec.requires_approval:
+            if ctx.approve is None:
+                return fail(
+                    "upstream_error",
+                    f"{name} needs approval but this session cannot ask for it.",
+                    retryable=False,
+                )
+            if not await _maybe_await(ctx.approve(name, args)):
+                return fail(
+                    "upstream_error",
+                    f"The human declined {name}. Do not retry it; choose another approach.",
+                    retryable=False,
+                )
+
+        validate = getattr(tool, "validate", None)
+        if validate is not None:
+            problem = await _maybe_await(validate(args, ctx))
+            if problem is not None:
+                return fail("invalid_args", f"{problem} Call {name} again with corrected arguments.")
+
         async with asyncio.timeout(timeout_s):
-            return await tool.call(args, ctx)
+            result = await tool.call(args, ctx)
     except asyncio.CancelledError:
         raise
     except TimeoutError:
@@ -162,6 +172,16 @@ async def execute(
     except Exception as e:
         logger.exception("tool %s raised", name)
         return fail("upstream_error", f"{name} failed: {type(e).__name__}: {e}")
+
+    if not isinstance(result, ResultEnvelope):
+        logger.error("tool %s returned %s, not a ResultEnvelope", name, type(result).__name__)
+        return fail("upstream_error", f"{name} returned a malformed result.", retryable=False)
+    return result
+
+
+async def _maybe_await(value: Any) -> Any:
+    """Tolerate a sync callback where an async one is expected."""
+    return await value if inspect.isawaitable(value) else value
 
 
 def _check_schema(args: dict[str, Any], schema: dict[str, Any]) -> str | None:
@@ -174,20 +194,35 @@ def _check_schema(args: dict[str, Any], schema: dict[str, Any]) -> str | None:
     if not schema:
         return None
 
+    # Composed schemas (oneOf/anyOf/allOf/$ref) are not ours to interpret.
+    if any(k in schema for k in ("oneOf", "anyOf", "allOf", "$ref")):
+        return None
+
     properties = schema.get("properties") or {}
-    missing = [k for k in schema.get("required") or [] if k not in args]
+    required = schema.get("required") or []
+
+    missing = [k for k in required if k not in args]
     if missing:
         return f"Missing required argument(s): {', '.join(sorted(missing))}."
 
-    unknown = [k for k in args if k not in properties]
-    if properties and unknown:
-        return f"Unknown argument(s): {', '.join(sorted(unknown))}. Allowed: {', '.join(sorted(properties))}."
+    # Only reject unknown keys when the schema is closed and self-consistent.
+    # Third-party schemas routinely mark a key required without declaring it,
+    # and rejecting it both ways makes the tool permanently uncallable.
+    closed = schema.get("additionalProperties") is not True and all(k in properties for k in required)
+    if properties and closed:
+        unknown = [k for k in args if k not in properties]
+        if unknown:
+            return f"Unknown argument(s): {', '.join(sorted(unknown))}. Allowed: {', '.join(sorted(properties))}."
 
     for key, value in args.items():
         expected = (properties.get(key) or {}).get("type")
         if expected and not _type_ok(value, expected):
-            return f"Argument {key!r} should be {expected}, got {type(value).__name__}."
+            return f"Argument {key!r} should be {_describe(expected)}, got {type(value).__name__}."
     return None
+
+
+def _describe(expected: Any) -> str:
+    return " or ".join(expected) if isinstance(expected, list) else str(expected)
 
 
 _JSON_TYPES: dict[str, type | tuple[type, ...]] = {
@@ -200,7 +235,12 @@ _JSON_TYPES: dict[str, type | tuple[type, ...]] = {
 }
 
 
-def _type_ok(value: Any, expected: str) -> bool:
+def _type_ok(value: Any, expected: Any) -> bool:
+    # A union like ["string", "null"] is routine in third-party schemas.
+    if isinstance(expected, list):
+        return any(_type_ok(value, option) for option in expected)
+    if expected == "null":
+        return value is None
     python_type = _JSON_TYPES.get(expected)
     if python_type is None:
         return True
