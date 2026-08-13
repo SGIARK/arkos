@@ -19,7 +19,7 @@ neither do `app.py`, `task_runner.py` or `ArkModelNew.py`. If something tells yo
 to edit one of those, that instruction is stale — check `git log`, do not
 recreate the file.
 
-**There is no HTTP server right now.** Task 4 writes it. `base_module/` holds
+**There is no HTTP server right now.** Task 4 writes it. `harness_module/` holds
 only `jwt_utils.py` and `browser_routes.py`.
 
 Where the live code is: `agent_module/loop.py` (the one loop),

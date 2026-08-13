@@ -176,7 +176,7 @@ flowchart TB
 flowchart TB
     FE["frontend<br/>live updates over SSE, no polling"]
 
-    subgraph HARNESS["harness (base_module) — control plane"]
+    subgraph HARNESS["harness_module — control plane"]
         API["api<br/>snapshot · subscribe · commands"]
         LIFE["lifecycle<br/>the only state machine (7 states),<br/>sole writer of session status"]
         LOG["session_log<br/>append-only events, one table"]
@@ -267,18 +267,26 @@ triggers (scrapped, own future feature), multi-worker leasing (Task 13).
 
 **Deletion inventory:**
 
-| Module | Now | After | Notes |
-|---|---|---|---|
-| state_module | 1,708 | ~0 | graphs, routers, discovery, both agent packages |
-| agent_module | 535 | ~250 | loop.py + events.py replace step/step_stream/choose_transition |
-| base_module | 2,564 | ~1,700 | lifecycle/session_log/runner/api consolidation |
-| tool_module | 1,930 | ~1,950 | envelope+manifest over kept smithery; absorbs sandbox/ from computer_module; scoped.py deleted |
-| model_module | 442 | ~150 | one client; llm_json mostly dies |
-| computer_module | 1,757 | 0 | dissolved: agent/model/runner/router deleted; sandbox+tools → tool_module/sandbox/ |
-| memory_module | 335 | ~0 | removed; mem0 + embedder out of the stack |
-| (new) harness | — | ~600 | lifecycle · session_log · runner · api, consolidated from base_module |
-| tests | 5,037 | ~2,200 | tests of deleted machinery go with it |
-| **Total (py)** | **~14.9k** | **~6.3k** | production ~9.9k → ~4.3k |
+Estimated before, measured after Tasks 7+8 landed on 2026-08-13.
+
+| Module | Before | Planned | **Actual** | Notes |
+|---|---|---|---|---|
+| state_module | 1,708 | ~0 | **0** | deleted: graphs, routers, discovery, both agent packages |
+| memory_module | 335 | ~0 | **0** | deleted: mem0 + embedder out of the stack |
+| computer_module | 1,757 | 0 | **0** | dissolved: agent/model/runner/router/store deleted; sandbox+tools → `tool_module/sandbox/` |
+| base_module → harness_module | 2,564 | ~1,700 | **172** | app/task_runner/tasks/task_store/users deleted outright. Only `jwt_utils` + `browser_routes` survive; the four control-plane files are Tasks 4-5, not yet written |
+| agent_module | 535 | ~250 | **629** | loop.py + events.py; `agent.py` deleted |
+| model_module | 442 | ~150 | **363** | one client; ArkModelNew + llm_json deleted |
+| tool_module | 1,930 | ~1,950 | **2,828** | envelope · registry · connections · smithery · tools/ · browser · sandbox (absorbed) |
+| config_module + db | — | — | **515** | loader, migration 0, asyncpg pool |
+| tests | 5,037 | ~2,200 | **3,894** | 14 test files went with their machinery |
+| **Total (py)** | **~14.9k** | **~6.3k** | **8,576** | production 9.9k → **4,682** against a ~4.5k target |
+
+Where the two big misses are, and why neither is alarming: `harness_module` is
+172 instead of ~1,700 because its four files are not written yet, so that gap is
+Tasks 4-5 arriving, not a saving. `tool_module` overshot ~900 because the
+inventory assumed sandbox would arrive trimmed; it arrived as-is (Task 8's
+integration is unfinished) and the browser tool is untouched until Task 9.
 
 Migration is replace-then-delete, with no flag and no bridge: Tasks 1-3 build
 the new path alongside the old, 0c wipes the database, Task 4 cuts over, and the
@@ -407,10 +415,10 @@ is a straight cutover, and the app is down until it lands.
 completion (measured); memory auto-injection code DELETED (memory removed);
 SSE error chunk on mid-stream failure; chat transcripts ride `session_events`;
 an attended turn ends in `idle`.
-**Touch:** `base_module/app.py` | **P0, 2d** | **Blockers:** 1-3, 0c applied
+**Touch:** `harness_module/app.py` | **P0, 2d** | **Blockers:** 1-3, 0c applied
 **Note:** `app.py` is DELETED (Task 7 ran early), so this is now "write
 `harness/api.py`" rather than "untangle app.py". There is no HTTP server until
-it lands. `base_module/` currently holds only `jwt_utils.py` and
+it lands. `harness_module/` currently holds only `jwt_utils.py` and
 `browser_routes.py`; the naming question (Open Question 5) is now free to settle.
 **Test:** first SSE chunk arrives before mocked model finishes; forced mid-stream
 exception yields an error chunk, not truncation.
@@ -420,14 +428,14 @@ exception yields an error chunk, not truncation.
 flips attended → unattended; completion ONLY via `finish_task` when unattended;
 `idle` on an attended turn end; terminal reason recorded; budgets enforced;
 cancel wins races.
-**Touch:** `base_module` runner/task_store/tasks | **P1, 3d** | **Blockers:** 4
+**Touch:** `harness_module` runner/task_store/tasks | **P1, 3d** | **Blockers:** 4
 **Test:** kill mid-task → resume at cursor, no duplicate side effects; budget
 exhaustion → `failed{max_hops}`, never completed.
 
 ## Task 6: Event-driven approvals
 **Done when:** `request_approval` parks (no polling, no timeout-fail); respond
 appends + wakes at cursor; reminder at 1h.
-**Touch:** `base_module` | **P1, 2d** | **Blockers:** 5
+**Touch:** `harness_module` | **P1, 2d** | **Blockers:** 5
 **Test:** zero DB queries while parked; restart preserves the pending approval.
 
 ## Task 7: Delete the old machinery
@@ -471,7 +479,7 @@ event and rendered in the right-hand canvas (replacing the fixed corner pane); r
 string; graceful-stop budget with `wait_for` backstop; config collapses to a
 `browser:` yaml section; WARNING on dropped register_* kwargs.
 **Touch:** `tool_module/browser_tool.py`, `browser_stream.py`,
-`base_module/browser_routes.py` | **P2, 2d** | **Blockers:** 1
+`harness_module/browser_routes.py` | **P2, 2d** | **Blockers:** 1
 **Test:** budget kills at deadline with partial results; step events appear in
 the session log; stream requires ownership; failure ≠ empty string.
 
@@ -526,11 +534,15 @@ the spine. Task-level acceptance tests live on each card above.
    assumption of the redesign; test first.*
 2. Browser inner-loop model: text-only Qwen grounding acceptable, or does the
    browser justify a small VL model? (Someday-fork; not this spec.)
-3. Does anything downstream consume `StateOutput.structured_data` besides the
-   runner and SSE layer? Grep before Task 7.
+3. ~~Does anything downstream consume `StateOutput.structured_data` besides the
+   runner and SSE layer?~~ **Moot:** both the producer and every consumer were
+   deleted with `state_module` in Task 7.
 4. Hosted frontier model for workers (local 8B for chat)? Config change after
    Task 1; cost call, not architecture.
-5. Naming: keep `base_module` or rename `harness/` (contracts.md pending item).
+5. ~~Naming: keep `base_module` or rename?~~ **Settled 2026-08-13:** renamed
+   **`harness_module`**, matching the repo's `*_module` convention. Done while
+   the directory held two files; the four control-plane modules land there in
+   Tasks 4-5.
 
 ---
 
@@ -754,10 +766,10 @@ re-derive what was safe to touch.
 Production 9.9k → **4,682 lines**, against a ~4.5k target. Tests 6,047 → 3,894;
 suite green at 231. What survived the cull and why: `tool_module/browser_*`
 (Task 9 leashes it), `tool_module/sandbox/` (moved, not integrated),
-`base_module/{jwt_utils,browser_routes}`, `config_module`, `db/`, `frontend/`,
+`harness_module/{jwt_utils,browser_routes}`, `config_module`, `db/`, `frontend/`,
 `landing/`.
 
 Two consequences to carry forward. **There is no HTTP server** until Task 4
-writes one — `app.py` is gone rather than half-alive. And `base_module/` is down
+writes one — `app.py` is gone rather than half-alive. And `harness_module/` is down
 to two files, so Open Question 5 (keep the name or rename to `harness/`) costs
 nothing to settle now and should be settled before Task 4 puts an api.py in it.

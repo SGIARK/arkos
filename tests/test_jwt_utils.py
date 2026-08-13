@@ -1,4 +1,4 @@
-"""Tests for base_module/jwt_utils.py — JWT issue/decode and the auth dependency."""
+"""Tests for harness_module/jwt_utils.py — JWT issue/decode and the auth dependency."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import jwt
 import pytest
 from fastapi import HTTPException
 
-from base_module.jwt_utils import (
+from harness_module.jwt_utils import (
     _extract_bearer,
     decode_token,
     get_current_user,
@@ -53,7 +53,7 @@ class TestDecodeToken:
 
     def test_rejects_expired_token(self):
         # 1970 + 1 second iat; exp also in the past
-        with patch("base_module.jwt_utils._SECRET", "ark-dev-secret-change-me"):
+        with patch("harness_module.jwt_utils._SECRET", "ark-dev-secret-change-me"):
             past = jwt.encode(
                 {"sub": "u", "username": "n", "iat": 1, "exp": 100},
                 "ark-dev-secret-change-me",
@@ -128,7 +128,7 @@ class TestGetCurrentUser:
     @pytest.mark.asyncio
     async def test_username_defaults_to_anon_when_missing(self):
         # Forge a token with no username field
-        from base_module.jwt_utils import _SECRET
+        from harness_module.jwt_utils import _SECRET
 
         token = jwt.encode(
             {"sub": "u", "iat": int(time.time()), "exp": int(time.time()) + 60},

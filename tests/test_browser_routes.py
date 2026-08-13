@@ -1,4 +1,4 @@
-"""Tests for base_module/browser_routes.py — /v1/browser/stream SSE endpoint.
+"""Tests for harness_module/browser_routes.py — /v1/browser/stream SSE endpoint.
 
 The SSE generator is exercised directly rather than through httpx, because
 httpx's ASGITransport buffers streamed responses until the response
@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from base_module import browser_routes
+from harness_module import browser_routes
 from tool_module import browser_stream as bs_module
 
 

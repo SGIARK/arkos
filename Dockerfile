@@ -9,4 +9,6 @@ COPY . .
 
 EXPOSE 1112
 
-CMD ["python", "-m", "uvicorn", "base_module.app:app", "--host", "0.0.0.0", "--port", "1112"]
+# harness_module/api.py is written in Task 4. Until then this image builds but
+# does not serve.
+CMD ["python", "-m", "uvicorn", "harness_module.api:app", "--host", "0.0.0.0", "--port", "1112"]

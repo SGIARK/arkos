@@ -34,7 +34,7 @@ def get_connection_url():
     if db_url:
         return db_url
 
-    # Fall back to ConfigLoader so we stay in sync with base_module/app.py
+    # Fall back to ConfigLoader so we stay in sync with the api layer (Task 4)
     try:
         sys.path.insert(0, str(_PROJECT_ROOT))
         from config_module.loader import config  # type: ignore

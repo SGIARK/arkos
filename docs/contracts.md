@@ -70,7 +70,7 @@ upcast, rows are never rewritten.
 | `repeat_tasks` | out of scope (watching scrapped) |
 | new | **`system_events`** (operational log: batched, best-effort, pruned 30d); **`result_blobs`** `{ref, session_id, content, created_at}` — full oversized tool outputs, events carry preview+ref; **`projects`**, **`project_files`**, **`user_connections`** `{user_id, mcp_url, connection_id, status, tools_cache, refreshed_at}` — keyed by `(user_id, mcp_url)`; `connection_id` is minted BY US (Smithery accepts a path segment we choose), stored, never recomputed. No `server_name`: config keys are in-process labels, not durable keys. No credentials (they stay behind Smithery). **Write the row first:** mint a UUID, INSERT `status='pending'`, PUT to Smithery, then UPDATE from the response. A crash between mint and PUT leaves a pending row whose id is reused on retry, so the id survives every failure; minting after the PUT strands the old connection holding the user's live OAuth grant, which is the drift D24 exists to kill, just moved to crash-time. **`shared_connections`** `{mcp_url pk, connection_id, status, tools_cache, refreshed_at}` — same rule, no user column, because no-auth servers (Slack's workspace bot token) have no user and `user_connections.user_id` is NOT NULL. |
 
-### harness (today `base_module`; owns control plane — lifecycle sits NEXT TO the agent, never inside it)
+### harness_module (owns control plane — lifecycle sits NEXT TO the agent, never inside it)
 
 **`lifecycle.py`** — consolidates `task_store.set_task_status` /
 `mark_task_completed` / `mark_task_failed` / PATCH-status route.
@@ -444,7 +444,7 @@ torn down when idle, respawned against the persisted state on the next lease.
 With its agent deleted, `computer_module` had no reason to be a module. The
 sandbox manager and toolset move to `tool_module/sandbox/`; `agent.py`,
 `model.py`, `runner.py`, `computer_router.py` are deleted/folded into the
-unified task path. Backend module map is now role-per-module: `harness`
+unified task path. Backend module map is now role-per-module: `harness_module`
 (control plane) · `agent_module` (brain) · `model_module` (model) ·
 `tool_module` (all hands).
 
@@ -526,21 +526,29 @@ on concurrently running sessions. None of this exists in prod until it does —
 | Violation | Breaks | Where |
 |---|---|---|
 | browser frame queue keyed by user only; concurrent tasks clobber each other | (user, task) stream keying | `tool_module/browser_stream.py:39,74` |
-| `/v1/browser/stream` trusts client-supplied user_id, no auth | every-endpoint ownership check | `base_module/browser_routes.py:31-34` |
+| `/v1/browser/stream` trusts client-supplied user_id, no auth | every-endpoint ownership check | `harness_module/browser_routes.py:31-34` |
 | browser returns bare string; failure and empty are both `""` | tool_result envelope | `tool_module/browser_tool.py:499` |
 | zero step callbacks wired; 3-min silent tool call | progress-as-status-events | `tool_module/browser_tool.py:443-463` |
-| `demo-login` mints tokens with no credential | auth issuance | `base_module/users.py:74` |
-| task status written from 4+ call sites, no legality check | single lifecycle writer | `base_module/task_store.py`, `tasks.py` |
-| runaway tasks marked completed via `completion_signal` fallback | `done{reason}` sole authority | `base_module/task_runner.py:213` |
-| fake streaming (full completion, then per-char replay) | structural streaming | `agent_module/agent.py:494` |
-| two model clients, no timeout, nested retries | one client, one retry layer | `ArkModelNew.py:83`, `computer_module/model.py:46` |
 | ~~`run.sh` launches with NO parser flags; `llm.model_name` is `"tgi"`~~ FIXED in Task 0a(i) | one authoritative model: **Qwen3-8B**, `--tool-call-parser qwen25`, `--reasoning-parser qwen3` | `config_module/config.yaml`, `model_module/run.sh` |
-| `ArkModelLink` is built with no `model_name`, so the live chat path still sends the `"tgi"` default and ignores `llm.model_name` | one authoritative model | `base_module/app.py:67` (dies with Task 4) |
-| mem0 config hardcodes `Qwen/Qwen2.5-7B-Instruct` against port 30000, which serves Qwen3-8B | one authoritative model | `memory_module/memory.py:58` (dies with Task 7) |
-| Code docstrings route implementers to the superseded specs, including `ENVIRONMENT_SPEC` which was never written | those 13 files now live in `docs/deprecated/` (READMEd, and CLAUDE.md forbids reading it); the docstrings die with the files Tasks 7/8 delete | `agent_module/agent.py:305,306,328`, `computer_module/*`, `spike_sandbox.py:100` |
-| context overflow classified `bad_request` → terminal death, no recovery | overflow is recoverable (ladder, spec) | `ArkModelNew.py:147` |
-| `short_term_turns: 50` config never read; loop hardcodes 5 turns | config is the source of truth | `agent.py:323,415,510` |
-| `logging_module` mandated by CLAUDE.md does not exist; 35 `print()`s in prod | two-logs contract above | repo-wide |
+| ~~`logging_module` mandated by CLAUDE.md does not exist; 35 `print()`s in prod~~ RESOLVED 2026-08-13 | two-logs contract above | the 35 were 27 in a misplaced test, 7 in `db/migrate.py` (a CLI, where print is correct) and 1 in a build script. Zero in production paths. `logging_module` itself is still unbuilt (D17) |
 
-Open (owner to settle): keep `base_module` name or rename to `harness/`;
-per-event `version` vs per-session schema version.
+**Resolved by deletion, 2026-08-13 (Tasks 7+8).** These were tracked rather than
+fixed because their files were scheduled corpses; the files are now gone, so the
+violations are gone with them. Kept as a record of what the redesign was for, not
+as open items: `demo-login` minting credential-free tokens (`users.py`); task
+status written from 4+ call sites with no legality check (`task_store.py`,
+`tasks.py`); runaway tasks marked **completed** via the `completion_signal`
+fallback (`task_runner.py:213`); fake streaming, full completion then per-char
+replay (`agent_module/agent.py:494`); two model clients with no timeout and
+nested retries (`ArkModelNew.py:83`, `computer_module/model.py:46`);
+`ArkModelLink` built with no `model_name` so the live path ignored
+`llm.model_name` (`app.py:67`); mem0 hardcoding Qwen2.5-7B against a port serving
+Qwen3-8B (`memory_module/memory.py:58`); context overflow classified
+`bad_request` into terminal death (`ArkModelNew.py:147`); `short_term_turns`
+config never read; and the docstrings routing implementers to the superseded
+specs.
+
+Settled 2026-08-13: `base_module` is renamed **`harness_module`** — the four
+control-plane files (`lifecycle` · `session_log` · `runner` · `api`) land there
+in Tasks 4-5. Still open (owner to settle): per-event `version` vs per-session
+schema version.

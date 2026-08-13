@@ -36,16 +36,18 @@ pip install -r requirements-dev.txt  # dev only
 
 ## File Structure
 
-* `base_module/` -- FastAPI app, user auth (JWT/OAuth), tasks API
+* `harness_module/` -- control plane: lifecycle, session log, runner, api
+* `agent_module/` -- the one agent loop (`run_turn`) and its event vocabulary
+* `model_module/` -- the one model client (streaming + native tool calling)
+* `tool_module/` -- all hands: envelope, registry, MCP via Smithery, browser, sandbox
 * `config_module/` -- YAML configuration loader
-* `db/` -- Postgres schema migrations and maintenance scripts
-* `model_module/` -- LLM inference wrapper (ArkModelLink)
-* `agent_module/` -- agent orchestration and state machine runner
-* `state_module/` -- state graph definitions (agent, tool, user states)
-* `tool_module/` -- MCP (Model Context Protocol) tool integration via Smithery
-* `memory_module/` -- short-term (Postgres) and long-term (mem0) memory
+* `db/` -- Postgres schema migration and the asyncpg pool
 * `frontend/` -- web UI served at `/app`
 * `tests/` -- pytest test suite
+
+Mid-redesign: `state_module`, `memory_module` and `computer_module` were deleted
+on 2026-08-13, and most of `harness_module` is not written yet. See
+`docs/single_loop_redesign_spec.md`.
 
 ## CI/CD Pipeline
 
@@ -173,9 +175,10 @@ You need to create a `.env` and set `DB_URL` before starting the application:
 
 1. **Start the API server**:
    ```bash
-   python base_module/app.py
+   python -m uvicorn harness_module.api:app
    ```
-   This starts the FastAPI server on the port configured in `config_module/config.yaml` (`app.port`).
+   NOTE: `harness_module/api.py` does not exist yet — Task 4 writes it. There is
+   deliberately no HTTP server between the database cutover and that task.
 
 2. **Access the UI**: Port-forward to `app.port` (default `1114`) and navigate to `/app` in your browser.
 
