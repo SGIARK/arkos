@@ -337,6 +337,7 @@ a single migration 0 creates the target schema directly: `users`, `projects`,
 `shared_connections`. No history migration — fresh cutover. `repeat_tasks` is
 carried over untouched alongside `waitlist`.
 **Effort:** half day | **Blockers:** none to write; **RUNS AFTER TASK 3**
+**Blocked by Task 14** (host hardening) unless that risk is accepted knowingly.
 **Runs after Tasks 1-3, immediately before Task 4.** Those three build the
 client, loop and tool layer and none of them need the new database. There is no
 expand/contract and no bridge: this drops the old tables outright, so **the app
@@ -444,6 +445,23 @@ commands; motion + skeletons.
 **Touch:** `frontend/` | **P1, 4-5d** | **Blockers:** 4, LG spec Task 10
 **Test:** cold load <1s no blank-then-pop; cancel reflects instantly and
 reconciles; network drop resumes from last seq with no missed transitions.
+
+## Task 14: Host and database hardening (deferred 2026-08-13)
+**Why:** an unresolved infrastructure incident was found on the ark box while
+validating migration 0. Details, evidence and the full checklist are
+**deliberately not in this repo**: see `~/dev/vulnerabilities.md` on the ark
+host. Do not copy its contents here.
+**Done when:** the database is not reachable from the public internet; the
+privilege path that made the incident possible is removed; every credential in
+that file's rotation list is rotated; the persistence hunt is complete and its
+findings recorded.
+**Effort:** unknown, likely 1d + a rebuild decision | **P0**
+**Blocks 0c and Task 4.** 0c wipes and rebuilds the database in place. Doing
+that on a host whose integrity is unestablished rebuilds the schema on sand, and
+Task 4 then puts live chat on it. Settle this first or accept the risk knowingly.
+**Partly done already:** the immediately dangerous account and the live process
+were removed on 2026-08-13. The network exposure was NOT closed; it needs host
+root. Status is tracked in that file, not here.
 
 ## Task 13: Multi-worker safety (follow-up)
 **Done when:** dispatch claims via conditional update / SKIP LOCKED; semaphore
