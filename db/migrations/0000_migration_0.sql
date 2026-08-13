@@ -28,10 +28,24 @@ DROP TABLE IF EXISTS user_sandboxes        CASCADE;  -- recreated, new shape
 DROP TABLE IF EXISTS tasks                 CASCADE;  -- -> sessions
 DROP TABLE IF EXISTS users                 CASCADE;  -- -> users, Supabase-keyed
 
+-- Pre-Smithery OAuth storage: access_token/refresh_token in plaintext. No code
+-- has read it since Smithery took over the credential vault, and no migration
+-- dropped it, so it outlived the users it keys. Credentials stay behind
+-- Smithery now; nothing in the new schema replaces this.
+DROP TABLE IF EXISTS user_oauth_tokens     CASCADE;
+
 -- mem0's pgvector collection. memory_module pointed mem0 at THIS database, so
 -- the reset leaves it behind otherwise — rows keyed by hashed user ids that no
 -- longer mean anything, plus its HNSW index. Memory is removed for now.
-DROP TABLE IF EXISTS memories CASCADE;
+--
+-- mem0 goes through the `vecs` extension: the real tables live in the vecs
+-- schema and public.memories is only a view over vecs.memories. Dropping the
+-- public name alone leaves every vector behind.
+DROP VIEW  IF EXISTS memories             CASCADE;
+DROP TABLE IF EXISTS vecs.memories          CASCADE;
+DROP TABLE IF EXISTS vecs.memories_entities CASCADE;
+DROP TABLE IF EXISTS vecs.mem0migrations    CASCADE;
+-- vecs.urop_benchmark* stay: different project, not mem0's, not ours to drop.
 
 DROP TYPE IF EXISTS task_status     CASCADE;
 DROP TYPE IF EXISTS approval_kind   CASCADE;

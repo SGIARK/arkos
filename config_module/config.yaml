@@ -40,9 +40,14 @@ budgets:
 tools:
   result_view_cap_chars: 4000   # over this -> blob + ref
   call_timeout_s: 120           # hard cap on one tool call
+  mcp_cache_ttl_s: 3600         # revalidate a connection's tools/list after this.
+                                # Only refreshes the cached list; never re-PUTs,
+                                # so a restart still costs zero Smithery writes.
 
 database:
   url: "${DB_URL}"
+  pool_min_size: 1
+  pool_max_size: 10
 
 
 memory:

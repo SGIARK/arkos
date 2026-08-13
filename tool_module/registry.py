@@ -13,13 +13,19 @@ import importlib
 import logging
 import pkgutil
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Protocol
 
 from config_module.loader import config
 from tool_module import tools as tools_package
 from tool_module.envelope import ResultEnvelope, Tool, ToolContext, ToolSpec, execute, fail
 
 McpCall = Callable[[str, dict[str, Any], ToolContext], Awaitable[ResultEnvelope]]
+
+
+class McpSource(Protocol):
+    """What `manifest` needs from the MCP half. `Smithery` satisfies it."""
+
+    async def specs(self, user_id: str) -> list[ToolSpec]: ...
 
 
 def _cfg(key: str, default: Any) -> Any:
@@ -55,20 +61,23 @@ def reset() -> None:
     _local = None
 
 
-def manifest(mcp_specs: list[ToolSpec] | None = None) -> list[ToolSpec]:
+async def manifest(user_id: str, *, mcp: McpSource | None = None) -> list[ToolSpec]:
     """
     The whole manifest for a session.
 
     One manifest: there are no session types, so every session may reach for
     every hand. An MCP tool whose name collides with ours keeps its prefix and
     therefore cannot displace it.
+
+    `mcp` is injected rather than imported so the registry stays free of
+    transport; with none, a session gets our tools and no remote ones.
     """
     # Copies, always. ToolSpec is mutable and the local ones are process-cached,
     # so handing out references lets one session's edit poison every session.
     specs = [_copy(t.spec) for t in local_tools().values()]
     taken = {s.name for s in specs}
 
-    for spec in mcp_specs or []:
+    for spec in await mcp.specs(user_id) if mcp is not None else []:
         # Prefix unconditionally. A remote tool genuinely called mcp_foo would
         # otherwise be dispatched as foo, a name its server does not have.
         name = f"{MCP_PREFIX}{spec.name}"

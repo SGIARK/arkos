@@ -12,33 +12,55 @@ def _ctx(**kw):
     return ToolContext(user_id="u1", **kw)
 
 
+class _Mcp:
+    """A stand-in for the Smithery half: whatever specs the test names."""
+
+    def __init__(self, specs):
+        self._specs = specs
+
+    async def specs(self, user_id):
+        return list(self._specs)
+
+
+def _mcp(*specs):
+    return _Mcp(list(specs))
+
+
 def test_the_control_tools_are_all_discovered():
     names = set(reg.local_tools())
     assert {"finish_task", "ask", "request_approval", "todo_write", "read_result"} <= names
 
 
-def test_manifest_namespaces_mcp_tools():
-    remote = [ToolSpec(name="send_email", description="d")]
-    names = [s.name for s in reg.manifest(remote)]
+@pytest.mark.asyncio
+async def test_manifest_namespaces_mcp_tools():
+    specs = await reg.manifest("u1", mcp=_mcp(ToolSpec(name="send_email", description="d")))
+    names = [s.name for s in specs]
 
     assert "mcp_send_email" in names
     assert "send_email" not in names
 
 
-def test_a_remote_tool_cannot_shadow_one_of_ours():
-    """A remote read_file must not displace the sandbox read_file."""
-    remote = [ToolSpec(name="read_result", description="impostor")]
-    specs = reg.manifest(remote)
+@pytest.mark.asyncio
+async def test_a_remote_tool_cannot_shadow_one_of_ours():
+    """A remote read_result must not displace ours."""
+    specs = await reg.manifest("u1", mcp=_mcp(ToolSpec(name="read_result", description="impostor")))
 
     ours = [s for s in specs if s.name == "read_result"]
     assert len(ours) == 1 and ours[0].description != "impostor"
     assert "mcp_read_result" in [s.name for s in specs]
 
 
-def test_manifest_names_are_unique():
-    specs = reg.manifest([ToolSpec(name="a", description="d"), ToolSpec(name="b", description="d")])
+@pytest.mark.asyncio
+async def test_manifest_names_are_unique():
+    specs = await reg.manifest("u1", mcp=_mcp(ToolSpec(name="a", description="d"), ToolSpec(name="b", description="d")))
     names = [s.name for s in specs]
     assert len(names) == len(set(names))
+
+
+@pytest.mark.asyncio
+async def test_manifest_without_an_mcp_source_is_just_ours():
+    specs = await reg.manifest("u1")
+    assert specs and not any(s.name.startswith("mcp_") for s in specs)
 
 
 @pytest.mark.asyncio
@@ -113,29 +135,35 @@ async def test_read_result_pages_a_stored_blob():
 # --- gaps found by review ---------------------------------------------------
 
 
-def test_manifest_hands_out_copies_not_the_cache():
+@pytest.mark.asyncio
+async def test_manifest_hands_out_copies_not_the_cache():
     """A per-session manifest must not be able to poison every other session."""
-    first = reg.manifest()
+    first = await reg.manifest("u1")
     first[0].description = "vandalised"
 
-    assert reg.manifest()[0].description != "vandalised"
+    assert (await reg.manifest("u1"))[0].description != "vandalised"
 
 
-def test_a_remote_tool_already_called_mcp_something_is_not_double_stripped():
+@pytest.mark.asyncio
+async def test_a_remote_tool_already_called_mcp_something_is_not_double_stripped():
     """Prefixing conditionally meant dispatching mcp_foo as foo, which the server lacks."""
-    specs = reg.manifest([ToolSpec(name="mcp_foo", description="d")])
+    specs = await reg.manifest("u1", mcp=_mcp(ToolSpec(name="mcp_foo", description="d")))
     assert "mcp_mcp_foo" in [s.name for s in specs]
 
 
-def test_two_remote_names_that_collide_after_prefixing_do_not_both_survive():
+@pytest.mark.asyncio
+async def test_two_remote_names_that_collide_after_prefixing_do_not_both_survive():
     """Duplicate function names in one manifest are a 400 from most servers."""
-    specs = reg.manifest([ToolSpec(name="x", description="a"), ToolSpec(name="mcp_x", description="b")])
+    specs = await reg.manifest(
+        "u1", mcp=_mcp(ToolSpec(name="x", description="a"), ToolSpec(name="mcp_x", description="b"))
+    )
     names = [s.name for s in specs]
     assert len(names) == len(set(names))
 
 
-def test_a_remote_tool_cannot_take_one_of_our_names():
-    specs = reg.manifest([ToolSpec(name="finish_task", description="impostor")])
+@pytest.mark.asyncio
+async def test_a_remote_tool_cannot_take_one_of_our_names():
+    specs = await reg.manifest("u1", mcp=_mcp(ToolSpec(name="finish_task", description="impostor")))
     ours = [s for s in specs if s.name == "finish_task"]
     assert len(ours) == 1 and ours[0].description != "impostor"
 
@@ -199,7 +227,7 @@ async def test_the_bound_dispatch_satisfies_the_loop(monkeypatch):
         e
         async for e in lp.run_turn(
             [{"role": "user", "content": "go"}],
-            reg.manifest(),
+            await reg.manifest("u1"),
             lp.Budgets.load("interactive"),
             "attended",
             dispatch=dispatch,

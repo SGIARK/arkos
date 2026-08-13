@@ -344,7 +344,9 @@ expand/contract and no bridge: this drops the old tables outright, so **the app
 is DOWN from the moment 0c runs until Task 4 lands.** That is the price of a
 clean overhaul, and it is accepted. Reap all e2b sandboxes first (see the
 migration header).
-**Status:** file written (`db/migrations/0000_migration_0.sql`), not yet applied.
+**Status:** DONE — applied 2026-08-13. 15 tables in `public`, `waitlist` (8 rows)
+and `repeat_tasks` preserved. Two teardown gaps found only by running it against
+the real database; both fixed in the same commit (see Implementation Notes).
 
 ## Task 1: Model client rewrite
 **Done when:** one cached client (timeout=90, max_retries=0); the only retry
@@ -379,18 +381,23 @@ minted once and stored (D24); scoped.py deleted; tools/call timeout 120s.
 **Test:** warm per-user tool call = exactly 1 HTTP request; restart = 1 DB read,
 0 Smithery PUTs for connected servers; renaming a key under `mcp_servers:`
 changes no row and prompts no reconnect.
-**Status:** PARTIAL. Done: 3a envelope, 3b registry + manifest + the five
-control tools, 3c review fixes. `ToolSpec`/`ResultEnvelope` are now defined once
-in `tool_module/envelope.py` and imported by the loop, so the mirrors cannot
-drift. `registry.bind()` adapts dispatch to the loop's `(name, args)` shape.
-**NOT done, carry into the next session:** the Smithery half. `user_connections`
-persistence keyed by `(user_id, mcp_url)`, D24 (delete `_user_conn_id` /
-`_shared_conn_id`, mint the id once and store it), one `ClientSession`, TTL
-revalidation, and deleting `scoped.py`. `smithery.py` is untouched, so nothing
-yet produces the `mcp_specs` that `manifest()` accepts.
-**Deviation:** contracts says `manifest(user_id)`. Built as `manifest(mcp_specs)`
-because resolving user to specs is the Smithery half, which does not exist yet.
-Reconcile when it lands.
+**Status:** DONE. 3a envelope, 3b registry + manifest + the five control tools,
+3c review fixes, 3d the Smithery half. `ToolSpec`/`ResultEnvelope` are defined
+once in `tool_module/envelope.py` and imported by the loop, so the mirrors
+cannot drift. `registry.bind()` adapts dispatch to the loop's `(name, args)`
+shape. `smithery.py` is rewritten on D24: `tool_module/connections.py` stores
+`user_connections` / `shared_connections`, ids are minted once and written
+before the PUT, one `ClientSession`, TTL revalidation that never re-PUTs.
+`scoped.py` and `tool_call.py` are deleted.
+**Deviation resolved:** `manifest` now matches contracts —
+`manifest(user_id, *, mcp=None)`. It is async (the MCP half is a DB read) and
+takes the source by injection so the registry stays free of transport.
+**Cost, accepted knowingly:** the old path is broken from here, not at Task 4.
+`base_module/app.py`, `task_runner.py`, `state_module/*/state_tool.py` and
+`computer_module/agent.py` still import the deleted names; 0c already dropped
+the tables they read, so they were corpses regardless. `tests/test_scoped.py`,
+`test_smithery_isolation.py`, `test_smithery_local_tools.py`,
+`test_state_module.py` and `test_tasks.py` went with them (−55 tests).
 
 ## Task 4: Chat on the new loop
 **No flag.** A flag whose off position 500s is not a rollback, it is dead config
@@ -677,3 +684,41 @@ Two known-wrong model declarations are recorded in the contracts violations
 table rather than fixed: `app.py:67` (dies with Task 4) and `memory.py:58`
 (dies with Task 7). Fixing scheduled corpses is wasted effort; leaving them
 invisible is the actual risk.
+
+**2026-08-13 — 0c applied, and only the real database found the last two holes.**
+The migration had been verified against a seeded throwaway DB and reported clean.
+Run against the actual one it failed on the first statement, and the second gap
+would have passed silently:
+
+- `public.memories` is a **VIEW** over `vecs.memories`. mem0 goes through the
+  `vecs` extension, so the real vectors (500 rows) plus `memories_entities` and
+  `mem0migrations` live in the `vecs` schema. `DROP TABLE memories` errored;
+  dropping only the public name would have left every vector behind.
+  `vecs.urop_benchmark*` is a different project's and is deliberately untouched.
+- `user_oauth_tokens` — pre-Smithery OAuth storage, 3 rows of plaintext
+  `access_token`/`refresh_token`, read by zero lines of code, dropped by no
+  migration. It would have outlived the users keying it. Now dropped.
+
+The lesson worth carrying: a seeded DB proves the migration handles what you
+remembered to seed. Neither of these was in the seed.
+
+Sandboxes were NOT reaped first. Four were alive (all paused since June); their
+handles are `ij06czr3ca5fl784k5lbe`, `iic0cu1gr3aqn9vt7pvub`,
+`ibwyx5gj6p8s9ieqohq88`, `i3u42o3ufy9ye7901yo1n` and the owner is killing them
+in the e2b console. Task 14 was NOT done first either; the risk was accepted
+knowingly, per the card.
+
+**2026-08-13 — Task 3d: a tool call never opens an OAuth flow.** The old
+`call_tool` scanned every per-user server with a PUT when it did not recognise a
+tool name, which is both the N-request warm path and a redirect the model cannot
+complete. Now an unconnected server fails the call with `auth_required` carrying
+the setup URL and `retryable=False`. Connecting is a human action through
+`connect()`, never a side effect of the model reaching for something.
+
+Also settled here: MCP specs are always `readonly=False`. A remote server does
+not tell us whether a tool mutates, and guessing wrong makes the loop run writes
+in parallel. And `Smithery.call` stores the blob itself when a result is over
+`tools.result_view_cap_chars` — the loop view-caps for the screen but hands the
+model whatever the envelope holds, and `ref` only ever comes from the envelope,
+so this is where the Task 2 "oversized result loses its tail" gap actually closes
+for MCP.
