@@ -97,6 +97,7 @@ class ToolContext:
     session_id: str | None = None
     emit_status: Callable[[str], None] | None = None
     store_blob: Callable[[str], Awaitable[str]] | None = None
+    read_blob: Callable[[str, int, int], Awaitable[str | None]] | None = None
     approve: Callable[[str, dict[str, Any]], Awaitable[bool]] | None = None
 
 
