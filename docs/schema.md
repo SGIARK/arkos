@@ -48,15 +48,19 @@ sessions (
   id              uuid primary key default gen_random_uuid(),
   user_id         uuid not null references users(id),
   project_id      uuid references projects(id),
-  mode            text not null,          -- 'attended' | 'unattended' (a PHASE,
-                                          -- not a type; flips when the human says go)
+  mode            text not null check (mode in ('attended','unattended')),
+                                          -- a PHASE, not a type; flips when the
+                                          -- human says go
   title           text,
   goal            text,
-  status          text not null,          -- pending idle running
-                                          -- awaiting_approval
-                                          -- completed failed cancelled
-                                          -- (idle = alive, waiting for a human;
-                                          --  survives restarts)
+  status          text not null check (status in ('pending','idle','running',
+                                          'awaiting_approval','completed',
+                                          'failed','cancelled')),
+                                          -- idle = alive, waiting for a human;
+                                          -- survives restarts. CHECKed because an
+                                          -- out-of-vocabulary write makes
+                                          -- transition()'s WHERE status=expected
+                                          -- stop matching and strands the session.
   terminal_reason text,                   -- = done.reason, verbatim
   cursor_seq      bigint not null default 0,
   hops_used       int  not null default 0,
@@ -68,6 +72,8 @@ sessions (
 -- operator-console seams (cheap now, painful later):
 create index on sessions (status, terminal_reason, ended_at);
 create index on sessions (user_id, ended_at);
+-- the new_sessions_per_hour quota query, which ended_at cannot serve:
+create index on sessions (user_id, created_at);
 
 -- the transcript: audit, never pruned ---------------------------------------
 session_events (
@@ -76,9 +82,9 @@ session_events (
                                           -- per session are fine; every read
                                           -- is "after N", never "count".
   session_id  uuid not null references sessions(id) on delete cascade,
-  kind        text not null,              -- user content reasoning tool_call
-                                          -- tool_result status todo budget
-                                          -- lifecycle view_transform done
+  kind        text not null check (kind in ('user','content','reasoning',
+                              'tool_call','tool_result','status','todo','budget',
+                              'lifecycle','view_transform','done')),
   version     int  not null default 1,    -- readers upcast; rows never rewritten
   payload     jsonb not null,
   ts          timestamptz not null default now()
@@ -113,18 +119,20 @@ approvals (
   session_id   uuid not null references sessions(id) on delete cascade,
   tool_call_id text not null,             -- stays OPEN across the park; the
                                           -- response event closes it
-  kind         text not null,             -- 'approval' | 'ask'
+  kind         text not null check (kind in ('approval','ask')),
   prompt       text not null,
   answer       text,
   created_at   timestamptz not null default now(),
   answered_at  timestamptz
 )
 create index on approvals (session_id) where answered_at is null;
+-- a double-park is impossible, not merely unlikely:
+create unique index on approvals (session_id, tool_call_id) where answered_at is null;
 
 -- stateful hands ------------------------------------------------------------
 resource_leases (
   resource_key text primary key,          -- 'sandbox:{user}' | 'browser:{user}'
-  session_id   uuid not null references sessions(id),
+  session_id   uuid not null references sessions(id) on delete cascade,
   acquired_at  timestamptz not null default now(),
   expires_at   timestamptz not null
 )

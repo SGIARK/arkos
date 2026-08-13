@@ -280,8 +280,10 @@ triggers (scrapped, own future feature), multi-worker leasing (Task 13).
 | tests | 5,037 | ~2,200 | tests of deleted machinery go with it |
 | **Total (py)** | **~14.9k** | **~6.3k** | production ~9.9k → ~4.3k |
 
-Migration is replace-then-delete: `loop.py` behind a config flag; old modules
-deleted one PR each once the new path carries chat + one real task end to end.
+Migration is replace-then-delete, with no flag and no bridge: Tasks 1-3 build
+the new path alongside the old, 0c wipes the database, Task 4 cuts over, and the
+old modules are dead code deleted one PR each in Task 7. The app is down between
+0c and Task 4 landing.
 
 ---
 
@@ -334,9 +336,14 @@ a single migration 0 creates the target schema directly: `users`, `projects`,
 `approvals`, `resource_leases`, `user_sandboxes`, `user_connections`,
 `shared_connections`. No history migration — fresh cutover. `repeat_tasks` is
 carried over untouched alongside `waitlist`.
-**Effort:** half day | **Blockers:** none (run before Task 4 cutover)
-**Status:** file written (`db/migrations/0000_migration_0.sql`); NOT yet applied
-to any database — it drops `users` and `tasks`, so it runs at the Task 4 cutover.
+**Effort:** half day | **Blockers:** none to write; **RUNS AFTER TASK 3**
+**Runs after Tasks 1-3, immediately before Task 4.** Those three build the
+client, loop and tool layer and none of them need the new database. There is no
+expand/contract and no bridge: this drops the old tables outright, so **the app
+is DOWN from the moment 0c runs until Task 4 lands.** That is the price of a
+clean overhaul, and it is accepted. Reap all e2b sandboxes first (see the
+migration header).
+**Status:** file written (`db/migrations/0000_migration_0.sql`), not yet applied.
 
 ## Task 1: Model client rewrite
 **Done when:** one cached client (timeout=90, max_retries=0); the only retry
@@ -366,12 +373,15 @@ minted once and stored (D24); scoped.py deleted; tools/call timeout 120s.
 0 Smithery PUTs for connected servers; renaming a key under `mcp_servers:`
 changes no row and prompts no reconnect.
 
-## Task 4: Chat on the new loop, behind a flag
-**Done when:** `loop_v2` routes chat through `run_turn`; first token before
+## Task 4: Chat on the new loop
+**No flag.** A flag whose off position 500s is not a rollback, it is dead config
+pretending to be one: 0c has already dropped the tables the old path reads. This
+is a straight cutover, and the app is down until it lands.
+**Done when:** chat routes through `run_turn`; first token before
 completion (measured); memory auto-injection code DELETED (memory removed);
 SSE error chunk on mid-stream failure; chat transcripts ride `session_events`;
 an attended turn ends in `idle`.
-**Touch:** `base_module/app.py` | **P0, 2d** | **Blockers:** 1-3
+**Touch:** `base_module/app.py` | **P0, 2d** | **Blockers:** 1-3, 0c applied
 **Test:** first SSE chunk arrives before mocked model finishes; forced mid-stream
 exception yields an error chunk, not truncation.
 
@@ -392,8 +402,9 @@ appends + wakes at cursor; reminder at 1h.
 
 ## Task 7: Delete the old machinery
 **Done when:** state_module, old step/step_stream, llm_json repair, memory_module,
-mem0/embedder deps, and their tests are gone; flag removed; CLAUDE.md rewritten;
-production LOC ≤ ~4.5k.
+mem0/embedder deps, and their tests are gone; CLAUDE.md rewritten;
+production LOC ≤ ~4.5k. No flag to remove, and everything here is already dead
+code by now, so deletion is mechanical rather than a second cutover.
 **Touch:** everywhere | **P1, several small PRs** | **Blockers:** 4-6 stable 1 week
 **Test:** suite green; grep for StateHandler/StateOutput/graph.yaml/mem0 = nothing.
 
@@ -603,4 +614,30 @@ SGLang launch, so contracts moves to 40960. And Task 1's config key was renamed
 `max_attempts` → **`max_retries`** to match contracts, though the two halves of
 contracts disagree on its meaning (the yaml block says "max_retries: 3", the
 conformance test says "<=3 attempts"). Implemented as a cap on total attempts.
-**Open question for the author — which did you mean?**
+**Open question for the author: which did you mean?**
+
+**2026-08-13 — sequencing settled: no flag, no bridge.** 0c runs after Tasks 1-3
+and immediately before Task 4. The app is down in between. A flag was considered
+and rejected: 0c drops the tables the old path reads, so the off position would
+500 rather than roll back. Task 4's flag and Task 7's flag-removal step are gone
+from the plan; Task 7 is now mechanical deletion of dead code.
+
+**2026-08-13 — `append()` must hold `pg_advisory_xact_lock(session_id)`.**
+BIGSERIAL assigns seq before commit, so an api transaction holding 100 can commit
+after the loop's 101 and an SSE reader that already sent 101 never emits 100.
+The lock makes commit order equal seq order within a session. D13 is untouched:
+it argued against per-session counters, not per-session locking. The user-scoped
+grid feed (G27) spans sessions and needs a hold-back window when it is built.
+Pinned by a new conformance test, `test_append_ordering_under_concurrency`.
+
+**2026-08-13 — schema.md amended while amendments are still free.** CHECK
+constraints on `sessions.mode`, `sessions.status` and `session_events.kind`; a
+partial unique on `approvals (session_id, tool_call_id) WHERE answered_at IS
+NULL`; `ON DELETE CASCADE` on `resource_leases.session_id`; and the
+`(user_id, created_at)` index the `new_sessions_per_hour` quota actually uses.
+Verified against a live DB: bad status, double-park and bad kind all rejected.
+
+Two known-wrong model declarations are recorded in the contracts violations
+table rather than fixed: `app.py:67` (dies with Task 4) and `memory.py:58`
+(dies with Task 7). Fixing scheduled corpses is wasted effort; leaving them
+invisible is the actual risk.

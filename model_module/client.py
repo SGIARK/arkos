@@ -1,16 +1,11 @@
 """
-The model client. One client, one retry layer (D25, contracts `model_module`).
+The model client: one cached client, one retry layer.
 
-Replaces `ArkModelNew.py:ArkModelLink` and `computer_module/model.py:ToolCallingModel`,
-which between them built a fresh `AsyncOpenAI` per property access, retried at two
-nested levels, and had no streaming path that carried tool calls.
-
-Public surface is one function:
+Replaces ArkModelNew.py:ArkModelLink and computer_module/model.py:ToolCallingModel.
 
     async for delta in generate(messages, tools=..., source=..., options=...): ...
 
-`generate` raises `ModelError` and nothing else. `asyncio.CancelledError` passes
-through untouched — cancellation is not a model failure.
+Raises ModelError and nothing else. CancelledError propagates.
 """
 
 from __future__ import annotations
@@ -19,11 +14,14 @@ import asyncio
 import logging
 import random
 from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass, field
+from contextlib import aclosing
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from openai import (
     APIConnectionError,
+    APIError,
+    APIResponseValidationError,
     APIStatusError,
     APITimeoutError,
     AsyncOpenAI,
@@ -41,43 +39,34 @@ from model_module.errors import ModelError
 
 logger = logging.getLogger(__name__)
 
-# Where the call came from. `background` is an unattended run with no human
-# watching: it fails fast on overload rather than holding a GPU slot that an
-# interactive turn could use (contracts: "background source: no overload retries").
+# `background` is an unattended run with no human watching.
 Source = Literal["interactive", "background"]
 
 
+def _cfg(key: str, default: Any) -> Any:
+    """Config read that keeps falsy values. `or default` would drop temperature 0."""
+    value = config.get(key)
+    return default if value is None else value
+
+
 # --- deltas -----------------------------------------------------------------
-# The wire is one interleaved stream, so this is one union, not three iterators.
 
 
 @dataclass(slots=True)
 class TextDelta:
-    """A fragment of the model's reply, for `content` events."""
-
     text: str
 
 
 @dataclass(slots=True)
 class ReasoningDelta:
-    """
-    A fragment of SGLang's `reasoning_content` (--reasoning-parser qwen3).
-
-    Streamed, never dropped: Qwen3 reasons for hundreds of tokens before
-    answering, so dropping it freezes the screen for the longest part of a turn.
-    The FOLD is what discards it — it never replays into the message list.
-    """
+    """SGLang's reasoning_content. Streamed like text; the fold drops it."""
 
     text: str
 
 
 @dataclass(slots=True)
 class ToolCallDelta:
-    """
-    A fragment of one tool call. Keyed by `index`, because the model may
-    interleave fragments of several calls and only `index` is present on every
-    chunk — `id` and `name` arrive once, on the opening fragment.
-    """
+    """One fragment. `id` and `name` arrive once; `index` is on every fragment."""
 
     index: int
     id: str | None = None
@@ -87,10 +76,9 @@ class ToolCallDelta:
 
 @dataclass(slots=True)
 class Finish:
-    """End of one completion. `usage` is None if the server did not report it."""
-
     reason: str | None
-    usage: dict[str, int] | None = field(default=None)
+    # Not dict[str, int]: SGLang sends *_tokens_details as None beside the counts.
+    usage: dict[str, Any] | None = None
 
 
 Delta = TextDelta | ReasoningDelta | ToolCallDelta | Finish
@@ -99,36 +87,27 @@ Delta = TextDelta | ReasoningDelta | ToolCallDelta | Finish
 # --- client -----------------------------------------------------------------
 
 _client: AsyncOpenAI | None = None
-_client_key: tuple[str, str] | None = None
+_client_key: tuple[str, str, float] | None = None
 
 
 def get_client() -> AsyncOpenAI:
-    """
-    The cached client. One per (base_url, api_key), built once.
-
-    `max_retries=0` is deliberate and load-bearing: the SDK's own retry layer is
-    the innermost of the three nested loops this redesign deletes. Retrying is
-    `_attempts()`'s job, and only its job.
-    """
+    """The cached client. max_retries=0: retrying is `generate`'s job alone."""
     global _client, _client_key
 
-    base_url = str(config.get("llm.base_url") or "")
-    api_key = str(config.get("llm.api_key") or "-")
-    key = (base_url, api_key)
+    base_url = str(_cfg("llm.base_url", ""))
+    api_key = str(_cfg("llm.api_key", "-"))
+    # In the key because it is only read at construction.
+    timeout = float(_cfg("llm.timeout_s", 90))
+    key = (base_url, api_key, timeout)
 
     if _client is None or _client_key != key:
-        _client = AsyncOpenAI(
-            base_url=base_url,
-            api_key=api_key,
-            timeout=float(config.get("llm.timeout_s") or 90),
-            max_retries=0,
-        )
+        _client = AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=timeout, max_retries=0)
         _client_key = key
     return _client
 
 
 def reset_client() -> None:
-    """Drop the cached client. For tests and for config reloads."""
+    """Drop the cached client. For tests and config reloads."""
     global _client, _client_key
     _client = None
     _client_key = None
@@ -136,7 +115,6 @@ def reset_client() -> None:
 
 # --- error classification ---------------------------------------------------
 
-# Retrying these is pointless: the request itself is the problem.
 _TERMINAL = (
     BadRequestError,
     AuthenticationError,
@@ -153,8 +131,7 @@ def _classify(exc: Exception, source: Source) -> ModelError:
     if isinstance(exc, APIConnectionError):
         return ModelError(f"cannot reach the model: {exc}", retryable=True, kind="connect", cause=exc)
     if isinstance(exc, RateLimitError):
-        # The one place `source` changes behaviour: an unattended run waiting out
-        # a queue is worth less than an interactive turn getting the slot.
+        # An unattended run yields the GPU slot rather than queueing for it.
         return ModelError(
             f"model overloaded: {exc}",
             retryable=source != "background",
@@ -167,7 +144,6 @@ def _classify(exc: Exception, source: Source) -> ModelError:
     if isinstance(exc, InternalServerError):
         return ModelError(f"model server error: {exc}", retryable=True, kind="server_error", cause=exc)
     if isinstance(exc, APIStatusError):
-        # Any 5xx we did not name above is still the server's fault.
         retryable = exc.status_code >= 500
         return ModelError(
             f"model returned {exc.status_code}: {exc}",
@@ -175,14 +151,23 @@ def _classify(exc: Exception, source: Source) -> ModelError:
             kind="server_error" if retryable else "bad_request",
             cause=exc,
         )
-    # Anything else (a broken stream, a malformed chunk) is transport-shaped.
-    return ModelError(f"model call failed ({type(exc).__name__}): {exc}", retryable=True, kind="stream", cause=exc)
+    if isinstance(exc, (APIError, APIResponseValidationError)):
+        # 200 OK, then {"error": ...} in the body. SGLang sends this for
+        # prompt-too-long, OOM and abort, all of which a retry reproduces.
+        return ModelError(f"model stream failed: {exc}", retryable=False, kind="stream", cause=exc)
+    # Our own parse bug. Retrying cannot fix code, and would hide it behind 3 calls.
+    return ModelError(
+        f"model call failed ({type(exc).__name__}): {exc}",
+        retryable=False,
+        kind="internal",
+        cause=exc,
+    )
 
 
 async def _backoff(attempt: int) -> None:
     """Exponential backoff with jitter. `attempt` is 1-based."""
-    base = float(config.get("llm.retry_backoff_s") or 0.5)
-    ceiling = float(config.get("llm.retry_backoff_max_s") or 8.0)
+    base = float(_cfg("llm.retry_backoff_s", 0.5))
+    ceiling = float(_cfg("llm.retry_backoff_max_s", 8.0))
     delay = min(base * (2 ** (attempt - 1)), ceiling)
     await asyncio.sleep(delay * (0.5 + random.random() / 2))
 
@@ -201,48 +186,47 @@ async def generate(
     One model turn, streamed.
 
     Args:
-        messages: OpenAI-shape messages. Built by the fold, not by this module.
+        messages: OpenAI-shape messages, built by the fold.
         tools: OpenAI-shape tool schemas, or None for a plain completion.
-        source: `interactive` or `background`; see `Source`.
-        options: Per-call model params, passed through. Written ONLY from config,
-            never from model output. `chat_template_kwargs` is lifted into
-            `extra_body` for SGLang (e.g. disabling the thinking scratchpad).
+        source: see `Source`.
+        options: per-call model params from config. `chat_template_kwargs` is
+            lifted into extra_body for SGLang.
 
     Yields:
-        `TextDelta` / `ReasoningDelta` / `ToolCallDelta` as they arrive, then
-        exactly one `Finish`.
+        Deltas as they arrive, then exactly one `Finish`.
 
     Raises:
-        ModelError: and nothing else. `asyncio.CancelledError` propagates.
+        ModelError: and nothing else. CancelledError propagates.
     """
-    max_attempts = int(config.get("llm.max_retries") or 3)
+    try:
+        # max(1, ...) stops a nonsense value emptying the range below.
+        max_attempts = max(1, int(_cfg("llm.max_retries", 3)))
+    except (TypeError, ValueError) as e:
+        raise ModelError(f"bad llm.max_retries in config: {e}", retryable=False, kind="bad_request", cause=e) from e
+
     last: ModelError | None = None
 
     for attempt in range(1, max_attempts + 1):
         started = False
         try:
-            async for delta in _stream_once(messages, tools, source, options):
-                # Once the caller has seen a delta, this attempt is committed:
-                # replaying it would duplicate text on screen and duplicate tool
-                # calls in the transcript. A mid-stream failure is the LOOP's to
-                # retry (as a whole hop), not ours.
-                started = True
-                yield delta
+            # aclosing, so abandoning this generator closes the HTTP stream now
+            # rather than at GC.
+            async with aclosing(_stream_once(messages, tools, source, options)) as attempt_stream:
+                async for delta in attempt_stream:
+                    # Past the first delta the attempt is committed: replaying it
+                    # would duplicate text and tool calls. The loop retries the hop.
+                    started = True
+                    yield delta
             return
         except ModelError as e:
             if started or not e.retryable or attempt == max_attempts:
                 raise
             last = e
-            logger.warning(
-                "model attempt %d/%d failed (%s), retrying: %s",
-                attempt,
-                max_attempts,
-                e.kind,
-                e,
-            )
+            logger.warning("model attempt %d/%d failed (%s), retrying: %s", attempt, max_attempts, e.kind, e)
             await _backoff(attempt)
 
-    raise last  # unreachable: the loop either returns or raises
+    assert last is not None
+    raise last
 
 
 async def _stream_once(
@@ -258,13 +242,12 @@ async def _stream_once(
         extra_body["chat_template_kwargs"] = opts.pop("chat_template_kwargs")
 
     kwargs: dict[str, Any] = {
-        "model": str(config.get("llm.model_name") or ""),
+        "model": str(_cfg("llm.model_name", "")),
         "messages": list(messages),
-        "max_tokens": int(config.get("llm.max_tokens") or 8192),
-        "temperature": float(config.get("llm.temperature") or 0.7),
+        "max_tokens": int(_cfg("llm.max_tokens", 8192)),
+        "temperature": float(_cfg("llm.temperature", 0.7)),
         "stream": True,
-        # Without this the server sends no usage on a streamed call and every
-        # budget downstream is blind.
+        # Without this a streamed call reports no usage and budgets go blind.
         "stream_options": {"include_usage": True},
     }
     kwargs.update(opts)
@@ -282,7 +265,7 @@ async def _stream_once(
         raise _classify(e, source) from e
 
     finish_reason: str | None = None
-    usage: dict[str, int] | None = None
+    usage: dict[str, Any] | None = None
 
     try:
         async for chunk in stream:
@@ -300,7 +283,6 @@ async def _stream_once(
             if delta is None:
                 continue
 
-            # reasoning_content is SGLang's, not in the OpenAI schema.
             reasoning = getattr(delta, "reasoning_content", None)
             if reasoning:
                 yield ReasoningDelta(text=reasoning)
@@ -318,9 +300,10 @@ async def _stream_once(
                 )
     except asyncio.CancelledError:
         raise
-    except ModelError:
-        raise
     except Exception as e:
         raise _classify(e, source) from e
+    finally:
+        # Frees the decode slot and the pooled connection on the abandon path.
+        await stream.close()
 
     yield Finish(reason=finish_reason, usage=usage)

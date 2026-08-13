@@ -143,6 +143,14 @@ append(session_id, event) -> seq        # seq = ONE global BIGSERIAL: ordering,
                                         # need a lock. Gaps are fine: every read
                                         # is "after N", never "count".
                                         # Enforces the transcript invariant.
+# append() takes pg_advisory_xact_lock(session_id) before inserting. BIGSERIAL
+# hands out values BEFORE commit, so without it an api txn holding seq 100 can
+# commit after the loop's 101, and an SSE reader that already sent 101 never
+# emits 100: a silently dropped event on a live stream. The lock makes commit
+# order equal seq order WITHIN a session. D13 is untouched; it argued against
+# per-session counters, not per-session locking.
+# NOT covered: the user-scoped grid feed (G27) spans sessions, so it needs a
+# hold-back window when it is built.
 get_events(session_id, after_seq=0, limit=500) -> list[Event]
 save_blob(session_id, content) -> ref
 read_blob(ref, offset=0, limit=2000) -> str
@@ -489,6 +497,7 @@ on concurrently running sessions. None of this exists in prod until it does —
 | `test_lifecycle_transitions` | ALLOWED map only; cancel wins a live race |
 | `test_streaming_first_token` | first content event before the mocked model finishes |
 | `test_retry_budget_bounded` | ≤3 attempts, bounded wall clock; background no-retry |
+| `test_append_ordering_under_concurrency` | concurrent api and loop appends; an SSE reader never skips a seq |
 | `test_resume_verify_on_wake` | dangling call → interrupted; no silent re-execution |
 | `test_event_replay_deterministic` | same log ⇒ identical context assembly |
 | `test_authz_scoping` | user A cannot read/steer user B's sessions, refs, files |
@@ -508,7 +517,9 @@ on concurrently running sessions. None of this exists in prod until it does —
 | runaway tasks marked completed via `completion_signal` fallback | `done{reason}` sole authority | `base_module/task_runner.py:213` |
 | fake streaming (full completion, then per-char replay) | structural streaming | `agent_module/agent.py:494` |
 | two model clients, no timeout, nested retries | one client, one retry layer | `ArkModelNew.py:83`, `computer_module/model.py:46` |
-| `run.sh` launches with NO parser flags; `llm.model_name` is `"tgi"`; a dead `computer_agent:` block carries a `--tool-call-parser qwen3` comment (not a real tool parser) | one authoritative model: **Qwen3-8B**, `--tool-call-parser qwen25`, `--reasoning-parser qwen3`; `computer_agent:` deleted (Task 0a) | `config_module/config.yaml`, `model_module/run.sh` |
+| ~~`run.sh` launches with NO parser flags; `llm.model_name` is `"tgi"`~~ FIXED in Task 0a(i) | one authoritative model: **Qwen3-8B**, `--tool-call-parser qwen25`, `--reasoning-parser qwen3` | `config_module/config.yaml`, `model_module/run.sh` |
+| `ArkModelLink` is built with no `model_name`, so the live chat path still sends the `"tgi"` default and ignores `llm.model_name` | one authoritative model | `base_module/app.py:67` (dies with Task 4) |
+| mem0 config hardcodes `Qwen/Qwen2.5-7B-Instruct` against port 30000, which serves Qwen3-8B | one authoritative model | `memory_module/memory.py:58` (dies with Task 7) |
 | Code docstrings route implementers to the superseded specs, including `ENVIRONMENT_SPEC` which was never written | those 13 files now live in `docs/deprecated/` (READMEd, and CLAUDE.md forbids reading it); the docstrings die with the files Tasks 7/8 delete | `agent_module/agent.py:305,306,328`, `computer_module/*`, `spike_sandbox.py:100` |
 | context overflow classified `bad_request` → terminal death, no recovery | overflow is recoverable (ladder, spec) | `ArkModelNew.py:147` |
 | `short_term_turns: 50` config never read; loop hardcodes 5 turns | config is the source of truth | `agent.py:323,415,510` |

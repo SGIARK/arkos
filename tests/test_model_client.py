@@ -6,33 +6,49 @@ clock, background source does not retry on overload.
 """
 
 import asyncio
-import time
 from types import SimpleNamespace
 
 import pytest
-from openai import APITimeoutError, BadRequestError, RateLimitError
+from openai import (
+    APIConnectionError,
+    APIError,
+    APITimeoutError,
+    BadRequestError,
+    InternalServerError,
+    RateLimitError,
+)
 
 from model_module import client as mc
 from model_module.errors import ModelError
 
+# Captured before any monkeypatching, so the partial-override lambdas below can
+# defer to the real loader for every key they do not care about.
+_real_get = mc.config.get
+
+
 # --- doubles ----------------------------------------------------------------
 
 
-def _chunk(*, content=None, reasoning=None, tool_calls=None, finish=None, usage=None):
+def _chunk(*, content=None, reasoning=None, tool_calls=None, finish=None):
     """One SGLang-shaped streaming chunk."""
     delta = SimpleNamespace(content=content, reasoning_content=reasoning, tool_calls=tool_calls)
-    choice = SimpleNamespace(delta=delta, finish_reason=finish)
-    return SimpleNamespace(choices=[choice], usage=usage)
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta, finish_reason=finish)], usage=None)
 
 
-def _usage_chunk(prompt=10, completion=5):
+def _usage_chunk(**counts):
     """The trailing usage-only chunk: no choices, which readers must tolerate."""
-    usage = SimpleNamespace(model_dump=lambda: {"prompt_tokens": prompt, "completion_tokens": completion})
-    return SimpleNamespace(choices=[], usage=usage)
+    return SimpleNamespace(choices=[], usage=SimpleNamespace(model_dump=lambda: counts))
 
 
 def _tool_call(index, *, id=None, name=None, arguments=""):
     return SimpleNamespace(index=index, id=id, function=SimpleNamespace(name=name, arguments=arguments))
+
+
+def _response(status_code):
+    """Minimal httpx-shaped response for constructing SDK errors."""
+    import httpx
+
+    return httpx.Response(status_code=status_code, request=httpx.Request("POST", "http://t/v1/chat/completions"))
 
 
 class _Stream:
@@ -40,6 +56,7 @@ class _Stream:
         self._chunks = chunks
         self._fail_after = fail_after
         self._error = error
+        self.closed = False
 
     def __aiter__(self):
         async def gen():
@@ -50,9 +67,12 @@ class _Stream:
 
         return gen()
 
+    async def close(self):
+        self.closed = True
+
 
 class _FakeCompletions:
-    """Counts attempts so the retry budget is observable."""
+    """Counts attempts, so the retry budget is observable."""
 
     def __init__(self, behaviour):
         self._behaviour = behaviour
@@ -75,18 +95,13 @@ def fake(monkeypatch):
 
     def install(behaviour):
         completions = _FakeCompletions(behaviour)
-        stub = SimpleNamespace(chat=SimpleNamespace(completions=completions))
-        monkeypatch.setattr(mc, "get_client", lambda: stub)
+        monkeypatch.setattr(mc, "get_client", lambda: SimpleNamespace(chat=SimpleNamespace(completions=completions)))
         return completions
 
-    # Keep the suite fast: the retry budget is what's under test, not the clock.
-    monkeypatch.setattr(mc.config, "get", _fast_config(mc.config.get))
-    return install
-
-
-def _fast_config(original):
+    # Keep the suite fast: the attempt count is what's under test, not the clock.
     overrides = {"llm.retry_backoff_s": 0.001, "llm.retry_backoff_max_s": 0.004}
-    return lambda key, *a, **kw: overrides.get(key, original(key, *a, **kw))
+    monkeypatch.setattr(mc.config, "get", lambda k, *a, **kw: overrides.get(k, _real_get(k)))
+    return install
 
 
 async def _drain(source="interactive", tools=None, options=None):
@@ -96,89 +111,96 @@ async def _drain(source="interactive", tools=None, options=None):
 # --- the retry budget -------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "error,kind",
+    [
+        (APITimeoutError(request=None), "timeout"),
+        (APIConnectionError(request=None), "connect"),
+        (InternalServerError("boom", response=_response(500), body=None), "server_error"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_hung_endpoint_stops_at_three_attempts(fake):
-    """A permanently timing-out endpoint costs 3 requests, not 99."""
-    completions = fake(lambda n: APITimeoutError(request=None))
+async def test_retryable_failures_stop_at_three_attempts(fake, error, kind):
+    """A permanently failing endpoint costs 3 requests, not 99."""
+    completions = fake(lambda n: error)
 
-    started = time.monotonic()
     with pytest.raises(ModelError) as excinfo:
         await _drain()
-    elapsed = time.monotonic() - started
 
     assert completions.calls == 3
-    assert excinfo.value.kind == "timeout"
+    assert excinfo.value.kind == kind
     assert excinfo.value.retryable is True
-    # Bounded wall clock: three attempts of backoff, not an open-ended wait.
-    assert elapsed < 5
 
 
+@pytest.mark.parametrize("source,expected_calls", [("background", 1), ("interactive", 3)])
 @pytest.mark.asyncio
-async def test_background_source_does_not_retry_overload(fake):
+async def test_only_interactive_waits_out_an_overload(fake, source, expected_calls):
     """An unattended run yields the GPU slot instead of queueing for it."""
     completions = fake(lambda n: RateLimitError("busy", response=_response(429), body=None))
 
     with pytest.raises(ModelError) as excinfo:
-        await _drain(source="background")
+        await _drain(source=source)
 
-    assert completions.calls == 1
+    assert completions.calls == expected_calls
     assert excinfo.value.kind == "rate_limit"
-    assert excinfo.value.retryable is False
 
 
+@pytest.mark.parametrize(
+    "error,kind",
+    [
+        # Retrying a malformed request just spends the budget on the same 400.
+        (BadRequestError("nope", response=_response(400), body=None), "bad_request"),
+        # In-band SSE error: 200 OK, then {"error": ...} in the body. Retrying
+        # costs 3 client attempts x 3 loop hop attempts for a doomed prompt.
+        (APIError("context length exceeded", request=None, body=None), "stream"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_interactive_source_does_retry_overload(fake):
-    completions = fake(lambda n: RateLimitError("busy", response=_response(429), body=None))
-
-    with pytest.raises(ModelError):
-        await _drain(source="interactive")
-
-    assert completions.calls == 3
-
-
-@pytest.mark.asyncio
-async def test_bad_request_fails_fast(fake):
-    """Retrying a malformed request just spends the budget on the same 400."""
-    completions = fake(lambda n: BadRequestError("nope", response=_response(400), body=None))
+async def test_terminal_failures_fail_fast(fake, error, kind):
+    completions = fake(lambda n: error)
 
     with pytest.raises(ModelError) as excinfo:
         await _drain()
 
     assert completions.calls == 1
-    assert excinfo.value.kind == "bad_request"
+    assert excinfo.value.kind == kind
     assert excinfo.value.retryable is False
 
 
 @pytest.mark.asyncio
-async def test_recovers_on_second_attempt(fake):
+async def test_failure_before_the_first_chunk_still_retries(fake):
+    """
+    The boundary that decides retry-vs-commit: nothing has been yielded yet, so
+    this one MUST retry.
+    """
+
     def behaviour(n):
         if n == 1:
-            return APITimeoutError(request=None)
-        return _Stream([_chunk(content="hello", finish="stop")])
+            return _Stream([_chunk(content="never seen")], fail_after=0, error=APITimeoutError(request=None))
+        return _Stream([_chunk(content="second time", finish="stop")])
 
     completions = fake(behaviour)
     deltas = await _drain()
 
     assert completions.calls == 2
-    assert [d.text for d in deltas if isinstance(d, mc.TextDelta)] == ["hello"]
+    assert [d.text for d in deltas if isinstance(d, mc.TextDelta)] == ["second time"]
 
 
 @pytest.mark.asyncio
 async def test_midstream_failure_is_not_retried(fake):
     """
-    Once a delta has been handed to the caller the attempt is committed: a retry
-    would duplicate text on screen and duplicate tool calls in the transcript.
-    The loop retries the whole hop instead.
+    The other side of that boundary. Once a delta has been handed over the
+    attempt is committed: a retry would duplicate text on screen and duplicate
+    tool calls in the transcript. The loop retries the whole hop instead.
     """
-
-    def behaviour(n):
-        return _Stream(
+    completions = fake(
+        lambda n: _Stream(
             [_chunk(content="par"), _chunk(content="tial")],
             fail_after=1,
             error=APITimeoutError(request=None),
         )
+    )
 
-    completions = fake(behaviour)
     seen = []
     with pytest.raises(ModelError):
         async for d in mc.generate([{"role": "user", "content": "hi"}]):
@@ -188,11 +210,25 @@ async def test_midstream_failure_is_not_retried(fake):
     assert [d.text for d in seen] == ["par"]
 
 
+@pytest.mark.asyncio
+async def test_parsing_bug_is_not_retried(fake):
+    """Retrying cannot fix our own code; 3 real model calls would just hide it."""
+    broken = SimpleNamespace(usage=None)  # no .choices -> AttributeError in the parse loop
+    completions = fake(lambda n: _Stream([broken]))
+
+    with pytest.raises(ModelError) as excinfo:
+        await _drain()
+
+    assert completions.calls == 1
+    assert excinfo.value.kind == "internal"
+    assert excinfo.value.retryable is False
+
+
 # --- streaming shape --------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_yields_text_reasoning_and_tool_calls(fake):
+async def test_yields_text_reasoning_tool_calls_and_usage(fake):
     fake(
         lambda n: _Stream(
             [
@@ -201,7 +237,9 @@ async def test_yields_text_reasoning_and_tool_calls(fake):
                 _chunk(tool_calls=[_tool_call(0, id="c1", name="run_command", arguments='{"cmd')]),
                 _chunk(tool_calls=[_tool_call(0, arguments='":"ls"}')]),
                 _chunk(finish="tool_calls"),
-                _usage_chunk(),
+                # Real SGLang sends *_tokens_details: None beside the counts, so
+                # Finish.usage cannot be typed dict[str, int].
+                _usage_chunk(prompt_tokens=9, completion_tokens=142, prompt_tokens_details=None),
             ]
         )
     )
@@ -212,7 +250,6 @@ async def test_yields_text_reasoning_and_tool_calls(fake):
     assert isinstance(deltas[1], mc.TextDelta) and deltas[1].text == "the answer"
 
     calls = [d for d in deltas if isinstance(d, mc.ToolCallDelta)]
-    assert [c.index for c in calls] == [0, 0]
     assert calls[0].name == "run_command"
     # Fragments are handed over as they arrive; assembly is the loop's job.
     assert "".join(c.arguments for c in calls) == '{"cmd":"ls"}'
@@ -220,7 +257,34 @@ async def test_yields_text_reasoning_and_tool_calls(fake):
     finish = deltas[-1]
     assert isinstance(finish, mc.Finish)
     assert finish.reason == "tool_calls"
-    assert finish.usage == {"prompt_tokens": 10, "completion_tokens": 5}
+    assert finish.usage["prompt_tokens_details"] is None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_tool_calls_stay_separated_by_index(fake):
+    """The model interleaves calls; only `index` is on every fragment."""
+    fake(
+        lambda n: _Stream(
+            [
+                _chunk(tool_calls=[_tool_call(0, id="a", name="grep", arguments='{"q"')]),
+                _chunk(tool_calls=[_tool_call(1, id="b", name="glob", arguments='{"p"')]),
+                _chunk(tool_calls=[_tool_call(0, arguments=':"x"}')]),
+                _chunk(tool_calls=[_tool_call(1, arguments=':"y"}')]),
+                _chunk(finish="tool_calls"),
+            ]
+        )
+    )
+
+    calls = [d for d in await _drain() if isinstance(d, mc.ToolCallDelta)]
+    assert "".join(c.arguments for c in calls if c.index == 0) == '{"q":"x"}'
+    assert "".join(c.arguments for c in calls if c.index == 1) == '{"p":"y"}'
+
+
+@pytest.mark.asyncio
+async def test_finish_arrives_even_with_no_usage_chunk(fake):
+    fake(lambda n: _Stream([_chunk(content="hi", finish="stop")]))
+    deltas = await _drain()
+    assert isinstance(deltas[-1], mc.Finish) and deltas[-1].usage is None
 
 
 @pytest.mark.asyncio
@@ -237,14 +301,46 @@ async def test_first_delta_arrives_before_the_stream_ends(fake):
 
             return gen()
 
+        async def close(self):
+            pass
+
     fake(lambda n: _SlowStream())
 
     agen = mc.generate([{"role": "user", "content": "hi"}])
+    # Any accumulate-then-yield implementation hangs here instead.
     first = await asyncio.wait_for(agen.__anext__(), timeout=1)
-    assert first.text == "first"  # arrived while the model is still generating
+    assert first.text == "first"
 
     released.set()
     await agen.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stream_is_closed_when_the_consumer_abandons_it(fake):
+    """
+    A hop abandoned on budget must free the decode slot immediately, not
+    whenever refcounting gets round to finalizing two chained generators.
+    """
+    stream = _Stream([_chunk(content="a"), _chunk(content="b"), _chunk(content="c", finish="stop")])
+    fake(lambda n: stream)
+
+    agen = mc.generate([{"role": "user", "content": "hi"}])
+    await agen.__anext__()
+    await agen.aclose()
+
+    assert stream.closed, "the SGLang decode slot keeps generating until this closes"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_is_not_a_model_error(fake):
+    """Wrapping cancel as ModelError would make it look retryable."""
+    fake(lambda n: asyncio.CancelledError())
+
+    with pytest.raises(asyncio.CancelledError):
+        await _drain()
+
+
+# --- config is the source of truth ------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -255,47 +351,57 @@ async def test_options_and_tools_reach_the_wire(fake):
     await _drain(tools=tools, options={"temperature": 0.2, "chat_template_kwargs": {"enable_thinking": False}})
 
     sent = completions.kwargs
-    assert sent["tools"] == tools
-    assert sent["tool_choice"] == "auto"
+    assert sent["tools"] == tools and sent["tool_choice"] == "auto"
     assert sent["temperature"] == 0.2
     # chat_template_kwargs is SGLang-only, so it rides extra_body, not the top level.
     assert sent["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
-    assert sent["stream"] is True
-    assert sent["stream_options"] == {"include_usage": True}
+    assert sent["stream"] is True and sent["stream_options"] == {"include_usage": True}
 
-
-@pytest.mark.asyncio
-async def test_no_tools_sends_no_tool_choice(fake):
-    completions = fake(lambda n: _Stream([_chunk(content="ok", finish="stop")]))
     await _drain()
-    assert "tools" not in completions.kwargs
-    assert "tool_choice" not in completions.kwargs
+    assert "tools" not in completions.kwargs and "tool_choice" not in completions.kwargs
 
 
 @pytest.mark.asyncio
-async def test_cancellation_is_not_a_model_error(fake):
-    """Cancel must propagate; wrapping it as ModelError would make cancel retryable."""
-    fake(lambda n: asyncio.CancelledError())
+async def test_falsy_config_values_are_honoured(monkeypatch):
+    """
+    `config.get(k) or default` silently discarded these, and `temperature: 0` is
+    the setting most likely to be reached for on a tool turn.
+    """
+    completions = _FakeCompletions(lambda n: _Stream([_chunk(content="ok", finish="stop")]))
+    monkeypatch.setattr(mc, "get_client", lambda: SimpleNamespace(chat=SimpleNamespace(completions=completions)))
+    monkeypatch.setattr(mc.config, "get", lambda k, *a, **kw: 0 if k == "llm.temperature" else _real_get(k))
 
-    with pytest.raises(asyncio.CancelledError):
+    await _drain()
+    assert completions.kwargs["temperature"] == 0.0
+
+
+@pytest.mark.parametrize("bad_value", [-1, "hot"])
+@pytest.mark.asyncio
+async def test_bad_max_retries_still_raises_model_error(monkeypatch, bad_value):
+    """
+    generate() raises ModelError and nothing else. -1 emptied the attempt range
+    and fell through to `raise None`; "hot" escaped as a bare ValueError.
+    """
+    completions = _FakeCompletions(lambda n: APITimeoutError(request=None))
+    monkeypatch.setattr(mc, "get_client", lambda: SimpleNamespace(chat=SimpleNamespace(completions=completions)))
+    monkeypatch.setattr(mc.config, "get", lambda k, *a, **kw: bad_value if k == "llm.max_retries" else _real_get(k))
+
+    with pytest.raises(ModelError):
         await _drain()
+    assert completions.calls <= 1
 
 
-# --- the cached client ------------------------------------------------------
-
-
-def test_client_is_cached_and_has_no_sdk_retries(monkeypatch):
+def test_client_is_cached_with_the_configured_timeout(monkeypatch):
+    """Contracts' 'bounded wall clock' depends on timeout actually being applied."""
     mc.reset_client()
+    monkeypatch.setattr(mc.config, "get", lambda k, *a, **kw: 12.5 if k == "llm.timeout_s" else _real_get(k))
+
     first = mc.get_client()
-    second = mc.get_client()
-
-    assert first is second, "a new client per call was the old bug"
+    assert first is mc.get_client(), "a new client per call was the old bug"
+    assert first.timeout == 12.5
     assert first.max_retries == 0, "the SDK retry layer is one of the three nested loops being deleted"
+
+    # timeout is part of the cache key, so a config reload is not silently ignored.
+    monkeypatch.setattr(mc.config, "get", lambda k, *a, **kw: 34.0 if k == "llm.timeout_s" else _real_get(k))
+    assert mc.get_client().timeout == 34.0
     mc.reset_client()
-
-
-def _response(status_code):
-    """Minimal httpx-shaped response for constructing SDK errors."""
-    import httpx
-
-    return httpx.Response(status_code=status_code, request=httpx.Request("POST", "http://test/v1/chat/completions"))

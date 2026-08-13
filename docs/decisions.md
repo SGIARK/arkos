@@ -145,8 +145,10 @@ qwen25` (Qwen3 dense models use the Hermes-style `<tool_call>` format the qwen25
 detector reads; `qwen3_coder` is for the Coder variants and `qwen3` is not a tool
 parser at all) plus `--reasoning-parser qwen3`, because Qwen3 is a hybrid
 reasoning model and un-split `<think>` output would stream into `content` events
-as if it were the reply. The stale `"tgi"` model name and the whole
-`computer_agent:` block are deleted. *Cost:* reasoning is STREAMED, not
+as if it were the reply. `run.sh` is authoritative; `config.yaml` mirrors it so
+the client can read it, and a mismatch between the two is a bug, which is what
+Task 0a(i) verifies. The stale `"tgi"` model name and the `computer_agent.llm`
+block are deleted (`computer_agent.sandbox` is promoted, not deleted, until Task 8). *Cost:* reasoning is STREAMED, not
 dropped: it re-yields as a `reasoning` event alongside `content`, because Qwen3
 reasons for hundreds of tokens before answering and a blank screen through the
 slowest part of the turn is the opacity this redesign exists to remove. That makes

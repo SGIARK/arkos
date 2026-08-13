@@ -13,6 +13,9 @@ it is correct. If they disagree, contracts wins and the spec is the bug.
 open it, cite it, or follow its task numbers. Stale pointers to it in docstrings
 should be deleted, not followed.
 
+**`state_module` is deprecated.** It still exists because Task 7 has not deleted
+it yet. **Add no new states or routers**, and do not extend the ones there.
+
 Coding standards will be rewritten in Task 7, once the new shape exists. Until
 then: ruff, type hints on every signature, `async def` for anything that awaits,
 no `print()` in production paths.

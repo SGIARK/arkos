@@ -80,14 +80,16 @@ CREATE TABLE sessions (
     id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id          UUID        NOT NULL REFERENCES users(id),
     project_id       UUID        REFERENCES projects(id),
-    -- 'attended' | 'unattended'. A PHASE, not a type: it flips when the human
-    -- says go.
-    mode             TEXT        NOT NULL,
+    -- A PHASE, not a type: it flips when the human says go.
+    mode             TEXT        NOT NULL CHECK (mode IN ('attended', 'unattended')),
     title            TEXT,
     goal             TEXT,
-    -- pending idle running awaiting_approval completed failed cancelled.
-    -- idle = alive, waiting for a human; survives restarts.
-    status           TEXT        NOT NULL,
+    -- idle = alive, waiting for a human; survives restarts. CHECKed because an
+    -- out-of-vocabulary write makes transition()'s WHERE status=expected stop
+    -- matching, stranding the session with no DB-level guard.
+    status           TEXT        NOT NULL CHECK (status IN (
+                         'pending', 'idle', 'running', 'awaiting_approval',
+                         'completed', 'failed', 'cancelled')),
     terminal_reason  TEXT,                  -- = done.reason, verbatim
     cursor_seq       BIGINT      NOT NULL DEFAULT 0,
     hops_used        INT         NOT NULL DEFAULT 0,
@@ -100,16 +102,20 @@ CREATE TABLE sessions (
 -- Operator-console seams: cheap now, painful later.
 CREATE INDEX idx_sessions_triage ON sessions (status, terminal_reason, ended_at);
 CREATE INDEX idx_sessions_user   ON sessions (user_id, ended_at);
+-- the new_sessions_per_hour quota query, which ended_at cannot serve
+CREATE INDEX idx_sessions_created ON sessions (user_id, created_at);
 
 -- ----------------------------------- the transcript: audit, never pruned ----
 CREATE TABLE session_events (
     -- ONE global counter: ordering + resume cursor + event id. Gaps per session
-    -- are fine; every read is "after N", never "count".
+    -- are fine; every read is "after N", never "count". BIGSERIAL assigns before
+    -- commit, so append() must hold pg_advisory_xact_lock(session_id) or a
+    -- reader can skip a seq that commits late.
     seq         BIGSERIAL   PRIMARY KEY,
     session_id  UUID        NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    -- user content reasoning tool_call tool_result status todo budget
-    -- lifecycle view_transform done
-    kind        TEXT        NOT NULL,
+    kind        TEXT        NOT NULL CHECK (kind IN (
+                    'user', 'content', 'reasoning', 'tool_call', 'tool_result',
+                    'status', 'todo', 'budget', 'lifecycle', 'view_transform', 'done')),
     version     INT         NOT NULL DEFAULT 1,  -- readers upcast; rows never rewritten
     payload     JSONB       NOT NULL,
     ts          TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -147,7 +153,7 @@ CREATE TABLE approvals (
     session_id    UUID        NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     -- Stays OPEN across the park; the response event closes it.
     tool_call_id  TEXT        NOT NULL,
-    kind          TEXT        NOT NULL,   -- 'approval' | 'ask'
+    kind          TEXT        NOT NULL CHECK (kind IN ('approval', 'ask')),
     prompt        TEXT        NOT NULL,
     answer        TEXT,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -155,11 +161,14 @@ CREATE TABLE approvals (
 );
 
 CREATE INDEX idx_approvals_pending ON approvals (session_id) WHERE answered_at IS NULL;
+-- a double-park is impossible, not merely unlikely
+CREATE UNIQUE INDEX idx_approvals_one_open_per_call
+    ON approvals (session_id, tool_call_id) WHERE answered_at IS NULL;
 
 -- ---------------------------------------------------------- stateful hands --
 CREATE TABLE resource_leases (
     resource_key  TEXT        PRIMARY KEY,  -- 'sandbox:{user}' | 'browser:{user}'
-    session_id    UUID        NOT NULL REFERENCES sessions(id),
+    session_id    UUID        NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     acquired_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at    TIMESTAMPTZ NOT NULL
 );
