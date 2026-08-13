@@ -344,6 +344,9 @@ layer (classified, ≤3, backoff; background source fails fast on overload);
 streaming + tools through one path. Replaces ArkModelLink AND ToolCallingModel.
 **Touch:** `model_module/client.py` | **P0, 1d** | **Blockers:** none
 **Test:** hung endpoint → ≤3 requests, bounded wall clock, no event-loop stall.
+**Status:** written + tested (`tests/test_model_client.py`, 12 tests). Nothing
+calls it yet, and `ArkModelLink`/`ToolCallingModel` are still live for their
+existing callers — they are deleted in Tasks 7/8, not here.
 
 ## Task 2: Core loop
 **Done when:** `run_turn` per contracts.md (generalized from ComputerAgent.run,
@@ -560,3 +563,20 @@ and `repeat_tasks` has no FK to `users`, so it survives the `users` drop.
 Verified by applying it to a throwaway DB — 12 tables, bookkeeping correct.
 **Not yet applied to a real database:** it drops `users` and `tasks`, so it runs
 at the Task 4 cutover.
+
+**2026-08-13 — Task 1: a mid-stream failure is NOT retried by the client.**
+The contract says the client retries within one `generate()` call, but a stream
+that dies after emitting deltas cannot be replayed — the caller has already seen
+the text, and retrying would duplicate it on screen and duplicate tool calls in
+the transcript. So: retry only before the first delta; after that, raise
+`retryable=True` and let the loop re-attempt the whole hop (Task 2). Still two
+bounded layers, as contracts require. Pinned by
+`test_midstream_failure_is_not_retried`.
+
+Also settled here: `source` is `interactive | background` and changes exactly
+one behaviour — `background` does not retry overload (429), so an unattended run
+yields the GPU slot instead of queueing for it. Everything else retries
+identically. New config keys under `llm:`: `timeout_s: 90` (0a measured max
+44.2s), `max_attempts`, `retry_backoff_s`, `retry_backoff_max_s` — no magic
+numbers in the client. `ModelError` gained `kind`; it defaults to `"unknown"`
+only so the pre-redesign callers keep working until Tasks 7-8 delete them.
