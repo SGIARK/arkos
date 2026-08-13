@@ -3,6 +3,9 @@ Task 2 conformance: one LLM call per hop, structural streaming, and termination
 that an unattended run cannot fake.
 """
 
+import asyncio
+import time
+
 import pytest
 
 from agent_module import events as ev
@@ -291,3 +294,86 @@ async def test_oversized_result_is_view_capped_with_a_total(model):
     assert result.total_chars == len(big) and result.ref == "r1"
     # The model still sees the whole thing; only the view is capped.
     assert messages[-2]["content"] == big
+
+
+# --- readonly drives concurrency --------------------------------------------
+
+
+def _calls(*specs):
+    """One hop issuing several tool calls."""
+    deltas = []
+    for i, (name, cid) in enumerate(specs):
+        deltas.append(mc.ToolCallDelta(index=i, id=cid, name=name, arguments="{}"))
+    return deltas + [mc.Finish(reason="tool_calls")]
+
+
+@pytest.mark.asyncio
+async def test_readonly_calls_run_in_parallel(model):
+    """Three 50ms reads take ~50ms together, not 150ms."""
+    model.arm(_calls(("grep", "a"), ("grep", "b"), ("grep", "c")), _text("done"))
+
+    async def slow_read(name, args):
+        await asyncio.sleep(0.05)
+        return lp.ResultEnvelope(ok=True, content="found")
+
+    started = time.monotonic()
+    events, _ = await _run(model, dispatch=slow_read)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.12, "serial execution would take at least 0.15s"
+    assert {e.id for e in events if isinstance(e, ev.ToolResultEvent)} == {"a", "b", "c"}
+
+
+@pytest.mark.asyncio
+async def test_writes_run_serially_and_in_order(model):
+    """A write may depend on what came before it, so it never overlaps."""
+    model.arm(_calls(("write_file", "a"), ("write_file", "b")), _text("done"))
+    live = 0
+    order = []
+
+    async def tracked(name, args):
+        nonlocal live
+        live += 1
+        assert live == 1, "two writes overlapped"
+        await asyncio.sleep(0.01)
+        order.append(name)
+        live -= 1
+        return lp.ResultEnvelope(ok=True, content="written")
+
+    events, _ = await _run(model, dispatch=tracked)
+
+    assert len(order) == 2
+    assert [e.id for e in events if isinstance(e, ev.ToolResultEvent)] == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_a_write_between_reads_splits_the_batches(model):
+    """read read write read must not hoist the last read past the write."""
+    model.arm(_calls(("grep", "a"), ("grep", "b"), ("write_file", "w"), ("grep", "c")), _text("done"))
+    sequence = []
+
+    async def tracked(name, args):
+        sequence.append(f"start:{name}")
+        await asyncio.sleep(0.01)
+        sequence.append(f"end:{name}")
+        return lp.ResultEnvelope(ok=True, content="ok")
+
+    await _run(model, dispatch=tracked)
+
+    assert sequence.index("end:write_file") > sequence.index("start:grep")
+    # The trailing read begins only after the write has finished.
+    assert sequence[-2:] == ["start:grep", "end:grep"]
+
+
+@pytest.mark.asyncio
+async def test_every_parallel_call_is_still_closed_exactly_once(model):
+    """The transcript invariant holds when a batch has a bad call in it."""
+    model.arm(_calls(("grep", "a"), ("teleport", "b"), ("grep", "c")), _text("done"))
+
+    events, messages = await _run(model)
+
+    opened = sorted(e.id for e in events if isinstance(e, ev.ToolCallEvent))
+    closed = sorted(e.id for e in events if isinstance(e, ev.ToolResultEvent))
+    assert opened == closed == ["a", "b", "c"]
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+    assert sorted(m["tool_call_id"] for m in tool_msgs) == ["a", "b", "c"]

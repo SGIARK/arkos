@@ -362,6 +362,10 @@ retry; honest hop/attempt counters; streams structurally.
 **Touch:** `agent_module/loop.py`, `events.py` | **P0, 2-3d** | **Blockers:** 1
 **Test:** mocked model, 2 tool calls then text → exactly 3 LLM calls, parallel
 readonly execution, `done{completed}`.
+**Status:** done in three commits: 2a events vocabulary, 2b run_turn with serial
+tools, 2c parallel readonly. 38 tests. `run_turn` takes `dispatch` as a keyword
+argument, which the contracts signature omits; without it the loop would have to
+import `tool_module` and would stop being pure.
 
 ## Task 3: Tool layer slim-down
 **Done when:** envelope + manifest per contracts.md; one ClientSession; TTL

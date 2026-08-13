@@ -9,6 +9,7 @@ react to. Only cancellation propagates.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -211,12 +212,12 @@ async def run_turn(
             }
         )
 
-        finished = False
-        for call in calls:
-            async for event in _run_one_call(call, by_name, dispatch, state, messages):
+        finished = any(c.name == FINISH_TOOL and c.name in by_name for c in calls)
+        # readonly drives concurrency: reads go together, a write runs alone and
+        # in order, since a write may depend on the reads before it.
+        for batch in _batch_by_readonly(calls, by_name):
+            async for event in _run_batch(batch, by_name, dispatch, state, messages):
                 yield event
-            if call.name == FINISH_TOOL and call.name in by_name:
-                finished = True
 
         if finished and mode == "unattended":
             yield DoneEvent(reason="completed")
@@ -251,57 +252,99 @@ class _Hop:
         return [self._calls[i] for i in sorted(self._calls)]
 
 
-async def _run_one_call(
-    call: _PartialCall,
+def _batch_by_readonly(calls: list[_PartialCall], by_name: dict[str, ToolSpec]) -> list[list[_PartialCall]]:
+    """Group consecutive readonly calls; anything else stands alone."""
+    batches: list[list[_PartialCall]] = []
+    for call in calls:
+        spec = by_name.get(call.name)
+        if spec is not None and spec.readonly and batches and _all_readonly(batches[-1], by_name):
+            batches[-1].append(call)
+        else:
+            batches.append([call])
+    return batches
+
+
+def _all_readonly(batch: list[_PartialCall], by_name: dict[str, ToolSpec]) -> bool:
+    return all((spec := by_name.get(c.name)) is not None and spec.readonly for c in batch)
+
+
+async def _run_batch(
+    batch: list[_PartialCall],
     by_name: dict[str, ToolSpec],
     dispatch: Dispatch,
     state: _State,
     messages: list[dict[str, Any]],
 ) -> AsyncIterator[Event]:
-    """Validate, execute and report one call. Never raises except cancellation."""
-    args, parse_error = _parse_args(call.arguments)
+    """
+    Validate the batch, then dispatch what survives concurrently.
 
-    if parse_error is not None:
-        yield ToolCallEvent(id=call.id, name=call.name, args={})
-        if state.repair_available:
-            state.repair_available = False
-            state.repair_pending = True
-        yield _close(call, "invalid_args", parse_error, messages)
+    Results are yielded as they land rather than in call order, so a slow read
+    does not hold up a fast one on screen. Every call is still closed by exactly
+    one result before this returns.
+    """
+    runnable: list[tuple[_PartialCall, dict[str, Any]]] = []
+
+    for call in batch:
+        args, parse_error = _parse_args(call.arguments)
+        if parse_error is not None:
+            yield ToolCallEvent(id=call.id, name=call.name, args={})
+            if state.repair_available:
+                state.repair_available = False
+                state.repair_pending = True
+            yield _close(call, "invalid_args", parse_error, messages)
+            continue
+
+        yield ToolCallEvent(id=call.id, name=call.name, args=args)
+
+        if call.name not in by_name:
+            known = ", ".join(sorted(by_name)) or "none"
+            yield _close(call, "not_found", f"No tool named {call.name!r}. Available: {known}", messages)
+            continue
+
+        cap = state.budgets.per_tool_attempts
+        if state.failures.get(call.name, 0) >= cap:
+            yield _close(
+                call,
+                "upstream_error",
+                f"{call.name} has failed {cap} times. Do not call it again; try another approach.",
+                messages,
+            )
+            continue
+
+        runnable.append((call, args))
+
+    if not runnable:
         return
 
-    yield ToolCallEvent(id=call.id, name=call.name, args=args)
+    # asyncio.wait, not as_completed: it hands back the task objects themselves,
+    # which is how a result is matched to its call.
+    tasks = {asyncio.create_task(dispatch(c.name, a)): c for c, a in runnable}
+    pending = set(tasks)
+    try:
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                call = tasks[task]
+                envelope = task.result()
+                if envelope.ok:
+                    state.failures.pop(call.name, None)
+                else:
+                    state.failures[call.name] = state.failures.get(call.name, 0) + 1
 
-    if call.name not in by_name:
-        known = ", ".join(sorted(by_name)) or "none"
-        yield _close(call, "not_found", f"No tool named {call.name!r}. Available: {known}", messages)
-        return
-
-    cap = state.budgets.per_tool_attempts
-    if state.failures.get(call.name, 0) >= cap:
-        yield _close(
-            call,
-            "upstream_error",
-            f"{call.name} has failed {cap} times. Do not call it again; try another approach.",
-            messages,
-        )
-        return
-
-    envelope = await dispatch(call.name, args)
-    if envelope.ok:
-        state.failures.pop(call.name, None)
-    else:
-        state.failures[call.name] = state.failures.get(call.name, 0) + 1
-
-    content, total = _cap_view(envelope.content)
-    messages.append({"role": "tool", "tool_call_id": call.id, "content": envelope.content})
-    yield ToolResultEvent(
-        id=call.id,
-        ok=envelope.ok,
-        content=content,
-        error_kind=envelope.error_kind,
-        total_chars=total,
-        ref=envelope.ref,
-    )
+                content, total = _cap_view(envelope.content)
+                messages.append({"role": "tool", "tool_call_id": call.id, "content": envelope.content})
+                yield ToolResultEvent(
+                    id=call.id,
+                    ok=envelope.ok,
+                    content=content,
+                    error_kind=envelope.error_kind,
+                    total_chars=total,
+                    ref=envelope.ref,
+                )
+    finally:
+        # Covers the consumer abandoning the generator mid-batch.
+        for task in pending:
+            task.cancel()
 
 
 def _close(call: _PartialCall, error_kind: str, message: str, messages: list[dict[str, Any]]) -> ToolResultEvent:
