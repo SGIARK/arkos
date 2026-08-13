@@ -12,17 +12,37 @@
 -- is why the old users table (username/last_seen, locally minted id) cannot be
 -- kept: its ids do not mean the same thing.
 
+-- WARNING — user_sandboxes is dropped, not migrated. Its user_id was TEXT and
+-- is UUID now, so the old rows cannot be carried across. Every live e2b handle
+-- is lost: users' persistent sandbox filesystems become unreachable, and the
+-- orphaned sandboxes keep running (and billing) until their own idle timeout.
+-- Pause or reap all sandboxes BEFORE running this.
+
 -- ---------------------------------------------------------------- teardown --
-DROP TABLE IF EXISTS conversation_context CASCADE;  -- merged into session_events
-DROP TABLE IF EXISTS task_events          CASCADE;  -- merged into session_events
-DROP TABLE IF EXISTS task_approvals       CASCADE;  -- -> approvals
-DROP TABLE IF EXISTS user_sandboxes       CASCADE;  -- recreated, new shape
-DROP TABLE IF EXISTS tasks                CASCADE;  -- -> sessions
-DROP TABLE IF EXISTS users                CASCADE;  -- -> users, Supabase-keyed
+DROP TABLE IF EXISTS conversation_context  CASCADE;  -- merged into session_events
+DROP TABLE IF EXISTS task_events           CASCADE;  -- merged into session_events
+DROP TABLE IF EXISTS computer_task_events  CASCADE;  -- merged into session_events
+DROP TABLE IF EXISTS computer_tasks        CASCADE;  -- dropped with the old chain
+DROP TABLE IF EXISTS task_approvals        CASCADE;  -- -> approvals
+DROP TABLE IF EXISTS user_sandboxes        CASCADE;  -- recreated, new shape
+DROP TABLE IF EXISTS tasks                 CASCADE;  -- -> sessions
+DROP TABLE IF EXISTS users                 CASCADE;  -- -> users, Supabase-keyed
+
+-- mem0's pgvector collection. memory_module pointed mem0 at THIS database, so
+-- the reset leaves it behind otherwise — rows keyed by hashed user ids that no
+-- longer mean anything, plus its HNSW index. Memory is removed for now.
+DROP TABLE IF EXISTS memories CASCADE;
 
 DROP TYPE IF EXISTS task_status     CASCADE;
 DROP TYPE IF EXISTS approval_kind   CASCADE;
 DROP TYPE IF EXISTS approval_status CASCADE;
+
+-- Orphaned with the tasks trigger that was its only caller.
+DROP FUNCTION IF EXISTS set_updated_at() CASCADE;
+
+-- 0006 and 0007 both existed, so computer_tasks may or may not be present: a DB
+-- that stopped at 0006 can never run 0007 now that the chain is deleted. Hence
+-- the unconditional drops above.
 
 -- The deleted migrations must not look applied on a DB that already ran them.
 DELETE FROM schema_migrations WHERE name ~ '^000[1-7]_';

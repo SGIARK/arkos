@@ -181,7 +181,7 @@ code is a bug (see `short_term_turns` in violations).
 
 ```yaml
 llm:
-  context_window: 32768        # total in+out the served model accepts
+  context_window: 40960        # total in+out the served model accepts
   max_tokens: 8192             # output reserve  -> input budget = window - reserve
   timeout_s: 90                # per model call
   max_retries: 3               # the ONE retry layer

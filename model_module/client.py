@@ -215,7 +215,7 @@ async def generate(
     Raises:
         ModelError: and nothing else. `asyncio.CancelledError` propagates.
     """
-    max_attempts = int(config.get("llm.max_attempts") or 3)
+    max_attempts = int(config.get("llm.max_retries") or 3)
     last: ModelError | None = None
 
     for attempt in range(1, max_attempts + 1):

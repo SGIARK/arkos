@@ -109,7 +109,7 @@ async def me(current: dict[str, Any] = CurrentUser) -> MeResponse:
     return MeResponse(user_id=current["user_id"], username=current["username"], slack_user_id=slack_user_id)
 
 
-@router.post("/slack-connect", status_code=204)
+@router.post("/slack-connect", status_code=204, response_model=None)
 async def slack_connect(
     req: SlackConnectRequest,
     current: dict[str, Any] = CurrentUser,

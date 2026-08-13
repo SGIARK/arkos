@@ -554,7 +554,9 @@ from 0c's own table list — that list named `tasks`/`task_approvals` (renamed t
 `sessions`/`approvals`) and omitted `sessions`, `system_events`,
 `resource_leases`, `shared_connections`. Building from it would have shipped a
 schema with no operational log and no lease table. 0c is now corrected; a sweep
-of the other law docs came back clean.
+of the other law docs for stale *table names* came back clean (that sweep did
+not cover other stale values — `contracts.md` still had `context_window: 32768`,
+found later by review and corrected to 40960).
 
 Two details: the migration deletes the `schema_migrations` rows for
 `0001`–`0007`, so a DB that ran the deleted chain does not report them applied;
@@ -580,3 +582,25 @@ identically. New config keys under `llm:`: `timeout_s: 90` (0a measured max
 44.2s), `max_attempts`, `retry_backoff_s`, `retry_backoff_max_s` — no magic
 numbers in the client. `ModelError` gained `kind`; it defaults to `"unknown"`
 only so the pre-redesign callers keep working until Tasks 7-8 delete them.
+
+**2026-08-13 — review pass on Tasks 0-1; the teardown was the weak half.**
+Migration 0 created the right schema but under-dropped. Added:
+`computer_tasks` / `computer_task_events` (a DB that stopped at `0006` can never
+run `0007` now the chain is deleted, so 0007's drops had to move here), mem0's
+`memories` pgvector collection (memory_module pointed mem0 at *this* database),
+and the orphaned `set_updated_at()`. Re-verified by seeding a realistic
+pre-redesign DB — FKs, trigger, enum types, `waitlist` and `repeat_tasks` with
+rows — then applying: zero leftovers, both preserved tables intact.
+
+`user_sandboxes` is dropped rather than migrated (TEXT → UUID `user_id` cannot
+carry across). That loses every live e2b handle, so sandboxes must be reaped
+BEFORE the cutover or they keep billing to nobody. Now a WARNING in the
+migration header.
+
+Also corrected: `contracts.md` said `context_window: 32768` while config said
+40960 — contracts contradicted its own rule that the value match the actual
+SGLang launch, so contracts moves to 40960. And Task 1's config key was renamed
+`max_attempts` → **`max_retries`** to match contracts, though the two halves of
+contracts disagree on its meaning (the yaml block says "max_retries: 3", the
+conformance test says "<=3 attempts"). Implemented as a cap on total attempts.
+**Open question for the author — which did you mean?**

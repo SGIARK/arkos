@@ -24,7 +24,10 @@ llm:
   temperature: 0.7
   timeout_s: 90             # per request. Measured max was 44s (Task 0a), so this
                             # is ~2x headroom, not a guess.
-  max_attempts: 3           # total tries per generate() call, not retries-after-the-first
+  max_retries: 3            # the ONE retry layer. Read as a cap on TOTAL attempts
+                            # per generate() call — contracts names the key
+                            # max_retries but its conformance test pins "<=3
+                            # attempts", and the test is the testable half.
   retry_backoff_s: 0.5      # first backoff; doubles, with jitter
   retry_backoff_max_s: 8.0
 
