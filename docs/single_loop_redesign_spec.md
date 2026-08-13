@@ -35,7 +35,7 @@ before Task 7 deletes the fallback machinery.
 
 This document is the why and the build plan.
 
-**Status:** Not started | **Author:** John Wallace | **Last updated:** 2026-07-24
+**Status:** Task 0 (preflight) in progress | **Author:** John Wallace | **Last updated:** 2026-08-13
 
 ---
 
@@ -303,6 +303,12 @@ is recorded in Implementation Notes (>~5% malformed → temp 0.2 for tool turns,
 or SGLang constrained decoding / xgrammar). Everything downstream assumes this
 passes; measure before building on it.
 **Effort:** half day | **Blockers:** none
+**Status:** done — (i) landed in `5f3705f`; (ii) measured 2026-08-11, passed;
+(iii) recorded in Implementation Notes below. The probe script was a one-off and
+was deleted rather than committed: it imported `computer_module.tools`, which
+Task 8 removes. Re-measuring means rewriting it against the then-current tool
+schemas, which is the correct amount of work for a check that only re-runs when
+the served model or its parser flags change.
 
 **0b — Quarantine the superseded guidance (do NOT rewrite CLAUDE.md yet).**
 **Done when:** (i) a ~10-line note at the top of CLAUDE.md: redesign in progress,
@@ -323,10 +329,14 @@ never written. Full CLAUDE.md rewrite stays in Task 7.
 **Done when:** existing data cleared (zero users; **preserve the `waitlist`
 table — it has real signups**), `db/migrations/0001`–`0007` **deleted** (done —
 they described tables the redesign does not build; nothing migrates forward), and
-a single migration 0 creates the target schema directly (`session_events`, `result_blobs`,
-`tasks` + new cols, `projects`, `project_files`, `user_connections`, `users`,
-`task_approvals`, `user_sandboxes`). No history migration — fresh cutover.
+a single migration 0 creates the target schema directly: `users`, `projects`,
+`project_files`, `sessions`, `session_events`, `result_blobs`, `system_events`,
+`approvals`, `resource_leases`, `user_sandboxes`, `user_connections`,
+`shared_connections`. No history migration — fresh cutover. `repeat_tasks` is
+carried over untouched alongside `waitlist`.
 **Effort:** half day | **Blockers:** none (run before Task 4 cutover)
+**Status:** file written (`db/migrations/0000_migration_0.sql`); NOT yet applied
+to any database — it drops `users` and `tasks`, so it runs at the Task 4 cutover.
 
 ## Task 1: Model client rewrite
 **Done when:** one cached client (timeout=90, max_retries=0); the only retry
@@ -490,4 +500,63 @@ the spine. Task-level acceptance tests live on each card above.
 
 # Implementation Notes
 
-*Add entries as work lands.*
+Newest last. Keep entries short. An entry earns its place only if a later
+session would otherwise re-derive it — a measurement and the decision it forced,
+a deviation from the plan and why. `git log` is the changelog; this is not.
+
+When work contradicts this document, **amend the document in the same commit.**
+
+---
+
+**2026-08-11 — Task 0a(i): config was lying about the served model.** `run.sh`
+launched Qwen2.5-7B-Instruct with no parser flags; the live container serves
+**Qwen/Qwen3-8B** with `--tool-call-parser qwen25 --reasoning-parser qwen3`
+(verified via `docker ps` + `/get_server_info`). `llm.model_name` was the
+placeholder `"tgi"`; context window 32768 → 40960 (native, no
+`--context-length` override). `computer_agent.sandbox` was **promoted** to a
+top-level `sandbox:` block rather than deleted — `computer_module/sandbox.py`
+reads it at runtime and Task 8 has not relocated it yet. Commit `5f3705f`.
+
+**2026-08-11 — Task 0a(ii)+(iii): native tool calling measured. It passes.**
+22 realistic prompts, real SGLang endpoint, our actual tool schemas, default
+temperature:
+
+| | |
+|---|---|
+| malformed calls | **0 / 22** |
+| tool-call XML leaking into `content` | 0 |
+| transport/API errors | 0 |
+| spurious calls (tool used when none needed) | 0 |
+| answered in prose instead of calling a tool | 2 |
+| latency | median 8.3s · mean 13.8s · **max 44.2s** |
+
+**Decision: no temperature drop for tool turns, no constrained decoding, no
+xgrammar.** Threshold was ~5% malformed; measured zero. The feared
+`--reasoning-parser` × `--tool-call-parser` interaction did not appear.
+
+Caveats worth carrying forward:
+
+- **Bound to Qwen3-8B with those two parser flags.** Change either and
+  re-measure before trusting this.
+- Task 2's single repair retry stays regardless — it is cheap, and 22 prompts
+  is not a proof.
+- The 2 prose answers were the model declining to call a tool, not bad output.
+  A Task 2 prompting concern, not a decoding one.
+- Max 44.2s is the number for Task 1: under `timeout=90`, but not by the margin
+  the median implies.
+
+**2026-08-13 — Task 0c: migration 0 written, and the spec was wrong about it.**
+`db/migrations/0000_migration_0.sql` is built from `schema.md` + contracts, not
+from 0c's own table list — that list named `tasks`/`task_approvals` (renamed to
+`sessions`/`approvals`) and omitted `sessions`, `system_events`,
+`resource_leases`, `shared_connections`. Building from it would have shipped a
+schema with no operational log and no lease table. 0c is now corrected; a sweep
+of the other law docs came back clean.
+
+Two details: the migration deletes the `schema_migrations` rows for
+`0001`–`0007`, so a DB that ran the deleted chain does not report them applied;
+and `repeat_tasks` has no FK to `users`, so it survives the `users` drop.
+
+Verified by applying it to a throwaway DB — 12 tables, bookkeeping correct.
+**Not yet applied to a real database:** it drops `users` and `tasks`, so it runs
+at the Task 4 cutover.
