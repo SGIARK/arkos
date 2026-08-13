@@ -7,6 +7,11 @@ touches the e2b SDK, so the persistence flavor (pause/resume now, volumes later)
 can change without touching the agent, runner, or endpoints.
 
 Does NOT run the agent loop or make routing decisions -- it is plumbing.
+
+MOVED HERE FROM computer_module, NOT YET FINISHED (Task 8). It still reads
+`user_sandboxes` with psycopg2, and migration 0 rebuilt that table with a UUID
+`user_id` where this expects TEXT, so the DB half is broken until it moves to
+`db.pool`. Nothing calls it yet.
 """
 
 from __future__ import annotations
@@ -23,7 +28,7 @@ from config_module.loader import config
 
 logger = logging.getLogger(__name__)
 
-# e2b 2.25.1 facts (verified by computer_module/spike_sandbox.py):
+# e2b 2.25.1 facts (verified against the live API by a spike since deleted):
 #   Sandbox.create(timeout=...) -> sandbox with .sandbox_id
 #   sbx.pause() returns None; resume via Sandbox.connect(sandbox_id)
 #   sbx.commands.run(cmd) -> .stdout/.stderr/.exit_code (raises on non-zero exit)

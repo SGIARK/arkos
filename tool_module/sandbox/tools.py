@@ -1,10 +1,13 @@
 """
-The agent-computer interface: tool schemas + dispatch for the computer-agent.
+The sandbox hands: tool schemas + dispatch against a user's persistent sandbox.
 
 Tool *descriptions* encode the discipline (read-before-edit, unique old_string,
-search-first) -- borrowed as paradigms from Claude Code, re-authored. Every tool
-executes against the user's persistent sandbox (SandboxManager) or MCP. Does NOT
-own the loop; agent.py drives it.
+search-first) -- borrowed as paradigms from Claude Code, re-authored.
+
+MOVED HERE FROM computer_module, NOT YET FINISHED (Task 8). Still to do: put
+these behind `envelope.execute`, register them in the manifest so `run_turn`
+can reach them, provision the sandbox lazily on the first sandbox call, and
+move `manager.py` off psycopg2 onto `db.pool`. Nothing dispatches to them yet.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from computer_module.sandbox import SandboxManager
+from tool_module.sandbox.manager import SandboxManager
 
 logger = logging.getLogger(__name__)
 

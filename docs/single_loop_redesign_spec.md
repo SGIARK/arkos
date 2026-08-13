@@ -408,6 +408,10 @@ completion (measured); memory auto-injection code DELETED (memory removed);
 SSE error chunk on mid-stream failure; chat transcripts ride `session_events`;
 an attended turn ends in `idle`.
 **Touch:** `base_module/app.py` | **P0, 2d** | **Blockers:** 1-3, 0c applied
+**Note:** `app.py` is DELETED (Task 7 ran early), so this is now "write
+`harness/api.py`" rather than "untangle app.py". There is no HTTP server until
+it lands. `base_module/` currently holds only `jwt_utils.py` and
+`browser_routes.py`; the naming question (Open Question 5) is now free to settle.
 **Test:** first SSE chunk arrives before mocked model finishes; forced mid-stream
 exception yields an error chunk, not truncation.
 
@@ -433,6 +437,15 @@ production LOC ≤ ~4.5k. No flag to remove, and everything here is already dead
 code by now, so deletion is mechanical rather than a second cutover.
 **Touch:** everywhere | **P1, several small PRs** | **Blockers:** 4-6 stable 1 week
 **Test:** suite green; grep for StateHandler/StateOutput/graph.yaml/mem0 = nothing.
+**Status:** DONE 2026-08-13, pulled forward ahead of Task 4. The stated blocker
+("4-6 stable 1 week") was written when the old path still had to run; 0c dropped
+the tables it reads, so waiting would only have preserved rubble. Deleted:
+`state_module/`, `memory_module/`, `model_module/{ArkModelNew,llm_json,tests_arkmodel}`,
+`agent_module/agent.py`, `base_module/{app,task_runner,tasks,task_store,users,
+main_interface*,depricated}`, `tool_module/slack_notify.py` (its only caller was
+`state_approval.py`, and approval reminders go by email now), and 13 test files.
+**Production 9.9k → 4,682 lines; 17.4k → 8.6k with tests. Suite green at 231.**
+CLAUDE.md rewrite is the one part NOT done.
 
 ## Task 8: Dissolve computer_module into tool_module/sandbox/
 **Done when:** sandbox manager + toolset relocated to `tool_module/sandbox/`,
@@ -442,6 +455,14 @@ endpoints shimmed; no credentials in sandbox env.
 **Touch:** `computer_module/` → `tool_module/sandbox/` | **P1, 3d** | **Blockers:** 1, 2, 6
 **Test:** one task does MCP → sandbox code → browser in a single run, no
 re-spawn, no upfront typing; sandbox boots only at first sandbox call.
+**Status:** PARTIAL. `computer_module` is gone: agent/model/runner/router/store
+deleted, `sandbox.py` → `tool_module/sandbox/manager.py` and `tools.py` →
+`tool_module/sandbox/tools.py`. That is the dissolution, not the integration.
+**Still to do, and nothing calls this code yet:** put the toolset behind
+`envelope.execute`, register it in the manifest, lazy-provision on first sandbox
+call, and move `manager.py` off psycopg2 onto `db.pool` — migration 0 rebuilt
+`user_sandboxes` with a UUID `user_id` where it still expects TEXT, so its DB
+half is broken until then. Both files carry a header saying so.
 
 ## Task 9: Browser tool on a leash
 **Done when:** per contracts.md browser section — step callback wired to
@@ -722,3 +743,21 @@ in parallel. And `Smithery.call` stores the blob itself when a result is over
 model whatever the envelope holds, and `ref` only ever comes from the envelope,
 so this is where the Task 2 "oversized result loses its tail" gap actually closes
 for MCP.
+
+**2026-08-13 — Tasks 7 and 8 pulled forward; the repo is now the new shape.**
+Both were scheduled late for one reason: the old path had to keep running. 0c
+ended that, and everything still standing was rubble — 18 files across
+`state_module`/`computer_module`/`base_module` already imported names deleted in
+3d. Deferring further would have preserved dead weight and made every session
+re-derive what was safe to touch.
+
+Production 9.9k → **4,682 lines**, against a ~4.5k target. Tests 6,047 → 3,894;
+suite green at 231. What survived the cull and why: `tool_module/browser_*`
+(Task 9 leashes it), `tool_module/sandbox/` (moved, not integrated),
+`base_module/{jwt_utils,browser_routes}`, `config_module`, `db/`, `frontend/`,
+`landing/`.
+
+Two consequences to carry forward. **There is no HTTP server** until Task 4
+writes one — `app.py` is gone rather than half-alive. And `base_module/` is down
+to two files, so Open Question 5 (keep the name or rename to `harness/`) costs
+nothing to settle now and should be settled before Task 4 puts an api.py in it.
