@@ -8,65 +8,35 @@ from dotenv import load_dotenv
 
 
 class ConfigLoader:
-    """
-    Loads YAML config and substitutes ${VAR} with environment variables.
-
-    Example:
-        config = ConfigLoader()
-        db_url = config.get('database.url')  # Gets from arkos.yaml
-        port = config.get('app.port', default=8080)
-    """
+    """Load YAML config and substitute ${VAR} with environment variables."""
 
     def __init__(self, config_path: str | None = None):
-        """
-        Initialize config loader.
-
-        Args:
-            config_path: Path to YAML config. If None, uses default location.
-        """
+        """Initialize the loader, defaulting to config_module/config.yaml."""
         if config_path is None:
-            # Find project root (parent of config_module)
             project_root = Path(__file__).parent.parent
             config_path = project_root / "config_module" / "config.yaml"
 
         self.config_path = Path(config_path)
         self._config: dict[str, Any] | None = None
 
-        # Check if config file exists
         if not self.config_path.exists():
             raise FileNotFoundError(
                 f"Config file not found: {self.config_path}\nPlease create config_module/arkos.yaml"
             )
 
     def load(self) -> dict[str, Any]:
-        """
-        Load config file and substitute environment variables.
-
-        Returns:
-            Complete config dictionary
-        """
-        # Cache the loaded config
+        """Load and cache the config file with environment variables substituted."""
         if self._config is not None:
             return self._config
 
-        # Load YAML
         with open(self.config_path) as f:
             config = yaml.safe_load(f)
 
-        # Substitute environment variables
         self._config = self._substitute_env_vars(config)
         return self._config
 
     def _substitute_env_vars(self, obj: Any) -> Any:
-        """
-        Recursively substitute ${VAR} patterns with os.environ['VAR'].
-
-        Args:
-            obj: Config value (dict, list, str, etc.)
-
-        Returns:
-            Same structure with variables substituted
-        """
+        """Recursively substitute ${VAR} patterns in `obj` with os.environ values."""
         if isinstance(obj, dict):
             return {key: self._substitute_env_vars(val) for key, val in obj.items()}
 
@@ -74,7 +44,6 @@ class ConfigLoader:
             return [self._substitute_env_vars(item) for item in obj]
 
         elif isinstance(obj, str):
-            # Match ${VAR} pattern
             pattern = r"\$\{([^}]+)\}"
 
             def replace_var(match):
@@ -96,24 +65,7 @@ class ConfigLoader:
             return obj
 
     def get(self, key_path: str, default: Any = None) -> Any:
-        """
-        Get nested config value using dot notation.
-
-        Args:
-            key_path: Dot-separated path like 'llm.base_url' or 'app.port'
-            default: Value to return if key not found
-
-        Returns:
-            Config value or default
-
-        Example:
-            >>> config.get('llm.base_url')
-            'http://localhost:30000/v1'
-            >>> config.get('app.port')
-            1112
-            >>> config.get('nonexistent.key', default=999)
-            999
-        """
+        """Return the value at a dot-separated `key_path`, or `default` if absent."""
         config = self.load()
         keys = key_path.split(".")
         value = config
@@ -129,31 +81,20 @@ class ConfigLoader:
         return value
 
     def validate_required(self, required_keys: list[str]) -> None:
-        """
-        Raise RuntimeError at startup if any required config key is missing or None.
-
-        Calling this early turns cryptic downstream None errors into a clear
-        message that names the missing key before the server accepts any traffic.
-
-        Args:
-            required_keys: Dot-notation paths that must be present and non-None.
-        """
+        """Raise RuntimeError if any of the given dot-notation keys is missing or None."""
         missing = [k for k in required_keys if self.get(k) is None]
         if missing:
             raise RuntimeError(f"Missing required config keys (check config.yaml and .env): {missing}")
 
     def reload(self) -> dict[str, Any]:
-        """Force reload config from disk (useful for testing)."""
+        """Discard the cache and reload the config from disk."""
         self._config = None
         return self.load()
 
 
-# Find project root and load .env
 project_root = Path(__file__).parent.parent
 env_path = project_root / ".env"
 
-# Load .env file - python-dotenv handles everything
 load_dotenv(dotenv_path=env_path, override=False)
 
-# Create global config instance
 config = ConfigLoader()

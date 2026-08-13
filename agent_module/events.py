@@ -1,9 +1,6 @@
 """
-The event vocabulary. Store-shape = wire-shape: the object saved is the object
-pushed, so there is no translation layer between db, SSE and tests.
-
-Consumed by session_log (store), SSE (wire), the runner (lifecycle), and the
-frontend. `to_row()` and `parse_event()` are the only serialisation boundary.
+The event vocabulary. Store-shape equals wire-shape: the object saved is the
+object pushed, so db, SSE and tests share one shape.
 """
 
 from __future__ import annotations
@@ -25,9 +22,7 @@ EventKind = Literal[
     "done",
 ]
 
-# turn_end is NON-terminal: the attended "I have said my piece", and the only
-# trigger for running -> idle. interrupted is written by the startup sweep for a
-# session the process died underneath.
+# turn_end is non-terminal: it is the only trigger for running -> idle.
 DoneReason = Literal[
     "turn_end",
     "completed",
@@ -46,16 +41,13 @@ TERMINAL_REASONS: frozenset[str] = frozenset(
 
 @dataclass(slots=True)
 class Event:
-    """
-    Base for every event. `kind` identifies the row; `version` lets readers
-    upcast, since rows are never rewritten.
-    """
+    """Base for every event. Rows are never rewritten, so readers upcast by `version`."""
 
     kind: ClassVar[EventKind]
     version: int = field(default=1, kw_only=True)
 
     def payload(self) -> dict[str, Any]:
-        """The jsonb column, and the SSE data. Everything but kind and version."""
+        """Return the jsonb column and SSE data: everything but kind and version."""
         return {k: v for k, v in asdict(self).items() if k != "version"}
 
     def to_row(self) -> dict[str, Any]:
@@ -64,7 +56,7 @@ class Event:
 
 @dataclass(slots=True)
 class UserEvent(Event):
-    """`source` distinguishes the human from the nudge and system injections."""
+    """User input; `source` separates the human from system injections."""
 
     kind: ClassVar[EventKind] = "user"
     text: str
@@ -79,7 +71,7 @@ class ContentEvent(Event):
 
 @dataclass(slots=True)
 class ReasoningEvent(Event):
-    """Separate from content because the fold drops it and replays content."""
+    """Model reasoning; never folded back into the message list."""
 
     kind: ClassVar[EventKind] = "reasoning"
     text: str
@@ -108,7 +100,7 @@ class ToolResultEvent(Event):
 
 @dataclass(slots=True)
 class StatusEvent(Event):
-    """`url` is the ephemeral browser frame stream: announced, not stored for replay."""
+    """Progress label; `url` is an ephemeral frame stream, not stored for replay."""
 
     kind: ClassVar[EventKind] = "status"
     label: str
@@ -179,14 +171,10 @@ _BY_KIND: dict[str, type[Event]] = {
 
 def parse_event(kind: str, payload: dict[str, Any], version: int = 1) -> Event:
     """
-    Rebuild an event from a stored row.
-
-    A newer writer's extra payload keys are dropped rather than raising, which
-    is what `version` is for: an old reader must still render a v2 row.
+    Rebuild an event from a stored row, dropping payload keys this reader does not know.
 
     Raises:
         ValueError: on an unknown kind, or a payload missing a required field.
-            An out-of-vocabulary row is loud rather than silently absent.
     """
     cls = _BY_KIND.get(kind)
     if cls is None:

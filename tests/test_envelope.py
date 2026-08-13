@@ -60,7 +60,6 @@ async def test_a_hung_tool_is_capped():
     result = await env.execute("read_file", {"path": "/x"}, _ctx(), lookup=_lookup(tool), timeout_s=0.05)
 
     assert result.error_kind == "timeout" and result.retryable is True
-    # The model is told the outcome is unknown, not that it failed cleanly.
     assert "may or may not" in result.content
 
 
@@ -134,9 +133,6 @@ async def _deny(name, args):
     return False
 
 
-# --- gaps found by review ---------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_nothing_escapes_execute():
     """The one promise this function makes, on every path that can raise."""
@@ -178,7 +174,6 @@ async def test_a_tool_returning_junk_does_not_reach_the_loop():
 
 @pytest.mark.asyncio
 async def test_useless_failures_are_not_marked_retryable():
-    """Retrying these burns the per-tool cap for nothing."""
     tool = _Tool(name="send_email", requires_approval=True)
     declined = await env.execute("send_email", {"path": "/x"}, _ctx(approve=_deny), lookup=_lookup(tool))
     cannot_ask = await env.execute("send_email", {"path": "/x"}, _ctx(), lookup=_lookup(tool))
@@ -189,7 +184,7 @@ async def test_useless_failures_are_not_marked_retryable():
 
 @pytest.mark.asyncio
 async def test_third_party_schemas_do_not_become_uncallable():
-    """A key marked required but never declared used to be rejected both ways."""
+    """A key marked required but never declared in properties is still callable."""
 
     class _Remote:
         spec = env.ToolSpec(
@@ -233,3 +228,42 @@ async def test_a_nullable_type_union_is_accepted():
 
     assert (await env.execute("remote", {"a": None}, _ctx(), lookup=_lookup(_Remote()))).ok is True
     assert (await env.execute("remote", {"a": 5}, _ctx(), lookup=_lookup(_Remote()))).error_kind == "invalid_args"
+
+
+# Invariant: execute() converts EVERY exception into an envelope, with exactly one
+# exception, cancellation, which is BaseException and must reach the event loop.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "boom",
+    [
+        RuntimeError("plain"),
+        ValueError("bad value"),
+        KeyError("missing"),
+        TypeError("wrong type"),
+        AttributeError("no attr"),
+        TimeoutError("aiohttp total timeout"),
+        OSError("connection reset"),
+        MemoryError("out of memory"),
+        RecursionError("too deep"),
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid"),
+        ZeroDivisionError("division by zero"),
+        StopIteration("exhausted"),
+        StopAsyncIteration("exhausted"),
+        NotImplementedError("todo"),
+    ],
+    ids=lambda e: type(e).__name__,
+)
+async def test_every_exception_kind_comes_back_as_an_envelope(boom):
+    tool = _Tool(boom=boom)
+    result = await env.execute("read_file", {"path": "p"}, _ctx(), lookup=lambda n: tool)
+
+    assert isinstance(result, env.ResultEnvelope)
+    assert result.ok is False and result.error_kind in ("upstream_error", "timeout")
+
+
+@pytest.mark.asyncio
+async def test_cancellation_is_the_one_thing_that_escapes():
+    tool = _Tool(boom=asyncio.CancelledError())
+
+    with pytest.raises(asyncio.CancelledError):
+        await env.execute("read_file", {"path": "p"}, _ctx(), lookup=lambda n: tool)

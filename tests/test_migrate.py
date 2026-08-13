@@ -1,8 +1,6 @@
-"""Tests for db/migrate.py — connection-URL resolution and migration helpers.
+"""Connection-URL resolution and migration helpers in db/migrate.py.
 
-The Postgres-touching functions (apply_migration, ensure_migrations_table,
-already_applied) are exercised against MagicMock connections, since their
-correctness is "did we issue the right SQL with the right args".
+The Postgres-touching functions run against MagicMock connections.
 """
 
 from __future__ import annotations
@@ -12,8 +10,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Importing db.migrate runs load_dotenv() at import time, but the module is
-# tolerant of missing .env so this is safe in the test env.
 from db import migrate
 
 # ---------------------------------------------------------------------------
@@ -34,9 +30,7 @@ class TestGetConnectionUrl:
         monkeypatch.setenv("POSTGRES_DB", "arkos")
         monkeypatch.setenv("POSTGRES_USER", "supabase")
 
-        # Force the ConfigLoader path to fail so we exercise the constructed
-        # default branch. The loader caches a singleton, so monkeypatching its
-        # output is more reliable than removing it from sys.modules.
+        # Force the ConfigLoader path to fail so the constructed default runs.
         with patch("config_module.loader.config.get", side_effect=RuntimeError("no config")):
             url = migrate.get_connection_url()
 
@@ -50,8 +44,6 @@ class TestGetConnectionUrl:
         with patch("config_module.loader.config.get", side_effect=RuntimeError("no config")):
             url = migrate.get_connection_url()
 
-        # All defaults baked into the function: postgres user, postgres pw,
-        # localhost host, 5432 port, postgres db.
         assert url == "postgresql://postgres:postgres@localhost:5432/postgres"
 
     def test_uses_config_loader_when_env_unset(self, monkeypatch):
@@ -60,8 +52,7 @@ class TestGetConnectionUrl:
             assert migrate.get_connection_url() == "postgresql://from-config/x"
 
     def test_skips_unresolved_config_value(self, monkeypatch):
-        # ConfigLoader returning a literal "${DB_URL}" means it never got
-        # substituted; we should ignore it and fall through to defaults.
+        # A literal "${DB_URL}" means substitution never happened.
         monkeypatch.delenv("DB_URL", raising=False)
         monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
         with patch("config_module.loader.config.get", return_value="${DB_URL}"):
@@ -87,7 +78,6 @@ class TestMigrationHelpers:
     def test_ensure_migrations_table_creates_and_commits(self):
         conn, cur = self._conn_with_cursor()
         migrate.ensure_migrations_table(conn)
-        # The exact SQL contains CREATE TABLE IF NOT EXISTS schema_migrations
         sql = cur.execute.call_args[0][0]
         assert "CREATE TABLE IF NOT EXISTS schema_migrations" in sql
         conn.commit.assert_called_once()
@@ -111,7 +101,7 @@ class TestMigrationHelpers:
 
         migrate.apply_migration(conn, sql_file)
 
-        # Two execute calls: the migration SQL itself, then the bookkeeping insert.
+        # Two execute calls: the migration SQL, then the bookkeeping insert.
         first_call_sql, *_ = cur.execute.call_args_list[0][0]
         assert "CREATE TABLE demo" in first_call_sql
 
@@ -134,10 +124,6 @@ class TestMainSmoke:
             assert migrate.main() == 1
 
     def test_returns_0_when_no_migrations(self, tmp_path, monkeypatch):
-        # Point migrations dir at an empty tmp and stub psycopg2 so nothing
-        # talks to a real DB. main() walks Path(__file__).parent / "migrations".
-        # Easier: stub psycopg2.connect, ensure_migrations_table, and have
-        # the migrations dir contain no .sql files via a patch.
         monkeypatch.setenv("DB_URL", "postgresql://stub")
         empty_dir = tmp_path / "migrations"
         empty_dir.mkdir()
@@ -147,11 +133,9 @@ class TestMainSmoke:
             patch("db.migrate.ensure_migrations_table"),
             patch("db.migrate.Path") as mock_path,
         ):
-            # Path(__file__).parent / "migrations" must resolve to our empty_dir
+            # Path(__file__).parent / "migrations" must resolve to empty_dir.
             mock_path.return_value.parent.__truediv__.return_value = empty_dir
             assert migrate.main() == 0
 
 
-# Skip the smoke test that requires path mocking gymnastics if the patching
-# proves brittle. Marker keeps it visible without breaking CI.
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")

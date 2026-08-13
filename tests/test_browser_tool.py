@@ -1,8 +1,6 @@
-"""Tests for tool_module/browser_tool.py — browser automation tool.
+"""The browser automation tool in tool_module/browser_tool.py.
 
-The actual browser-use Agent is mocked. These tests verify the wiring:
-config plumbing, error surfacing, isolation between concurrent users, and
-correct registration on the tool manager.
+The browser-use Agent is mocked; what is pinned is the wiring around it.
 """
 
 from __future__ import annotations
@@ -20,14 +18,9 @@ import pytest
 
 
 def _install_fake_browser_use(monkeypatch, run_side_effect=None, captured_cdp=None):
-    """Install a fake `browser_use` module so the lazy import inside
-    run_browser_task succeeds without the real package.
+    """Install a fake `browser_use` matching the 0.12 surface.
 
-    Matches the browser-use 0.12 surface: top-level Agent, Browser (an alias
-    for BrowserSession that takes cdp_url directly), and ChatOpenAI.
-
-    `run_side_effect` is awaited as the result of Agent.run(). If a list is
-    passed, each call pops the next item.
+    `run_side_effect` becomes the result of Agent.run(); a list pops one item per call.
     """
     fake_browser_use = types.ModuleType("browser_use")
 
@@ -74,11 +67,6 @@ def _install_fake_browser_use(monkeypatch, run_side_effect=None, captured_cdp=No
     monkeypatch.setitem(sys.modules, "browser_use", fake_browser_use)
 
 
-# ---------------------------------------------------------------------------
-# Test 1: tool returns a result
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_browser_tool_returns_result(monkeypatch):
     from tool_module.browser_tool import run_browser_task
@@ -94,15 +82,9 @@ async def test_browser_tool_returns_result(monkeypatch):
     assert captured == ["ws://browserless:3000"]
 
 
-# ---------------------------------------------------------------------------
-# Test 2: user isolation (concurrent calls, separate sessions)
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_browser_tool_routes_llm_through_sglang(monkeypatch):
-    """The browser-use Agent's LLM should be pointed at the in-cluster SGLang
-    Qwen server rather than the public OpenAI API."""
+    """The Agent's LLM points at the in-cluster SGLang server, not the OpenAI API."""
     import tool_module.browser_tool as bt
 
     captured_llm = {}
@@ -160,15 +142,8 @@ async def test_browser_tool_user_isolation(monkeypatch):
         run_browser_task("user_b", "task two"),
     )
 
-    # Each call returns its own result; one user's result does not bleed into
-    # the other's. (Fake Agent pops from a shared list, so order doesn't matter
-    # as long as the set is correct.)
+    # The fake Agent pops from a shared list, so only the set is deterministic.
     assert {result_a, result_b} == {"A", "B"}
-
-
-# ---------------------------------------------------------------------------
-# Test 3: missing/unreachable browserless surfaces a clear error
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -222,7 +197,7 @@ def test_register_browser_tool_noop_on_none():
 
 @pytest.mark.asyncio
 async def test_handler_routes_through_run_browser_task(monkeypatch):
-    """The MCP-shaped handler unpacks `task` from arguments and returns content."""
+    """The MCP-shaped handler unpacks `task` and returns content."""
     import tool_module.browser_tool as bt
 
     monkeypatch.setattr(bt, "run_browser_task", AsyncMock(return_value="hello"))
@@ -245,22 +220,17 @@ async def test_handler_rejects_missing_task():
 
 
 class _FakeMethodNamespace:
-    """Stand-in for the chained `cdp_client.send.Page.startScreencast(...)` and
-    `cdp_client.register.Page.screencastFrame(...)` accessor patterns that
-    cdp_use exposes inside browser-use 0.12."""
+    """Stand-in for cdp_use's chained `send.Page.x(...)` / `register.Page.y(...)` accessors."""
 
     def __init__(self, on_call):
         self._on_call = on_call
 
     def __getattr__(self, attr):
-        # Each attribute access returns another namespace that records the
-        # full chain when finally called.
         return _FakeMethodNamespace(lambda *args, _path=attr, **kwargs: self._on_call(_path, args, kwargs))
 
 
 class _FakeCDPClient:
-    """Records both registered event handlers (.register.Page.screencastFrame)
-    and sent commands (.send.Page.startScreencast)."""
+    """Records both registered event handlers and sent commands."""
 
     def __init__(self):
         self.sent: list[tuple[str, tuple, dict]] = []
@@ -334,9 +304,7 @@ class _FakeBrowserSession:
 
 @pytest.mark.asyncio
 async def test_browser_tool_starts_and_ends_screencast_session(monkeypatch):
-    """Around agent.run(), the broker must see exactly one started/ended pair
-    and any CDP frames must be forwarded to push_frame. Drives the broker via
-    the 0.12 CDP client surface."""
+    """One started/ended pair around agent.run(), with CDP frames forwarded to push_frame."""
     import tool_module.browser_tool as bt
 
     cdp_client = _FakeCDPClient()
@@ -372,7 +340,6 @@ async def test_browser_tool_starts_and_ends_screencast_session(monkeypatch):
                 if any(s[0] == "Page.startScreencast" for s in cdp_client.sent):
                     break
                 await asyncio.sleep(0.01)
-            # Fire a frame from cdp_client (event + session_id matching ours).
             cdp_client.fire(
                 "Page.screencastFrame",
                 {"data": "ZZZZ", "sessionId": 7},
@@ -394,21 +361,17 @@ async def test_browser_tool_starts_and_ends_screencast_session(monkeypatch):
     assert ("start", "user_42") in captured
     assert ("end", "user_42") in captured
     assert ("frame", "user_42", "ZZZZ") in captured
-    # Page.startScreencast must have been sent with our session_id.
     start_calls = [s for s in cdp_client.sent if s[0] == "Page.startScreencast"]
     assert start_calls, "startScreencast was never sent"
     assert start_calls[0][2] == "S1"  # session_id
-    # An ack for the fired frame.
     ack_calls = [s for s in cdp_client.sent if s[0] == "Page.screencastFrameAck"]
     assert any(s[1].get("sessionId") == 7 for s in ack_calls), "ack missing for fired frame"
-    # Stop on teardown.
     assert any(s[0] == "Page.stopScreencast" for s in cdp_client.sent)
 
 
 @pytest.mark.asyncio
 async def test_browser_tool_screencast_ignores_frames_from_other_sessions(monkeypatch):
-    """The cdp_client is shared across all CDP targets the agent attaches to.
-    Frames for OTHER sessions must not bleed into this user's stream."""
+    """The cdp_client is shared across targets, so other sessions' frames must not bleed in."""
     import tool_module.browser_tool as bt
 
     cdp_client = _FakeCDPClient()
@@ -487,14 +450,13 @@ async def test_browser_tool_screencast_disabled_via_env(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_browser_tool_screencast_failure_does_not_break_agent(monkeypatch):
-    """If the agent never focuses a target (agent_focus_target_id stays None),
-    the screencast must quietly exit and the agent must still complete."""
+    """With no focused target the screencast exits quietly and the agent still completes."""
     import tool_module.browser_tool as bt
 
     _install_fake_browser_use(monkeypatch, run_side_effect="ok")
     monkeypatch.setenv("BROWSERLESS_URL", "ws://browserless:3000")
 
-    # Speed up the target-readiness poll loop
+    # Speed up the target-readiness poll loop.
     real_sleep = asyncio.sleep
 
     async def fast_sleep(seconds):
@@ -506,7 +468,7 @@ async def test_browser_tool_screencast_failure_does_not_break_agent(monkeypatch)
 
     class NoTargetAgent:
         def __init__(self, task, llm, browser, **_):
-            # agent_focus_target_id stays falsy — screencast should bail.
+            # agent_focus_target_id stays falsy, so the screencast bails.
             self.browser_session = SimpleNamespaceLike(agent_focus_target_id=None)
 
         async def run(self, max_steps=None):
@@ -570,7 +532,6 @@ async def test_browser_tool_wall_clock_timeout(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_browser_tool_passes_max_steps_when_supported(monkeypatch):
-    """When the Agent.run accepts max_steps, run_browser_task should pass it."""
     captured = {}
 
     fake_browser_use = types.ModuleType("browser_use")
@@ -616,7 +577,7 @@ async def test_browser_tool_passes_max_steps_when_supported(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_browser_tool_passes_agent_config_knobs(monkeypatch):
-    """max_failures, max_actions_per_step, llm_timeout should be passed to Agent."""
+    """max_failures, max_actions_per_step and llm_timeout reach the Agent."""
     captured: dict[str, object] = {}
 
     fake_browser_use = types.ModuleType("browser_use")
@@ -750,7 +711,6 @@ def test_augment_cdp_url_idempotent(monkeypatch):
     monkeypatch.delenv("BROWSER_USE_STEALTH", raising=False)
     once = _augment_cdp_url("ws://browserless:3000")
     twice = _augment_cdp_url(once)
-    # stealth=true should appear exactly once
     assert twice.count("stealth=true") == 1
 
 
@@ -857,8 +817,7 @@ async def test_browser_tool_vision_judge_thinking_envs_take_effect(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_browser_tool_silently_drops_unsupported_kwargs(monkeypatch):
-    """Older browser-use versions whose Agent doesn't accept max_failures must
-    not crash — the kwargs are introspected and dropped."""
+    """An Agent that does not accept max_failures must not crash the call."""
     captured: dict[str, object] = {}
 
     fake_browser_use = types.ModuleType("browser_use")

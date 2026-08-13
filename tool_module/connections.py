@@ -1,14 +1,8 @@
 """
-Stored MCP connections (D24).
+Stored MCP connections, keyed by `mcp_url` and addressed by a minted `connection_id`.
 
-A connection is identified by its `mcp_url` and addressed by a `connection_id`
-we mint once and store. There is no formula from config key to id, so renaming a
-key under `mcp_servers:` touches no row and prompts no reconnect.
-
-The row is written BEFORE the Smithery PUT: mint, INSERT `pending`, PUT, UPDATE
-from the response. A crash between mint and PUT leaves a pending row whose id is
-reused on the next attempt, so the id survives every failure. Minting after the
-PUT would strand the old connection still holding the user's live OAuth grant.
+The row is written BEFORE the Smithery PUT, so a crash in between leaves a pending
+row whose id is reused rather than stranding a connection holding a live OAuth grant.
 """
 
 from __future__ import annotations
@@ -29,7 +23,7 @@ _COLUMNS = "mcp_url, connection_id, status, tools_cache, refreshed_at"
 
 @dataclass(slots=True)
 class Connection:
-    """One stored connection. `tools` is the cached `tools/list` response."""
+    """One stored connection; `tools` is the cached `tools/list` response."""
 
     mcp_url: str
     connection_id: str
@@ -42,26 +36,21 @@ class Connection:
         return self.status == CONNECTED
 
     def stale(self, ttl_s: float) -> bool:
-        """True when the cached tool list is old enough to revalidate."""
+        """Return True when the cached tool list is old enough to revalidate."""
         if self.refreshed_at is None:
             return True
         return (datetime.now(UTC) - self.refreshed_at).total_seconds() > ttl_s
 
 
 def mint_id(mcp_url: str) -> str:
-    """
-    A fresh connection id. Smithery takes whatever path segment we choose.
-
-    The host is slugified in so the id is still recognisable in Smithery's
-    dashboard; the uuid half is what makes it unique.
-    """
+    """Mint a fresh connection id: the host slugified for readability, a uuid for uniqueness."""
     host = re.sub(r"^https?://", "", mcp_url).split("/")[0]
     slug = re.sub(r"[^a-z0-9]+", "-", host.lower()).strip("-")[:40]
     return f"{slug}-{uuid.uuid4().hex[:12]}" if slug else uuid.uuid4().hex
 
 
 def _uid(user_id: str) -> uuid.UUID:
-    """user_id is a Supabase auth sub. Anything else is a bug upstream, not here."""
+    """Parse a user_id as the Supabase auth UUID it must be, raising ValueError otherwise."""
     try:
         return uuid.UUID(user_id)
     except (ValueError, TypeError, AttributeError) as e:
@@ -79,12 +68,7 @@ def _row(record: Any) -> Connection:
 
 
 async def load(user_id: str | None) -> dict[str, Connection]:
-    """
-    Every stored connection keyed by `mcp_url`. `user_id=None` loads the shared ones.
-
-    This single query is what makes a restart cost zero Smithery PUTs: a
-    connection already `connected` is usable straight from the row.
-    """
+    """Return every stored connection keyed by `mcp_url`; `user_id=None` loads the shared ones."""
     if user_id is None:
         rows = await pool.fetch(f"SELECT {_COLUMNS} FROM shared_connections")
     else:
@@ -96,12 +80,7 @@ async def load(user_id: str | None) -> dict[str, Connection]:
 
 
 async def claim(user_id: str | None, mcp_url: str) -> str:
-    """
-    The id to PUT with, written down first.
-
-    Returns the existing id when there already is a row, so a retry after a
-    crashed connect reuses it rather than stranding the old one.
-    """
+    """Return the id to PUT with, reusing an existing row's id so a retry strands nothing."""
     new_id = mint_id(mcp_url)
     if user_id is None:
         return await pool.fetchval(
@@ -136,7 +115,7 @@ async def save(
     status: str,
     tools: list[dict[str, Any]] | None = None,
 ) -> None:
-    """Record what Smithery came back with. `refreshed_at` is the TTL clock."""
+    """Record what Smithery came back with; `refreshed_at` is the TTL clock."""
     if user_id is None:
         await pool.execute(
             """
@@ -164,10 +143,8 @@ async def set_status(user_id: str | None, mcp_url: str, status: str) -> None:
     """
     Change the status and nothing else.
 
-    `save(tools=None)` NULLs `tools_cache`, which is right for a connection that
-    never came up but wrong for one whose grant died: the tool names are how a
-    later call resolves to this connection at all, and losing them turns an
-    actionable `auth_required` into a bare `not_found`.
+    Unlike `save(tools=None)` this keeps `tools_cache`, which is how a later call
+    still resolves a name to this connection.
     """
     if user_id is None:
         await pool.execute(

@@ -1,114 +1,10 @@
 """
-Browser automation tool: hand a natural-language task to a sandboxed Chromium
-session managed by Browserless and return the final string result.
+Browser automation: hand a natural-language task to a sandboxed Chromium session
+managed by Browserless and return the final string result.
 
-User isolation is delegated to Browserless: each call gets a fresh session
-from the pool, torn down on completion or timeout. This module owns the
-glue between Arkos's tool registry and the `browser-use` Agent, plus a
-best-effort CDP screencast that forwards JPEG frames into the in-process
-frame broker so a frontend pane can show the user what the agent is doing.
-
-Configuration (env):
-  BROWSERLESS_URL    CDP WebSocket URL, e.g. ws://browserless:3000 (required)
-  SGLANG_URL         base URL of the in-cluster SGLang Qwen server
-                     (default http://sglang:30000); the tool talks to its
-                     OpenAI-compatible /v1 endpoint
-  BROWSER_USE_MODEL  model name to send to SGLang (default "tgi", which the
-                     SGLang launcher accepts as an alias for whatever model
-                     is loaded)
-  OPENAI_API_KEY     forwarded as the bearer token; SGLang ignores it but the
-                     OpenAI client requires something. Defaults to "sk-dummy".
-  BROWSER_STREAM_ENABLED  "0" to disable the screencast entirely (default on).
-  BROWSER_USE_MAX_STEPS    hard cap on browser-use agent steps (default 25).
-  BROWSER_USE_MAX_SECONDS  wall-clock timeout for one task in seconds
-                           (default 180). Beats infinite reCAPTCHA loops.
-  BROWSER_USE_MAX_FAILURES         consecutive failed steps before the agent
-                                   gives up (default 3, matches browser-use).
-  BROWSER_USE_MAX_ACTIONS_PER_STEP max actions browser-use bundles into one
-                                   step, e.g. for filling multi-field forms
-                                   (default 4, matches browser-use).
-  BROWSER_USE_LLM_TIMEOUT          per-LLM-call timeout in seconds (default
-                                   90, matches browser-use).
-  BROWSER_USE_STEALTH              "1" to ask Browserless to launch the
-                                   sandbox in stealth mode (puppeteer-extra-
-                                   plugin-stealth — helps reduce reCAPTCHA
-                                   detection). Default "1". The flag is
-                                   appended to the CDP URL as ?stealth=true
-                                   and is a no-op against non-Browserless
-                                   CDP endpoints.
-  BROWSER_USE_VISION               "1" to send screenshots to the LLM on
-                                   every step. Default "0" because arkos's
-                                   default SGLang model (Qwen/Qwen3-8B) is
-                                   text-only — passing images burns prompt
-                                   tokens and the model can't see them.
-                                   Flip to "1" once SGLang serves a VL
-                                   variant (e.g. Qwen3-VL).
-  BROWSER_USE_THINKING             "1" to let browser-use inject its
-                                   <think> scaffold into prompts. Default
-                                   "0" — browser-use's scaffold isn't
-                                   trained into stock Qwen-Instruct and
-                                   adds latency without observable wins.
-  BROWSER_USE_USE_JUDGE            "1" to run browser-use's built-in
-                                   output judge after a task completes.
-                                   Default "0" — the judge defaults to the
-                                   main LLM and only pays off when a
-                                   ground_truth is supplied, which arkos
-                                   doesn't have.
-  BROWSER_USE_ENABLE_PLANNING      "1" to let the Agent insert higher-level
-                                   planning passes (default "1" matches
-                                   browser-use 0.12).
-  BROWSER_USE_REPLAN_ON_STALL      consecutive failed step count that
-                                   triggers a planning replan (default 3).
-  BROWSER_USE_EXPLORATION_LIMIT    steps between planning passes during
-                                   normal progress (default 5).
-  BROWSER_USE_FLASH_MODE           "1" to enable browser-use's flash mode,
-                                   which trims the per-step prompt and skips
-                                   some judgment passes for faster, lighter
-                                   automation on simple tasks (default "0",
-                                   the safer choice for diverse tasks).
-  BROWSER_USE_INCLUDE_RECENT_EVENTS  "1" to surface recent browser-side
-                                   events (network errors, navigation
-                                   commits, alert dialogs) to the agent
-                                   each step. Helps recovery from page-load
-                                   races. Default "0" — matches browser-use.
-  BROWSER_USE_EXTRA_GUIDANCE        extra free-form text appended to
-                                   browser-use's built-in system prompt
-                                   for every step. If unset, arkos appends
-                                   its own defaults (be concise, dismiss
-                                   cookie banners, never ask the user
-                                   mid-task, prefer direct URLs over
-                                   search-engine indirection).
-  BROWSER_USE_MESSAGE_COMPACTION    "1" to let browser-use compact the
-                                   message history once it grows past a
-                                   threshold (default "1" — required for
-                                   any task longer than ~10 steps to
-                                   avoid blowing the model's context).
-                                   Flip to "0" only to debug a step.
-  BROWSER_USE_COMPACT_EVERY_N_STEPS  override browser-use's default
-                                   compact_every_n_steps=25. Defaults to
-                                   10 so compaction actually fires before
-                                   BROWSER_USE_MAX_STEPS (default 25)
-                                   cuts the run off. Set to 0 to fall
-                                   back to the browser-use default.
-  BROWSER_USE_LOOP_DETECTION        "1" to enable browser-use's loop
-                                   detector (default "1"). Disabling it
-                                   on purposefully-repetitive tasks (e.g.
-                                   pagination scrapes) avoids false
-                                   positives.
-  BROWSER_USE_LOOP_WINDOW           number of trailing steps inspected
-                                   for repetition (default 20).
-  BROWSER_USE_MAX_HISTORY_ITEMS     hard cap on how many past steps are
-                                   kept in the agent's working context
-                                   after compaction. Unset = unlimited
-                                   (browser-use default).
-  BROWSER_USE_ALLOWED_DOMAINS       comma-separated list of domain
-                                   patterns the agent is allowed to
-                                   navigate to. Supports glob style
-                                   ("https://*.example.com"). Empty
-                                   (default) = unrestricted. Off-list
-                                   navigations are rejected by the
-                                   BrowserSession before they reach the
-                                   network.
+Glue between arkos and the `browser-use` Agent, plus a best-effort CDP screencast
+into the frame broker. Configured from the environment: BROWSERLESS_URL (required),
+SGLANG_URL, OPENAI_API_KEY and the BROWSER_USE_* knobs read in `run_browser_task`.
 """
 
 from __future__ import annotations
@@ -140,14 +36,11 @@ def _bool_env(name: str, default: bool) -> bool:
     return raw.lower() in {"1", "true", "yes", "on"}
 
 
-# Default per-step guidance appended to browser-use's built-in system prompt.
-# Tuned for arkos's typical task shape: a chat user asks buddy to do one
-# concrete thing, we have no human in the loop during execution, and we want
-# determinism over creativity. Override entirely via BROWSER_USE_EXTRA_GUIDANCE.
+# Appended to browser-use's built-in system prompt unless overridden by env.
 _DEFAULT_EXTRA_GUIDANCE = (
     "Operating context: you are arkos's automation agent running inside a "
     "headless Chromium sandbox. The user is NOT watching this execution and "
-    "CANNOT answer questions mid-task — never wait for human input; if a "
+    "CANNOT answer questions mid-task; never wait for human input. If a "
     "step is ambiguous, make the most reasonable assumption and continue.\n"
     "\n"
     "Behaviour rules:\n"
@@ -155,7 +48,7 @@ _DEFAULT_EXTRA_GUIDANCE = (
     "  - If the task names a specific URL, go directly to it; don't route "
     "through a search engine.\n"
     "  - When a cookie/consent banner blocks the page, dismiss it (accept or "
-    "decline — whichever is one click away) and continue.\n"
+    "decline, whichever is one click away) and continue.\n"
     "  - When a modal/overlay covers the content you need, close it before "
     "trying to read or click underneath.\n"
     "  - Treat reCAPTCHA, login walls, and paywalls as task-blocking; report "
@@ -169,18 +62,10 @@ def _extra_guidance() -> str:
 
 
 def _build_compaction_settings() -> Any:
-    """Decide what to pass for the Agent's `message_compaction` kwarg.
+    """Return the Agent's `message_compaction` kwarg: False, True, or a settings object.
 
-    browser-use 0.12.6's default compact_every_n_steps=25 is exactly our
-    BROWSER_USE_MAX_STEPS cap, so compaction is effectively never reached on
-    arkos — long tasks silently overflow the model's context window. Default
-    to 10 here so compaction fires twice within a 25-step run and the
-    context stays bounded.
-
-    Returns:
-      - False if BROWSER_USE_MESSAGE_COMPACTION=0  (compaction disabled)
-      - True  if BROWSER_USE_COMPACT_EVERY_N_STEPS=0  (browser-use defaults)
-      - a MessageCompactionSettings instance otherwise
+    browser-use's default of every 25 steps equals our step cap, so compaction
+    would never fire; default to every 10 steps instead.
     """
     if not _bool_env("BROWSER_USE_MESSAGE_COMPACTION", default=True):
         return False
@@ -193,8 +78,7 @@ def _build_compaction_settings() -> Any:
         try:
             from browser_use import MessageCompactionSettings  # type: ignore
         except ImportError:
-            # Older browser_use without the settings type — fall back to the
-            # plain True bool; arkos's compaction will use library defaults.
+            # Older browser_use without the settings type; use library defaults.
             logger.info("browser_tool: MessageCompactionSettings not importable; using boolean compaction")
             return True
     try:
@@ -205,12 +89,7 @@ def _build_compaction_settings() -> Any:
 
 
 async def _wait_for_agent_target(agent: Any, timeout_s: float = 10.0) -> bool:
-    """Wait until browser-use has focused on a real Chromium target.
-
-    browser-use 0.12 exposes the currently focused page's target id as
-    `agent.browser_session.agent_focus_target_id`. Until that's populated,
-    there's nothing to screencast.
-    """
+    """Wait until browser-use has focused a real Chromium target to screencast."""
     deadline_loops = int(timeout_s / 0.1)
     for _ in range(deadline_loops):
         try:
@@ -226,13 +105,7 @@ async def _wait_for_agent_target(agent: Any, timeout_s: float = 10.0) -> bool:
 async def _run_screencast(agent: Any, user_id: str) -> None:
     """Stream CDP screencast frames from the agent's focused page to the broker.
 
-    Uses the browser-use 0.12 CDP surface (cdp_use under the hood):
-    `agent.browser_session.cdp_client` for event registration plus
-    `agent.browser_session.get_or_create_cdp_session(target_id=None, focus=False)`
-    for the per-target session id we send `Page.startScreencast` against.
-
     Any failure logs and exits quietly; the agent's own run is never affected.
-    Cancelled by `run_browser_task`'s finally block.
     """
     if not await _wait_for_agent_target(agent):
         logger.info("browser_tool: no agent target within timeout; skipping screencast")
@@ -248,8 +121,7 @@ async def _run_screencast(agent: Any, user_id: str) -> None:
     target_session_id = cdp_session.session_id
 
     def _on_frame(event: dict[str, Any], session_id: Any = None) -> None:
-        # Only forward frames for OUR session; the shared cdp_client also fires
-        # for other targets the agent attaches to during a run.
+        # Only our session: the shared cdp_client also fires for other targets.
         if session_id is not None and session_id != target_session_id:
             return
         data = event.get("data")
@@ -299,14 +171,7 @@ async def _safe_ack(cdp_session: Any, session_id: int) -> None:
 
 
 def _augment_cdp_url(url: str) -> str:
-    """Append `stealth=true` to a Browserless CDP URL when stealth is enabled.
-
-    Browserless reads query params from the WS handshake; `?stealth=true`
-    launches the session via puppeteer-extra-plugin-stealth, which masks the
-    automation signals that Google/Cloudflare/etc detect to trigger reCAPTCHA.
-
-    No-op against any CDP endpoint that ignores the query string.
-    """
+    """Append `stealth=true` to the CDP URL unless stealth is disabled; a no-op elsewhere."""
     if os.environ.get("BROWSER_USE_STEALTH", "1") == "0":
         return url
     from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -326,8 +191,7 @@ def _parse_allowed_domains(raw: str | None) -> list[str]:
 
 
 def _build_browser(browser_cls: Any, kwargs: dict[str, Any]) -> Any:
-    """Construct a browser-use Browser, dropping kwargs the installed version
-    doesn't accept. Same shape as _build_agent but for the Browser side."""
+    """Construct a browser-use Browser, dropping kwargs the installed version does not accept."""
     import inspect
 
     try:
@@ -353,22 +217,14 @@ _REQUIRED_AGENT_KWARGS = frozenset({"task", "llm", "browser"})
 
 
 def _build_agent(agent_cls: Any, kwargs: dict[str, Any]) -> Any:
-    """Construct a browser-use Agent, dropping optional kwargs the installed
-    version doesn't accept.
-
-    browser-use moves parameters in and out of the Agent constructor across
-    minor releases. We introspect the signature and pass only what's
-    accepted — required kwargs always go through; optional ones are dropped
-    silently. Beats version-pinning the kwarg list against a fast-moving dep.
-    """
+    """Construct a browser-use Agent, dropping optional kwargs the installed version does not accept."""
     import inspect
 
     try:
         sig = inspect.signature(agent_cls.__init__)
         params = sig.parameters
     except (TypeError, ValueError):
-        # Can't introspect (e.g. C-implemented class). Try as-is and let the
-        # caller deal with any TypeError.
+        # Not introspectable; pass through and let the caller handle a TypeError.
         return agent_cls(**kwargs)
 
     accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
@@ -385,10 +241,9 @@ def _build_agent(agent_cls: Any, kwargs: dict[str, Any]) -> Any:
 
 
 async def run_browser_task(user_id: str, task: str) -> str:
-    """Run a single browser task in an isolated Browserless session.
+    """Run one browser task in an isolated Browserless session and return its final text.
 
-    Returns the agent's final string result. Raises BrowserToolError if
-    Browserless is unreachable or the configured CDP endpoint is missing.
+    Raises BrowserToolError when Browserless is unconfigured, unreachable, or too slow.
     """
     cdp_url = os.environ.get("BROWSERLESS_URL")
     if not cdp_url:
@@ -474,8 +329,7 @@ async def run_browser_task(user_id: str, task: str) -> str:
         try:
             return await agent.run(max_steps=max_steps)
         except TypeError:
-            # Older/newer browser-use versions may not accept max_steps; fall
-            # back to the wall-clock timeout alone.
+            # Some browser-use versions do not accept max_steps; the wall clock still caps it.
             return await agent.run()
 
     history = None
@@ -509,11 +363,7 @@ async def _handler(arguments: dict[str, Any], user_id: str | None) -> dict[str, 
 
 
 def register_browser_tool(tool_manager: Any) -> None:
-    """Register `browser_task` as a local tool on the shared tool manager.
-
-    Safe to call when tool_manager is None (e.g. Smithery disabled in dev) — it
-    becomes a no-op so app startup still succeeds.
-    """
+    """Register `browser_task` on the shared tool manager; a no-op when it is None."""
     if tool_manager is None:
         logger.info("browser_tool: tool_manager is None; skipping registration")
         return

@@ -1,10 +1,8 @@
 """
 One shape for every tool result.
 
-Replaces three inconsistent conventions: state_tool.py raised, ComputerAgent
-returned error strings, tools.py:dispatch returned a dict. `execute` never
-raises except on cancellation, so a broken tool is model input rather than a
-dead run.
+`execute` never raises except on cancellation, so a broken tool is model input
+rather than a dead run.
 """
 
 from __future__ import annotations
@@ -34,10 +32,7 @@ _RETRYABLE: frozenset[str] = frozenset({"timeout", "upstream_error"})
 
 @dataclass(slots=True)
 class ResultEnvelope:
-    """
-    What every tool returns. `content` on a failure is written FOR the model:
-    it is the only thing the model sees, so it has to say what to do next.
-    """
+    """What every tool returns; on a failure `content` is written for the model to act on."""
 
     ok: bool
     content: str
@@ -51,7 +46,7 @@ def ok(content: str, *, ref: str | None = None) -> ResultEnvelope:
 
 
 def fail(error_kind: ErrorKind, content: str, *, retryable: bool | None = None) -> ResultEnvelope:
-    """`retryable` overrides the default when retrying is known to be useless."""
+    """Build a failed envelope; `retryable` overrides the default for the kind."""
     return ResultEnvelope(
         ok=False,
         content=content,
@@ -62,10 +57,7 @@ def fail(error_kind: ErrorKind, content: str, *, retryable: bool | None = None) 
 
 @dataclass(slots=True)
 class ToolSpec:
-    """
-    One tool's contract. `readonly` drives concurrency in the loop, so a tool
-    that mutates anything must not claim it.
-    """
+    """One tool's contract; `readonly` drives loop concurrency, so a mutating tool must not claim it."""
 
     name: str
     description: str = ""
@@ -86,13 +78,7 @@ class ToolSpec:
 
 @dataclass(slots=True)
 class ToolContext:
-    """
-    Everything a tool may need that is not an argument.
-
-    `emit_status` lets a long tool report progress without knowing what an event
-    is. `store_blob` returns a ref for output too large to inline; a tool that
-    does not call it gets truncated with no way to page the rest.
-    """
+    """Everything a tool may need that is not an argument."""
 
     user_id: str
     session_id: str | None = None
@@ -103,7 +89,7 @@ class ToolContext:
 
 
 class Tool(Protocol):
-    """What registry.py discovers. `validate` is optional."""
+    """What registry.py discovers; `validate` is optional."""
 
     spec: ToolSpec
 
@@ -119,21 +105,12 @@ async def execute(
     timeout_s: float = 120.0,
 ) -> ResultEnvelope:
     """
-    Run one tool. Never raises except cancellation.
+    Run one tool and always return a ResultEnvelope. Never raises except cancellation.
 
-    Args:
-        name: tool name, already stripped of any mcp_ prefix by the caller.
-        args: validated-on-arrival arguments.
-        ctx: per-call context.
-        lookup: resolves a name to a Tool, or None.
-        timeout_s: hard cap; a hung upstream must not hold a hop open.
-
-    Returns:
-        A ResultEnvelope, always.
+    `name` must already be stripped of any mcp_ prefix by the caller.
     """
-    # Everything is inside the try. Lookup, schema checking, approval and
-    # validate can all raise, and any of them escaping breaks the one promise
-    # this function makes.
+    # All of it inside the try: lookup, schema check, approval and validate can
+    # each raise, and any escaping breaks the promise above.
     try:
         tool = lookup(name)
         if tool is None:
@@ -185,12 +162,7 @@ async def _maybe_await(value: Any) -> Any:
 
 
 def _check_schema(args: dict[str, Any], schema: dict[str, Any]) -> str | None:
-    """
-    Required keys and declared types only.
-
-    Deliberately not full JSON Schema: the model needs a short, actionable
-    sentence, and a validator's error text is neither.
-    """
+    """Return one actionable sentence about `args`, or None. Required keys and declared types only."""
     if not schema:
         return None
 
@@ -205,9 +177,8 @@ def _check_schema(args: dict[str, Any], schema: dict[str, Any]) -> str | None:
     if missing:
         return f"Missing required argument(s): {', '.join(sorted(missing))}."
 
-    # Only reject unknown keys when the schema is closed and self-consistent.
-    # Third-party schemas routinely mark a key required without declaring it,
-    # and rejecting it both ways makes the tool permanently uncallable.
+    # Third-party schemas often require a key they never declare, so reject
+    # unknown keys only when the schema is closed and self-consistent.
     closed = schema.get("additionalProperties") is not True and all(k in properties for k in required)
     if properties and closed:
         unknown = [k for k in args if k not in properties]
@@ -244,7 +215,7 @@ def _type_ok(value: Any, expected: Any) -> bool:
     python_type = _JSON_TYPES.get(expected)
     if python_type is None:
         return True
-    # bool is an int subclass, and a bool where a number belongs is a real bug.
+    # bool is an int subclass; a bool where a number belongs is a real bug.
     if expected in ("integer", "number") and isinstance(value, bool):
         return False
     return isinstance(value, python_type)

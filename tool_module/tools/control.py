@@ -1,10 +1,4 @@
-"""
-The control tools: how the model steers its own run.
-
-These are the only tools with authority over the loop rather than the world.
-`finish_task` is the one that makes an unattended exit safe, so its description
-is the model's whole manual for when a run is allowed to end.
-"""
+"""The control tools: the ones with authority over the loop rather than the world."""
 
 from __future__ import annotations
 
@@ -138,8 +132,7 @@ class ReadResult:
         return ok(text)
 
 
-# The runner parks on these instead of continuing. Named here so it does not
-# have to hardcode strings; nothing parks yet, that is Task 6.
+# The runner parks on these instead of continuing. Nothing parks on them yet.
 PARK_TOOLS = frozenset({Ask.spec.name, RequestApproval.spec.name})
 
 TOOLS = [FinishTask(), Ask(), RequestApproval(), TodoWrite(), ReadResult()]

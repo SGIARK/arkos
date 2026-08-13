@@ -1,9 +1,6 @@
-"""Tests for harness_module/browser_routes.py — /v1/browser/stream SSE endpoint.
+"""The /v1/browser/stream SSE endpoint in harness_module/browser_routes.py.
 
-The SSE generator is exercised directly rather than through httpx, because
-httpx's ASGITransport buffers streamed responses until the response
-generator returns — useless for testing a long-lived SSE stream. Driving
-the generator's __anext__ in the test loop gives us deterministic delivery.
+The SSE generator is driven directly, because httpx's ASGITransport buffers streamed responses.
 """
 
 from __future__ import annotations
@@ -82,8 +79,7 @@ async def test_event_stream_isolates_users(fresh_broker):
 
 @pytest.mark.asyncio
 async def test_event_stream_emits_keepalive_when_idle(fresh_broker, monkeypatch):
-    """When no events arrive, the stream sends an SSE comment line to keep
-    the connection warm rather than yielding nothing or exiting."""
+    """An idle stream sends an SSE comment line rather than yielding nothing."""
     monkeypatch.setattr(browser_routes, "_KEEPALIVE_SECONDS", 0.05)
     gen = browser_routes._event_stream("idle")
 
@@ -95,8 +91,7 @@ async def test_event_stream_emits_keepalive_when_idle(fresh_broker, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_event_stream_closes_cleanly_on_cancel(fresh_broker):
-    """Cancelling the consuming task (FastAPI-side disconnect) must not raise
-    a bubbling exception out of the generator."""
+    """Cancelling the consuming task must not raise out of the generator."""
     gen = browser_routes._event_stream("zombie")
     consume_task = asyncio.create_task(gen.__anext__())
     await asyncio.sleep(0.01)
@@ -120,7 +115,6 @@ def test_resolve_user_id_prefers_header():
 
 def test_resolve_user_id_falls_back_to_query():
     req = _FakeRequest(headers={}, query=SimpleNamespace())
-    # query_params behaves like a dict for `.get`; SimpleNamespace lacks it,
-    # so use a plain dict to exercise the fallthrough to query then config.
+    # query_params is read with `.get`, which SimpleNamespace lacks.
     req.query_params = {"user_id": "from-query"}
     assert browser_routes._resolve_user_id(req) == "from-query"

@@ -1,9 +1,7 @@
 """
-The agent loop. One `run_turn`, replacing Agent.step/step_stream/choose_transition,
-all of state_module, and ComputerAgent.run.
-
-Never touches Postgres. Only caller of the model. Errors are model input, not
-control flow: a failed tool comes back as a tool_result the model can read.
+The agent loop: one `run_turn`. Never touches Postgres, and is the only caller
+of the model. Tool errors are model input, not control flow: a failed tool comes
+back as a tool_result the model can read.
 """
 
 from __future__ import annotations
@@ -54,7 +52,7 @@ class Budgets:
 
     @classmethod
     def load(cls, profile: Profile = "interactive") -> Budgets:
-        """Budgets come from config; a caller naming a profile gets that profile."""
+        """Load the budgets for one profile from config."""
         fallback = {"interactive": (6, 300.0), "worker": (15, 1800.0)}[profile]
         return cls(
             max_hops=int(_cfg(f"budgets.{profile}.max_hops", fallback[0])),
@@ -103,8 +101,7 @@ async def run_turn(
     """
     Run one turn to its end, yielding events as they happen.
 
-    `messages` is mutated in place, so a caller that persists it sees the same
-    history the model saw.
+    `messages` is mutated in place.
 
     Args:
         messages: OpenAI-shape history, built by the fold.
@@ -118,8 +115,7 @@ async def run_turn(
     Yields:
         Events from the vocabulary, ending with exactly one `done`.
     """
-    # An unattended run is the background source: no human is waiting, so it
-    # yields the GPU slot on overload rather than queueing for it.
+    # Unattended runs yield the GPU slot on overload instead of queueing for it.
     source: model_client.Source = "background" if mode == "unattended" else "interactive"
     by_name = {t.name: t for t in tools}
     schemas = [t.to_openai() for t in tools]
@@ -139,8 +135,7 @@ async def run_turn(
             yield DoneEvent(reason="wall_clock")
             return
 
-        # A repair round trip and a model re-attempt are both the same hop
-        # trying again, so neither is charged and neither re-emits the meter.
+        # A repair round trip or a model re-attempt is the same hop trying again.
         charged = not state.repair_pending and not reattempt
         state.repair_pending = False
         reattempt = False
@@ -150,8 +145,7 @@ async def run_turn(
 
         hop = _Hop()
         try:
-            # The budget bounds the whole hop, model plus tools. Checking only
-            # between hops would let one slow tool overrun it without limit.
+            # Bounds the whole hop, model plus tools, not just the gap between hops.
             async with asyncio.timeout(remaining):
                 async for delta in model_client.generate(messages, schemas, source=source, options=options):
                     event = hop.absorb(delta)
@@ -173,8 +167,7 @@ async def run_turn(
                         yield DoneEvent(reason="turn_end")
                         return
                     if not hop.text:
-                        # No text and no calls. Looping on that just spends the
-                        # budget on more nothing.
+                        # Nothing to act on; looping would only spend budget.
                         yield DoneEvent(reason="model_error")
                         return
                     if not nudged and hops_used == budgets.max_hops - 1:
@@ -216,8 +209,7 @@ async def run_turn(
             yield DoneEvent(reason="model_error")
             return
         except asyncio.CancelledError:
-            # Cancel exits through done{cancelled} rather than propagating a
-            # bare error, so the transcript records why the run stopped.
+            # Record why the run stopped before the cancellation propagates.
             yield DoneEvent(reason="cancelled")
             raise
 
@@ -228,7 +220,7 @@ async def run_turn(
 
 
 class _Hop:
-    """Accumulates one streamed completion. Text is yielded as it arrives."""
+    """Accumulate one streamed completion."""
 
     def __init__(self) -> None:
         self.text = ""
@@ -237,7 +229,7 @@ class _Hop:
         self._next_synthetic = 0
 
     def absorb(self, delta: model_client.Delta) -> Event | None:
-        """Map one delta to at most one event. Tool-call fragments buffer instead."""
+        """Map one delta to at most one event; tool-call fragments buffer instead."""
         if isinstance(delta, model_client.TextDelta):
             self.text += delta.text
             return ContentEvent(text=delta.text)
@@ -252,17 +244,12 @@ class _Hop:
                 partial.name = delta.name
             partial.arguments += delta.arguments
         elif isinstance(delta, model_client.Finish):
-            # "length" means max_tokens cut the reply off mid-thought.
+            # "length" means max_tokens truncated the reply.
             self.truncated = delta.reason == "length"
         return None
 
     def finish(self, seen_ids: set[str]) -> list[_PartialCall]:
-        """
-        Ordered calls, with ids made unique.
-
-        An id that is empty or already used cannot be paired with its result,
-        and a repeat is a 400 from the server on the next hop.
-        """
+        """Return the calls in order, replacing empty or reused ids so each pairs with one result."""
         calls = [self._calls[i] for i in sorted(self._calls)]
         for call in calls:
             if not call.id or call.id in seen_ids:
@@ -297,9 +284,8 @@ async def _run_batch(
     """
     Validate the batch, then dispatch what survives concurrently.
 
-    Results are yielded as they land rather than in call order, so a slow read
-    does not hold up a fast one. Every call is closed by exactly one result
-    before this returns, on every exit path.
+    Results are yielded as they land, not in call order. Every call is closed by
+    exactly one result before this returns, on every exit path.
     """
     runnable: list[tuple[_PartialCall, dict[str, Any]]] = []
 
@@ -321,8 +307,7 @@ async def _run_batch(
             continue
 
         cap = state.budgets.per_tool_attempts
-        # in_flight counts this batch, so five parallel calls to one tool cannot
-        # all dispatch under a cap of two.
+        # in_flight counts this batch, so parallel calls cannot all dispatch past the cap.
         if state.failures.get(call.name, 0) + state.in_flight.get(call.name, 0) >= cap:
             yield _close(
                 call,
@@ -338,8 +323,7 @@ async def _run_batch(
     if not runnable:
         return
 
-    # asyncio.wait, not as_completed: it hands back the task objects, which is
-    # how a result is matched to its call.
+    # asyncio.wait, not as_completed: the task object is what maps a result to its call.
     tasks = {asyncio.create_task(dispatch(c.name, a)): c for c, a in runnable}
     pending = set(tasks)
     try:
@@ -349,8 +333,7 @@ async def _run_batch(
                 call = tasks[task]
                 yield _settle(call, _envelope_of(task, call), state, messages)
     except (asyncio.CancelledError, GeneratorExit):
-        # Close every open call before leaving, or the transcript has a
-        # tool_call with no result and the session cannot be resumed.
+        # Close every open call, or the session cannot be resumed.
         for task in pending:
             task.cancel()
         for task in pending:
@@ -364,7 +347,7 @@ _INTERRUPTED = "Interrupted before this returned. The outcome is unknown; verify
 
 
 def _envelope_of(task: asyncio.Task[ResultEnvelope], call: _PartialCall) -> ResultEnvelope:
-    """A dispatch that raises is a failed tool, not a failed run."""
+    """Return the task's envelope; a dispatch that raises is a failed tool, not a failed run."""
     try:
         return task.result()
     except asyncio.CancelledError:
@@ -420,7 +403,7 @@ def _parse_args(raw: str) -> tuple[dict[str, Any], str | None]:
 
 
 def _cap_view(content: str) -> tuple[str, int | None]:
-    """View-cap the result. `ref` comes from the envelope when a blob was stored."""
+    """Truncate the result to the view cap, returning the original length when it was cut."""
     cap = int(_cfg("tools.result_view_cap_chars", 4000))
     if len(content) <= cap:
         return content, None

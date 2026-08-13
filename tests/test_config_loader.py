@@ -1,4 +1,4 @@
-"""Tests for ConfigLoader in config_module/loader.py."""
+"""ConfigLoader in config_module/loader.py."""
 
 from pathlib import Path
 
@@ -78,7 +78,7 @@ class TestConfigLoaderLoad:
         loader = ConfigLoader(simple_config)
         first = loader.load()
         second = loader.load()
-        assert first is second  # Same object reference = cached
+        assert first is second
 
 
 class TestConfigLoaderGet:
@@ -152,7 +152,6 @@ class TestConfigLoaderReload:
 
         assert loader.load()["version"] == 1
 
-        # Update file
         config_file.write_text(yaml.dump({"version": 2}))
         reloaded = loader.reload()
         assert reloaded["version"] == 2
@@ -161,4 +160,4 @@ class TestConfigLoaderReload:
         loader = ConfigLoader(simple_config)
         first = loader.load()
         reloaded = loader.reload()
-        assert first is not reloaded  # Different objects after reload
+        assert first is not reloaded

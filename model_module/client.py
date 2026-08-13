@@ -1,11 +1,6 @@
 """
-The model client: one cached client, one retry layer.
-
-Replaces ArkModelNew.py:ArkModelLink and computer_module/model.py:ToolCallingModel.
-
-    async for delta in generate(messages, tools=..., source=..., options=...): ...
-
-Raises ModelError and nothing else. CancelledError propagates.
+The model client: one cached client, one streamed `generate`, one retry layer.
+Raises ModelError and nothing else; CancelledError propagates.
 """
 
 from __future__ import annotations
@@ -44,7 +39,7 @@ Source = Literal["interactive", "background"]
 
 
 def _cfg(key: str, default: Any) -> Any:
-    """Config read that keeps falsy values. `or default` would drop temperature 0."""
+    """Read a config key, keeping falsy values such as temperature 0."""
     value = config.get(key)
     return default if value is None else value
 
@@ -59,7 +54,7 @@ class TextDelta:
 
 @dataclass(slots=True)
 class ReasoningDelta:
-    """SGLang's reasoning_content. Streamed like text; the fold drops it."""
+    """SGLang reasoning_content; streamed like text, never folded into messages."""
 
     text: str
 
@@ -77,7 +72,7 @@ class ToolCallDelta:
 @dataclass(slots=True)
 class Finish:
     reason: str | None
-    # Not dict[str, int]: SGLang sends *_tokens_details as None beside the counts.
+    # Not dict[str, int]: SGLang sends *_tokens_details as None.
     usage: dict[str, Any] | None = None
 
 
@@ -91,7 +86,7 @@ _client_key: tuple[str, str, float] | None = None
 
 
 def get_client() -> AsyncOpenAI:
-    """The cached client. max_retries=0: retrying is `generate`'s job alone."""
+    """Return the cached client; max_retries=0 because `generate` is the only retry layer."""
     global _client, _client_key
 
     base_url = str(_cfg("llm.base_url", ""))
@@ -107,7 +102,7 @@ def get_client() -> AsyncOpenAI:
 
 
 def reset_client() -> None:
-    """Drop the cached client. For tests and config reloads."""
+    """Drop the cached client, for tests and config reloads."""
     global _client, _client_key
     _client = None
     _client_key = None
@@ -152,10 +147,9 @@ def _classify(exc: Exception, source: Source) -> ModelError:
             cause=exc,
         )
     if isinstance(exc, (APIError, APIResponseValidationError)):
-        # 200 OK, then {"error": ...} in the body. SGLang sends this for
-        # prompt-too-long, OOM and abort, all of which a retry reproduces.
+        # A body-level error after 200 OK; a retry reproduces it.
         return ModelError(f"model stream failed: {exc}", retryable=False, kind="stream", cause=exc)
-    # Our own parse bug. Retrying cannot fix code, and would hide it behind 3 calls.
+    # Our own bug; retrying cannot fix code.
     return ModelError(
         f"model call failed ({type(exc).__name__}): {exc}",
         retryable=False,
@@ -189,7 +183,7 @@ async def generate(
         messages: OpenAI-shape messages, built by the fold.
         tools: OpenAI-shape tool schemas, or None for a plain completion.
         source: see `Source`.
-        options: per-call model params from config. `chat_template_kwargs` is
+        options: per-call model params from config; `chat_template_kwargs` is
             lifted into extra_body for SGLang.
 
     Yields:
@@ -199,7 +193,7 @@ async def generate(
         ModelError: and nothing else. CancelledError propagates.
     """
     try:
-        # max(1, ...) stops a nonsense value emptying the range below.
+        # max(1, ...) keeps a nonsense config value from emptying the range below.
         max_attempts = max(1, int(_cfg("llm.max_retries", 3)))
     except (TypeError, ValueError) as e:
         raise ModelError(f"bad llm.max_retries in config: {e}", retryable=False, kind="bad_request", cause=e) from e
@@ -209,12 +203,11 @@ async def generate(
     for attempt in range(1, max_attempts + 1):
         started = False
         try:
-            # aclosing, so abandoning this generator closes the HTTP stream now
-            # rather than at GC.
+            # aclosing closes the HTTP stream on abandon rather than at GC.
             async with aclosing(_stream_once(messages, tools, source, options)) as attempt_stream:
                 async for delta in attempt_stream:
-                    # Past the first delta the attempt is committed: replaying it
-                    # would duplicate text and tool calls. The loop retries the hop.
+                    # Past the first delta the attempt is committed: a retry would
+                    # duplicate deltas already emitted, so the loop retries the hop.
                     started = True
                     yield delta
             return
@@ -247,7 +240,7 @@ async def _stream_once(
         "max_tokens": int(_cfg("llm.max_tokens", 8192)),
         "temperature": float(_cfg("llm.temperature", 0.7)),
         "stream": True,
-        # Without this a streamed call reports no usage and budgets go blind.
+        # Streamed calls report no usage without this.
         "stream_options": {"include_usage": True},
     }
     kwargs.update(opts)
@@ -303,7 +296,7 @@ async def _stream_once(
     except Exception as e:
         raise _classify(e, source) from e
     finally:
-        # Frees the decode slot and the pooled connection on the abandon path.
+        # Frees the decode slot and pooled connection on the abandon path.
         await stream.close()
 
     yield Finish(reason=finish_reason, usage=usage)

@@ -1,21 +1,8 @@
 """
-Custom `browser_use.Tools` actions registered alongside the built-in agent
-toolkit. Each one collapses a multi-step LLM-reasoned flow into a single
-deterministic tool call.
-
-Lazy imports throughout: arkos must still boot on hosts where browser_use
-isn't installed (tests mock it via sys.modules). `build_arkos_tools()`
-returns None in that environment and the caller falls back to passing
-nothing for `tools=`.
-
-Design notes:
-- Actions are async because the cdp_use client is async-only.
-- We talk to Chromium via `browser_session.get_or_create_cdp_session(...)` so
-  we share the agent's existing CDP socket; opening a second connection to
-  Browserless would land us on a different browser instance entirely.
-- Heuristic JS evaluation is preferred over per-site selectors: the goal is
-  graceful degradation across the long tail of consent UIs, not perfection
-  on any one site.
+Custom `browser_use.Tools` actions, each collapsing a multi-step LLM flow into
+one deterministic call. browser_use is imported lazily so arkos boots without it;
+`build_arkos_tools()` then returns None. Actions reuse the agent's CDP session,
+since a second connection would land on a different browser instance.
 """
 
 from __future__ import annotations
@@ -26,12 +13,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-# JavaScript heuristic for dismissing consent/cookie/age-gate overlays.
-# Strategy: walk every visible button / role=button / clickable anchor on the
-# page, score it by how close its accessible text matches common consent
-# verbs in several languages, click the highest-scoring match if any clears
-# a confidence threshold. Returns the chosen label and total candidates
-# considered so the LLM gets a useful breadcrumb in the action result.
+# Scores every visible clickable by how well its text matches a consent verb
+# and clicks the best one above threshold.
 _DISMISS_OVERLAY_JS = r"""
 (() => {
   const TERMS = [
@@ -132,9 +115,6 @@ def _make_dismiss_overlay_action(tools_module: Any, action_result_cls: Any):
 
 
 # --- wait_for_element -----------------------------------------------------
-# Useful for SPAs: the agent calls this once and waits up to N seconds for a
-# CSS selector to render and become visible, instead of N steps of "look at
-# the page" + "click index 7" + "page is still loading" loops.
 
 _WAIT_FOR_ELEMENT_JS = r"""
 (async ({ selector, timeoutMs }) => {
@@ -211,10 +191,6 @@ def _make_wait_for_element_action(tools_module, action_result_cls):
 
 
 # --- click_then_wait_for_url_change --------------------------------------
-# Form submissions and "next page" links commonly trigger navigation that
-# the agent then has to recognise across two steps (click + observe new URL).
-# Collapses into one deterministic call that fires the click and resolves
-# only after the URL changes (or a timeout fires).
 
 _CLICK_THEN_WAIT_JS = r"""
 (async ({ selector, timeoutMs }) => {
@@ -248,7 +224,7 @@ def _make_click_then_wait_action(tools_module, action_result_cls):
         description=(
             "Click a CSS selector and wait for the page's URL to change. "
             "Use this for submit buttons, 'next page' links, and login "
-            "buttons — anywhere the next step depends on a navigation "
+            "buttons, anywhere the next step depends on a navigation "
             "having actually happened. Returns whether navigation occurred."
         ),
         param_model=ClickWaitParams,
@@ -286,7 +262,7 @@ def _make_click_then_wait_action(tools_module, action_result_cls):
         return action_result_cls(
             extracted_content=(
                 f"Clicked {params.selector!r} but URL did not change within "
-                f"{params.timeout_ms}ms — still at {value.get('from_url')}"
+                f"{params.timeout_ms}ms, still at {value.get('from_url')}"
             ),
             include_in_memory=True,
         )
@@ -295,8 +271,6 @@ def _make_click_then_wait_action(tools_module, action_result_cls):
 
 
 # --- scroll_to_load_all ---------------------------------------------------
-# Infinite-scroll feeds: scroll to the bottom, wait, repeat until the page
-# stops growing (or we hit a hard cap). One action replaces 10+ LLM steps.
 
 _SCROLL_TO_LOAD_JS = r"""
 (async ({ maxScrolls, settleMs }) => {
@@ -359,9 +333,6 @@ def _make_scroll_to_load_all_action(tools_module, action_result_cls):
 
 
 # --- extract_text_region --------------------------------------------------
-# For "summarise the article" or "what's in the main panel" tasks: hand the
-# LLM the cleaned plain text of a CSS region directly, instead of asking it
-# to recompose text from index-numbered DOM elements.
 
 _EXTRACT_TEXT_JS = r"""
 (({ selector, maxChars }) => {
@@ -439,21 +410,14 @@ def _make_extract_text_region_action(tools_module, action_result_cls):
 
 
 def _json_dump(s: str) -> str:
-    """JSON-escape a string for inline injection into the JS expression.
-
-    Use json.dumps so quotes/backslashes/newlines round-trip safely.
-    """
+    """JSON-escape a string for inline injection into a JS expression."""
     import json
 
     return json.dumps(s)
 
 
 def build_arkos_tools() -> Any | None:
-    """Build a `browser_use.Tools` instance carrying arkos's custom actions.
-
-    Returns None if browser_use isn't importable (lets the caller pass
-    nothing for `tools=` without branching).
-    """
+    """Build a `browser_use.Tools` carrying arkos's actions, or None if browser_use is missing."""
     try:
         import browser_use as bu
     except ImportError:

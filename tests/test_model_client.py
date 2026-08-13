@@ -1,8 +1,6 @@
-"""
-Task 1 conformance: the model client has ONE retry layer and it is bounded.
+"""The model client has one retry layer and it is bounded.
 
-Pins `test_retry_budget_bounded` from contracts.md: <=3 attempts, bounded wall
-clock, background source does not retry on overload.
+Pins contracts.md's retry budget: <=3 attempts, and background does not retry on overload.
 """
 
 import asyncio
@@ -21,8 +19,7 @@ from openai import (
 from model_module import client as mc
 from model_module.errors import ModelError
 
-# Captured before any monkeypatching, so the partial-override lambdas below can
-# defer to the real loader for every key they do not care about.
+# Captured before monkeypatching so the override lambdas can defer to the real loader.
 _real_get = mc.config.get
 
 
@@ -36,7 +33,7 @@ def _chunk(*, content=None, reasoning=None, tool_calls=None, finish=None):
 
 
 def _usage_chunk(**counts):
-    """The trailing usage-only chunk: no choices, which readers must tolerate."""
+    """The trailing usage-only chunk, which carries no choices."""
     return SimpleNamespace(choices=[], usage=SimpleNamespace(model_dump=lambda: counts))
 
 
@@ -148,10 +145,8 @@ async def test_only_interactive_waits_out_an_overload(fake, source, expected_cal
 @pytest.mark.parametrize(
     "error,kind",
     [
-        # Retrying a malformed request just spends the budget on the same 400.
         (BadRequestError("nope", response=_response(400), body=None), "bad_request"),
-        # In-band SSE error: 200 OK, then {"error": ...} in the body. Retrying
-        # costs 3 client attempts x 3 loop hop attempts for a doomed prompt.
+        # In-band SSE error: 200 OK, then {"error": ...} in the body.
         (APIError("context length exceeded", request=None, body=None), "stream"),
     ],
 )
@@ -169,10 +164,7 @@ async def test_terminal_failures_fail_fast(fake, error, kind):
 
 @pytest.mark.asyncio
 async def test_failure_before_the_first_chunk_still_retries(fake):
-    """
-    The boundary that decides retry-vs-commit: nothing has been yielded yet, so
-    this one MUST retry.
-    """
+    """Nothing has been yielded yet, so the attempt is not committed."""
 
     def behaviour(n):
         if n == 1:
@@ -188,11 +180,7 @@ async def test_failure_before_the_first_chunk_still_retries(fake):
 
 @pytest.mark.asyncio
 async def test_midstream_failure_is_not_retried(fake):
-    """
-    The other side of that boundary. Once a delta has been handed over the
-    attempt is committed: a retry would duplicate text on screen and duplicate
-    tool calls in the transcript. The loop retries the whole hop instead.
-    """
+    """Once a delta has been handed over the attempt is committed; the loop retries the hop."""
     completions = fake(
         lambda n: _Stream(
             [_chunk(content="par"), _chunk(content="tial")],
@@ -212,7 +200,7 @@ async def test_midstream_failure_is_not_retried(fake):
 
 @pytest.mark.asyncio
 async def test_parsing_bug_is_not_retried(fake):
-    """Retrying cannot fix our own code; 3 real model calls would just hide it."""
+    """Retrying cannot fix our own code."""
     broken = SimpleNamespace(usage=None)  # no .choices -> AttributeError in the parse loop
     completions = fake(lambda n: _Stream([broken]))
 
@@ -237,8 +225,7 @@ async def test_yields_text_reasoning_tool_calls_and_usage(fake):
                 _chunk(tool_calls=[_tool_call(0, id="c1", name="run_command", arguments='{"cmd')]),
                 _chunk(tool_calls=[_tool_call(0, arguments='":"ls"}')]),
                 _chunk(finish="tool_calls"),
-                # Real SGLang sends *_tokens_details: None beside the counts, so
-                # Finish.usage cannot be typed dict[str, int].
+                # SGLang sends *_tokens_details beside the counts, so usage is not dict[str, int].
                 _usage_chunk(prompt_tokens=9, completion_tokens=142, prompt_tokens_details=None),
             ]
         )
@@ -317,10 +304,7 @@ async def test_first_delta_arrives_before_the_stream_ends(fake):
 
 @pytest.mark.asyncio
 async def test_stream_is_closed_when_the_consumer_abandons_it(fake):
-    """
-    A hop abandoned on budget must free the decode slot immediately, not
-    whenever refcounting gets round to finalizing two chained generators.
-    """
+    """A hop abandoned on budget must free the decode slot immediately."""
     stream = _Stream([_chunk(content="a"), _chunk(content="b"), _chunk(content="c", finish="stop")])
     fake(lambda n: stream)
 
@@ -363,10 +347,7 @@ async def test_options_and_tools_reach_the_wire(fake):
 
 @pytest.mark.asyncio
 async def test_falsy_config_values_are_honoured(monkeypatch):
-    """
-    `config.get(k) or default` silently discarded these, and `temperature: 0` is
-    the setting most likely to be reached for on a tool turn.
-    """
+    """`temperature: 0` must reach the wire rather than being discarded as falsy."""
     completions = _FakeCompletions(lambda n: _Stream([_chunk(content="ok", finish="stop")]))
     monkeypatch.setattr(mc, "get_client", lambda: SimpleNamespace(chat=SimpleNamespace(completions=completions)))
     monkeypatch.setattr(mc.config, "get", lambda k, *a, **kw: 0 if k == "llm.temperature" else _real_get(k))
@@ -378,10 +359,7 @@ async def test_falsy_config_values_are_honoured(monkeypatch):
 @pytest.mark.parametrize("bad_value", [-1, "hot"])
 @pytest.mark.asyncio
 async def test_bad_max_retries_still_raises_model_error(monkeypatch, bad_value):
-    """
-    generate() raises ModelError and nothing else. -1 emptied the attempt range
-    and fell through to `raise None`; "hot" escaped as a bare ValueError.
-    """
+    """generate() raises ModelError and nothing else, whatever the config holds."""
     completions = _FakeCompletions(lambda n: APITimeoutError(request=None))
     monkeypatch.setattr(mc, "get_client", lambda: SimpleNamespace(chat=SimpleNamespace(completions=completions)))
     monkeypatch.setattr(mc.config, "get", lambda k, *a, **kw: bad_value if k == "llm.max_retries" else _real_get(k))
@@ -392,7 +370,7 @@ async def test_bad_max_retries_still_raises_model_error(monkeypatch, bad_value):
 
 
 def test_client_is_cached_with_the_configured_timeout(monkeypatch):
-    """Contracts' 'bounded wall clock' depends on timeout actually being applied."""
+    """The bounded wall clock depends on the timeout actually being applied."""
     mc.reset_client()
     monkeypatch.setattr(mc.config, "get", lambda k, *a, **kw: 12.5 if k == "llm.timeout_s" else _real_get(k))
 

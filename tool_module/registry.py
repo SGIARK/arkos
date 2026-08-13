@@ -1,9 +1,7 @@
 """
-Tool discovery. Adding a tool is adding a module under `tool_module/tools/`
-that exposes a `TOOLS` list; nothing else needs editing.
-
-MCP tools are namespaced `mcp_*` and the prefix is stripped on dispatch, so a
-remote `read_file` cannot shadow ours.
+Tool discovery and dispatch. A tool is a module under `tool_module/tools/`
+exposing a `TOOLS` list. MCP tools are namespaced `mcp_*` and the prefix is
+stripped on dispatch, so a remote `read_file` cannot shadow ours.
 """
 
 from __future__ import annotations
@@ -23,7 +21,7 @@ McpCall = Callable[[str, dict[str, Any], ToolContext], Awaitable[ResultEnvelope]
 
 
 class McpSource(Protocol):
-    """What `manifest` needs from the MCP half. `Smithery` satisfies it."""
+    """What `manifest` needs from the MCP half; `Smithery` satisfies it."""
 
     async def specs(self, user_id: str) -> list[ToolSpec]: ...
 
@@ -41,7 +39,7 @@ _local: dict[str, Tool] | None = None
 
 
 def local_tools() -> dict[str, Tool]:
-    """Ours, discovered once. Always loaded: an unused tool costs a schema, not a boot."""
+    """Return our own tools, discovered once per process."""
     global _local
     if _local is None:
         found: dict[str, Tool] = {}
@@ -56,30 +54,21 @@ def local_tools() -> dict[str, Tool]:
 
 
 def reset() -> None:
-    """Drop the discovery cache. For tests."""
+    """Drop the discovery cache, for tests."""
     global _local
     _local = None
 
 
 async def manifest(user_id: str, *, mcp: McpSource | None = None) -> list[ToolSpec]:
-    """
-    The whole manifest for a session.
-
-    One manifest: there are no session types, so every session may reach for
-    every hand. An MCP tool whose name collides with ours keeps its prefix and
-    therefore cannot displace it.
-
-    `mcp` is injected rather than imported so the registry stays free of
-    transport; with none, a session gets our tools and no remote ones.
-    """
-    # Copies, always. ToolSpec is mutable and the local ones are process-cached,
-    # so handing out references lets one session's edit poison every session.
+    """Return every tool spec a session may use; without `mcp`, only the local ones."""
+    # Copies, always: ToolSpec is mutable and the local ones are process-cached,
+    # so sharing references lets one session's edit poison every session.
     specs = [_copy(t.spec) for t in local_tools().values()]
     taken = {s.name for s in specs}
 
     for spec in await mcp.specs(user_id) if mcp is not None else []:
-        # Prefix unconditionally. A remote tool genuinely called mcp_foo would
-        # otherwise be dispatched as foo, a name its server does not have.
+        # Prefix unconditionally: a remote tool genuinely called mcp_foo would
+        # otherwise dispatch as foo, a name its server does not have.
         name = f"{MCP_PREFIX}{spec.name}"
         if name in taken:
             logger.warning("dropping MCP tool %s: name collides with %s", spec.name, name)
@@ -107,19 +96,12 @@ async def dispatch(
     mcp_call: McpCall | None = None,
     timeout_s: float = 120.0,
 ) -> ResultEnvelope:
-    """
-    Run one tool by the name the model used.
-
-    `mcp_call(bare_name, args, ctx) -> ResultEnvelope` handles the mcp_* half.
-    Injected rather than imported so the registry does not depend on transport.
-    """
+    """Run one tool by the name the model used; `mcp_call` handles the mcp_* half."""
     if name.startswith(MCP_PREFIX):
         if mcp_call is None:
             return fail("not_found", f"No MCP transport available for {name!r}.")
         bare = name[len(MCP_PREFIX) :]
         try:
-            # The remote tools are the ones that actually hang, so they need the
-            # cap more than the local ones do.
             async with asyncio.timeout(timeout_s):
                 result = await mcp_call(bare, args, ctx)
         except asyncio.CancelledError:
@@ -142,12 +124,7 @@ def bind(
     mcp_call: McpCall | None = None,
     timeout_s: float | None = None,
 ) -> Callable[[str, dict[str, Any]], Awaitable[ResultEnvelope]]:
-    """
-    Adapt `dispatch` to the `(name, args)` shape `run_turn` requires.
-
-    The loop must not know about contexts or transports, so the session binds
-    them here once and hands the loop a two-argument function.
-    """
+    """Adapt `dispatch` to the `(name, args)` shape `run_turn` requires."""
     cap = float(_cfg("tools.call_timeout_s", 120.0)) if timeout_s is None else timeout_s
 
     async def dispatch_bound(name: str, args: dict[str, Any]) -> ResultEnvelope:

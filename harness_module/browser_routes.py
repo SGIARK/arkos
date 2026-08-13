@@ -1,10 +1,6 @@
-"""HTTP routes for the live browser screencast viewer.
+"""SSE route for the live browser screencast viewer.
 
-A single SSE endpoint that streams the current user's screencast events
-out of the in-process frame broker. Events:
-  {"type": "started"}                  a new session began
-  {"type": "frame", "jpeg_b64": "..."} one screencast frame
-  {"type": "ended"}                    the active session finished
+Streams the user's `started`, `frame` and `ended` events from the in-process broker.
 """
 
 from __future__ import annotations
@@ -22,9 +18,7 @@ from tool_module.browser_stream import broker
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Cadence of the SSE keep-alive comment line. Without periodic bytes some
-# proxies/load balancers and even some browsers' EventSource drop idle
-# connections after ~30s; the comment is invisible to the consumer.
+# Proxies and EventSource drop idle connections after ~30s without bytes.
 _KEEPALIVE_SECONDS = 15.0
 
 
@@ -42,27 +36,19 @@ async def browser_stream(request: Request) -> StreamingResponse:
 
 
 async def _event_stream(user_id: str):
-    """Yield SSE frames for `user_id`.
-
-    Relies on FastAPI/Starlette to cancel this generator when the client
-    disconnects — no manual is_disconnected() polling, which we observed
-    spuriously firing under some uvicorn versions and killing the stream
-    before the first real event. Sends an SSE comment line every
-    _KEEPALIVE_SECONDS so intermediaries don't time the connection out.
-    """
+    """Yield SSE frames for `user_id` until the client disconnects."""
     sub_iter = broker.subscribe(user_id).__aiter__()
     try:
         while True:
             try:
                 event = await asyncio.wait_for(sub_iter.__anext__(), timeout=_KEEPALIVE_SECONDS)
             except TimeoutError:
-                # SSE comment line — keeps the connection warm; consumers ignore it.
                 yield ": keepalive\n\n"
                 continue
             except StopAsyncIteration:
                 break
             yield f"data: {json.dumps(event)}\n\n"
     except asyncio.CancelledError:
-        # Client disconnected; let the generator close cleanly.
+        # Starlette cancels this generator when the client disconnects.
         logger.info("browser_stream: unsubscribe user_id=%s", user_id)
         raise

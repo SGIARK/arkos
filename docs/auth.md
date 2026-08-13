@@ -84,6 +84,16 @@ web content via `browser_task`, and MCP tool results. Stance:
   durable and rendered in the UI. Credentials stay behind the Smithery
   vault+proxy and never enter the brain or sandbox (contracts.md).
 - Sandbox env carries no credentials (verified in redesign Task 8).
+- **A per-user MCP connection may never be written to `shared_connections`.**
+  That table has no user column, and `_load(None)` hands every row to every
+  user, so one person's OAuth grant landing there is a grant handed to the whole
+  install. The gate is `requires_auth` in config: `false` writes shared, `true`
+  writes `user_connections` and REFUSES when there is no `user_id` rather than
+  falling back. The schema cannot express this (nothing links the two tables),
+  so it is enforced only by `_owner_for()` and pinned by
+  `test_a_per_user_server_without_a_user_is_refused_not_written_as_shared`.
+  Anything that ever calls `connect()` with a fallback or anonymous user id
+  re-opens this.
 - **The persistent browser profile is credential-equivalent at rest.** Because
   the browser is leased per user and keeps its profile (D18), that directory
   holds live logged-in session cookies for whatever the user signed into. It is
@@ -109,6 +119,11 @@ web content via `browser_task`, and MCP tool results. Stance:
 - `test_token_issuance` — no code path issues a token without Supabase
   verification; grep-level check that demo-login/ARK_DEMO_MODE are gone.
 - `test_cookie_session` — no cookie or a foreign cookie is rejected on every endpoint including both SSE streams; mutations reject a bad `Origin`.
+- `test_a_per_user_server_without_a_user_is_refused_not_written_as_shared` — a
+  `requires_auth` server never produces a `shared_connections` row.
+- `test_one_users_connection_is_never_visible_to_another`,
+  `test_a_tool_another_user_connected_is_not_callable` — MCP connections and
+  their tools are scoped to their owner.
 
 # Open questions
 

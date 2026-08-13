@@ -6,9 +6,7 @@ import sys
 # Ensure project root is on sys.path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-# Real config first, placeholders second. The DB-touching tests need the actual
-# DB_URL; everything else only needs the var to exist, because
-# config_module.loader hard-fails on any unset ${VAR} in config.yaml.
+# Real .env first: the loader hard-fails on any unset ${VAR} in config.yaml.
 try:
     from dotenv import load_dotenv
 

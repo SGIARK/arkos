@@ -6,7 +6,7 @@ from agent_module import events as ev
 
 
 def test_every_vocabulary_kind_is_implemented():
-    """The table in contracts.md is the whole vocabulary; nothing may be missing."""
+    """The table in contracts.md is the whole vocabulary."""
     assert set(ev._BY_KIND) == {
         "user",
         "content",
@@ -44,13 +44,12 @@ def test_round_trips_through_a_stored_row(event):
 
 
 def test_lifecycle_uses_from_on_the_wire():
-    """`from` is a Python keyword; the wire name must not leak the underscore."""
+    """`from` is a Python keyword, so the wire name must not leak the underscore."""
     row = ev.LifecycleEvent(from_="pending", to="running").to_row()
     assert "from" in row["payload"] and "from_" not in row["payload"]
 
 
 def test_unknown_kind_is_loud():
-    """A silently dropped row is a hole in the transcript."""
     with pytest.raises(ValueError):
         ev.parse_event("not_a_kind", {})
 
@@ -62,7 +61,7 @@ def test_turn_end_is_not_terminal():
 
 
 def test_a_newer_writers_extra_keys_are_dropped_not_fatal():
-    """An old reader must still render a v2 row; that is what version is for."""
+    """An old reader must still render a v2 row."""
     event = ev.parse_event("content", {"text": "hi", "sentiment": "warm"}, version=2)
     assert event.text == "hi" and event.version == 2
 

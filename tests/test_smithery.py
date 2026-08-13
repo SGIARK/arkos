@@ -1,9 +1,6 @@
-"""
-The Smithery half: stored connection ids (D24), one ClientSession, TTL, and the
-two request-count claims Task 3 is measured by.
+"""Stored connection ids, one ClientSession, TTL, and the request-count claims.
 
-Postgres is real here — migration 0 is applied and these are the tables the
-redesign ships. Every case works in its own user id, so they do not collide.
+Runs against a real Postgres with migration 0 applied; each case uses its own user id.
 """
 
 from __future__ import annotations
@@ -18,7 +15,7 @@ import pytest_asyncio
 from db import pool
 from tool_module import connections as conns
 from tool_module.envelope import ToolContext
-from tool_module.smithery import AuthRequiredError, Smithery, _render, _to_specs
+from tool_module.smithery import AuthRequiredError, Smithery, _render, _to_spec
 
 pytestmark = pytest.mark.asyncio
 
@@ -33,7 +30,7 @@ SMITHERY_CFG = {"api_key": "k", "namespace": "arkos-test"}
 
 
 class FakeClient:
-    """Counts what actually goes over the wire, which is the whole point here."""
+    """Counts what goes over the wire."""
 
     def __init__(self, *, status="connected", tools=None, setup_url=None):
         self.status = status
@@ -69,7 +66,7 @@ def _user() -> str:
 
 
 async def _seed_user(user_id: str) -> None:
-    """user_connections has an FK to users; the id is a Supabase auth sub."""
+    """user_connections has an FK to users."""
     await pool.execute("INSERT INTO users (id) VALUES ($1) ON CONFLICT DO NOTHING", uuid.UUID(user_id))
 
 
@@ -81,12 +78,7 @@ def _hands(client=None, **kw) -> Smithery:
 
 @pytest_asyncio.fixture(autouse=True)
 async def _db():
-    """
-    These assert against the real schema, so they need the real database.
-
-    Skipping beats faking it: the claims here are about what Postgres does with
-    a composite primary key and an upsert, which a mock cannot tell us.
-    """
+    """Skip the module unless the real schema is reachable."""
     try:
         await pool.fetchval("SELECT 1")
     except Exception as e:  # noqa: BLE001 - any connection failure means skip
@@ -99,11 +91,10 @@ async def _db():
     await pool.close()
 
 
-# --- D24: the id is minted once and stored -----------------------------------
+# --- the id is minted once and stored ----------------------------------------
 
 
 async def test_the_row_is_written_before_the_put():
-    """A crash between mint and PUT must leave the id behind, not strand it."""
     user_id = _user()
     await _seed_user(user_id)
 
@@ -115,7 +106,6 @@ async def test_the_row_is_written_before_the_put():
 
 
 async def test_a_retry_after_a_crashed_connect_reuses_the_same_id():
-    """Minting a second id would strand the first, still holding the OAuth grant."""
     user_id = _user()
     await _seed_user(user_id)
 
@@ -126,7 +116,7 @@ async def test_a_retry_after_a_crashed_connect_reuses_the_same_id():
 
 
 async def test_renaming_the_config_key_changes_no_row_and_prompts_no_reconnect():
-    """The Task 3 acceptance test for D24: config keys are labels, not keys."""
+    """Config keys are labels, not identities."""
     user_id = _user()
     await _seed_user(user_id)
     client = FakeClient()
@@ -135,7 +125,7 @@ async def test_renaming_the_config_key_changes_no_row_and_prompts_no_reconnect()
     await before.connect(user_id, "linear")
     puts_after_connect = len(client.puts)
 
-    # Same url, different label. This is the rename that used to disconnect everyone.
+    # Same url, different label.
     renamed = Smithery({"linear_mcp": dict(SERVERS["linear"])}, SMITHERY_CFG)
     renamed.client = client
     specs = await renamed.specs(user_id)
@@ -147,7 +137,6 @@ async def test_renaming_the_config_key_changes_no_row_and_prompts_no_reconnect()
 
 
 async def test_the_id_is_not_derived_from_the_config_key():
-    """There is no formula, so two urls never collide and a label never appears."""
     a = conns.mint_id(LINEAR)
     b = conns.mint_id(LINEAR)
 
@@ -242,7 +231,6 @@ async def test_a_fresh_tool_list_is_not_revalidated():
 
 
 async def test_a_failed_revalidation_keeps_the_tools_we_had():
-    """A refresh blip must not take away tools the user connected."""
     user_id = _user()
     await _seed_user(user_id)
     client = FakeClient()
@@ -273,11 +261,7 @@ async def test_stale_is_measured_from_refreshed_at():
 
 
 async def test_revalidating_re_arms_the_clock_in_memory_not_just_the_db():
-    """
-    Found by review: `_revalidate` wrote refreshed_at to the DB but not to the
-    cached object, so `stale()` stayed True and every later manifest build
-    re-fetched forever. The same instance has to stop asking.
-    """
+    """The same instance must stop re-fetching once a revalidation succeeds."""
     user_id = _user()
     await _seed_user(user_id)
     client = FakeClient()
@@ -324,11 +308,7 @@ async def test_a_failed_revalidation_also_re_arms_so_a_dead_server_is_not_retrie
 
 
 async def test_concurrent_loads_do_not_install_a_stale_snapshot():
-    """
-    Found by review: invalidating with a bare `_cache.pop` let an in-flight read
-    write its pre-connect snapshot afterwards, and since `_load` only re-reads
-    when the key is absent, that entry never healed for the life of the process.
-    """
+    """A load in flight during an invalidation must not install its old snapshot."""
     user_id = _user()
     await _seed_user(user_id)
     client = FakeClient()
@@ -343,11 +323,7 @@ async def test_concurrent_loads_do_not_install_a_stale_snapshot():
 
 
 async def test_the_manifest_and_dispatch_agree_on_which_server_owns_a_name():
-    """
-    Found by review: specs() scanned shared-first while _resolve scanned
-    user-first, so the model saw one server's schema and the call went to the
-    other's connection.
-    """
+    """The schema the model sees and the connection the call lands on are the same."""
     user_id = _user()
     await _seed_user(user_id)
     servers = {
@@ -365,14 +341,13 @@ async def test_the_manifest_and_dispatch_agree_on_which_server_owns_a_name():
 
     specs = await hands.specs(user_id)
     first = next(s for s in specs if s.name == "search")
-    owner, conn = await hands._resolve("search", user_id)
+    route = (await hands._routes(user_id))["search"]
 
     assert first.description == "MINE"
-    assert owner == user_id and conn.mcp_url == LINEAR
+    assert route.owner == user_id and route.conn.mcp_url == LINEAR
 
 
 async def test_a_per_user_server_without_a_user_is_refused_not_written_as_shared():
-    """A personal OAuth grant in shared_connections would be handed to everyone."""
     from tool_module.smithery import SmitheryError
 
     hands = _hands(FakeClient())
@@ -386,14 +361,7 @@ async def test_a_per_user_server_without_a_user_is_refused_not_written_as_shared
 
 
 async def test_a_never_connected_server_does_not_open_oauth_on_a_tool_call():
-    """
-    The model cannot complete a browser redirect, so a call must never PUT.
-
-    `not_found` is the right answer here specifically because the server was
-    NEVER connected: we have no tool list for it, so nothing maps this name to
-    it, and the manifest never offered the tool either. The revoked case, where
-    we DO know the names, is the one that owes an actionable auth_required.
-    """
+    """A call must never PUT, and with no tool list the name is simply not found."""
     user_id = _user()
     await _seed_user(user_id)
     client = FakeClient(status="auth_required", setup_url="https://smithery/auth/x")
@@ -439,13 +407,11 @@ async def test_a_dead_grant_mid_call_marks_the_connection_and_stops_retrying():
     assert result.error_kind == "auth_required" and result.retryable is False
     rows = await conns.load(user_id)
     assert rows[LINEAR].status == "auth_required"
-    # The names must survive the status change, or the NEXT call cannot resolve
-    # to this connection and degrades to a bare not_found.
+    # The names must survive the status change for the next call to resolve.
     assert [t["name"] for t in rows[LINEAR].tools] == ["create_issue"]
 
 
 async def test_the_call_after_a_dead_grant_still_says_auth_required():
-    """Found by review: nulling tools_cache made the second call a bare not_found."""
     user_id = _user()
     await _seed_user(user_id)
     hands = _hands(FakeClient())
@@ -465,7 +431,6 @@ async def test_the_call_after_a_dead_grant_still_says_auth_required():
 
 
 async def test_a_db_failure_recording_a_dead_grant_still_says_do_not_retry():
-    """An asyncpg blip must not turn 'do not retry' into a retryable error."""
     user_id = _user()
     await _seed_user(user_id)
     hands = _hands(FakeClient())
@@ -559,13 +524,10 @@ async def test_content_blocks_are_flattened_not_dropped():
 
 
 async def test_remote_tools_are_never_marked_readonly():
-    """A remote server does not tell us; guessing wrong runs writes in parallel."""
-    specs = _to_specs([{"name": "delete_everything", "description": "d"}])
-    assert specs[0].readonly is False
+    assert _to_spec({"name": "delete_everything", "description": "d"}).readonly is False
 
 
 async def test_an_oversized_result_is_stored_and_referenced():
-    """Without this the tail is lost: `ref` only ever comes from the envelope."""
     user_id = _user()
     await _seed_user(user_id)
     client = FakeClient()
@@ -599,3 +561,70 @@ async def test_the_client_reuses_one_session():
     assert first is second
     await client.close()
     assert first.closed
+
+
+async def test_a_dead_grant_survives_a_restart_as_auth_required_not_not_found():
+    """Contracts: auth_required is actionable. A fresh process must still resolve the name."""
+    user_id = _user()
+    await _seed_user(user_id)
+    await _hands(FakeClient()).connect(user_id, "linear")
+
+    class Revoked(FakeClient):
+        async def jsonrpc(self, connection_id, method, params=None):
+            raise AuthRequiredError("linear", setup_url="https://smithery/reauth")
+
+    live = _hands(Revoked())
+    assert (await live.call("create_issue", {}, ToolContext(user_id=user_id))).error_kind == "auth_required"
+
+    # A fresh process: no in-memory cache, no remembered setup URL, same rows.
+    restarted = _hands(FakeClient())
+    result = await restarted.call("create_issue", {}, ToolContext(user_id=user_id))
+
+    assert result.error_kind == "auth_required", "rehydration lost the name and degraded to not_found"
+    assert result.retryable is False
+    assert "Linear" in result.content and "Settings" in result.content
+    # The manifest still hides it, so the model is not invited to call it again.
+    assert await restarted.specs(user_id) == []
+
+
+async def test_reachable_tools_converge_to_non_empty_under_interleaved_invalidation():
+    """Invariant: however invalidate and refill interleave, a connected server ends up visible."""
+    user_id = _user()
+    await _seed_user(user_id)
+    client = FakeClient()
+    hands = _hands(client)
+
+    for delay in (0, 0.001, 0.005):
+        hands._invalidate(user_id)
+        readers = [asyncio.create_task(hands.specs(user_id)) for _ in range(4)]
+        await asyncio.sleep(delay)
+        hands._invalidate(user_id)
+        await hands.connect(user_id, "linear")
+        await asyncio.gather(*readers)
+
+        assert [s.name for s in await hands.specs(user_id)] == ["create_issue"], f"blanked at delay={delay}"
+
+
+async def test_two_concurrent_misses_do_not_both_query_the_database():
+    user_id = _user()
+    await _seed_user(user_id)
+    hands = _hands(FakeClient())
+    await hands.connect(user_id, "linear")
+    hands._invalidate(user_id)
+
+    calls = []
+    original = conns.load
+
+    async def counted(owner):
+        calls.append(owner)
+        return await original(owner)
+
+    import tool_module.smithery as sm
+
+    sm.conns.load = counted
+    try:
+        await asyncio.gather(hands._load(user_id), hands._load(user_id), hands._load(user_id))
+    finally:
+        sm.conns.load = original
+
+    assert calls.count(user_id) == 1

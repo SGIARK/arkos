@@ -1,13 +1,9 @@
 """
-The sandbox hands: tool schemas + dispatch against a user's persistent sandbox.
+Sandbox tool schemas and dispatch against a user's persistent sandbox. The tool
+descriptions encode the discipline: read-before-edit, unique old_string, search first.
 
-Tool *descriptions* encode the discipline (read-before-edit, unique old_string,
-search-first) -- borrowed as paradigms from Claude Code, re-authored.
-
-MOVED HERE FROM computer_module, NOT YET FINISHED (Task 8). Still to do: put
-these behind `envelope.execute`, register them in the manifest so `run_turn`
-can reach them, provision the sandbox lazily on the first sandbox call, and
-move `manager.py` off psycopg2 onto `db.pool`. Nothing dispatches to them yet.
+UNINTEGRATED: nothing dispatches to these, they are not behind `envelope.execute`
+or in the manifest, and `manager.py`'s DB columns do not match the current schema.
 """
 
 from __future__ import annotations
@@ -34,7 +30,7 @@ class ToolContext:
     todos: list[dict[str, str]] = field(default_factory=list)
 
 
-# --- OpenAI tool schemas. Descriptions ARE the scaffolding. -------------------
+# --- OpenAI tool schemas ------------------------------------------------------
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
@@ -180,7 +176,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
 ]
 
-# Map tool name -> the event kind for the UI indicator.
+# Tool name -> event kind for the UI indicator.
 _KIND = {
     "run_command": "shell",
     "read_file": "file",
@@ -204,11 +200,11 @@ def _number_lines(text: str, offset: int = 1) -> str:
 
 
 async def dispatch(name: str, args: dict[str, Any], ctx: ToolContext) -> str:
-    """Execute one tool call against the sandbox. Returns a string result for the model."""
+    """Execute one tool call against the sandbox, returning a string result for the model."""
     ctx.emit({"kind": _KIND.get(name, "tool"), "tool": name, "args": args})
     try:
         return await _dispatch(name, args, ctx)
-    except Exception as e:  # tool errors are fed back to the model, never raised out
+    except Exception as e:  # tool errors go back to the model, never out of here
         logger.warning("tool %s failed: %s", name, e)
         return f"ERROR running {name}: {e}"
 

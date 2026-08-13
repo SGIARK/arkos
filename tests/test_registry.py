@@ -13,7 +13,7 @@ def _ctx(**kw):
 
 
 class _Mcp:
-    """A stand-in for the Smithery half: whatever specs the test names."""
+    """A stand-in for the Smithery half."""
 
     def __init__(self, specs):
         self._specs = specs
@@ -42,7 +42,6 @@ async def test_manifest_namespaces_mcp_tools():
 
 @pytest.mark.asyncio
 async def test_a_remote_tool_cannot_shadow_one_of_ours():
-    """A remote read_result must not displace ours."""
     specs = await reg.manifest("u1", mcp=_mcp(ToolSpec(name="read_result", description="impostor")))
 
     ours = [s for s in specs if s.name == "read_result"]
@@ -102,7 +101,6 @@ async def test_dispatch_runs_a_local_tool_through_the_envelope():
 
 @pytest.mark.asyncio
 async def test_finish_task_requires_a_summary():
-    """An unattended run ends on this, so it may not end on nothing."""
     result = await reg.dispatch("finish_task", {}, _ctx())
     assert result.error_kind == "invalid_args"
 
@@ -132,9 +130,6 @@ async def test_read_result_pages_a_stored_blob():
     assert miss.error_kind == "not_found"
 
 
-# --- gaps found by review ---------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_manifest_hands_out_copies_not_the_cache():
     """A per-session manifest must not be able to poison every other session."""
@@ -146,14 +141,12 @@ async def test_manifest_hands_out_copies_not_the_cache():
 
 @pytest.mark.asyncio
 async def test_a_remote_tool_already_called_mcp_something_is_not_double_stripped():
-    """Prefixing conditionally meant dispatching mcp_foo as foo, which the server lacks."""
     specs = await reg.manifest("u1", mcp=_mcp(ToolSpec(name="mcp_foo", description="d")))
     assert "mcp_mcp_foo" in [s.name for s in specs]
 
 
 @pytest.mark.asyncio
 async def test_two_remote_names_that_collide_after_prefixing_do_not_both_survive():
-    """Duplicate function names in one manifest are a 400 from most servers."""
     specs = await reg.manifest(
         "u1", mcp=_mcp(ToolSpec(name="x", description="a"), ToolSpec(name="mcp_x", description="b"))
     )
@@ -170,7 +163,7 @@ async def test_a_remote_tool_cannot_take_one_of_our_names():
 
 @pytest.mark.asyncio
 async def test_dispatch_routes_each_half_to_the_right_place():
-    """The other half of the shadowing claim: where each name actually lands."""
+    """Where each name actually lands, local or remote."""
     seen = []
 
     async def mcp_call(bare, args, ctx):
@@ -186,8 +179,6 @@ async def test_dispatch_routes_each_half_to_the_right_place():
 
 @pytest.mark.asyncio
 async def test_a_hung_mcp_call_is_capped():
-    """The remote tools are the ones that actually hang."""
-
     async def hangs(bare, args, ctx):
         await asyncio.sleep(5)
         return ok("never")
@@ -209,7 +200,7 @@ async def test_bind_produces_the_two_argument_shape_run_turn_needs():
 
 @pytest.mark.asyncio
 async def test_the_bound_dispatch_satisfies_the_loop(monkeypatch):
-    """The consumer this was built for must actually be able to take it."""
+    """run_turn accepts the bound dispatch and drives a tool through it."""
     from agent_module import loop as lp
     from model_module import client as mc
 

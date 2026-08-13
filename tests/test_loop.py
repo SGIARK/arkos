@@ -1,7 +1,4 @@
-"""
-Task 2 conformance: one LLM call per hop, structural streaming, and termination
-that an unattended run cannot fake.
-"""
+"""One LLM call per hop, structural streaming, and termination an unattended run cannot fake."""
 
 import asyncio
 import time
@@ -35,7 +32,7 @@ def _text(*chunks):
     return [mc.TextDelta(text=c) for c in chunks] + [mc.Finish(reason="stop")]
 
 
-def _call(name, args='{}', *, id="c1", index=0):
+def _call(name, args="{}", *, id="c1", index=0):
     return [
         mc.ToolCallDelta(index=index, id=id, name=name, arguments=args),
         mc.Finish(reason="tool_calls"),
@@ -44,7 +41,7 @@ def _call(name, args='{}', *, id="c1", index=0):
 
 @pytest.fixture
 def model(monkeypatch):
-    """Arm the model with one delta list per hop; counts hops."""
+    """Arm the model with one delta list per hop, counting hops."""
 
     class Recorder:
         def __init__(self):
@@ -101,7 +98,6 @@ async def _run(model_fixture, *, mode="attended", messages=None, dispatch=None, 
 
 @pytest.mark.asyncio
 async def test_two_tool_calls_then_text_costs_three_llm_calls(model):
-    """The headline: one model call per hop, not the old three to five."""
     model.arm(_call("grep", '{"q":"x"}', id="a"), _call("grep", '{"q":"y"}', id="b"), _text("all done"))
 
     events, _ = await _run(model)
@@ -113,7 +109,6 @@ async def test_two_tool_calls_then_text_costs_three_llm_calls(model):
 
 @pytest.mark.asyncio
 async def test_content_is_yielded_per_delta_not_accumulated(model):
-    """Streaming is structural: no accumulation step exists."""
     model.arm(_text("Hel", "lo", " there"))
 
     events, _ = await _run(model)
@@ -123,7 +118,7 @@ async def test_content_is_yielded_per_delta_not_accumulated(model):
 
 @pytest.mark.asyncio
 async def test_reasoning_streams_but_never_enters_messages(model):
-    """Qwen3's template strips prior thinking; replaying it is wrong and costly."""
+    """Qwen3's template strips prior thinking, so replaying it is wrong."""
     model.arm([mc.ReasoningDelta(text="hmm"), mc.TextDelta(text="answer"), mc.Finish(reason="stop")])
 
     events, messages = await _run(model)
@@ -144,7 +139,6 @@ async def test_attended_ends_on_bare_text(model):
 
 @pytest.mark.asyncio
 async def test_unattended_bare_text_does_not_end_the_run(model):
-    """Only finish_task makes an unattended exit safe."""
     model.arm(_text("I think I am done"), _call(lp.FINISH_TOOL))
 
     events, _ = await _run(model, mode="unattended")
@@ -186,7 +180,6 @@ async def test_tool_failure_comes_back_as_a_readable_result(model):
 
     result = next(e for e in events if isinstance(e, ev.ToolResultEvent))
     assert result.ok is False and result.error_kind == "upstream_error"
-    # The model gets to read it and react, rather than the run dying.
     assert any(m.get("role") == "tool" and "disk on fire" in m["content"] for m in messages)
     assert events[-1].reason == "turn_end"
 
@@ -203,7 +196,6 @@ async def test_unknown_tool_is_reported_not_raised(model):
 
 @pytest.mark.asyncio
 async def test_malformed_args_get_one_free_repair_hop(model):
-    """The repair must not eat a hop the actual work needs."""
     model.arm(_call("grep", "{not json"), _call("grep", '{"q":"x"}'), _text("done"))
 
     events, _ = await _run(model)
@@ -230,7 +222,6 @@ async def test_a_tool_that_keeps_failing_is_cut_off(model):
 
 @pytest.mark.asyncio
 async def test_a_success_clears_the_failure_streak(model):
-    """A tool that works again is not punished for an earlier bad patch."""
     outcomes = [
         lp.ResultEnvelope(ok=False, content="x", error_kind="timeout"),
         lp.ResultEnvelope(ok=True, content="fine"),
@@ -337,7 +328,6 @@ async def test_readonly_calls_run_in_parallel(model):
 
 @pytest.mark.asyncio
 async def test_writes_run_serially_and_in_order(model):
-    """A write may depend on what came before it, so it never overlaps."""
     model.arm(_calls(("write_file", "a"), ("write_file", "b")), _text("done"))
     live = 0
     order = []
@@ -390,12 +380,9 @@ async def test_every_parallel_call_is_still_closed_exactly_once(model):
     assert sorted(m["tool_call_id"] for m in tool_msgs) == ["a", "b", "c"]
 
 
-# --- gaps found by review ---------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_a_failed_finish_task_does_not_complete_the_run(model):
-    """completion comes from the RESULT, never from the call being issued."""
+    """Completion comes from the result, never from the call being issued."""
     model.arm(_call(lp.FINISH_TOOL, id="f"), _text("still here"))
     dispatch = _dispatch(lp.ResultEnvelope(ok=False, content="could not finish", error_kind="upstream_error"))
 
@@ -461,7 +448,6 @@ async def test_cancellation_closes_open_calls_and_says_why(model):
 
 @pytest.mark.asyncio
 async def test_duplicate_and_empty_tool_call_ids_are_made_unique(model):
-    """Repeated ids are a 400 on the next hop and unpairable in the log."""
     model.arm(_calls(("grep", ""), ("grep", "")), _text("done"))
 
     events, messages = await _run(model)
@@ -534,7 +520,6 @@ async def test_an_empty_completion_does_not_spin(model):
 
 @pytest.mark.asyncio
 async def test_readonly_batch_really_overlaps(model):
-    """Peak concurrency, rather than a wall-clock threshold that flakes."""
     model.arm(_calls(("grep", "a"), ("grep", "b"), ("grep", "c")), _text("done"))
     live = 0
     peak = 0

@@ -1,4 +1,4 @@
-"""Tests for tool_module/browser_actions.py — custom Tools() registration."""
+"""Custom Tools() registration in tool_module/browser_actions.py."""
 
 from __future__ import annotations
 
@@ -10,10 +10,9 @@ import pytest
 
 
 def _install_minimal_browser_use(monkeypatch, action_registry: list) -> Any:
-    """Install a fake browser_use module exposing Tools and ActionResult.
+    """Install a fake browser_use exposing Tools and ActionResult.
 
-    action_registry collects (description, handler) tuples on every
-    @tools.action(...) decoration so tests can inspect what was registered.
+    action_registry collects (description, handler) tuples on every @tools.action decoration.
     """
     fake = types.ModuleType("browser_use")
 
@@ -28,8 +27,6 @@ def _install_minimal_browser_use(monkeypatch, action_registry: list) -> Any:
 
         def action(self, description: str, param_model=None, **_kwargs):
             def decorator(fn):
-                # Mirror the real registry: store description, fn, and the
-                # pydantic model class if one was supplied.
                 self.registered.append((description, fn))
                 if param_model is not None:
                     fn._param_model = param_model
@@ -40,7 +37,7 @@ def _install_minimal_browser_use(monkeypatch, action_registry: list) -> Any:
     fake.Tools = FakeTools
     fake.ActionResult = FakeActionResult
     monkeypatch.setitem(sys.modules, "browser_use", fake)
-    # Also remove any cached browser_actions so the lazy import picks up the fake.
+    # Drop any cached browser_actions so the lazy import picks up the fake.
     sys.modules.pop("tool_module.browser_actions", None)
     return fake
 
@@ -48,17 +45,14 @@ def _install_minimal_browser_use(monkeypatch, action_registry: list) -> Any:
 def test_build_arkos_tools_returns_none_without_browser_use(monkeypatch):
     monkeypatch.setitem(sys.modules, "browser_use", None)  # make the import fail
     sys.modules.pop("tool_module.browser_actions", None)
-    # The import inside build_arkos_tools will fail; the function returns None.
-    # We have to use a fresh import to avoid module caching.
     import importlib
 
     spec = importlib.util.find_spec("tool_module.browser_actions")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
-    # Force ImportError by deleting browser_use from sys.modules during call
     monkeypatch.delitem(sys.modules, "browser_use", raising=False)
-    # Block re-import by inserting a finder that says no
+    # Block the re-import so build_arkos_tools sees an ImportError.
     import builtins as _b
 
     real_import = _b.__import__
@@ -99,13 +93,12 @@ async def test_dismiss_overlay_action_clicks_when_match(monkeypatch):
     assert tools is not None
     handler = next(h for _, h in registry if h.__name__ == "dismiss_overlay")
 
-    # Build a fake browser_session whose CDP evaluate returns "I clicked something".
     class FakeCDPClient:
         class send:
             class Runtime:
                 @staticmethod
                 async def evaluate(params=None, session_id=None):
-                    assert "TERMS" in params["expression"]  # arkos's heuristic is loaded
+                    assert "TERMS" in params["expression"]
                     return {
                         "result": {
                             "value": {
@@ -175,17 +168,12 @@ async def test_dismiss_overlay_action_swallows_cdp_failures(monkeypatch):
         async def get_or_create_cdp_session(self, target_id=None, focus=False):
             raise RuntimeError("CDP socket dead")
 
-    # Must NOT propagate the exception — the action returns a graceful result.
     result = await handler(BrokenBrowserSession())
     assert "page not ready" in result.extracted_content
 
 
 def test_all_five_actions_register(monkeypatch):
-    """The full arkos action set should land in Tools(), not silently fail.
-
-    build_arkos_tools catches per-action exceptions, so a typo in one
-    decorator would go unnoticed without this test.
-    """
+    """build_arkos_tools swallows per-action exceptions, so the set is checked whole."""
     registry: list = []
     _install_minimal_browser_use(monkeypatch, registry)
     from tool_module.browser_actions import build_arkos_tools

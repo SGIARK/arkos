@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-"""
-Migration runner for Arkos database schema.
+"""Migration runner: apply pending db/migrations/*.sql in lexical order.
 
-Applies every pending migration in db/migrations/ in lexical order.
-Tracks applied migrations in a small `schema_migrations` table.
-Reads connection from DB_URL env var or constructs from POSTGRES_PASSWORD.
+Applied migrations are recorded in the `schema_migrations` table.
 """
 
 import os
@@ -13,7 +10,6 @@ from pathlib import Path
 
 import psycopg2
 
-# Load the same .env the app uses before reading DB_URL.
 _PROJECT_ROOT = Path(__file__).parent.parent
 try:
     from dotenv import load_dotenv  # type: ignore
@@ -24,17 +20,11 @@ except Exception:
 
 
 def get_connection_url():
-    """
-    Resolve the Postgres connection URL the same way the running backend does:
-      1. DB_URL env var (from shell or .env)
-      2. config_module.loader's ConfigLoader (substitutes ${DB_URL} from .env)
-      3. Constructed default from POSTGRES_* env vars
-    """
+    """Resolve the Postgres URL from DB_URL, else config.yaml, else POSTGRES_* vars."""
     db_url = os.environ.get("DB_URL")
     if db_url:
         return db_url
 
-    # Fall back to ConfigLoader so we stay in sync with the api layer (Task 4)
     try:
         sys.path.insert(0, str(_PROJECT_ROOT))
         from config_module.loader import config  # type: ignore

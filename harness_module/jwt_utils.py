@@ -1,16 +1,6 @@
-"""
-Minimal JWT helpers for demo-style auth.
+"""Minimal JWT helpers for demo-style auth.
 
-Token payload:
-    {
-        "sub": "<user uuid>",
-        "username": "<username>",
-        "iat": <unix>,
-        "exp": <unix>,
-    }
-
-Secret is read from env var ARK_JWT_SECRET, with a dev fallback.
-Swap `DEMO_MODE_NO_PASSWORD` semantics later without changing this file.
+Payload carries sub, username, iat and exp; the secret comes from ARK_JWT_SECRET.
 """
 
 from __future__ import annotations
@@ -26,19 +16,16 @@ from fastapi import Depends, Header, HTTPException, status
 _DEFAULT_SECRET = "ark-dev-secret-change-me"
 _SECRET = os.environ.get("ARK_JWT_SECRET", _DEFAULT_SECRET)
 _ALG = "HS256"
-_TTL_SECONDS = 60 * 60 * 24 * 30  # 30 days, plenty for demos (see UNSAFE_DECISIONS U7)
+_TTL_SECONDS = 60 * 60 * 24 * 30
 
 
 def _demo_mode() -> bool:
-    """True if ARK_DEMO_MODE is set. Gates the X-User-ID fallback (UNSAFE_DECISIONS U2)."""
+    """Return True if ARK_DEMO_MODE is set, which gates the X-User-ID fallback."""
     return os.environ.get("ARK_DEMO_MODE", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def assert_secure_secret() -> None:
-    """
-    Fail-fast at startup: refuse to boot with the built-in default JWT secret
-    unless explicitly in demo mode. A default secret means forgeable tokens.
-    """
+    """Raise unless a real ARK_JWT_SECRET is set, since the default is forgeable."""
     if _SECRET == _DEFAULT_SECRET and not _demo_mode():
         raise RuntimeError(
             "ARK_JWT_SECRET is the built-in default. Set a real secret, or set "
@@ -59,7 +46,7 @@ def issue_token(user_id: str | uuid.UUID, username: str) -> str:
 
 
 def decode_token(token: str) -> dict[str, Any]:
-    """Decode and verify a JWT. Raises jwt.PyJWTError on invalid/expired."""
+    """Decode and verify a JWT, raising jwt.PyJWTError if invalid or expired."""
     return jwt.decode(token, _SECRET, algorithms=[_ALG])
 
 
@@ -76,13 +63,7 @@ async def get_current_user(
     authorization: str | None = Header(default=None),
     x_user_id: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    """
-    FastAPI dependency. Returns {"user_id": str, "username": str} or raises 401.
-
-    A valid Bearer token always wins. The X-User-ID header is honored ONLY in
-    demo mode (ARK_DEMO_MODE) -- otherwise a missing/invalid token is a 401.
-    See UNSAFE_DECISIONS U2.
-    """
+    """Resolve the caller to {"user_id", "username"} from the Bearer token, or raise 401."""
     token = _extract_bearer(authorization)
     if token:
         try:
@@ -92,7 +73,7 @@ async def get_current_user(
         return {"user_id": payload["sub"], "username": payload.get("username") or "anon"}
 
     if x_user_id and _demo_mode():
-        # Demo-only legacy pass-through. Forgeable -- never enable in prod.
+        # Forgeable pass-through, gated on demo mode; never enable in prod.
         return {"user_id": x_user_id, "username": x_user_id}
 
     raise HTTPException(

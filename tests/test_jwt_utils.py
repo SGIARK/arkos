@@ -1,4 +1,4 @@
-"""Tests for harness_module/jwt_utils.py — JWT issue/decode and the auth dependency."""
+"""JWT issue/decode and the auth dependency in harness_module/jwt_utils.py."""
 
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ class TestDecodeToken:
             decode_token(bad)
 
     def test_rejects_expired_token(self):
-        # 1970 + 1 second iat; exp also in the past
+        # iat and exp both in 1970.
         with patch("harness_module.jwt_utils._SECRET", "ark-dev-secret-change-me"):
             past = jwt.encode(
                 {"sub": "u", "username": "n", "iat": 1, "exp": 100},
@@ -84,9 +84,7 @@ class TestExtractBearer:
         assert _extract_bearer("Token abc") is None
 
     def test_returns_none_for_malformed_header(self):
-        # Single token, no scheme
         assert _extract_bearer("just-a-string") is None
-        # Bearer with empty token
         assert _extract_bearer("Bearer ") is None
 
 

@@ -1,4 +1,4 @@
-"""Tests for tool_module/browser_stream.py — the screencast frame broker."""
+"""The screencast frame broker in tool_module/browser_stream.py."""
 
 from __future__ import annotations
 
@@ -77,14 +77,9 @@ async def test_overflow_drops_oldest_frame():
     broker = BrowserStreamBroker(queue_size=2)
     broker.start_session("u1")  # uses 1 slot
 
-    # Fill past capacity without consuming. The 'started' event plus newer
-    # frames keep getting pushed; the broker silently drops the head.
     for tag in ("F1", "F2", "F3", "F4", "F5"):
         broker.push_frame("u1", tag)
 
-    # Drain whatever survived in the queue. The set should be a suffix of the
-    # pushed sequence — exact contents depend on drop ordering, but it must
-    # never raise and must never exceed queue_size.
     q = broker._queue("u1")
     assert q.qsize() <= 2
     survivors = []

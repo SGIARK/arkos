@@ -1,13 +1,4 @@
-"""
-The asyncpg pool: one per process, shared by every session.
-
-The psycopg2 helpers elsewhere in the repo are synchronous, and one sync DB call
-in an async path freezes every user on the single event loop. New code uses this
-and nothing else.
-
-`statement_cache_size=0` is not optional against Supabase's transaction pooler:
-prepared statements do not survive a connection being handed to another client.
-"""
+"""Async Postgres access: one asyncpg pool per process, shared by every session."""
 
 from __future__ import annotations
 
@@ -29,17 +20,17 @@ def _cfg(key: str, default: Any) -> Any:
 
 
 async def pool() -> asyncpg.Pool:
-    """The pool, created on first use. Safe to call from anywhere."""
+    """Return the process-wide pool, creating it on first use."""
     global _pool
     if _pool is None:
-        # Double-checked: two coroutines can both miss the first read, and
-        # creating two pools leaks every connection in the loser.
+        # Double-checked: two coroutines creating two pools leaks the loser's connections.
         async with _lock:
             if _pool is None:
                 _pool = await asyncpg.create_pool(
                     dsn=config.get("database.url"),
                     min_size=int(_cfg("database.pool_min_size", 1)),
                     max_size=int(_cfg("database.pool_max_size", 10)),
+                    # Required: Supabase's transaction pooler breaks prepared statements.
                     statement_cache_size=0,
                     init=_register_json,
                 )
@@ -47,7 +38,7 @@ async def pool() -> asyncpg.Pool:
 
 
 async def _register_json(conn: asyncpg.Connection) -> None:
-    """Hand back dicts/lists for json columns instead of raw text."""
+    """Decode json and jsonb columns to Python objects instead of raw text."""
     for typename in ("json", "jsonb"):
         await conn.set_type_codec(
             typename,
@@ -58,7 +49,7 @@ async def _register_json(conn: asyncpg.Connection) -> None:
 
 
 async def close() -> None:
-    """Drop the pool. Called at shutdown, and by tests between cases."""
+    """Close the pool and clear it."""
     global _pool
     if _pool is not None:
         await _pool.close()

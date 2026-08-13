@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
-"""
-Test script for the config loader added in the recent commit.
-Tests YAML loading, environment variable substitution, and config.get() functionality.
-"""
+"""Standalone checks for the config loader: YAML load, ${VAR} substitution, get()."""
 
 import os
 import tempfile
 
-# Set up test environment variables
 os.environ["TEST_DB_URL"] = "postgresql://testuser:testpass@localhost:5432/testdb"
 os.environ["TEST_API_KEY"] = "test-api-key-12345"
 os.environ["TEST_PORT"] = "8080"
@@ -16,7 +12,7 @@ from loader import ConfigLoader, config
 
 
 def test_yaml_loading():
-    """Test that YAML config file loads successfully"""
+    """Check that the YAML config file loads."""
     print("[OK] Testing YAML loading...")
     loaded_config = config.load()
     assert loaded_config is not None, "Config should be loaded"
@@ -25,10 +21,9 @@ def test_yaml_loading():
 
 
 def test_environment_variable_substitution():
-    """Test that ${VAR} patterns are replaced with environment variables"""
+    """Check that ${VAR} patterns are replaced with environment variables."""
     print("\n[OK] Testing environment variable substitution...")
 
-    # Create a temporary config file with env vars
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
         f.write("""
 test:
@@ -40,10 +35,8 @@ test:
         temp_config_path = f.name
 
     try:
-        # Load the temporary config
         test_loader = ConfigLoader(temp_config_path)
 
-        # Test substitutions
         assert test_loader.get("test.db_url") == "postgresql://testuser:testpass@localhost:5432/testdb", (
             "DB URL should be substituted"
         )
@@ -63,66 +56,58 @@ test:
 
 
 def test_nested_config_access():
-    """Test accessing nested config values with dot notation"""
+    """Check nested config access via dot notation."""
     print("\n[OK] Testing nested config access...")
 
-    # Test app.host
     host = config.get("app.host")
     assert host is not None, "app.host should exist"
     print(f"  [OK] app.host = {host}")
 
-    # Test app.port
     port = config.get("app.port")
     assert port is not None, "app.port should exist"
     print(f"  [OK] app.port = {port}")
 
-    # Test llm.base_url
     llm_url = config.get("llm.base_url")
     assert llm_url is not None, "llm.base_url should exist"
     print(f"  [OK] llm.base_url = {llm_url}")
 
-    # Test memory.user_id
     user_id = config.get("memory.user_id")
     assert user_id is not None, "memory.user_id should exist"
     print(f"  [OK] memory.user_id = {user_id}")
 
 
 def test_default_values():
-    """Test that get() returns None for missing keys"""
+    """Check that missing keys return None or the supplied default."""
     print("\n[OK] Testing default values for missing keys...")
 
     result = config.get("nonexistent.key")
     assert result is None, "Non-existent keys should return None"
     print("  [OK] Non-existent keys return None")
 
-    # Test with custom default
     result = config.get("nonexistent.key", default="custom_default")
     assert result == "custom_default", "Custom default should be returned"
     print("  [OK] Custom defaults work correctly")
 
 
 def test_existing_config_values():
-    """Test that actual config.yaml values are accessible"""
+    """Check that values in the real config.yaml are readable."""
     print("\n[OK] Testing actual config.yaml values...")
 
-    # Test state.graph_path
     graph_path = config.get("state.graph_path")
     if graph_path:
         print(f"  [OK] state.graph_path = {graph_path}")
 
-    # Test app.system_prompt
     system_prompt = config.get("app.system_prompt")
     if system_prompt:
         print(f"  [OK] app.system_prompt exists (length: {len(system_prompt)})")
 
-    # Test database.url (may have env var)
     db_url = config.get("database.url")
     if db_url:
         print("  [OK] database.url configured")
 
 
 def main():
-    """Run all tests"""
+    """Run every check and report the result."""
     print("=" * 60)
     print("Testing Config Loader (config_module/loader.py)")
     print("=" * 60)

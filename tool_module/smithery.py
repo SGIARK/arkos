@@ -1,20 +1,9 @@
 """
 MCP, reached through Smithery Connect.
 
-We never spawn local MCP subprocesses, never hold upstream OAuth tokens, and
-never implement a provider's OAuth flow. Smithery keeps the credentials; we keep
-a connection id and a cached tool list (`connections.py`).
-
-Endpoints used:
-  PUT    {base}/connect/{namespace}/{connection_id}       upsert a connection
-  DELETE {base}/connect/{namespace}/{connection_id}       revoke it
-  POST   {base}/connect/{namespace}/{connection_id}/mcp   JSON-RPC 2.0 to it
-
-Two rules shape everything below. A warm tool call is ONE HTTP request: the
-connection and its tool list come from the stored row, so nothing re-PUTs to
-find out where a tool lives. And a tool call never opens an OAuth flow — an
-unconnected server fails with `auth_required` carrying the setup URL, because
-the model cannot complete a browser redirect and should stop asking.
+Smithery holds the credentials; we hold a connection id and a cached tool list
+(`connections.py`). A warm tool call is one HTTP request and never opens an OAuth
+flow: an unconnected server fails with `auth_required` and the setup URL.
 """
 
 from __future__ import annotations
@@ -23,6 +12,7 @@ import asyncio
 import json
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -35,8 +25,7 @@ from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, fail, ok
 
 logger = logging.getLogger(__name__)
 
-# A hung upstream must not hold a hop open. The registry caps the whole call at
-# tools.call_timeout_s too; this is the per-request half.
+# Per-request half of the cap; the registry caps the whole call separately.
 _HTTP_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10)
 
 
@@ -46,7 +35,7 @@ def _cfg(key: str, default: Any) -> Any:
 
 
 class AuthRequiredError(Exception):
-    """A connection needs a Smithery-hosted OAuth flow, or config, before it works."""
+    """Raised when a connection needs a Smithery-hosted OAuth flow, or config, first."""
 
     def __init__(self, service: str, setup_url: str | None = None, state: str = "auth_required"):
         self.service = service
@@ -56,11 +45,11 @@ class AuthRequiredError(Exception):
 
 
 class SmitheryError(RuntimeError):
-    """Any non-auth Smithery API failure."""
+    """Raised for any non-auth Smithery API failure."""
 
 
 def _parse_status(raw: Any) -> tuple[str, str | None]:
-    """Smithery's `status` is a bare string or an object. Normalize to (state, setup_url)."""
+    """Normalize Smithery's `status`, a bare string or an object, to (state, setup_url)."""
     if isinstance(raw, str):
         return raw, None
     if isinstance(raw, dict):
@@ -69,7 +58,7 @@ def _parse_status(raw: Any) -> tuple[str, str | None]:
 
 
 class SmitheryClient:
-    """Thin REST client. Owns the one ClientSession every call shares."""
+    """Thin REST client owning the one ClientSession every call shares."""
 
     def __init__(self, api_key: str, namespace: str, base_url: str = "https://api.smithery.ai"):
         if not api_key:
@@ -81,7 +70,7 @@ class SmitheryClient:
         self._lock = asyncio.Lock()
 
     async def session(self) -> aiohttp.ClientSession:
-        """One session for the process. A session per call re-does TLS every time."""
+        """Return the process-wide session, creating it on first use."""
         if self._session is None or self._session.closed:
             async with self._lock:
                 if self._session is None or self._session.closed:
@@ -110,14 +99,14 @@ class SmitheryClient:
         headers: dict[str, str] | None = None,
         return_url: str | None = None,
     ) -> dict[str, Any]:
-        """PUT the connection. The caller reads `status` to see if it is usable."""
+        """PUT the connection; the caller reads `status` to see whether it is usable."""
         url = f"{self.base_url}/connect/{self.namespace}/{connection_id}"
         body: dict[str, Any] = {"mcpUrl": mcp_url}
         if name:
             body["name"] = name
         meta = dict(metadata or {})
         if return_url:
-            # Sent both ways: whichever field the current API honours picks it up.
+            # Sent both ways; whichever field the current API honours picks it up.
             body["returnUrl"] = return_url
             meta.setdefault("returnUrl", return_url)
         if meta:
@@ -143,7 +132,7 @@ class SmitheryClient:
                 logger.warning("smithery DELETE %s returned %s", connection_id, resp.status)
 
     async def jsonrpc(self, connection_id: str, method: str, params: dict[str, Any] | None = None) -> Any:
-        """POST one JSON-RPC 2.0 request. Returns the `result` field."""
+        """POST one JSON-RPC 2.0 request and return its `result` field."""
         url = f"{self.base_url}/connect/{self.namespace}/{connection_id}/mcp"
         headers = self._headers()
         headers["Accept"] = "application/json, text/event-stream"
@@ -165,7 +154,7 @@ class SmitheryClient:
 
 
 def _parse_rpc(text: str, method: str) -> dict[str, Any]:
-    """JSON, or the SSE framing Smithery sometimes answers with."""
+    """Parse a response body as JSON, or as the SSE framing Smithery sometimes uses."""
     if not text.strip():
         return {}
     try:
@@ -183,18 +172,20 @@ def _parse_rpc(text: str, method: str) -> dict[str, Any]:
     raise SmitheryError(f"{method}: response was neither JSON nor SSE: {text[:200]}")
 
 
+@dataclass(slots=True)
+class Route:
+    """Which connection serves a tool name, and the cached schema for it."""
+
+    owner: str | None
+    conn: Connection
+    tool: dict[str, Any]
+
+
 class Smithery:
     """
-    The MCP half of the hands.
+    The MCP half of the hands, configured by `mcp_servers:` in config.yaml.
 
-    Config shape (`mcp_servers:` in config.yaml). The key is an in-process label
-    for logs and display only — identity is the url, so renaming it is free:
-
-        mcp_servers:
-          linear:
-            mcp_url: "https://linear.run.tools"
-            requires_auth: true
-            name: "Linear"
+    A config key is a label for logs and display only; identity is the `mcp_url`.
     """
 
     def __init__(self, servers: dict[str, dict[str, Any]], smithery_config: dict[str, Any]):
@@ -205,12 +196,11 @@ class Smithery:
             base_url=smithery_config.get("base_url", "https://api.smithery.ai"),
         )
         self._ttl_s = float(_cfg("tools.mcp_cache_ttl_s", 3600))
-        # mcp_url -> Connection, per user. `None` holds the shared (no-auth) ones.
+        # mcp_url -> Connection, per user; `None` holds the shared (no-auth) ones.
         self._cache: dict[str | None, dict[str, Connection]] = {}
         self._locks: dict[str | None, asyncio.Lock] = {}
         self._generation: dict[str | None, int] = {}
-        # Setup URLs live in memory only: they expire, and a stale one in the DB
-        # is worse than none.
+        # Setup URLs stay in memory: they expire, and a stale one is worse than none.
         self._setup_urls: dict[tuple[str | None, str], str] = {}
 
     # ---------- config ----------
@@ -222,7 +212,7 @@ class Smithery:
         return spec["mcp_url"]
 
     def _label(self, mcp_url: str) -> str:
-        """Reverse the url to its config label, for logs and the settings panel."""
+        """Return the config label for a url, for logs and the settings panel."""
         for label, spec in self.servers.items():
             if spec.get("mcp_url") == mcp_url:
                 return label
@@ -241,25 +231,19 @@ class Smithery:
         return lock
 
     def _invalidate(self, owner: str | None) -> None:
-        """
-        Drop the cached rows AND bump the generation.
-
-        Popping alone is not enough: a `_load` already awaiting its query would
-        install its pre-write snapshot afterwards, and since `_load` only reads
-        when the key is absent, that stale entry would never be revisited.
-        """
+        """Drop the cached rows and bump the generation, so an in-flight `_load` cannot reinstall them."""
         self._generation[owner] = self._generation.get(owner, 0) + 1
         self._cache.pop(owner, None)
 
     async def _load(self, owner: str | None) -> dict[str, Connection]:
-        """One DB read per owner per process; the rows carry everything else."""
+        """Return an owner's connections, reading the DB once per process."""
         cached = self._cache.get(owner)
         if cached is not None:
             return cached
 
         async with self._lock_for(owner):
-            # Someone may have filled it while we waited; two concurrent misses
-            # would otherwise both query and build divergent Connection graphs.
+            # Re-check under the lock; two concurrent misses would otherwise
+            # build divergent Connection graphs.
             cached = self._cache.get(owner)
             if cached is not None:
                 return cached
@@ -271,21 +255,19 @@ class Smithery:
             return rows
 
     async def _revalidate(self, owner: str | None, conn: Connection) -> None:
-        """Refresh a connected server's tool list once its TTL is up. No PUT."""
+        """Refresh a connected server's tool list once its TTL is up, without a PUT."""
         if not conn.connected or not conn.stale(self._ttl_s):
             return
         try:
             tools = await self._list_tools(conn.connection_id)
         except (SmitheryError, AuthRequiredError, aiohttp.ClientError, TimeoutError) as e:
-            # The cached list is still the best thing we have; a refresh failing
-            # must not take away tools the user already connected. Re-arm anyway,
-            # or a server that is down costs a timeout on every manifest build.
+            # Keep the cached list, but re-arm anyway or a server that is down
+            # costs a timeout on every manifest build.
             conn.refreshed_at = datetime.now(UTC)
             logger.warning("tools/list refresh failed for %s: %s", conn.mcp_url, e)
             return
         conn.tools = tools
-        # Re-arm the in-memory clock too. Writing only the DB leaves the cached
-        # object permanently stale, so every later manifest build re-fetches.
+        # Re-arm the in-memory clock too, or the cached object stays stale forever.
         conn.refreshed_at = datetime.now(UTC)
         await conns.save(owner, conn.mcp_url, status=CONNECTED, tools=tools)
 
@@ -297,10 +279,9 @@ class Smithery:
 
     async def connect(self, user_id: str | None, label: str, *, return_url: str | None = None) -> Connection:
         """
-        Bring a connection up, writing the row before the PUT (D24).
+        Bring a connection up, writing the row before the PUT.
 
-        Raises AuthRequiredError when the user still has to finish OAuth; the
-        row stays behind holding the id, so finishing it needs no new mint.
+        Raises AuthRequiredError when the user still has to finish OAuth.
         """
         mcp_url = self._url(label)
         spec = self.servers[label]
@@ -330,12 +311,7 @@ class Smithery:
         return Connection(mcp_url, connection_id, CONNECTED, tools)
 
     async def initialize_shared(self) -> None:
-        """
-        Connect the no-auth servers at startup.
-
-        Anything already `connected` in the DB is left alone: that is what makes
-        a restart cost one DB read and zero Smithery PUTs.
-        """
+        """Connect the no-auth servers at startup, leaving already-connected ones alone."""
         stored = await self._load(None)
         for label, spec in self.servers.items():
             if spec.get("requires_auth"):
@@ -363,98 +339,79 @@ class Smithery:
 
     # ---------- the manifest half ----------
 
-    async def specs(self, user_id: str) -> list[ToolSpec]:
+    async def _routes(self, user_id: str) -> dict[str, Route]:
         """
-        Every MCP tool this user can reach, from the stored caches.
+        Map every reachable tool name to the connection that owns it.
 
-        Names are bare here; `registry.manifest` adds the `mcp_` prefix, so a
-        remote `read_file` cannot shadow ours.
+        The single source of the name-to-connection mapping: `specs` and `call`
+        both read it, so the manifest cannot advertise one server's schema while
+        dispatch sends the call to another's. Connected wins over disconnected,
+        then the user's own connections win over shared ones.
         """
-        specs: list[ToolSpec] = []
-        # User-first, matching `_resolve`. If the two disagree the model is shown
-        # one server's schema and dispatched to another's, because
-        # `registry.manifest` keeps the first of a duplicated name.
-        for owner in (user_id, None):
-            for conn in list((await self._load(owner)).values()):
-                if not conn.connected:
-                    continue
-                await self._revalidate(owner, conn)
-                specs.extend(_to_specs(conn.tools))
-        return specs
+        routes: dict[str, Route] = {}
+        for want_connected in (True, False):
+            for owner in (user_id, None):
+                for conn in list((await self._load(owner)).values()):
+                    if conn.connected != want_connected:
+                        continue
+                    if conn.connected:
+                        await self._revalidate(owner, conn)
+                    for tool in conn.tools:
+                        name = tool.get("name")
+                        if name and name not in routes:
+                            routes[name] = Route(owner, conn, tool)
+        return routes
+
+    async def specs(self, user_id: str) -> list[ToolSpec]:
+        """Return every MCP tool this user can reach, named bare; `registry.manifest` prefixes them."""
+        routes = await self._routes(user_id)
+        return [_to_spec(r.tool) for r in routes.values() if r.conn.connected]
 
     # ---------- the dispatch half ----------
 
     async def call(self, name: str, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
-        """
-        Run one MCP tool. The `mcp_` prefix is already stripped by the registry.
-
-        Warm path: resolve the url from cache, one POST. Never a PUT — a tool
-        call is not the place to start an OAuth flow.
-        """
-        found = await self._resolve(name, ctx.user_id)
-        if found is None:
-            return fail("not_found", f"No connected MCP tool named {name!r}.")
-        owner, conn = found
+        """Run one MCP tool, with the `mcp_` prefix already stripped by the registry."""
+        route = (await self._routes(ctx.user_id)).get(name)
+        if route is None:
+            return fail("not_found", f"No MCP tool named {name!r} on any server you have connected.")
+        owner, conn = route.owner, route.conn
 
         if not conn.connected:
-            setup = self._setup_urls.get((owner, conn.mcp_url))
-            service = self._display(conn.mcp_url)
-            return fail(
-                "auth_required",
-                f"{service} is not connected yet. The human has to authorize it"
-                + (f" here: {setup}" if setup else "")
-                + ". Do not retry this tool; tell them what you needed it for.",
-                retryable=False,
-            )
+            return fail("auth_required", self._reconnect_message(owner, conn), retryable=False)
 
         try:
             result = await self.client.jsonrpc(conn.connection_id, "tools/call", {"name": name, "arguments": args})
         except AuthRequiredError as e:
             if e.setup_url:
                 self._setup_urls[(owner, conn.mcp_url)] = e.setup_url
-            # The grant died under us. Mark it so the manifest stops offering it,
-            # but KEEP tools_cache: the tool names are how a later call resolves
-            # to this connection, and dropping them makes the next attempt a bare
-            # not_found instead of this actionable answer. Failing to record the
-            # status must not turn "do not retry" into a retryable error, so the
-            # write is allowed to fail on its own.
+            # Keep tools_cache: the tool names are how a later call resolves to
+            # this connection. The write may fail without changing the answer.
             try:
                 await conns.set_status(owner, conn.mcp_url, "auth_required")
             except Exception:
                 logger.exception("could not record dead grant for %s", conn.mcp_url)
             else:
                 self._invalidate(owner)
-            return fail(
-                "auth_required",
-                f"{self._display(conn.mcp_url)} needs to be reconnected"
-                + (f": {e.setup_url}" if e.setup_url else "")
-                + ". Do not retry this tool.",
-                retryable=False,
-            )
+            return fail("auth_required", self._reconnect_message(owner, conn), retryable=False)
         except SmitheryError as e:
             return fail("upstream_error", f"{name} failed: {e}")
         except (aiohttp.ClientError, TimeoutError) as e:
-            # aiohttp's total-timeout raises bare TimeoutError, which is NOT a
-            # ClientError, so it would otherwise escape the envelope promise.
+            # aiohttp's total-timeout raises a bare TimeoutError, not a ClientError.
             return fail("upstream_error", f"{name} could not reach the server: {type(e).__name__}: {e}")
 
         return await _envelope(name, result, ctx)
 
-    async def _resolve(self, name: str, user_id: str) -> tuple[str | None, Connection] | None:
-        """
-        Which connection owns this tool. The user's own servers win over shared
-        ones, and another user's connections are never reachable from here.
-        """
-        for owner in (user_id, None):
-            for conn in (await self._load(owner)).values():
-                if any(t.get("name") == name for t in conn.tools):
-                    return owner, conn
-        return None
+    def _reconnect_message(self, owner: str | None, conn: Connection) -> str:
+        """Tell the model a server needs authorizing, with the setup URL when we still hold one."""
+        service = self._display(conn.mcp_url)
+        setup = self._setup_urls.get((owner, conn.mcp_url))
+        where = f" here: {setup}" if setup else " from the connections panel in Settings"
+        return f"{service} is not connected. The human has to authorize it{where}. Do not retry this tool."
 
     # ---------- settings panel ----------
 
     async def status(self, user_id: str) -> list[dict[str, Any]]:
-        """Per-user services and whether they are connected, for the UI."""
+        """Return the per-user services and whether they are connected, for the UI."""
         stored = await self._load(user_id)
         out = []
         for label, spec in self.servers.items():
@@ -479,11 +436,10 @@ class Smithery:
 
 def _owner_for(spec: dict[str, Any], user_id: str | None) -> str | None:
     """
-    Which table a connection belongs in. `None` means shared.
+    Return the owner key for a connection: None for shared, else the user_id.
 
-    A `requires_auth` server with no user would otherwise land in
-    `shared_connections`, handing one person's OAuth grant to everybody. That is
-    a bug in the caller, so it raises rather than guessing.
+    Raises SmitheryError for a per-user server with no user, rather than handing
+    one person's OAuth grant to everybody.
     """
     if not spec.get("requires_auth"):
         return None
@@ -492,36 +448,22 @@ def _owner_for(spec: dict[str, Any], user_id: str | None) -> str | None:
     return user_id
 
 
-def _to_specs(tools: list[dict[str, Any]]) -> list[ToolSpec]:
+def _to_spec(tool: dict[str, Any]) -> ToolSpec:
     """
-    A cached `tools/list` entry becomes a ToolSpec.
+    Convert one cached `tools/list` entry into a ToolSpec.
 
-    `readonly=False` always: a remote server does not tell us whether a tool
-    mutates, and guessing wrong runs writes in parallel.
+    Never readonly: a remote server does not tell us whether a tool mutates.
     """
-    specs = []
-    for tool in tools:
-        name = tool.get("name")
-        if not name:
-            continue
-        specs.append(
-            ToolSpec(
-                name=name,
-                description=tool.get("description") or "",
-                input_schema=tool.get("inputSchema") or tool.get("input_schema") or {},
-                readonly=False,
-            )
-        )
-    return specs
+    return ToolSpec(
+        name=tool["name"],
+        description=tool.get("description") or "",
+        input_schema=tool.get("inputSchema") or tool.get("input_schema") or {},
+        readonly=False,
+    )
 
 
 def _render(result: Any) -> tuple[str, bool]:
-    """
-    Flatten an MCP `tools/call` result to (text, is_error).
-
-    MCP answers with a content list; anything else we hand over as JSON rather
-    than dropping it.
-    """
+    """Flatten an MCP `tools/call` result to (text, is_error), falling back to JSON."""
     if not isinstance(result, dict):
         return (result if isinstance(result, str) else json.dumps(result, default=str)), False
 
@@ -551,11 +493,10 @@ async def _envelope(name: str, result: Any, ctx: ToolContext) -> ResultEnvelope:
     if len(text) <= cap or ctx.store_blob is None:
         return ok(text)
 
-    # Without this the tail is simply lost: the loop view-caps for the screen but
-    # hands the model whatever the envelope holds, and `ref` only ever comes from here.
+    # `ref` only ever comes from here; without it the tail is simply lost.
     ref = await ctx.store_blob(text)
     head = text[:cap]
     return ok(
-        f"{head}\n\n[truncated at {cap} of {len(text)} chars — read the rest with read_result(ref={ref!r})]",
+        f"{head}\n\n[truncated at {cap} of {len(text)} chars. Read the rest with read_result(ref={ref!r})]",
         ref=ref,
     )
