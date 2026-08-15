@@ -166,7 +166,7 @@ h1{font-size:24px}
 <form class="signup" id="signup-form" onsubmit="return handleSignup(event)">
 <input type="email" placeholder="you@company.com" required>
 <button type="submit">join the waitlist</button>
-</form>
+<input type="text" name="company_website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0"></form>
 <div class="signup-note">no spam. one email, when we launch.</div>
 <div class="signup-thanks">you're on the list. we'll be in touch.</div>
 </div>
@@ -223,7 +223,7 @@ h1{font-size:24px}
 <form class="signup" onsubmit="return handleSignup(event)">
 <input type="email" placeholder="you@company.com" required>
 <button type="submit">join the waitlist</button>
-</form>
+<input type="text" name="company_website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0"></form>
 </div>
 
 <footer>ark. a sandboxed ai agent</footer>
@@ -238,7 +238,18 @@ else{html.removeAttribute('data-theme');document.querySelector('.theme-btn').tex
 function handleSignup(e){
 e.preventDefault();
 const form=e.target;
-form.classList.add('done');
+const hp=form.querySelector('input[name="company_website"]');
+const emailEl=form.querySelector('input[type=email]');
+const email=(emailEl?emailEl.value:'').trim().toLowerCase();
+// Bots that fill the honeypot: pretend success, send nothing.
+if(!(hp&&hp.value)){
+  fetch('/api/waitlist',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({email:email})
+  }).catch(function(){});
+}
+form.classList.add('done'); // always show success (no enumeration, no leak)
 return false;
 }
 const io=new IntersectionObserver((entries)=>{
