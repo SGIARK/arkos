@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 from collections.abc import AsyncIterator, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass
@@ -118,6 +119,27 @@ _TERMINAL = (
     UnprocessableEntityError,
 )
 
+# A request too long for the model comes back as an ordinary 400. Providers
+# word it differently, so both the machine-readable code and the prose are
+# checked; a miss costs the run a `model_error` instead of a recoverable
+# `context_overflow`, which is the failure this exists to stop being silent.
+_OVERFLOW_CODE = "context_length_exceeded"
+_OVERFLOW_TEXT = re.compile(
+    r"context[ _-]?length|maximum context|context window|too many tokens|reduce the length|"
+    r"longer than the model|input is too long",
+    re.IGNORECASE,
+)
+
+
+def _is_context_overflow(exc: Exception) -> bool:
+    """Return True when a 400 is the request being too long rather than malformed."""
+    if getattr(exc, "code", None) == _OVERFLOW_CODE:
+        return True
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict) and body.get("error", {}).get("code") == _OVERFLOW_CODE:
+        return True
+    return bool(_OVERFLOW_TEXT.search(str(exc)))
+
 
 def _classify(exc: Exception, source: Source) -> ModelError:
     """Map an SDK exception to the one error type we raise."""
@@ -134,6 +156,11 @@ def _classify(exc: Exception, source: Source) -> ModelError:
             cause=exc,
         )
     if isinstance(exc, _TERMINAL):
+        if isinstance(exc, BadRequestError) and _is_context_overflow(exc):
+            # Distinct from bad_request: the loop can recover from this one by
+            # shrinking the view, where a malformed request is simply dead.
+            return ModelError(f"the request exceeded the context window: {exc}", retryable=False,
+                              kind="context_overflow", cause=exc)
         kind = "auth" if isinstance(exc, (AuthenticationError, PermissionDeniedError)) else "bad_request"
         return ModelError(f"model rejected the request: {exc}", retryable=False, kind=kind, cause=exc)
     if isinstance(exc, InternalServerError):

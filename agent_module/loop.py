@@ -83,6 +83,7 @@ class Budgets:
 
 
 Dispatch = Callable[[str, dict[str, Any]], Awaitable[ResultEnvelope]]
+StoreBlob = Callable[[str], Awaitable[str]]
 
 
 @dataclass(slots=True)
@@ -117,6 +118,7 @@ async def run_turn(
     dispatch: Dispatch,
     hops_used: int = 0,
     options: dict[str, Any] | None = None,
+    store_blob: StoreBlob | None = None,
 ) -> AsyncIterator[Event]:
     """
     Run one turn to its end, yielding events as they happen.
@@ -131,6 +133,9 @@ async def run_turn(
         dispatch: executes one tool and returns an envelope.
         hops_used: hops already spent, counted from the log across a resume.
         options: per-call model params from config.
+        store_blob: stores the full text of an oversized result and returns its
+            ref. Injected for the same reason as `dispatch`: the loop does not
+            know what a session is, let alone where a blob lives.
 
     Yields:
         Events from the vocabulary, ending with exactly one `done`.
@@ -210,13 +215,20 @@ async def run_turn(
                 )
 
                 for batch in _batch_by_readonly(calls, by_name):
-                    async for event in _run_batch(batch, by_name, dispatch, state, messages):
+                    async for event in _run_batch(batch, by_name, dispatch, state, messages, store_blob):
                         yield event
 
         except TimeoutError:
             yield DoneEvent(reason="wall_clock")
             return
         except ModelError as e:
+            if e.kind == "context_overflow":
+                # The view is too large for the model. Recording it as what it
+                # is keeps it out of the model_error bucket, where a recoverable
+                # condition would be indistinguishable from a dead one.
+                logger.error("hop exceeded the context window: %s", e)
+                yield DoneEvent(reason="context_overflow")
+                return
             if e.retryable and model_retries < budgets.model_retries:
                 model_retries += 1
                 reattempt = True
@@ -298,6 +310,7 @@ async def _run_batch(
     dispatch: Dispatch,
     state: _State,
     messages: list[dict[str, Any]],
+    store_blob: StoreBlob | None = None,
 ) -> AsyncIterator[Event]:
     """
     Validate the batch, then dispatch what survives concurrently.
@@ -349,7 +362,7 @@ async def _run_batch(
             done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 call = tasks[task]
-                yield _settle(call, _envelope_of(task, call), state, messages)
+                yield await _settle(call, _envelope_of(task, call), state, messages, store_blob)
     except (asyncio.CancelledError, GeneratorExit):
         # Close every open call, or the session cannot be resumed.
         for task in pending:
@@ -375,11 +388,12 @@ def _envelope_of(task: asyncio.Task[ResultEnvelope], call: _PartialCall) -> Resu
         return ResultEnvelope(ok=False, content=f"{call.name} failed: {e}", error_kind="upstream_error")
 
 
-def _settle(
+async def _settle(
     call: _PartialCall,
     envelope: ResultEnvelope,
     state: _State,
     messages: list[dict[str, Any]],
+    store_blob: StoreBlob | None = None,
 ) -> ToolResultEvent:
     state.in_flight[call.name] = max(0, state.in_flight.get(call.name, 1) - 1)
     if envelope.ok:
@@ -390,6 +404,16 @@ def _settle(
         state.failures[call.name] = state.failures.get(call.name, 0) + 1
 
     content, total = _cap_view(envelope.content)
+    ref = envelope.ref
+    if total is not None and ref is None and store_blob is not None:
+        # The event keeps the preview, so without a blob the tail is simply
+        # lost: a resumed run replays the truncated text with no way back to
+        # the rest, and the context ladder has nothing to point at either.
+        try:
+            ref = await store_blob(envelope.content)
+        except Exception:
+            logger.exception("could not store the full result of %s", call.name)
+
     messages.append({"role": "tool", "tool_call_id": call.id, "content": envelope.content})
     return ToolResultEvent(
         id=call.id,
@@ -397,7 +421,7 @@ def _settle(
         content=content,
         error_kind=envelope.error_kind if envelope.error_kind != "none" else None,
         total_chars=total,
-        ref=envelope.ref,
+        ref=ref,
     )
 
 

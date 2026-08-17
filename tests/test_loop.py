@@ -535,3 +535,91 @@ async def test_readonly_batch_really_overlaps(model):
     await _run(model, dispatch=tracked)
 
     assert peak == 3
+
+
+# --- an oversized result keeps a way back to its tail --------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_result_is_blobbed_so_the_tail_survives(model):
+    """The event holds a preview; without a ref the rest is simply lost."""
+    stored: list[str] = []
+
+    async def store_blob(content):
+        stored.append(content)
+        return "b_1"
+
+    async def dispatch(name, args):
+        return lp.ResultEnvelope(ok=True, content="x" * (CAP + 500))
+
+    model.arm(_call("grep"), _text("done"))
+    events = [e async for e in lp.run_turn([], TOOLS, _budgets(), "attended", dispatch=dispatch, store_blob=store_blob)]
+    result = next(e for e in events if e.kind == "tool_result")
+
+    assert result.total_chars == CAP + 500
+    assert result.ref == "b_1"
+    assert len(stored[0]) == CAP + 500, "the blob holds the whole thing, not the preview"
+
+
+@pytest.mark.asyncio
+async def test_a_result_that_fits_is_not_blobbed(model):
+    stored: list[str] = []
+
+    async def store_blob(content):
+        stored.append(content)
+        return "b_1"
+
+    async def dispatch(name, args):
+        return lp.ResultEnvelope(ok=True, content="small")
+
+    model.arm(_call("grep"), _text("done"))
+    events = [e async for e in lp.run_turn([], TOOLS, _budgets(), "attended", dispatch=dispatch, store_blob=store_blob)]
+    result = next(e for e in events if e.kind == "tool_result")
+
+    assert stored == []
+    assert result.ref is None and result.total_chars is None
+
+
+@pytest.mark.asyncio
+async def test_a_ref_the_tool_supplied_is_not_overwritten(model):
+    async def dispatch(name, args):
+        return lp.ResultEnvelope(ok=True, content="y" * (CAP + 10), ref="theirs")
+
+    async def store_blob(content):
+        raise AssertionError("the envelope already had a ref")
+
+    model.arm(_call("grep"), _text("done"))
+    events = [e async for e in lp.run_turn([], TOOLS, _budgets(), "attended", dispatch=dispatch, store_blob=store_blob)]
+
+    assert next(e for e in events if e.kind == "tool_result").ref == "theirs"
+
+
+@pytest.mark.asyncio
+async def test_a_blob_store_that_fails_costs_the_tail_not_the_turn(model):
+    async def dispatch(name, args):
+        return lp.ResultEnvelope(ok=True, content="z" * (CAP + 10))
+
+    async def store_blob(content):
+        raise RuntimeError("no blob store today")
+
+    model.arm(_call("grep"), _text("done"))
+    events = [e async for e in lp.run_turn([], TOOLS, _budgets(), "attended", dispatch=dispatch, store_blob=store_blob)]
+
+    assert next(e for e in events if e.kind == "tool_result").ref is None
+    assert events[-1].reason == "turn_end"
+
+
+# --- a request too long for the model is not a dead one ------------------------
+
+
+@pytest.mark.asyncio
+async def test_context_overflow_is_its_own_terminal_reason(model):
+    model.arm(ModelError("too long", retryable=False, kind="context_overflow"))
+
+    events = [e async for e in lp.run_turn([], TOOLS, _budgets(), "attended", dispatch=_never)]
+
+    assert events[-1].reason == "context_overflow"
+
+
+async def _never(name, args):
+    raise AssertionError("no tool should run")

@@ -324,6 +324,7 @@ async def _drive(session_id: str) -> None:
             dispatch=dispatch,
             hops_used=hops_used,
             options=_model_options(),
+            store_blob=sink.store_blob,
         ):
             if isinstance(event, DoneEvent):
                 await sink.close(event)
@@ -455,13 +456,17 @@ class _Sink:
 
     # --- what tools and the loop see -------------------------------------------
 
+    async def store_blob(self, content: str) -> str:
+        """Store the full text of an oversized result and return its ref."""
+        return await slog.save_blob(self.session.id, content)
+
     def tool_context(self) -> ToolContext:
         """Build the context tools receive alongside their arguments."""
         return ToolContext(
             user_id=self.session.user_id,
             session_id=self.session.id,
             emit_status=lambda label: self.emit(StatusEvent(label=label)),
-            store_blob=lambda content: slog.save_blob(self.session.id, content),
+            store_blob=self.store_blob,
             read_blob=lambda ref, offset, limit: slog.read_blob(ref, offset, limit, user_id=self.session.user_id),
             approve=self._approve,
         )

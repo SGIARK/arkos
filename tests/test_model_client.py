@@ -383,3 +383,46 @@ def test_client_is_cached_with_the_configured_timeout(monkeypatch):
     monkeypatch.setattr(mc.config, "get", lambda k, *a, **kw: 34.0 if k == "llm.timeout_s" else _real_get(k))
     assert mc.get_client().timeout == 34.0
     mc.reset_client()
+
+
+# --- a request too long is not the same as a request that is wrong -------------
+
+
+def test_a_context_length_400_is_classified_as_overflow():
+    """Recoverable by shrinking the view; a malformed request is not."""
+    from openai import BadRequestError
+
+    too_long = BadRequestError.__new__(BadRequestError)
+    Exception.__init__(too_long, "This model's maximum context length is 128000 tokens")
+    too_long.body = {"error": {"code": "context_length_exceeded"}}
+    too_long.code = "context_length_exceeded"
+
+    error = mc._classify(too_long, "interactive")
+
+    assert error.kind == "context_overflow"
+    assert error.retryable is False
+
+
+def test_an_ordinary_400_stays_a_bad_request():
+    from openai import BadRequestError
+
+    malformed = BadRequestError.__new__(BadRequestError)
+    Exception.__init__(malformed, "Invalid value for 'tool_choice'")
+    malformed.body = {"error": {"code": "invalid_value"}}
+    malformed.code = "invalid_value"
+
+    assert mc._classify(malformed, "interactive").kind == "bad_request"
+
+
+def test_overflow_is_recognised_from_the_prose_alone():
+    """SGLang and OpenAI word it differently, and neither is guaranteed to send a code."""
+    from openai import BadRequestError
+
+    for wording in (
+        "This model's maximum context length is 8192 tokens, however you requested 9000",
+        "Input is too long for requested model",
+        "please reduce the length of the messages",
+    ):
+        exc = BadRequestError.__new__(BadRequestError)
+        Exception.__init__(exc, wording)
+        assert mc._classify(exc, "interactive").kind == "context_overflow", wording
