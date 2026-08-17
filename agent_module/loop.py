@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -242,7 +243,6 @@ class _Hop:
         self.text = ""
         self.truncated = False
         self._calls: dict[int, _PartialCall] = {}
-        self._next_synthetic = 0
 
     def absorb(self, delta: model_client.Delta) -> Event | None:
         """Map one delta to at most one event; tool-call fragments buffer instead."""
@@ -269,8 +269,10 @@ class _Hop:
         calls = [self._calls[i] for i in sorted(self._calls)]
         for call in calls:
             if not call.id or call.id in seen_ids:
-                self._next_synthetic += 1
-                call.id = f"call_{len(seen_ids)}_{self._next_synthetic}"
+                # Unique across every turn of every session, not merely within
+                # this one: `seen_ids` starts empty each turn, so a counter would
+                # mint the same id again and the log could not tell them apart.
+                call.id = f"call_{uuid.uuid4().hex[:12]}"
             seen_ids.add(call.id)
         return calls
 

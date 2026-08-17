@@ -440,12 +440,11 @@ class Smithery:
 
     async def connections(self, user_id: str) -> list[dict[str, Any]]:
         """
-        Return every configured server and where this user stands with it.
+        Return every configured server and this user's status with it.
 
-        One row per `mcp_servers:` entry, connected or not, because the panel has
-        to offer the ones they have not connected yet. Shared servers are read
-        from the shared table: they have no user, and showing them per-user would
-        imply a grant that does not exist.
+        One row per `mcp_servers:` entry, connected or not, so the panel can
+        offer the ones they have not connected yet. Shared servers are read from
+        the shared table, since they have no per-user grant.
         """
         per_user = await self._load(user_id)
         shared = await self._load(None)
@@ -470,7 +469,7 @@ class Smithery:
         return out
 
     def needs_repair(self, row: dict[str, Any]) -> bool:
-        """True for a per-user server that is configured but not usable, so a read can re-verify it."""
+        """Return True for a per-user server that is configured but not connected."""
         return bool(row["requires_auth"]) and row["status"] != CONNECTED
 
     async def close(self) -> None:

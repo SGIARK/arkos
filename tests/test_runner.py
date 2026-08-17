@@ -324,3 +324,76 @@ async def _settle(session_id: str, timeout: float = 10.0) -> None:
     task = runner._running.get(session_id)
     if task is not None:
         await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+
+
+# --- a session must always fold back into a loadable conversation --------------
+
+
+def _assert_loadable(messages: list[dict]) -> None:
+    """Every tool message answers a call in the nearest preceding assistant message."""
+    open_ids: set[str] = set()
+    for i, message in enumerate(messages):
+        role = message.get("role")
+        if role == "assistant":
+            open_ids = {c["id"] for c in message.get("tool_calls") or []}
+        elif role == "tool":
+            assert message["tool_call_id"] in open_ids, (
+                f"message {i}: tool result {message['tool_call_id']!r} answers no preceding "
+                f"assistant tool_calls. The chat template rejects this and the session is unloadable."
+            )
+        elif role == "user":
+            # A user message ends the assistant turn it follows.
+            open_ids = set()
+
+
+async def test_a_message_typed_mid_call_still_folds_legally():
+    """Steering while a tool is in flight must not brick the session."""
+    session_id = await _session()
+    await slog.append(session_id, UserEvent(text="do it"))
+    await slog.append(session_id, ToolCallEvent(id="c1", name="grep", args={}))
+    await slog.append(session_id, UserEvent(text="actually, hurry"))
+    await slog.append(session_id, ToolResultEvent(id="c1", ok=True, content="found"))
+
+    messages, _ = await runner.fold(await runner.load(session_id))
+
+    _assert_loadable(messages)
+    # The steer is not lost, only moved after the result that was already open.
+    assert [m["content"] for m in messages if m["role"] == "user"] == ["do it", "actually, hurry"]
+    assert messages.index({"role": "tool", "tool_call_id": "c1", "content": "found"}) < len(messages) - 1
+
+
+async def test_an_interrupted_call_repaired_after_a_user_message_still_folds_legally():
+    """The repair can land after the message that woke the session."""
+    session_id = await _session()
+    await slog.append(session_id, ToolCallEvent(id="c1", name="run_command", args={}))
+    await slog.append(session_id, UserEvent(text="any update?"))
+    await slog.close_dangling(session_id)
+
+    messages, _ = await runner.fold(await runner.load(session_id))
+
+    _assert_loadable(messages)
+
+
+async def test_a_reused_tool_call_id_across_runs_still_folds_legally():
+    session_id = await _session()
+    for _ in range(2):
+        await slog.append(session_id, ToolCallEvent(id="call_1", name="grep", args={}))
+        await slog.append(session_id, ToolResultEvent(id="call_1", ok=True, content="x"))
+        await slog.append(session_id, DoneEvent(reason="turn_end"))
+
+    messages, _ = await runner.fold(await runner.load(session_id))
+
+    _assert_loadable(messages)
+
+
+async def test_the_loop_mints_tool_call_ids_that_do_not_repeat_across_turns():
+    from agent_module import loop as lp
+
+    first = lp._Hop()
+    first._calls[0] = lp._PartialCall(id="", name="grep")
+    second = lp._Hop()
+    second._calls[0] = lp._PartialCall(id="", name="grep")
+
+    minted = [first.finish(set())[0].id, second.finish(set())[0].id]
+
+    assert minted[0] != minted[1], "a fresh turn must not re-mint an earlier turn's id"

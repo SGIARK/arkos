@@ -1,9 +1,8 @@
 """
-The transcript: one append-only table for chat, tasks and everything else.
+The session transcript: one append-only table for chat, tasks and everything else.
 
-Store-shape equals wire-shape, so what `append` writes is what SSE pushes and
-what the fold reads back. A failed append halts the run: nothing executes off
-the record.
+What `append` writes is what SSE pushes and what the fold reads back. An append
+that fails raises, and the caller halts the run.
 """
 
 from __future__ import annotations
@@ -29,15 +28,15 @@ class TranscriptError(RuntimeError):
 
 @dataclass(slots=True)
 class StoredEvent:
-    """One row: the event plus the two columns the wire needs but the payload has no room for."""
+    """An event with the two row columns that are not part of its payload."""
 
     seq: int
     ts: datetime
     event: Event
 
 
-# Values under these keys never reach the log. The transcript is durable and
-# rendered in the UI, so a token pasted into tool args would outlive its rotation.
+# Tool-argument keys whose values are replaced before the event is stored. The
+# transcript is durable and rendered in the UI.
 _SECRET_KEY = re.compile(
     r"token|secret|password|passwd|api[-_ ]?key|authorization"
     r"|credential|private[-_ ]?key|dsn|conn(ection)?[-_ ]?string",
@@ -45,9 +44,8 @@ _SECRET_KEY = re.compile(
 )
 _REDACTED = "[redacted]"
 
-# The tail of the log that belongs to the current run. Everything before the last
-# `done` is a finished run whose calls are closed, so the invariant checks below
-# never have to read it.
+# The current run: everything after the last `done`. The invariant checks below
+# read only this tail.
 _RUN_START = """
     SELECT COALESCE(MAX(seq), 0) FROM session_events WHERE session_id = $1 AND kind = 'done'
 """
@@ -62,13 +60,16 @@ _OPEN_CALLS = f"""
            SELECT 1 FROM session_events r
             WHERE r.session_id = $1
               AND r.kind = 'tool_result'
+              -- A result closes only a call that precedes it. Without this an
+              -- earlier run's result vouches for a later call reusing its id.
+              AND r.seq > c.seq
               AND r.payload ->> 'id' = c.payload ->> 'id')
      ORDER BY c.seq
 """
 
 
 def _redact(value: Any, *, key_matched: bool = False) -> Any:
-    """Recursively replace values held under a secret-looking key."""
+    """Replace values held under a secret-looking key, recursively."""
     if key_matched and isinstance(value, str):
         return _REDACTED
     if isinstance(value, dict):
@@ -91,9 +92,8 @@ async def append(session_id: str, event: Event) -> StoredEvent:
     Append one event and return it with its assigned seq.
 
     Raises:
-        TranscriptError: when the event would break the transcript invariant.
-        asyncpg.PostgresError: on any database failure. Both are fatal to the
-            run by design — a run that cannot record itself must not continue.
+        TranscriptError: the event would break the transcript invariant.
+        asyncpg.PostgresError: the write failed. Both are fatal to the run.
     """
     async with (await pool.pool()).acquire() as conn, conn.transaction():
         return await append_tx(conn, session_id, event)
@@ -101,11 +101,13 @@ async def append(session_id: str, event: Event) -> StoredEvent:
 
 async def append_tx(conn: asyncpg.Connection, session_id: str, event: Event) -> StoredEvent:
     """Append inside a caller's transaction, so a status change and its event commit together."""
-    # BIGSERIAL hands out seq before commit, so without this an api transaction
-    # holding seq 100 can commit after the loop's 101 and an SSE reader that
-    # already sent 101 never emits 100. The lock makes commit order equal seq
-    # order within a session.
-    await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))", session_id)
+    # BIGSERIAL assigns seq before commit, so the lock is what makes commit order
+    # equal seq order within a session. Without it a transaction holding seq 100
+    # can commit after 101, and a reader that has sent 101 never emits 100.
+    # The canonical UUID text, not the caller's spelling: Postgres compares uuids
+    # case-insensitively but hashes text exactly, so an uppercased id would take
+    # a different lock and serialize against nothing.
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))", str(_uuid(session_id)))
     await _check_invariant(conn, session_id, event)
 
     row = _to_row(event)
@@ -125,13 +127,12 @@ async def append_tx(conn: asyncpg.Connection, session_id: str, event: Event) -> 
 
 async def _check_invariant(conn: asyncpg.Connection, session_id: str, event: Event) -> None:
     """
-    Enforce: every tool_call.id is closed by exactly one tool_result before the run ends.
+    Enforce that every tool_call.id is closed by exactly one tool_result.
 
-    Checked on the two kinds where it can be violated cheaply and meaningfully.
-    `content` is deliberately exempt: it is appended once per streamed chunk, and
-    a query per chunk would put a round trip on the token path. The loop appends
-    every result within its hop, so no content event can fall between a call and
-    its result.
+    Checked on `tool_result` and `done` only. `content` is appended once per
+    streamed chunk, and a query per chunk would put a round trip on the token
+    path; the loop appends every result within its hop, so no content event
+    falls between a call and its result.
     """
     if isinstance(event, ToolResultEvent):
         open_ids = {r["call_id"] for r in await conn.fetch(_OPEN_CALLS, _uuid(session_id))}
@@ -154,15 +155,14 @@ async def _check_invariant(conn: asyncpg.Connection, session_id: str, event: Eve
 
 async def close_dangling(session_id: str) -> list[StoredEvent]:
     """
-    Close every tool_call this run left open, with the result nobody was alive to write.
+    Close every tool_call the run left open, with an `interrupted` result.
 
-    Used on two paths that look different and are the same: the abort inside a
-    live run, and the startup sweep over a session the process died underneath.
-    The outcome of the call is genuinely unknown, which is what the result says.
+    Used by the abort path inside a live run and by the startup sweep. The
+    outcome of such a call is unknown, which is what the result says.
     """
     closed: list[StoredEvent] = []
     async with (await pool.pool()).acquire() as conn, conn.transaction():
-        await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))", session_id)
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))", str(_uuid(session_id)))
         for row in await conn.fetch(_OPEN_CALLS, _uuid(session_id)):
             event = ToolResultEvent(
                 id=row["call_id"],
@@ -179,7 +179,7 @@ INTERRUPTED = "Interrupted before this returned. The outcome is unknown; verify 
 
 
 async def get_events(session_id: str, after_seq: int = 0, limit: int = 500) -> list[StoredEvent]:
-    """Return events after `after_seq` in seq order. Every read is 'after N', never 'count'."""
+    """Return up to `limit` events after `after_seq`, in seq order."""
     rows = await pool.fetch(
         """
         SELECT seq, ts, kind, version, payload
@@ -222,7 +222,7 @@ def _stored(record: asyncpg.Record) -> StoredEvent:
 
 
 async def save_blob(session_id: str, content: str) -> str:
-    """Store an oversized tool result whole; the event carries a preview and this ref."""
+    """Store an oversized tool result whole and return its ref."""
     ref = await pool.fetchval(
         "INSERT INTO result_blobs (session_id, content) VALUES ($1, $2) RETURNING ref",
         _uuid(session_id),
@@ -233,10 +233,10 @@ async def save_blob(session_id: str, content: str) -> str:
 
 async def read_blob(ref: str, offset: int = 0, limit: int = 2000, *, user_id: str | None = None) -> str | None:
     """
-    Return a slice of a stored blob, or None when there is none the caller may read.
+    Return a slice of a stored blob, or None if the caller may not read it.
 
-    `user_id` scopes the read to its owner. Refs are unguessable UUIDs, but
-    unguessable is not access control (auth.md), so every caller passes one.
+    `user_id` scopes the read to the blob's owner; refs are unguessable UUIDs,
+    but that is not access control on its own.
     """
     try:
         ref_uuid = uuid.UUID(str(ref))
@@ -246,7 +246,7 @@ async def read_blob(ref: str, offset: int = 0, limit: int = 2000, *, user_id: st
         return await pool.fetchval(
             "SELECT substr(content, $2, $3) FROM result_blobs WHERE ref = $1",
             ref_uuid,
-            offset + 1,  # substr is 1-based; the tool argument is not
+            offset + 1,  # substr is 1-based, the argument is not
             max(0, limit),
         )
     return await pool.fetchval(
@@ -263,7 +263,7 @@ async def read_blob(ref: str, offset: int = 0, limit: int = 2000, *, user_id: st
 
 
 def _uuid(value: str) -> uuid.UUID:
-    """Parse an id as the UUID every key in this schema is."""
+    """Parse an id as a UUID, which every key in this schema is."""
     if isinstance(value, uuid.UUID):
         return value
     try:

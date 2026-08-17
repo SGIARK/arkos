@@ -1,10 +1,9 @@
 """
-Live fan-out of session events to whoever is watching.
+Live fan-out of session events to subscribers.
 
-The transcript in Postgres is the truth; this is only the "no polling" half. A
-subscriber that falls behind is told so rather than silently missing an event —
-it re-reads from the log after its last seq and rejoins. That makes a dropped
-queue slot a latency problem instead of a correctness one.
+The log in Postgres is the record; this only pushes. A subscriber whose queue
+overflows receives a LAGGED sentinel and re-reads from the log after its last
+seq, so a dropped slot costs latency rather than events.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class Lagged:
-    """Sentinel: this subscriber's queue overflowed and must re-read from the log."""
+    """Sentinel telling a subscriber its queue overflowed and it must re-read from the log."""
 
 
 LAGGED = Lagged()
@@ -29,20 +28,20 @@ Item = StoredEvent | Lagged
 
 
 class SessionStream:
-    """In-memory fan-out, one publisher per session and any number of subscribers."""
+    """In-memory fan-out: one publisher per session, any number of subscribers."""
 
     def __init__(self, queue_size: int = 256):
         self._queue_size = queue_size
         self._subscribers: dict[str, set[asyncio.Queue[Item]]] = {}
 
     def publish(self, session_id: str, event: StoredEvent) -> None:
-        """Hand one appended event to every live subscriber. Never blocks, never raises."""
+        """Hand one appended event to every subscriber. Never blocks, never raises."""
         for queue in list(self._subscribers.get(session_id, ())):
             try:
                 queue.put_nowait(event)
             except asyncio.QueueFull:
-                # Drain to the sentinel: the subscriber is going back to the log
-                # anyway, so holding stale events would only delay the catch-up.
+                # The subscriber re-reads from the log, so queued events would
+                # only delay the catch-up.
                 _drain(queue)
                 queue.put_nowait(LAGGED)
 
@@ -51,9 +50,8 @@ class SessionStream:
         """
         Attach to a session's live events for the life of the context.
 
-        Subscribe BEFORE reading the backlog, or an event appended between the
-        read and the attach is delivered to nobody. The reader de-duplicates on
-        seq, which costs nothing and closes that window.
+        Subscribe before reading the backlog: an event appended between the two
+        would otherwise reach nobody. Readers de-duplicate on seq.
         """
         queue: asyncio.Queue[Item] = asyncio.Queue(maxsize=self._queue_size)
         self._subscribers.setdefault(session_id, set()).add(queue)

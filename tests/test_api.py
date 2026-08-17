@@ -16,7 +16,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from agent_module.events import ContentEvent, DoneEvent, UserEvent
+from agent_module.events import ContentEvent, DoneEvent, ToolCallEvent, UserEvent
 from db import pool
 from harness_module import api, runner
 from harness_module import session_log as slog
@@ -123,10 +123,9 @@ async def test_a_token_we_did_not_verify_buys_nothing(client):
 
 
 async def test_an_expired_token_is_refused(client):
-    response = await client.post(
-        "/auth/session",
-        headers={"Authorization": f"Bearer {_supabase_token(str(uuid.uuid4()), exp=datetime.now(UTC) - timedelta(minutes=1))}"},
-    )
+    expired = _supabase_token(str(uuid.uuid4()), exp=datetime.now(UTC) - timedelta(minutes=1))
+
+    response = await client.post("/auth/session", headers={"Authorization": f"Bearer {expired}"})
 
     assert response.status_code == 401
 
@@ -181,13 +180,16 @@ async def test_health_needs_no_cookie(client):
 
 
 async def test_creating_a_session_opens_a_project_and_starts_the_turn(client):
-    user_id = await _signed_in(client)
+    await _signed_in(client)
 
     response = await client.post("/sessions", json={"goal": "file my taxes", "steps": ["gather", "file"]})
     body = response.json()
 
     assert response.status_code == 201
-    row = await pool.fetchrow("SELECT status, mode, goal, project_id FROM sessions WHERE id = $1", uuid.UUID(body["session_id"]))
+    row = await pool.fetchrow(
+        "SELECT status, mode, goal, project_id FROM sessions WHERE id = $1",
+        uuid.UUID(body["session_id"]),
+    )
     assert (row["status"], row["mode"]) == ("pending", "attended"), "every session is created attended (D5)"
     assert str(row["project_id"]) == body["project_id"]
 
@@ -244,6 +246,19 @@ async def test_a_message_appends_and_starts(client):
     assert events[-1].text == "and now this"
     assert events[-1].source == "human"
     assert session_id in api.started
+
+
+async def test_a_message_closes_a_dead_runs_open_call_before_it_lands(client):
+    """The other order puts a user event between a call and its result."""
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id)
+    await slog.append(session_id, ToolCallEvent(id="c1", name="run_command", args={}))
+
+    response = await client.post(f"/sessions/{session_id}/messages", json={"text": "any update?"})
+
+    assert response.status_code == 202
+    kinds = [e.event.kind for e in await slog.get_events(session_id)]
+    assert kinds == ["tool_call", "tool_result", "user"]
 
 
 async def test_a_composer_message_never_answers_a_park(client):

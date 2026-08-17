@@ -24,9 +24,9 @@ _KEEPALIVE_SECONDS = 15.0
 def _resolve_user_id(request: Request) -> str | None:
     """Read the caller's claimed id.
 
-    A listed contract violation: it trusts the client. Task 9 replaces this
-    route with `GET /sessions/{id}/browser/frames`, cookie-authed and keyed by
-    (user, session), which is why `api.py` does not mount this router.
+    Trusts the client, which is a listed contract violation, so `api.py` does
+    not mount this router. The replacement is a cookie-authed
+    `GET /sessions/{id}/browser/frames` keyed by (user, session).
     """
     return request.headers.get("X-User-ID") or request.query_params.get("user_id")
 

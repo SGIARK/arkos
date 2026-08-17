@@ -3,10 +3,10 @@ app:
   port: "1121"
   reload: true
   # The single origin /app and the API are served from, behind Caddy. Approval
-  # notifications deep-link to it, and mutations origin-check against it.
-  # Same-site is a deployment REQUIREMENT, not an aside: SameSite=Lax sends the
-  # cookie only on top-level GETs, so a cross-site frontend would send none on
-  # any EventSource and every SSE stream would 401 while the tests still passed.
+  # notifications deep-link to it, and mutations are origin-checked against it.
+  # Same-site is required: SameSite=Lax sends the cookie only on top-level GETs,
+  # so a cross-site frontend would send none on any EventSource and every SSE
+  # stream would 401.
   public_url: ""
 
 auth:
@@ -17,11 +17,15 @@ auth:
   session_ttl_s: 604800           # 7 days
 
 harness:
-  # No content-flush knob: the log writer runs behind the loop, so whatever
-  # streamed in while the previous append was in flight is merged into one row.
-  # Coalescing adapts to the database instead of being tuned against it.
+  # There is no content-flush interval: the log writer runs behind the loop, so
+  # text that arrives during an in-flight append is merged into one row.
   snapshot_events: 200            # what GET /sessions/{id} returns as recent_events
   sse_keepalive_s: 15             # proxies drop an idle stream at ~30s
+  # Backoff for retrying a terminal that could not be written. Without it a
+  # database blip mid-finish leaves a live session stuck `running`.
+  terminal_retry_s: 2
+  terminal_retry_max_s: 60
+  terminal_retry_max: 8
 
 quotas:
   max_unattended_sessions: 5      # per user; only unattended runs occupy a worker
@@ -29,10 +33,8 @@ quotas:
   upload_max_mb: 25               # per file, POST /projects/{id}/files
 
 approvals:
-  # Attended, the human is watching the stream and can cancel mid-call, which is
-  # what makes "every mcp_* tool requires approval" affordable in conversation.
-  # Unattended has no one to ask until the park lands (Task 6), and it does not
-  # auto-approve: that would be fifteen hops of unsupervised Gmail.
+  # Attended sessions approve automatically: a human is watching the stream and
+  # can cancel mid-call. Unattended sessions have no one to ask and refuse.
   attended_auto_approve: true
 
 llm:

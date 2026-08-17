@@ -1,20 +1,16 @@
 """
 Everything the model is told that is not a message or a tool schema.
 
-One file owns it, because `run_turn` takes `messages` already built and whoever
-assembles the first one decides what the model believes. Two callers today: the
-harness, which builds the opening message list, and the loop, which injects the
-finish nudge.
+Two callers: the harness, which builds the opening message list, and the loop,
+which injects the finish nudge.
+
+Nothing here reads a clock, a manifest or the environment, so context assembly
+is byte-identical given the same log and config. `date` is supplied by the
+caller. The tool inventory is deliberately absent: native tool calling puts the
+schemas in the request, and a prose copy would cost tokens and drift.
 
 Scaffolding (the understand/plan/act/verify shape, the tool discipline) is
 borrowed as paradigms from Claude Code and re-authored here in our own voice.
-
-**Determinism.** Context assembly must be byte-identical given the same log and
-config, so nothing here reads a clock, a manifest or the environment. `date` is
-passed in, and the harness passes `sessions.created_at` rather than today: a
-session replayed next year rebuilds the prompt it actually ran with. The tool
-inventory is deliberately absent — native tool calling puts the schemas in the
-request, and a prose copy would both cost tokens and drift from them.
 """
 
 from __future__ import annotations
@@ -86,10 +82,9 @@ def system_prompt(mode: Mode, *, date: str, goal: str | None = None) -> str:
     Build the system message for one session.
 
     Args:
-        mode: attended turns may end on bare text; unattended ones may not, and
-            the finishing section is the whole difference between them.
-        date: the session's own date (`sessions.created_at`), not today's, so a
-            replay rebuilds the prompt the run actually used.
+        mode: selects the finishing section, which is the only difference
+            between the two prompts.
+        date: the session's own date, so a replay rebuilds the same prompt.
         goal: the session's stated goal, when it has one.
     """
     parts = [_SHARED, _UNATTENDED if mode == "unattended" else _ATTENDED]
@@ -101,11 +96,10 @@ def system_prompt(mode: Mode, *, date: str, goal: str | None = None) -> str:
 
 def finish_nudge(finish_tool: str, hops_left: int) -> str:
     """
-    The one low-budget reminder an unattended run gets before its hops run out.
+    Build the reminder an unattended run gets once, before its hops run out.
 
-    Injected as a `user` event with `source: system`, so the transcript shows who
-    said it. Lives here rather than in the loop because hardcoded English under a
-    contract that bans magic values is still a magic value.
+    Injected as a `user` event with `source: system`, so the transcript shows
+    who said it.
     """
     hops = "1 hop" if hops_left == 1 else f"{hops_left} hops"
     return (

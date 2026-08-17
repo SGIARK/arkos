@@ -1,9 +1,9 @@
 """
-The only state machine, and the sole writer of `sessions.status`.
+The state machine, and the sole writer of `sessions.status`.
 
-It sits next to the agent, never inside it: no transition is ever LLM-gated.
-Every move is a conditional UPDATE, so a lost race is a `False` return rather
-than two writers disagreeing, and cancel wins by construction.
+Every move is a conditional UPDATE on the expected status, so a lost race
+returns False rather than letting two writers disagree. No transition is
+LLM-gated.
 """
 
 from __future__ import annotations
@@ -32,9 +32,8 @@ Mode = Literal["attended", "unattended"]
 
 TERMINAL: frozenset[str] = frozenset({"completed", "failed", "cancelled"})
 
-# Every legal move, and nothing else. The trigger for each is in contracts.md;
-# what this map exists for is to make an illegal one impossible to write by
-# accident, from any of the several call sites that move a session.
+# Every legal move. Transitions not listed here raise; the triggers for each are
+# in contracts.md.
 ALLOWED: frozenset[tuple[str, str]] = frozenset(
     {
         ("pending", "running"),  # the runner claims the lease
@@ -58,7 +57,7 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset(
 
 
 class IllegalTransition(ValueError):
-    """Raised for a move that is not in ALLOWED. A bug, not a race."""
+    """Raised for a move that is not in ALLOWED."""
 
 
 async def transition(
@@ -73,17 +72,14 @@ async def transition(
 
     Args:
         session_id: the session to move.
-        expected: the status the caller believes it is in; the UPDATE matches on it.
+        expected: the status the UPDATE matches on.
         new: the status to move to.
         reason: recorded on the event, and as `terminal_reason` when `new` is terminal.
-        mode: flipped in the SAME update when given. A mode flip without a status
-            change is illegal — both real flips (approve, unattended done) change
-            status anyway — and doing it separately opens a window where a session
-            is unattended for budget accounting but still recorded attended.
+        mode: flipped in the same UPDATE when given, so a session is never
+            unattended for budget accounting while still recorded attended.
 
     Returns:
-        True if this call made the move; False if it lost the race to another
-        writer, which is how cancel wins.
+        True if this call made the move, False if another writer got there first.
 
     Raises:
         IllegalTransition: the move is not in ALLOWED.
@@ -113,8 +109,8 @@ async def transition(
         if moved is None:
             logger.info("session %s: %s -> %s lost the race (not in %s)", session_id, expected, new, expected)
             return False
-        # Same transaction as the UPDATE: a status the transcript cannot explain
-        # is exactly the opacity this table exists to remove.
+        # Same transaction as the UPDATE, so the status and its explanation
+        # commit together.
         await session_log.append_tx(conn, session_id, LifecycleEvent(from_=expected, to=new, reason=reason))
     return True
 
@@ -123,10 +119,9 @@ def status_for(done: DoneEvent) -> Status | None:
     """
     Return the status a `done` event moves a running session to.
 
-    `turn_end` is the attended "I have said my piece" and is NOT terminal: it is
-    the one trigger for running -> idle, and leaves terminal_reason and ended_at
-    NULL. The four failure reasons all bucket to `failed`, with the reason kept
-    verbatim in `terminal_reason` so no second vocabulary appears.
+    `turn_end` is not terminal: it is the only trigger for running -> idle, and
+    leaves `terminal_reason` and `ended_at` NULL. The failure reasons all bucket
+    to `failed`, with the reason kept verbatim in `terminal_reason`.
     """
     if done.reason == "turn_end":
         return "idle"
@@ -139,19 +134,18 @@ def status_for(done: DoneEvent) -> Status | None:
 
 async def sweep_interrupted(reason: str = "interrupted") -> int:
     """
-    Fail every session still marked `running` at startup, and say why in its transcript.
+    Fail every session still marked `running` at startup, recording why.
 
-    The process died underneath them. Nothing is requeued: a blind retry
-    re-executes a side effect nobody closed. Restarting is a human act, and it
-    uses the terminal -> running row above.
+    Nothing is requeued: a blind retry would re-execute a side effect nobody
+    closed. Restarting is a human act, over the terminal -> running move.
     """
     rows = await pool.fetch("SELECT id FROM sessions WHERE status = 'running'")
     swept = 0
     for row in rows:
         session_id = str(row["id"])
         try:
-            # The transcript says why it stopped before the status does, and the
-            # dangling call is closed first or the session cannot be folded again.
+            # The dangling call is closed first, or the session cannot be
+            # folded back into messages.
             await session_log.close_dangling(session_id)
             await session_log.append(session_id, DoneEvent(reason=reason))
             if await transition(session_id, "running", "failed", reason):

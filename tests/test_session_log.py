@@ -215,3 +215,48 @@ async def test_a_blob_is_unreadable_by_another_user():
 
 async def test_an_unparseable_ref_is_a_miss_not_a_crash():
     assert await slog.read_blob("not-a-uuid") is None
+
+
+# --- id reuse across runs -----------------------------------------------------
+
+
+async def test_an_earlier_runs_result_does_not_close_a_later_call_with_the_same_id():
+    """A model that repeats a tool_call id must not brick the session."""
+    session_id = await _session()
+    await slog.append(session_id, ToolCallEvent(id="call_1", name="grep", args={}))
+    await slog.append(session_id, ToolResultEvent(id="call_1", ok=True, content="first"))
+    await slog.append(session_id, DoneEvent(reason="turn_end"))
+
+    # A second run reuses the id. The result must still close it.
+    await slog.append(session_id, ToolCallEvent(id="call_1", name="grep", args={}))
+    stored = await slog.append(session_id, ToolResultEvent(id="call_1", ok=True, content="second"))
+
+    assert stored.seq > 0
+    await slog.append(session_id, DoneEvent(reason="turn_end"))
+
+
+async def test_a_reused_id_is_still_closable_by_the_sweep():
+    session_id = await _session()
+    await slog.append(session_id, ToolCallEvent(id="call_1", name="grep", args={}))
+    await slog.append(session_id, ToolResultEvent(id="call_1", ok=True, content="first"))
+    await slog.append(session_id, DoneEvent(reason="turn_end"))
+    await slog.append(session_id, ToolCallEvent(id="call_1", name="grep", args={}))
+
+    closed = await slog.close_dangling(session_id)
+
+    assert [c.event.id for c in closed] == ["call_1"]
+
+
+async def test_the_advisory_lock_keys_off_one_canonical_id():
+    """Postgres compares uuids case-insensitively but hashes text exactly."""
+    session_id = await _session()
+    upper = session_id.upper()
+
+    async def append_as(spelling: str, text: str) -> int:
+        return (await slog.append(spelling, ContentEvent(text=text))).seq
+
+    first, second = await asyncio.gather(append_as(session_id, "lower"), append_as(upper, "upper"))
+    events = await slog.get_events(session_id)
+
+    assert {first, second} == {e.seq for e in events}, "both spellings must write to one session"
+    assert [e.seq for e in events] == sorted(e.seq for e in events)

@@ -1,15 +1,12 @@
 """
 Identity: verify Supabase's JWT once, then carry our own session cookie.
 
-Two secrets, because they are two trust domains. `SUPABASE_JWT_SECRET` verifies
-a token somebody else issued and we never sign with it. `ARK_SESSION_SECRET`
-signs the cookie we issue, and only `POST /auth/session` can reach the mint —
-there is no path from a username to a credential, which is the hole
-`demo-login` was.
+Two secrets for two trust domains. `SUPABASE_JWT_SECRET` only verifies tokens
+issued elsewhere; `ARK_SESSION_SECRET` only signs the cookie we issue, and the
+mint is reachable from `POST /auth/session` alone.
 
-The cookie is why `EventSource` needs no stream token: the browser attaches it
-to a subresource request automatically, so `Last-Event-ID` reconnect works out
-of the box, and httpOnly means XSS cannot read the session at all.
+The cookie is httpOnly, so XSS cannot read it, and the browser attaches it to
+`EventSource` requests, so SSE needs no stream token.
 """
 
 from __future__ import annotations
@@ -24,8 +21,8 @@ from config_module.loader import config
 
 _ALG = "HS256"
 
-# Marks a cookie as ours, so a Supabase token pasted into the cookie jar is not
-# mistaken for a session we issued.
+# Marks a cookie as ours, so a Supabase token in the cookie jar is not read as
+# a session we issued.
 _ISSUER = "arkos"
 
 
@@ -57,8 +54,8 @@ def verify_supabase(token: str) -> dict[str, Any]:
     secret = _secret("SUPABASE_JWT_SECRET")
     if not secret:
         raise jwt.InvalidKeyError("SUPABASE_JWT_SECRET is unset")
-    # Supabase stamps aud=authenticated. PyJWT refuses a token carrying an
-    # audience the caller did not ask for, so it is named rather than ignored.
+    # Supabase stamps aud=authenticated, and PyJWT rejects a token whose
+    # audience the caller did not name.
     return jwt.decode(
         token,
         secret,
@@ -84,8 +81,8 @@ def mint_session(user_id: str, email: str | None = None) -> str:
     """
     Sign a session cookie for an already-verified user.
 
-    The only caller is `POST /auth/session`, after `verify_supabase` returned.
-    Anything else calling this is re-opening token issuance.
+    The only legitimate caller is `POST /auth/session`, after `verify_supabase`
+    has returned.
     """
     secret = _secret("ARK_SESSION_SECRET")
     if not secret:

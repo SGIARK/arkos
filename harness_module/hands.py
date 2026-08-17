@@ -1,11 +1,9 @@
 """
 The process-wide MCP transport.
 
-Nothing in production constructed a `Smithery` before this: Task 3 kept the
-business logic and Task 7 deleted every route that reached it. One instance is
-built at startup and shared, because its point is the in-process connection
-cache — a second instance would mean a second cache and a second set of
-Smithery PUTs.
+One `Smithery` is built at startup and shared. It owns an in-process connection
+cache, so a second instance would mean a second cache and duplicate Smithery
+writes.
 """
 
 from __future__ import annotations
@@ -29,9 +27,8 @@ async def start() -> Smithery | None:
     """
     Build the shared client and bring the no-auth servers up.
 
-    A missing api key is not fatal: MCP is one hand among several, and refusing
-    to serve chat because Smithery is unconfigured would be the tail wagging the
-    dog. The manifest simply ships without MCP tools.
+    A missing api key is not fatal: the manifest ships without MCP tools rather
+    than the server refusing to start.
     """
     global _smithery
     if _smithery is not None:
@@ -44,8 +41,8 @@ async def start() -> Smithery | None:
 
     _smithery = Smithery(config.get("mcp_servers") or {}, smithery_config)
     try:
-        # Shared servers carry a workspace credential, not a user's, so they come
-        # up once here rather than on first use by whoever happens to be first.
+        # Shared servers carry a workspace credential rather than a user's, so
+        # they come up once at startup.
         await _smithery.initialize_shared()
     except Exception:
         logger.exception("smithery: shared servers did not come up; per-user ones are unaffected")

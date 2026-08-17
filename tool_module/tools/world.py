@@ -1,10 +1,9 @@
 """
 The world tools: what the model can see of its own installation.
 
-Reads only, all of them, and every query is scoped to `ctx.user_id` in SQL
-rather than filtered afterwards. A row belonging to someone else comes back as
-`not_found`, which is also what a row that does not exist comes back as — the
-model must not be able to probe for the existence of another user's project.
+All reads, each scoped to `ctx.user_id` in SQL rather than filtered afterwards.
+Another user's row and a missing row both read as `not_found`, so these cannot
+be used to probe for what other people have.
 """
 
 from __future__ import annotations
@@ -16,13 +15,13 @@ from typing import Any
 from db import pool
 from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, fail, ok
 
-# A model that asks for "everything" gets a page, not the table.
+# A request for "everything" returns a page, not the table.
 _DEFAULT_LIMIT = 50
 _MAX_LIMIT = 200
 
 
 def _render(rows: Any) -> str:
-    """Serialize rows for the model: JSON, because a tool result is read, not displayed."""
+    """Serialize rows as JSON for the model to read."""
     return json.dumps(rows, indent=2, default=str)
 
 
@@ -125,7 +124,8 @@ class ListSessions:
     )
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
-        # NULL means "no filter", so one query serves all four combinations.
+        # A NULL parameter means "no filter", so one query serves all four
+        # combinations of the two optional arguments.
         rows = await pool.fetch(
             """
             SELECT id, project_id, title, goal, status, mode, terminal_reason,
@@ -182,8 +182,8 @@ class GetSession:
             wanted = max(0, min(int(args.get("events") or 20), _MAX_LIMIT))
         except (TypeError, ValueError):
             wanted = 20
-        # Only the kinds that carry meaning to a reader: a wall of content chunks
-        # and budget meters is what the summary is for.
+        # Only the kinds a reader gets meaning from; budget meters and status
+        # labels are noise here.
         tail = await pool.fetch(
             """
             SELECT kind, payload, ts FROM (
@@ -214,8 +214,7 @@ class ListFiles:
     )
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
-        # Joined to projects rather than trusting the id: project_files has no
-        # user column, so the ownership check has to happen in the join.
+        # project_files has no user column, so ownership is checked in the join.
         rows = await pool.fetch(
             """
             SELECT f.id, f.name, f.size_bytes, f.created_at
@@ -229,8 +228,7 @@ class ListFiles:
             _MAX_LIMIT,
         )
         if not rows:
-            # Ambiguous on purpose: an empty project and someone else's project
-            # must read the same, or this becomes an existence oracle.
+            # An empty project and another user's project read the same.
             return ok("No files in that project.")
         return ok(_render([dict(r) for r in rows]))
 
