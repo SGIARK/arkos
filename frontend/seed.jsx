@@ -5,14 +5,15 @@
    ========================================================= */
 
 /* ---- backend resolution ----
-   The frontend is served by the backend at /app/, so the backend URL is
-   just the origin we were loaded from. An explicit override from the login
-   card wins; file:// dev falls back to localhost:1113. */
+   The frontend is served by the backend at /app/, so the backend URL is the
+   origin we were loaded from and the port is whatever config.yaml says. Same
+   origin is a requirement, not a convenience: SameSite=Lax sends the session
+   cookie only to its own site, so a cross-origin backend would leave every
+   EventSource unauthenticated. An explicit override from the login card wins. */
 function resolveBackend() {
   const override = localStorage.getItem("ark_backend");
   if (override) return override;
-  if (location.protocol.startsWith("http") && location.host) return location.origin;
-  return "http://localhost:1113";
+  return location.origin;
 }
 
 function newSessionId() {

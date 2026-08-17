@@ -180,7 +180,7 @@ You need to create a `.env` and set `DB_URL` before starting the application:
    NOTE: `harness_module/api.py` does not exist yet — Task 4 writes it. There is
    deliberately no HTTP server between the database cutover and that task.
 
-2. **Access the UI**: Port-forward to `app.port` (default `1114`) and navigate to `/app` in your browser.
+2. **Access the UI**: Port-forward to `app.port` from `config_module/config.yaml` and navigate to `/app` in your browser.
 
 ### Docker Compose (Full Stack)
 

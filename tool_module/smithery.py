@@ -299,7 +299,10 @@ class Smithery:
         state, setup_url = _parse_status(response.get("status"))
 
         if state != CONNECTED:
-            await conns.save(owner, mcp_url, status=state, tools=None)
+            # Status only, so tools_cache survives: an unconnected state is
+            # routine here (every read of GET /connections re-verifies) and a
+            # token that is not live yet must not cost a good tool list.
+            await conns.set_status(owner, mcp_url, state)
             self._setup_urls[(owner, mcp_url)] = setup_url or ""
             self._invalidate(owner)
             raise AuthRequiredError(service=label, setup_url=setup_url, state=state)

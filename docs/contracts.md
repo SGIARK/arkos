@@ -255,6 +255,9 @@ chat plumbing. One error shape everywhere: `{code, message, retryable}`.
 
 | Endpoint | In | Out |
 |---|---|---|
+| `POST /auth/session` | Supabase JWT as `Authorization: Bearer` | 204 + `Set-Cookie`. Verifies it once, upserts `sub` → `users`. The ONLY endpoint that reads a bearer token |
+| `DELETE /auth/session` | — | 204, cookie cleared |
+| `GET /auth/me` | — | `{user_id, email}` |
 | `GET /sessions/{id}` | — | `{title, project_id, status, hops_used/max, recent_events[]}` |
 | `GET /sessions/{id}/events` | `Last-Event-ID?` | SSE of events, `id:<seq>` each |
 | `POST /sessions` | `{goal, steps?, project_id?}` | `{session_id, project_id}` (new project unless given; `steps` seed the todo list) |
@@ -267,6 +270,15 @@ chat plumbing. One error shape everywhere: `{code, message, retryable}`.
 | `GET /results/{ref}` | `offset&limit` | blob slice (ownership-checked) |
 | `GET /sessions/{id}/browser/frames` | — | SSE JPEG side-channel, keyed (user, session), announced by a `status` event, rendered in the canvas panel (not a corner overlay) |
 | `POST /sessions/{id}/approve` | — | 202 — attended → **unattended**; the run begins |
+| `GET /connections` | — | `[{server, name, mcp_url, requires_auth, status, tool_count, refreshed_at}]` — `mcp_servers:` joined to `user_connections` + `shared_connections` |
+| `POST /connections/{server}/connect` | — | `{setup_url}` — mints the id, writes the `pending` row, PUTs to Smithery. Idempotent: reconnect reuses the stored id |
+| `DELETE /connections/{server}` | — | 204 |
+| `GET /oauth/callback/{server}` | Smithery's redirect | HTML that `postMessage`s the opener and closes. Identity from the **cookie**, never a query param |
+
+The callback never calls Smithery — it authenticates by cookie and closes.
+Verification is idempotent `connect()` on the next read of `GET /connections`; a
+row not yet connected stays `pending` with its `connection_id` and `tools_cache`
+intact (D24).
 
 **Auth on every endpoint above: the session cookie.** httpOnly + Secure +
 SameSite=Lax, set by us after verifying Supabase's JWT once. The browser attaches
