@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Literal
+from typing import Any, Literal
 
 from agent_module.events import DoneEvent, LifecycleEvent
 from db import pool
@@ -108,7 +108,20 @@ async def transition(
         # Same transaction as the UPDATE, so the status and its explanation commit
         # together.
         await session_log.append_tx(conn, session_id, LifecycleEvent(from_=expected, to=new, reason=reason))
+        await touch_project(conn, session_id)
     return True
+
+
+async def touch_project(conn: Any, session_id: str) -> None:
+    """Mark the session's project as updated. A no-op for a session with no project.
+
+    `projects.updated_at` has no trigger, so it moves only where code writes it.
+    `GET /projects` and `list_projects` order by it.
+    """
+    await conn.execute(
+        "UPDATE projects SET updated_at = now() WHERE id = (SELECT project_id FROM sessions WHERE id = $1)",
+        _uuid(session_id),
+    )
 
 
 def status_for(done: DoneEvent) -> Status:

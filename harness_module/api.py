@@ -248,6 +248,8 @@ async def create_session(body: dict[str, Any] = JsonBody, user_id: str = Current
         goal,
     )
     session_id = str(session_id)
+    async with (await pool.pool()).acquire() as conn:
+        await lifecycle.touch_project(conn, session_id)
 
     await _append(session_id, UserEvent(text=goal, source="human"))
     steps = body.get("steps")

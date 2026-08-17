@@ -554,17 +554,15 @@ anything. None permanently kills a session, falsifies the record or breaches
 consent, which is the bar the review batches used. Take them with the next piece
 of harness work:
 
-- **SSE backlog is a single `LIMIT 1000` page** (`api.py:397`, and the same loop
-  on the LAGGED re-read at `:412`). Past 1000 events the reader sends the page,
-  then jumps `sent` to the next live event and the middle is unrecoverable on
-  that connection. Page until a short page is returned, both places.
-- **`lifecycle` events are appended but never published** (`lifecycle.py:114`),
-  so the status pill only moves on reconnect. `transition()` should return the
-  `StoredEvent` and let the caller publish it AFTER commit — publishing inside
-  the transaction would leak a seq that is not yet visible to readers.
-- **`projects.updated_at` is written by nothing.** Migration 0 dropped the
-  trigger, so `ORDER BY updated_at DESC` in `GET /projects` and `list_projects`
-  is creation order forever. A touch on write or a restored trigger, either.
+- **MOVED to LG-1** (owner, 2026-08-17): the SSE backlog paging bug and the
+  unpublished `lifecycle` event. Both are invisible without a browser rendering
+  the stream, so they are scheduled as LG-1's first commit and tested against
+  the consumer that shows them.
+- ~~**`projects.updated_at` is written by nothing.**~~ **DONE 2026-08-17:**
+  `lifecycle.touch_project` runs inside `transition`'s transaction, and
+  `POST /sessions` touches at create time. A code-side touch rather than a
+  restored trigger: the trigger was dropped deliberately in migration 0, and a
+  write in code is greppable.
 - ~~**Local tools never blob an oversized result.**~~ **DONE in Task 5b:**
   `run_turn` takes `store_blob`, and an oversized result from one of our own
   tools now carries a ref. Note what this did NOT change: the message appended
@@ -574,16 +572,25 @@ of harness work:
   the model in full for the rest of that turn, and the ladder can only clear it
   at the next fold.
 - **`system_events` has zero writers** repo-wide, while `contracts.md:167-176`
-  makes it half the logging contract. Its natural home is the same change that
-  gives the fold something to report.
+  makes it half the logging contract. **Deferred to Task 8, with its decision
+  made (owner, 2026-08-17)** so it stops being an open question. The rule is the
+  one contracts already gives: record what you would query during an incident,
+  and nothing else. For v1 that is three writers — fold duration per wake (the
+  measurement that would justify the incremental-fold card), terminal-reaper
+  attempts (each retry is an incident breadcrumb), and lease waits and expiries
+  once Task 8 creates them. Batched, best-effort, never blocking, per the
+  contract. Three call sites; it rides with Task 8 because that is when the
+  third writer exists.
 - **Three conformance gaps.** `test_retry_budget_bounded` does not exist by that
   name (its substance is spread across `test_model_client.py` and
   `test_loop.py`). `test_streaming_first_token` pins only the SSE fan-out — its
   fake model appends straight to the log, so nothing pins the thing the sink
   exists for; drive `run_turn` with a slow fake append and assert the model
   stream never stalls. `test_event_replay_deterministic` folds a two-event log
-  twice in one process and can only fail on a clock read; fold a realistic log
-  with tool calls, mid-call steering and several `done` boundaries.
+  twice in one process and can only fail on a clock read; fold a log containing
+  mid-call steering twice and assert byte equality, which pins the one place the
+  fold has ordering freedom. The missing name and the thin replay test ride with
+  the next cleanup commit.
 
 ## Task 6: Event-driven approvals
 **Done when:** `request_approval` parks (no polling, no timeout-fail); respond
@@ -662,7 +669,13 @@ call, and move `manager.py` off psycopg2 onto `db.pool` — migration 0 rebuilt
 `user_sandboxes` with a UUID `user_id` where it still expects TEXT, so its DB
 half is broken until then. Both files carry a header saying so.
 
-**Moved here from Task 5, 2026-08-17:** the `resource_leases` machinery. Task 5
+**Moved here from Task 5, 2026-08-17:** the first `system_events` writers, and
+the `resource_leases` machinery. The operational log gets three writers, decided
+2026-08-17 and scoped by the contracts rule "record what you would query during
+an incident": fold duration per wake, terminal-reaper attempts, and the lease
+waits and expiries this card creates. Batched, best-effort, never blocking.
+
+The `resource_leases` machinery. Task 5
 owns the SESSION claim (the conditional UPDATE in `lifecycle.transition`); what
 lands here is `acquire`/`release` for `sandbox:{user}` and `browser:{user}`,
 because the sandbox toolset this card registers is their first caller. Held for

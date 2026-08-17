@@ -132,6 +132,25 @@ calls and text stream live; mid-run suggestion lands as a user event at the next
 hop; an ask is answered in-window and the task continues; no code path lets the
 human execute a tool.
 
+**Two stream bugs land as this card's FIRST commit, 2026-08-17 (owner).** Both
+are invisible until a browser is rendering the stream, and `curl` never hits
+either, so they are fixed where their consumer arrives and tested against it.
+
+1. **The SSE backlog is a single `LIMIT 1000` page** (`harness_module/api.py`,
+   `_event_stream`, and the same read in the LAGGED re-join). Past 1000 events
+   the reader sends the page, then advances `sent` to the next live event; the
+   middle is never delivered, and `sent` only moves forward, so it cannot be
+   recovered on that connection. This is the reconnect path, so a long session
+   loses transcript on screen while the log itself is intact. Page until a read
+   returns fewer rows than the limit, in both places.
+2. **`lifecycle` events are appended but never published**
+   (`harness_module/lifecycle.py`, `transition`). Every other append path calls
+   `stream.publish`; this one does not, so the status pill moves only when a
+   client reconnects. `transition()` should return the `StoredEvent` and let the
+   caller publish it **after the transaction commits**. Publishing inside the
+   transaction hands a subscriber a seq that a `Last-Event-ID` reader cannot yet
+   fetch — the same class of bug the `append()` advisory lock closes.
+
 **Carded from the Task 4 review, 2026-08-17.** The frontend talks to an API that
 no longer exists: `frontend/seed.jsx:156` calls `/auth/demo-login`, `:201-250`
 call `/tasks` and `/computer/tasks`, and `frontend/components.jsx:217` opens

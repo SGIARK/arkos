@@ -196,3 +196,39 @@ async def test_the_sweep_leaves_idle_conversations_alone():
     await lc.sweep_interrupted()
 
     assert (await _row(session_id))["status"] == "idle"
+
+
+# --- projects.updated_at --------------------------------------------------------
+
+
+async def test_a_transition_touches_the_sessions_project():
+    """`projects.updated_at` has no trigger; it moves only where code writes it."""
+    user_id = uuid.uuid4()
+    await pool.execute("INSERT INTO users (id) VALUES ($1)", user_id)
+    _seeded.append(user_id)
+    project_id = await pool.fetchval(
+        "INSERT INTO projects (user_id, title, updated_at) VALUES ($1, 'P', now() - interval '1 day') RETURNING id",
+        user_id,
+    )
+    session_id = str(
+        await pool.fetchval(
+            "INSERT INTO sessions (user_id, project_id, mode, status) VALUES ($1, $2, 'attended', 'running')"
+            " RETURNING id",
+            user_id,
+            project_id,
+        )
+    )
+    before = await pool.fetchval("SELECT updated_at FROM projects WHERE id = $1", project_id)
+
+    await lc.transition(session_id, "running", "idle", "turn_end")
+    after = await pool.fetchval("SELECT updated_at FROM projects WHERE id = $1", project_id)
+
+    assert after > before
+    await pool.execute("DELETE FROM sessions WHERE user_id = $1", user_id)
+    await pool.execute("DELETE FROM projects WHERE user_id = $1", user_id)
+
+
+async def test_a_transition_on_a_session_with_no_project_is_fine():
+    session_id = await _session(status="running")
+
+    assert await lc.transition(session_id, "running", "idle", "turn_end")
