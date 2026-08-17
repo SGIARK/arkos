@@ -669,6 +669,18 @@ call, and move `manager.py` off psycopg2 onto `db.pool` — migration 0 rebuilt
 `user_sandboxes` with a UUID `user_id` where it still expects TEXT, so its DB
 half is broken until then. Both files carry a header saying so.
 
+**Status of the lease half, DONE 2026-08-17:** `harness_module/leases.py` holds
+`acquire`/`release`/`release_all`/`holder` against `resource_leases`. The sink
+takes the lease on the first sandbox call and gives it up on terminal and on
+park. A contended session stays `running`, emits
+`status{label:"waiting for the sandbox"}` and retries until
+`leases.wait_timeout_s`, after which the tool returns
+`{ok:false, error_kind:timeout, retryable:true}` and the model routes around it.
+Leases carry an expiry so a dead process does not hold a resource forever.
+**Not implemented:** the wall clock does not exclude lease-wait time. Contracts
+asks for that "using the same active-segment accounting park already needs", and
+park does not have it either, so neither does this.
+
 **Moved here from Task 5, 2026-08-17:** the first `system_events` writers, and
 the `resource_leases` machinery. The operational log gets three writers, decided
 2026-08-17 and scoped by the contracts rule "record what you would query during

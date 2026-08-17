@@ -31,6 +31,13 @@ context:
   chars_per_token: 4              # characters per token in the estimate; there is no tokenizer for this model
   turns: 50                       # short-term transcript window; not read yet
 
+leases:
+  # The sandbox and browser are shared per user and keep state between calls, so
+  # one session holds them for its whole run.
+  ttl_s: 900              # a lease expires if the process holding it dies
+  wait_timeout_s: 120     # how long a contended call waits before giving up
+  poll_s: 2               # how often the waiter retries
+
 quotas:
   max_unattended_sessions: 5      # per user; only unattended runs occupy a worker
   new_sessions_per_hour: 20       # per user; sliding window

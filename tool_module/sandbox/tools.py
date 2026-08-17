@@ -27,7 +27,13 @@ _MAX_MATCHES = 100
 
 
 async def _sandbox(ctx: ToolContext):
-    """Return the user's sandbox, booting or resuming it on first use."""
+    """Return the sandbox manager, holding the session's lease on it.
+
+    The sandbox is shared across a user's sessions and keeps a filesystem
+    between calls, so one session holds it for the whole run.
+    """
+    if ctx.lease is not None:
+        await ctx.lease("sandbox")
     return sandbox_manager.manager()
 
 

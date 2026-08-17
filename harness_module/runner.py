@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 import uuid
 from collections.abc import Awaitable, Sequence
 from dataclasses import dataclass
@@ -32,11 +33,11 @@ from agent_module.events import (
 from agent_module.loop import Budgets, Dispatch, run_turn
 from config_module.loader import config
 from db import pool
-from harness_module import approvals, hands, lifecycle
+from harness_module import approvals, hands, leases, lifecycle
 from harness_module import session_log as slog
 from harness_module.stream import stream
 from tool_module import registry
-from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec
+from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, ToolUnavailable
 from tool_module.tools.control import PARK_KINDS
 
 logger = logging.getLogger(__name__)
@@ -556,6 +557,8 @@ class _Sink:
         # the result, at which point the call is closed in the transcript.
         self._park: tuple[str, str, dict[str, Any]] | None = None
         self._park_calls: dict[str, tuple[str, dict[str, Any]]] = {}
+        # Resource keys this session holds, so a second call skips the database.
+        self._leases: set[str] = set()
         # The ending already on the record; a later abort completes this one.
         self._pending_done: DoneEvent | None = None
         self._last_seq = 0
@@ -576,6 +579,7 @@ class _Sink:
             store_blob=self.store_blob,
             read_blob=lambda ref, offset, limit: slog.read_blob(ref, offset, limit, user_id=self.session.user_id),
             approve=self._approve,
+            lease=self._lease,
         )
 
     async def _approve(self, name: str, args: dict[str, Any]) -> bool:
@@ -597,6 +601,47 @@ class _Sink:
     def parked(self) -> bool:
         """True once a park tool has returned a result."""
         return self._park is not None
+
+    async def _lease(self, resource: str) -> None:
+        """Claim the session's lease on a shared resource, waiting if another session holds it.
+
+        A contended session stays `running` and says so with a status event. It
+        is not a park: no hops burn, because no model call happens.
+
+        Raises:
+            ToolUnavailable: the wait ran out. The model routes around it.
+        """
+        resource_key = leases.key(resource, self.session.user_id)
+        if resource_key in self._leases:
+            return
+
+        ttl = float(_cfg("leases.ttl_s", 900))
+        poll = float(_cfg("leases.poll_s", 2))
+        deadline = time.monotonic() + float(_cfg("leases.wait_timeout_s", 120))
+        announced = False
+
+        while True:
+            if await leases.acquire(resource_key, self.session.id, ttl):
+                self._leases.add(resource_key)
+                return
+            if not announced:
+                self.emit(StatusEvent(label=f"waiting for the {resource}"))
+                announced = True
+            if time.monotonic() >= deadline:
+                raise ToolUnavailable(
+                    "timeout",
+                    f"The {resource} is in use by another session and did not free up. Try again, "
+                    "or do something else first.",
+                )
+            await asyncio.sleep(poll)
+
+    async def _release_leases(self) -> None:
+        """Give up every resource this session holds."""
+        if not self._leases:
+            return
+        with contextlib.suppress(Exception):
+            await leases.release_all(self.session.id)
+        self._leases.clear()
 
     def emit(self, event: Event) -> None:
         """Queues one event for the writer. Never blocks."""
@@ -731,6 +776,7 @@ class _Sink:
                 self._done_appended = True
 
             await self._save_cursor()
+            await self._release_leases()
             new_status = lifecycle.status_for(done)
             # An unattended run that reaches a terminal hands the session back attended.
             mode = "attended" if new_status in lifecycle.TERMINAL and self.session.mode == "unattended" else None
@@ -785,6 +831,8 @@ class _Sink:
         if self._park is None:
             return False
         await self._drain()
+        # A parked session is not acting, so it holds nothing.
+        await self._release_leases()
         call_id, name, args = self._park
         approval = await approvals.create(self.session.id, call_id, PARK_KINDS[name], _park_prompt(name, args))
         await self._save_cursor()

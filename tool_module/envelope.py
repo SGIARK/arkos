@@ -30,6 +30,20 @@ ErrorKind = Literal[
 _RETRYABLE: frozenset[str] = frozenset({"timeout", "upstream_error"})
 
 
+class ToolUnavailable(Exception):
+    """Raised by a tool that cannot run right now, carrying the kind to report.
+
+    `execute` turns it into an envelope. Anything else a tool raises becomes an
+    `upstream_error`.
+    """
+
+    def __init__(self, error_kind: str, message: str, *, retryable: bool = True):
+        self.error_kind = error_kind
+        self.message = message
+        self.retryable = retryable
+        super().__init__(message)
+
+
 @dataclass(slots=True)
 class ResultEnvelope:
     """What every tool returns; on a failure `content` is written for the model to act on."""
@@ -86,6 +100,9 @@ class ToolContext:
     store_blob: Callable[[str], Awaitable[str]] | None = None
     read_blob: Callable[[str, int, int], Awaitable[str | None]] | None = None
     approve: Callable[[str, dict[str, Any]], Awaitable[bool]] | None = None
+    # Claims the session's lease on a shared, stateful resource by name
+    # ("sandbox", "browser"). Raises ToolUnavailable if the wait times out.
+    lease: Callable[[str], Awaitable[None]] | None = None
     # Per-turn state shared between calls, keyed by the tool that owns it.
     # `edit_file` uses it to record which paths have been read.
     scratch: dict[str, Any] = field(default_factory=dict)
@@ -147,6 +164,8 @@ async def execute(
             result = await tool.call(args, ctx)
     except asyncio.CancelledError:
         raise
+    except ToolUnavailable as e:
+        return fail(e.error_kind, e.message, retryable=e.retryable)
     except TimeoutError:
         return fail("timeout", f"{name} did not finish within {timeout_s:.0f}s. It may or may not have taken effect.")
     except Exception as e:
