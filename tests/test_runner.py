@@ -129,7 +129,8 @@ async def test_the_fold_rebuilds_messages_from_the_log():
     await slog.append(session_id, ToolCallEvent(id="c1", name="grep", args={"q": "receipt"}))
     await slog.append(session_id, ToolResultEvent(id="c1", ok=True, content="found it"))
 
-    messages, hops = await runner.fold(await runner.load(session_id))
+    folded = await runner.fold(await runner.load(session_id))
+    messages, hops = folded.messages, folded.hops_used
 
     assert messages[0]["role"] == "system"
     assert messages[1] == {"role": "user", "content": "find the receipt"}
@@ -148,7 +149,7 @@ async def test_reasoning_is_never_replayed_into_context():
     await slog.append(session_id, ReasoningEvent(text="the user said hi, I should..."))
     await slog.append(session_id, ContentEvent(text="hello"))
 
-    messages, _ = await runner.fold(await runner.load(session_id))
+    messages = (await runner.fold(await runner.load(session_id))).messages
 
     assert "I should" not in str(messages)
 
@@ -160,8 +161,8 @@ async def test_event_replay_deterministic():
     await slog.append(session_id, ContentEvent(text="hello"))
 
     session = await runner.load(session_id)
-    first, _ = await runner.fold(session)
-    second, _ = await runner.fold(session)
+    first = (await runner.fold(session)).messages
+    second = (await runner.fold(session)).messages
 
     assert first == second
 
@@ -171,10 +172,10 @@ async def test_hops_reset_at_a_done_and_carry_inside_one_run():
 
     session_id = await _session()
     await slog.append(session_id, BudgetEvent(hops_used=3, hops_max=6))
-    _, mid_run = await runner.fold(await runner.load(session_id))
+    mid_run = (await runner.fold(await runner.load(session_id))).hops_used
 
     await slog.append(session_id, DoneEvent(reason="turn_end"))
-    _, after_done = await runner.fold(await runner.load(session_id))
+    after_done = (await runner.fold(await runner.load(session_id))).hops_used
 
     assert mid_run == 3, "a resume inside a run keeps counting"
     assert after_done == 0, "a new turn budgets from zero"
@@ -188,7 +189,7 @@ async def test_a_stored_result_carries_its_ref_so_the_tail_is_recoverable():
         ToolResultEvent(id="c1", ok=True, content="head", total_chars=9000, ref="b_1"),
     )
 
-    messages, _ = await runner.fold(await runner.load(session_id))
+    messages = (await runner.fold(await runner.load(session_id))).messages
 
     assert "read_result" in messages[-1]["content"]
     assert "b_1" in messages[-1]["content"]
@@ -311,7 +312,7 @@ async def test_a_restarted_session_budgets_from_zero_after_a_cancel():
     await slog.append(session_id, BudgetEvent(hops_used=6, hops_max=6))
     await runner.cancel(session_id)
 
-    _, hops = await runner.fold(await runner.load(session_id))
+    hops = (await runner.fold(await runner.load(session_id))).hops_used
 
     assert hops == 0, "a restart would hit max_hops before calling the model"
 
@@ -454,7 +455,7 @@ async def test_a_message_typed_mid_call_still_folds_legally():
     await slog.append(session_id, UserEvent(text="actually, hurry"))
     await slog.append(session_id, ToolResultEvent(id="c1", ok=True, content="found"))
 
-    messages, _ = await runner.fold(await runner.load(session_id))
+    messages = (await runner.fold(await runner.load(session_id))).messages
 
     _assert_loadable(messages)
     # The steer is not lost, only moved after the result that was already open.
@@ -469,7 +470,7 @@ async def test_an_interrupted_call_repaired_after_a_user_message_still_folds_leg
     await slog.append(session_id, UserEvent(text="any update?"))
     await slog.close_dangling(session_id)
 
-    messages, _ = await runner.fold(await runner.load(session_id))
+    messages = (await runner.fold(await runner.load(session_id))).messages
 
     _assert_loadable(messages)
 
@@ -481,7 +482,7 @@ async def test_a_reused_tool_call_id_across_runs_still_folds_legally():
         await slog.append(session_id, ToolResultEvent(id="call_1", ok=True, content="x"))
         await slog.append(session_id, DoneEvent(reason="turn_end"))
 
-    messages, _ = await runner.fold(await runner.load(session_id))
+    messages = (await runner.fold(await runner.load(session_id))).messages
 
     _assert_loadable(messages)
 
@@ -645,3 +646,142 @@ async def test_a_killed_run_resumes_without_repeating_its_side_effect(model, too
     assert "send_email" not in dispatched, "the side effect was repeated"
     assert results[0].error_kind == "interrupted"
     assert "verify before retrying" in results[0].content
+
+
+# --- the context ladder ---------------------------------------------------------
+
+
+@pytest.fixture
+def tiny_window(monkeypatch):
+    """A window small enough that a few results overflow it."""
+
+    # The system prompt is ~650 tokens and rung 1 cannot clear it, so the
+    # ceiling has to sit above that floor for the ladder to have room to work.
+    def cfg(key, default):
+        return {
+            "llm.context_window": 1600,
+            "llm.max_tokens": 400,
+            "context.recovery_threshold": 0.8,
+            "context.chars_per_token": 4,
+        }.get(key, default)
+
+    monkeypatch.setattr(runner, "_cfg", cfg)
+
+
+async def _bulky_log(session_id: str, results: int = 6, size: int = 900) -> list[str]:
+    """A log of blobbed results, oldest first."""
+    refs = []
+    await slog.append(session_id, UserEvent(text="do the thing"))
+    for i in range(results):
+        ref = await slog.save_blob(session_id, "z" * size)
+        refs.append(ref)
+        await slog.append(session_id, ToolCallEvent(id=f"c{i}", name="grep", args={}))
+        await slog.append(
+            session_id,
+            ToolResultEvent(id=f"c{i}", ok=True, content="z" * 200, total_chars=size, ref=ref),
+        )
+    return refs
+
+
+async def test_a_log_over_the_input_budget_folds_to_a_view_under_it(tiny_window):
+    session_id = await _session()
+    await _bulky_log(session_id)
+
+    folded = await runner.fold(await runner.load(session_id))
+    ceiling = int(runner._input_budget() * 0.8)
+
+    assert runner._estimate_tokens(folded.messages) <= ceiling
+    assert folded.transform is not None
+    assert folded.transform.rung == 1
+
+
+async def test_the_ladder_clears_the_oldest_results_first(tiny_window):
+    session_id = await _session()
+    refs = await _bulky_log(session_id)
+
+    folded = await runner.fold(await runner.load(session_id))
+    dropped = folded.transform.dropped_refs
+
+    assert dropped == refs[: len(dropped)], "clearing must start at the oldest"
+    # What was cleared points at how to get it back; what survived is intact.
+    for ref in dropped:
+        assert any(ref in str(m.get("content")) for m in folded.messages)
+    assert any("read_result" in str(m.get("content")) for m in folded.messages)
+
+
+async def test_a_result_with_no_ref_is_never_cleared(tiny_window):
+    """There would be no way back to it."""
+    session_id = await _session()
+    await slog.append(session_id, UserEvent(text="go"))
+    for i in range(6):
+        await slog.append(session_id, ToolCallEvent(id=f"c{i}", name="grep", args={}))
+        await slog.append(session_id, ToolResultEvent(id=f"c{i}", ok=True, content="y" * 900))
+
+    folded = await runner.fold(await runner.load(session_id))
+
+    assert folded.transform is None
+    assert all("cleared from view" not in str(m.get("content")) for m in folded.messages)
+
+
+async def test_the_same_log_folds_byte_identically_twice(tiny_window):
+    """Prompt caching and replay both depend on it, ladder included."""
+    session_id = await _session()
+    await _bulky_log(session_id)
+    session = await runner.load(session_id)
+
+    first = await runner.fold(session)
+    second = await runner.fold(session)
+
+    assert first.messages == second.messages
+    assert first.transform.dropped_refs == second.transform.dropped_refs
+
+
+async def test_a_view_under_budget_is_left_alone(tiny_window):
+    session_id = await _session()
+    await slog.append(session_id, UserEvent(text="hello"))
+
+    folded = await runner.fold(await runner.load(session_id))
+
+    assert folded.transform is None
+
+
+async def test_the_drop_is_recorded_in_the_transcript(model, tools, tiny_window):
+    """View-only: the log says a drop happened, and is not rewritten."""
+    session_id = await _session()
+    await _bulky_log(session_id)
+    before = len(await slog.get_events(session_id))
+    model.arm(_text("carrying on"))
+
+    await runner.start(session_id)
+    await _settle(session_id)
+
+    events = await slog.get_events(session_id)
+    transforms = [e.event for e in events if e.event.kind == "view_transform"]
+    results = [e.event for e in events if e.event.kind == "tool_result"]
+
+    assert len(transforms) == 1 and transforms[0].dropped_refs
+    # The stored results still hold their own text; only the view changed.
+    assert all("cleared from view" not in r.content for r in results)
+    assert len(events) > before
+
+
+async def test_rung_1_clears_results_and_nothing_else(monkeypatch):
+    """A view dominated by the prompt cannot be rescued by clearing results."""
+
+    def cfg(key, default):
+        return {
+            "llm.context_window": 500,
+            "llm.max_tokens": 100,
+            "context.recovery_threshold": 0.8,
+            "context.chars_per_token": 4,
+        }.get(key, default)
+
+    monkeypatch.setattr(runner, "_cfg", cfg)
+    session_id = await _session()
+    refs = await _bulky_log(session_id, results=2)
+
+    folded = await runner.fold(await runner.load(session_id))
+
+    # It cleared everything it could and stopped, rather than looping or lying.
+    assert folded.transform.dropped_refs == refs
+    assert runner._estimate_tokens(folded.messages) > int(runner._input_budget() * 0.8)

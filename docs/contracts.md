@@ -164,6 +164,18 @@ rewritten; context assembly is deterministic given (log, config) — same log,
 same view, byte-identical (prompt cache + replay). Ladder mechanics live in the
 spec; this invariant is the contract.
 
+**Rung 1 clears by REF, not by tool** (owner sign-off 2026-08-17, replacing the
+`clearable_tools` whitelist). Clear the oldest results that hold a blob ref,
+regardless of producer; a result without a ref is never cleared. The whitelist
+promised re-derivability — re-run `grep` and get the same answer — which was
+already false for `browser_task`, because the web moved. A ref promises exact
+recoverability instead, and exact recoverability is what the fold actually
+needs. It also reaches the two largest producers of context pressure,
+`browser_task` and every `mcp_*` result, which the whitelist excluded by
+construction. Everything else is unchanged: view-only, the log is never
+rewritten, every drop appends a `view_transform` carrying the dropped refs, and
+replay stays deterministic.
+
 **Logging — two tables, split by AUDIENCE.**
 - **`session_events`** = the transcript. What a human should see about the
   agent's behaviour: messages, tool calls and results, lifecycle, todos, budgets.
@@ -195,7 +207,7 @@ llm:
   max_retries: 3               # the ONE retry layer
 context:
   recovery_threshold: 0.8      # rung 0 trips at this fraction of input budget
-  clearable_tools: [read_file, grep, glob, list_dir, search]   # rung 1 whitelist
+  chars_per_token: 4           # estimator ratio; there is no tokenizer for the served model
   turns: 50                    # short-term transcript window (today: ignored)
 budgets:                       # keyed by sessions.mode — one vocabulary, nothing to map
   attended:   {max_hops: 6,  wall_clock_s: 300}
@@ -538,7 +550,7 @@ on concurrently running sessions. None of this exists in prod until it does —
 | `test_retry_budget_bounded` | ≤3 attempts, bounded wall clock; background no-retry |
 | `test_append_ordering_under_concurrency` | concurrent api and loop appends; an SSE reader never skips a seq |
 | `test_resume_verify_on_wake` | dangling call → interrupted; no silent re-execution |
-| `test_event_replay_deterministic` | same log ⇒ identical context assembly |
+| `test_event_replay_deterministic` | same log ⇒ identical context assembly, ladder included: a log over the input budget folds to a view under it, and folds byte-identically twice |
 | `test_authz_scoping` | user A cannot read/steer user B's sessions, refs, files |
 
 ---

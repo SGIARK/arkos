@@ -511,7 +511,15 @@ cancel wins races; **context-recovery ladder rungs 0-1 live in the fold**.
 **Touch:** `harness_module` runner/task_store/tasks | **P1, 4d** | **Blockers:** 4
 **Test:** kill mid-task → resume at cursor, no duplicate side effects; budget
 exhaustion → `failed{max_hops}`, never completed; a log that overflows the input
-budget folds to a view under it, and the same log folds byte-identically twice.
+budget folds to a view under it by clearing the oldest results that hold a blob
+ref, and the same log folds byte-identically twice.
+
+**Two things called "lease", and only one of them is here.** The SESSION claim —
+the conditional UPDATE in `lifecycle.transition`, which the lifecycle table calls
+"the runner claims the lease" — is live and stays in this card's scope. The
+`resource_leases` TABLE, and `acquire`/`release` around the sandbox and the
+browser, move to **Task 8**: their first caller is the sandbox toolset, which
+that card registers. Building them here would ship a mechanism nothing calls.
 
 **Folded in 2026-08-16 — the context-recovery ladder.** Scoped into v1 at
 Proposed Approach above, given an invariant at `contracts.md:161-165`, and built
@@ -520,9 +528,11 @@ because rung 1 needs the `result_blobs` Task 4 delivers, and because a 6-hop
 attended turn rarely overflows while a 15-hop worker run is where it actually
 bites. Required: estimate the view per hop; over `context.recovery_threshold`
 (0.8) of `llm.context_window - llm.max_tokens`, clear the oldest tool results
-whose tool is in `context.clearable_tools`, replaced in the VIEW with
-`[cleared, ref b_x, re-read if needed]`; full content stays in `result_blobs`;
-every drop appended as a `view_transform` event; the log is never rewritten.
+that hold a blob ref — regardless of which tool produced them, and never a
+result without a ref — replaced in the VIEW with a pointer to `read_result`;
+full content stays in `result_blobs`; every drop appended as a `view_transform`
+event; the log is never rewritten. (Owner sign-off 2026-08-17 replaced the
+`clearable_tools` whitelist with the ref rule; see contracts.)
 Two prerequisites, both currently missing: `config.yaml` has no `context:` block
 at all, and `llm.context_window` is read by zero lines of code. Fix
 `done{context_overflow}` in the same change — `agent_module/loop.py:157` only
@@ -606,7 +616,10 @@ CLAUDE.md rewrite is the one part NOT done.
 **Done when:** sandbox manager + toolset relocated to `tool_module/sandbox/`,
 behind envelope, in the worker manifest; lazy provisioning on first sandbox
 call; ComputerAgent/model.py/runner/router deleted; computer_module gone;
-endpoints shimmed; no credentials in sandbox env.
+endpoints shimmed; no credentials in sandbox env; **`resource_leases`
+acquire/release around sandbox use, a contended wait emitting
+`status{label:"waiting for the sandbox"}` while staying `running`, and the lease
+released on terminal and on park.**
 **Touch:** `computer_module/` → `tool_module/sandbox/` | **P1, 3d** | **Blockers:** 1, 2, 6
 **Test:** one task does MCP → sandbox code → browser in a single run, no
 re-spawn, no upfront typing; sandbox boots only at first sandbox call.
@@ -618,6 +631,14 @@ deleted, `sandbox.py` → `tool_module/sandbox/manager.py` and `tools.py` →
 call, and move `manager.py` off psycopg2 onto `db.pool` — migration 0 rebuilt
 `user_sandboxes` with a UUID `user_id` where it still expects TEXT, so its DB
 half is broken until then. Both files carry a header saying so.
+
+**Moved here from Task 5, 2026-08-17:** the `resource_leases` machinery. Task 5
+owns the SESSION claim (the conditional UPDATE in `lifecycle.transition`); what
+lands here is `acquire`/`release` for `sandbox:{user}` and `browser:{user}`,
+because the sandbox toolset this card registers is their first caller. Held for
+the whole session, not per call; released on terminal and on park; a contended
+session stays `running` and says so with a `status` event rather than parking.
+It is in the done-when above so the card cannot close with it unreachable.
 
 ## Task 9: Browser tool on a leash
 **Done when:** per contracts.md browser section — step callback wired to

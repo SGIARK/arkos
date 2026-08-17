@@ -29,6 +29,7 @@ from agent_module.events import (
     ToolCallEvent,
     ToolResultEvent,
     UserEvent,
+    ViewTransformEvent,
 )
 from agent_module.loop import Budgets, Dispatch, run_turn
 from config_module.loader import config
@@ -99,16 +100,100 @@ async def load(session_id: str) -> Session | None:
 # --- the fold ----------------------------------------------------------------
 
 
-async def fold(session: Session) -> tuple[list[dict[str, Any]], int]:
+@dataclass(slots=True)
+class Folded:
+    """What one fold produced: the view, the hops behind it, and any drop it made."""
+
+    messages: list[dict[str, Any]]
+    hops_used: int
+    transform: ViewTransformEvent | None = None
+
+
+def _cleared_text(ref: str) -> str:
+    """What a cleared result reads as in the view. The full text is still in result_blobs."""
+    return f"[cleared from view to make room. read_result(ref={ref!r}) to re-read it]"
+
+
+def _input_budget() -> int:
+    """Tokens available for the view: the window less the output reserve."""
+    return max(0, int(_cfg("llm.context_window", 0)) - int(_cfg("llm.max_tokens", 0)))
+
+
+def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
+    """Estimate the view's size. A ratio, because there is no tokenizer for the served model."""
+    chars = 0
+    for message in messages:
+        chars += len(str(message.get("content") or ""))
+        for call in message.get("tool_calls") or []:
+            function = call.get("function") or {}
+            chars += len(str(function.get("name") or "")) + len(str(function.get("arguments") or ""))
+    return int(chars / max(1, int(_cfg("context.chars_per_token", 4))))
+
+
+async def fold(session: Session) -> Folded:
     """
     Rebuild the model's message list from the session's log.
 
-    Deterministic given (log, config, mode): no clock is read, and the date in
-    the system prompt comes from `sessions.created_at`.
+    Deterministic given (log, config, mode): no clock is read, the date in the
+    system prompt comes from `sessions.created_at`, and the ladder below clears
+    the same results every time it runs on the same log.
 
     `user` and `content` become messages, `tool_call` and `tool_result` become
     the paired assistant and tool messages, `reasoning` is dropped, and the
     remaining kinds are UI-only.
+    """
+    events = await _all_events(session.id)
+    messages, hops_used = _assemble(session, events, frozenset())
+
+    # Rung 0: is the view too big? Rung 1: clear the oldest results holding a
+    # blob ref until it is not. A result with no ref is never cleared -- there
+    # would be no way back to it.
+    budget = _input_budget()
+    threshold = float(_cfg("context.recovery_threshold", 0.8))
+    ceiling = int(budget * threshold)
+    if ceiling <= 0 or _estimate_tokens(messages) <= ceiling:
+        return Folded(messages, hops_used)
+
+    cleared: list[str] = []
+    for ref in _clearable_refs(events):
+        cleared.append(ref)
+        messages, hops_used = _assemble(session, events, frozenset(cleared))
+        if _estimate_tokens(messages) <= ceiling:
+            break
+
+    if not cleared:
+        logger.warning("session %s: the view is over budget and nothing holds a ref to clear", session.id)
+        return Folded(messages, hops_used)
+
+    if _estimate_tokens(messages) > ceiling:
+        # Rung 1 clears results and nothing else, so a view dominated by the
+        # system prompt and the conversation itself can stay over. Rungs 2-3
+        # (demote, then summarize) are where that goes; until they exist the
+        # hop may still come back done{context_overflow}.
+        logger.warning(
+            "session %s: cleared every stored result and the view is still over budget",
+            session.id,
+        )
+    logger.info("session %s: cleared %d result(s) from the view", session.id, len(cleared))
+    return Folded(messages, hops_used, ViewTransformEvent(rung=1, dropped_refs=cleared))
+
+
+def _clearable_refs(events: list[slog.StoredEvent]) -> list[str]:
+    """Every stored result's ref, oldest first."""
+    return [
+        e.event.ref
+        for e in events
+        if isinstance(e.event, ToolResultEvent) and e.event.ref
+    ]
+
+
+def _assemble(
+    session: Session,
+    events: list[slog.StoredEvent],
+    cleared: frozenset[str],
+) -> tuple[list[dict[str, Any]], int]:
+    """
+    Build the message list from events, with `cleared` refs reduced to a pointer.
 
     Returns:
         The messages, and the hops spent in the current run (the log after the
@@ -153,7 +238,7 @@ async def fold(session: Session) -> tuple[list[dict[str, Any]], int]:
             emit_user(text)
         deferred_users.clear()
 
-    for stored in await _all_events(session.id):
+    for stored in events:
         event = stored.event
         if isinstance(event, UserEvent):
             # A message typed while a call was in flight sits between the call
@@ -179,7 +264,8 @@ async def fold(session: Session) -> tuple[list[dict[str, Any]], int]:
             # Every call of the hop is buffered by now, so each result lands
             # directly after the assistant message carrying its call.
             flush_assistant()
-            messages.append({"role": "tool", "tool_call_id": event.id, "content": _result_text(event)})
+            body = _cleared_text(event.ref) if event.ref and event.ref in cleared else _result_text(event)
+            messages.append({"role": "tool", "tool_call_id": event.id, "content": body})
             open_calls.discard(event.id)
             drain_deferred()
         elif isinstance(event, BudgetEvent):
@@ -304,7 +390,11 @@ async def _drive(session_id: str) -> None:
         for closed in await slog.close_dangling(session_id):
             stream.publish(session_id, closed)
 
-        messages, hops_used = await fold(session)
+        folded = await fold(session)
+        messages, hops_used = folded.messages, folded.hops_used
+        if folded.transform is not None:
+            # View-only, and the log says so happened rather than being rewritten.
+            sink.emit(folded.transform)
         try:
             tools = await registry.manifest(session.user_id, mcp=hands.smithery())
         except Exception:

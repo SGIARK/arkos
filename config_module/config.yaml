@@ -29,6 +29,16 @@ harness:
   terminal_retry_max_s: 60
   terminal_retry_max: 8
 
+context:
+  # Rung 0 trips when the folded view passes this fraction of the input budget
+  # (llm.context_window - llm.max_tokens). Rung 1 then clears the oldest results
+  # that hold a blob ref, oldest first, until the view is back under it.
+  recovery_threshold: 0.8
+  # There is no tokenizer for the served model, and the wrong one is worse than
+  # an honest ratio: cl100k over a Qwen vocabulary was a listed violation.
+  chars_per_token: 4
+  turns: 50                       # short-term transcript window; not read yet
+
 quotas:
   max_unattended_sessions: 5      # per user; only unattended runs occupy a worker
   new_sessions_per_hour: 20       # per user; sliding window

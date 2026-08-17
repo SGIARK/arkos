@@ -38,13 +38,16 @@ async def _db(monkeypatch):
     # Nothing here is testing the loop; a turn that actually started would race
     # the assertions and call a model.
     started: list[str] = []
+    start_calls: list[dict] = []
 
     async def fake_start(session_id: str, **kw) -> bool:
         started.append(session_id)
+        start_calls.append({"session_id": session_id, **kw})
         return True
 
     monkeypatch.setattr(runner, "start", fake_start)
     api.started = started
+    api.start_calls = start_calls
     yield
     await pool.execute("DELETE FROM sessions WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM projects WHERE user_id = ANY($1::uuid[])", _seeded)
@@ -319,9 +322,11 @@ async def test_approving_flips_the_mode_and_starts_the_run(client):
 
     assert response.status_code == 202
     assert response.json()["mode"] == "unattended"
-    row = await pool.fetchrow("SELECT mode, status FROM sessions WHERE id = $1", uuid.UUID(session_id))
-    assert row["mode"] == "unattended"
     assert session_id in api.started
+    # The endpoint's job is to ask for the flip; making it atomic with the
+    # status change is runner.start's, and is pinned in test_runner.
+    assert api.start_calls[-1]["mode"] == "unattended"
+    assert api.start_calls[-1]["reason"] == "approved"
 
 
 async def test_a_running_session_cannot_be_handed_over(client):
