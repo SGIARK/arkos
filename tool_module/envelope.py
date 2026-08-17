@@ -86,6 +86,9 @@ class ToolContext:
     store_blob: Callable[[str], Awaitable[str]] | None = None
     read_blob: Callable[[str, int, int], Awaitable[str | None]] | None = None
     approve: Callable[[str, dict[str, Any]], Awaitable[bool]] | None = None
+    # Per-turn state shared between calls, keyed by the tool that owns it.
+    # `edit_file` uses it to record which paths have been read.
+    scratch: dict[str, Any] = field(default_factory=dict)
 
 
 class Tool(Protocol):
