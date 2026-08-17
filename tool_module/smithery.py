@@ -260,7 +260,24 @@ class Smithery:
             return
         try:
             tools = await self._list_tools(conn.connection_id)
-        except (SmitheryError, AuthRequiredError, aiohttp.ClientError, TimeoutError) as e:
+        except AuthRequiredError as e:
+            # A dead grant, recorded the way call() records one: the status moves
+            # and tools_cache stays, so the tool names still resolve to this
+            # connection and the model gets `auth_required` with a setup URL
+            # rather than `not_found`. Without this the refresh is silent and
+            # Settings keeps claiming connected until someone tries a call.
+            if e.setup_url:
+                self._setup_urls[(owner, conn.mcp_url)] = e.setup_url
+            conn.refreshed_at = datetime.now(UTC)
+            conn.status = "auth_required"
+            try:
+                await conns.set_status(owner, conn.mcp_url, "auth_required")
+            except Exception:
+                logger.exception("could not record dead grant for %s", conn.mcp_url)
+            else:
+                self._invalidate(owner)
+            return
+        except (SmitheryError, aiohttp.ClientError, TimeoutError) as e:
             # Keep the cached list, but re-arm anyway or a server that is down
             # costs a timeout on every manifest build.
             conn.refreshed_at = datetime.now(UTC)

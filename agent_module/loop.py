@@ -42,6 +42,14 @@ def _cfg(key: str, default: Any) -> Any:
     return default if value is None else value
 
 
+def _require(key: str) -> Any:
+    """Read a config value that the code holds no opinion about."""
+    value = config.get(key)
+    if value is None:
+        raise RuntimeError(f"config is missing {key!r}, and budgets have no defaults in code")
+    return value
+
+
 @dataclass(slots=True)
 class Budgets:
     max_hops: int
@@ -56,13 +64,19 @@ class Budgets:
         Keyed by `mode` so the caller passes what it already has. An attended
         session gets a short leash because a human is watching it; an unattended
         one gets room to finish.
+
+        Every value comes from config and none is defaulted here: a budget the
+        code can supply on its own is a second source of truth, and the copy
+        that drifts is the one nobody is reading.
+
+        Raises:
+            RuntimeError: on a missing key, at startup rather than mid-run.
         """
-        fallback = {"attended": (6, 300.0), "unattended": (15, 1800.0)}[mode]
         return cls(
-            max_hops=int(_cfg(f"budgets.{mode}.max_hops", fallback[0])),
-            wall_clock_s=float(_cfg(f"budgets.{mode}.wall_clock_s", fallback[1])),
-            per_tool_attempts=int(_cfg("budgets.per_tool_attempts", 3)),
-            model_retries=int(_cfg("budgets.model_retries", 3)),
+            max_hops=int(_require(f"budgets.{mode}.max_hops")),
+            wall_clock_s=float(_require(f"budgets.{mode}.wall_clock_s")),
+            per_tool_attempts=int(_require("budgets.per_tool_attempts")),
+            model_retries=int(_require("budgets.model_retries")),
         )
 
 

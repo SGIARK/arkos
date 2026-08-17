@@ -455,11 +455,30 @@ All three need the harness, so they belong here and nowhere earlier:
   setup URL points at a page that does not exist. Needs list · connect ·
   disconnect · `GET /oauth/callback/{service}`, plus one `Smithery` constructed
   at startup (nothing in production constructs one today), `initialize_shared()`
-  called so no-auth servers come up, and `close()` on shutdown. Prior art:
-  `git show cf27b08^:base_module/app.py:302-511` — note the callback retries
-  `_ensure_user_server` 3x at 1.5s because Smithery's token is not ready when the
-  redirect fires. **Adding endpoint rows to `contracts.md` needs owner sign-off
-  (G36/G37).**
+  called so no-auth servers come up, and `close()` on shutdown. Endpoint rows
+  landed in `contracts.md` on 2026-08-16.
+  **The callback must fire the verification**, as a post-response background
+  task — Starlette's `BackgroundTask` runs after the response is sent, which is
+  exactly one attempt that blocks nothing:
+  ```python
+  return HTMLResponse(POPUP_CLOSE_HTML, background=BackgroundTask(_verify_once, user_id, label))
+  # _verify_once: await smithery.connect(user_id, label)
+  # swallow AuthRequiredError (OAuth did not finish; read-repair covers it), log the rest
+  ```
+  `connect()` is already idempotent — `claim()`'s ON CONFLICT reuses the id and
+  the PUT is a no-op re-assert — so this needs no new machinery. Without it the
+  card can be completed and still strand a connection: dispatch never re-verifies
+  (D24 — a tool call must not open OAuth) and revalidation skips unconnected rows,
+  so a popup closed before the opener re-fetches leaves a row reading
+  `auth_required` forever after a successful authorization.
+  Prior art: `git show cf27b08^:base_module/app.py:302-511`. It retried
+  `_ensure_user_server` 3× at 1.5s INSIDE the callback because Smithery's token
+  is not always live when the redirect fires — do not copy that. It is a poll on
+  the request path, and losing the race showed the user a failure for a
+  connection that became valid moments later with nothing re-checking.
+  Deliberately NOT repaired in dispatch or the manifest build: revalidation never
+  re-PUTs (a restart costs zero Smithery writes), and repair belongs at the two
+  human-triggered edges, where a human is present anyway.
 
 ## Task 5: Unattended runs on the new loop
 **Done when:** runner per contracts.md (wake/fold/lease); `POST /sessions/{id}/approve`
@@ -596,9 +615,21 @@ root. Status is tracked in that file, not here.
 
 ## Task 13: Multi-worker safety (follow-up)
 **Done when:** dispatch claims via conditional update / SKIP LOCKED; semaphore
-per worker; stale leases expire.
+per worker; stale leases expire; **connection-cache invalidation crosses
+processes**.
 **Touch:** runner | **P2, 1-2d** | **Blockers:** 5
-**Test:** two workers, 10 tasks → each executes exactly once.
+**Test:** two workers, 10 tasks → each executes exactly once; a connection
+authorized on one worker is visible to another without restarting it.
+
+**Added 2026-08-16.** `Smithery._invalidate` is per-process. The OAuth callback
+can land on worker B and flip a row to `connected` while worker A's in-memory
+cache still reads `auth_required` — and because `_revalidate` skips unconnected
+rows, A never re-reads it for the life of the process. The user authorizes a
+server and one worker keeps refusing to use it, indefinitely. Harmless at one
+process, which is why it is filed here rather than on Task 4. Two ways out:
+Postgres LISTEN/NOTIFY (which the scale-out plan wants anyway), or simply let
+unconnected cached rows expire on the same TTL clock the connected ones already
+use. The second is a two-line change and is probably enough.
 
 ---
 

@@ -282,10 +282,13 @@ chat plumbing. One error shape everywhere: `{code, message, retryable}`.
 | `DELETE /connections/{server}` | — | 204 |
 | `GET /oauth/callback/{server}` | Smithery's redirect | HTML that `postMessage`s the opener and closes. Identity from the **cookie**, never a query param |
 
-The callback never calls Smithery — it authenticates by cookie and closes.
-Verification is idempotent `connect()` on the next read of `GET /connections`; a
-row not yet connected stays `pending` with its `connection_id` and `tools_cache`
-intact (D24).
+The callback never *blocks* on Smithery: it authenticates by cookie, responds,
+and fires one verification after the response. Verification is idempotent
+`connect()`, run again on any read of `GET /connections`; a row not yet connected
+keeps its `connection_id` and `tools_cache` (D24). The callback firing is the
+proof OAuth completed, so it is the trigger — read-repair alone would strand a
+connection whose popup closed early, since dispatch never re-verifies and
+revalidation skips unconnected rows.
 
 **Auth on every endpoint above: the session cookie.** httpOnly + Secure +
 SameSite=Lax, set by us after verifying Supabase's JWT once. The browser attaches

@@ -250,6 +250,38 @@ async def test_a_failed_revalidation_keeps_the_tools_we_had():
     assert [s.name for s in specs] == ["create_issue"]
 
 
+async def test_a_revoked_grant_found_while_refreshing_is_recorded():
+    """Revocation must surface within one TTL, not wait for someone to call a tool."""
+    user_id = _user()
+    await _seed_user(user_id)
+    await _hands(FakeClient()).connect(user_id, "linear")
+    await pool.execute(
+        "UPDATE user_connections SET refreshed_at = now() - interval '2 days' WHERE user_id = $1",
+        uuid.UUID(user_id),
+    )
+
+    class Revoked(FakeClient):
+        async def jsonrpc(self, connection_id, method, params=None):
+            raise AuthRequiredError(service="linear", setup_url="https://smithery/setup/linear")
+
+    hands = _hands(Revoked())
+    specs = await hands.specs(user_id)
+
+    row = await pool.fetchrow(
+        "SELECT status, tools_cache FROM user_connections WHERE user_id = $1",
+        uuid.UUID(user_id),
+    )
+    assert row["status"] == "auth_required"
+    # Dropped from the manifest: the model is not offered a tool it cannot use.
+    assert specs == []
+    # tools_cache survives, so a call held over from an earlier manifest still
+    # resolves to this connection and earns auth_required rather than not_found.
+    assert row["tools_cache"] is not None
+    result = await hands.call("create_issue", {}, ToolContext(user_id=user_id))
+    assert result.error_kind == "auth_required"
+    assert "smithery/setup/linear" in result.content
+
+
 async def test_stale_is_measured_from_refreshed_at():
     fresh = conns.Connection(LINEAR, "c1", conns.CONNECTED, [], datetime.now(UTC))
     old = conns.Connection(LINEAR, "c1", conns.CONNECTED, [], datetime.now(UTC) - timedelta(hours=2))
