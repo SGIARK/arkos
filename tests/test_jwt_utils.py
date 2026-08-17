@@ -45,7 +45,7 @@ class TestAssertSecureSecret:
 
     def test_passes_when_secret_set(self, monkeypatch):
         monkeypatch.setattr(jwt_utils, "_SECRET", "a-real-secret-thirty-two-chars-ok")
-        assert_secure_secret() is None
+        assert assert_secure_secret() is None
 
     def test_no_demo_bypass_exists(self, monkeypatch):
         # The old code let ARK_DEMO_MODE excuse a missing secret. It must not.

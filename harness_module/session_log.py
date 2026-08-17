@@ -39,7 +39,8 @@ class StoredEvent:
 # Values under these keys never reach the log. The transcript is durable and
 # rendered in the UI, so a token pasted into tool args would outlive its rotation.
 _SECRET_KEY = re.compile(
-    r"token|secret|password|passwd|api[-_ ]?key|authorization|credential|private[-_ ]?key|dsn|conn(ection)?[-_ ]?string",
+    r"token|secret|password|passwd|api[-_ ]?key|authorization"
+    r"|credential|private[-_ ]?key|dsn|conn(ection)?[-_ ]?string",
     re.IGNORECASE,
 )
 _REDACTED = "[redacted]"

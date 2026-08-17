@@ -14,6 +14,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from agent_module import prompts
 from agent_module.events import (
     BudgetEvent,
     ContentEvent,
@@ -190,10 +191,7 @@ async def run_turn(
                         return
                     if not nudged and hops_used == budgets.max_hops - 1:
                         nudged = True
-                        nudge = (
-                            f"You have 1 hop left and have not called {FINISH_TOOL}. "
-                            f"Finish the work and call {FINISH_TOOL}, or explain what blocked you."
-                        )
+                        nudge = prompts.finish_nudge(FINISH_TOOL, budgets.max_hops - hops_used)
                         messages.append({"role": "user", "content": nudge})
                         yield UserEvent(text=nudge, source="system")
                     model_retries = 0
