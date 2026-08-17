@@ -35,7 +35,7 @@ before Task 7 deletes the fallback machinery.
 
 This document is the why and the build plan.
 
-**Status:** Tasks 0-4 and 7 done · 8 partial · **Task 5 is next** |
+**Status:** Tasks 0-5 and 7 done · 8 partial · **Task 6 is next** |
 **Author:** John Wallace | **Last updated:** 2026-08-17
 
 **Where things actually stand, for a session picking this up cold:**
@@ -44,7 +44,7 @@ This document is the why and the build plan.
 |---|---|
 | Database | Supabase `sbtbbytesjobdpmqojlr`, migration 0 applied, 12 tables |
 | Model | hosted OpenAI, `gpt-4.1-mini` — `run_turn` verified end to end against it |
-| Suite | 311 passing; `pip install -r requirements-dev.txt` then `pytest` |
+| Suite | 359 passing; `pip install -r requirements-dev.txt` then `pytest` |
 | HTTP server | `harness_module/api.py`, `uvicorn harness_module.api:app`. Needs `SUPABASE_JWT_SECRET` and `ARK_SESSION_SECRET` |
 | Blocking decisions | none — endpoints, budgets, port, approval default, callback trigger all settled 2026-08-16/17 |
 
@@ -513,6 +513,13 @@ cancel wins races; **context-recovery ladder rungs 0-1 live in the fold**.
 exhaustion → `failed{max_hops}`, never completed; a log that overflows the input
 budget folds to a view under it by clearing the oldest results that hold a blob
 ref, and the same log folds byte-identically twice.
+
+**Status:** DONE 2026-08-17, in three commits (5a approve + quota, 5b overflow +
+blobbing, 5c the ladder). Not built here: the `resource_leases` machinery, moved
+to Task 8 with owner sign-off (below), and the incremental wake-at-cursor fold —
+the fold rebuilds the whole log every time, which is what makes replay
+deterministic and what the ladder now bounds. `sessions.cursor_seq` is written
+and still read by nothing.
 
 **Two things called "lease", and only one of them is here.** The SESSION claim —
 the conditional UPDATE in `lifecycle.transition`, which the lifecycle table calls
