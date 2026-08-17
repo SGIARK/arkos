@@ -63,6 +63,10 @@ h1 .accent{color:var(--accent)}
 .signup-thanks{display:none;font-size:13px;color:var(--accent);text-align:center}
 .signup.done + .signup-note{display:none}
 .signup.done ~ .signup-thanks{display:block}
+/* Failure keeps the inputs on screen — the whole point is that they can retry. */
+.signup-error{display:none;font-size:13px;color:var(--accent);text-align:center;margin-top:14px}
+.signup.failed ~ .signup-error{display:block}
+.signup.sending button{opacity:.55;cursor:default}
 
 /* mockup frame */
 .mock-stage{padding:50px 40px 100px;max-width:1080px;margin:0 auto}
@@ -169,6 +173,7 @@ h1{font-size:24px}
 <input type="text" name="company_website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0"></form>
 <div class="signup-note">no spam. one email, when we launch.</div>
 <div class="signup-thanks">you're on the list. we'll be in touch.</div>
+<div class="signup-error">something went wrong. please try again later.</div>
 </div>
 
 <div class="mock-stage">
@@ -224,6 +229,8 @@ h1{font-size:24px}
 <input type="email" placeholder="you@company.com" required>
 <button type="submit">join the waitlist</button>
 <input type="text" name="company_website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0"></form>
+<div class="signup-thanks">you're on the list. we'll be in touch.</div>
+<div class="signup-error">something went wrong. please try again later.</div>
 </div>
 
 <footer>ark. a sandboxed ai agent</footer>
@@ -238,18 +245,30 @@ else{html.removeAttribute('data-theme');document.querySelector('.theme-btn').tex
 function handleSignup(e){
 e.preventDefault();
 const form=e.target;
+if(form.classList.contains('sending'))return false; // ignore double-submits
 const hp=form.querySelector('input[name="company_website"]');
 const emailEl=form.querySelector('input[type=email]');
 const email=(emailEl?emailEl.value:'').trim().toLowerCase();
 // Bots that fill the honeypot: pretend success, send nothing.
-if(!(hp&&hp.value)){
-  fetch('/api/waitlist',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({email:email})
-  }).catch(function(){});
-}
-form.classList.add('done'); // always show success (no enumeration, no leak)
+if(hp&&hp.value){form.classList.add('done');return false;}
+form.classList.remove('failed');
+form.classList.add('sending');
+fetch('/api/waitlist',{
+  method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({email:email})
+}).then(function(r){
+  form.classList.remove('sending');
+  // 204 stored, 409/400 would be a client problem; anything not-ok is a retry.
+  // A duplicate signup returns 204 too, so a repeat visitor still sees success
+  // and we still leak no signal about who is already on the list.
+  if(r.ok){form.classList.add('done');}
+  else{form.classList.add('failed');}
+}).catch(function(){
+  // Network failure / offline.
+  form.classList.remove('sending');
+  form.classList.add('failed');
+});
 return false;
 }
 const io=new IntersectionObserver((entries)=>{

@@ -1,0 +1,12 @@
+{
+  "name": "arkos-landing",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Static landing page for trybuddynow.com plus the waitlist intake function.",
+  "dependencies": {
+    "pg": "^8.13.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -21,3 +21,7 @@
 
 # cursor
 .cursor/*
+
+# Real waitlist role secret — only the .example belongs in git
+waitlist-setup/002_waitlist_role.sql
+vercel-landing/node_modules/

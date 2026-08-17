@@ -1,0 +1,43 @@
+-- 002_waitlist_role.sql.example
+-- COPY to 002_waitlist_role.sql, replace the secret, run it, and do NOT commit
+-- the copy (.gitignore already excludes it). The real password lives in exactly
+-- two places: this Postgres role, and the Vercel WAITLIST_DATABASE_URL env var.
+--
+-- The ONLY role the public-facing intake function uses. It can INSERT into
+-- waitlist and nothing else: no SELECT (so a compromised function still cannot
+-- read the email list), no access to any other table. RLS is on, so the
+-- insert-only policy is scoped to exactly this role.
+--
+-- WHY NOT the `postgres` superuser from the Vercel function: postgres bypasses
+-- RLS and owns every table, so leaking that one env var would expose users,
+-- token_store, conversation_context and memories. waitlist_writer's worst case
+-- is spam rows in one table it cannot even read back.
+--
+-- Idempotent: safe to re-run. Re-running also resets the password, which is the
+-- supported way to rotate it (update Vercel's env var in the same change).
+
+do $$
+begin
+  if not exists (select 1 from pg_roles where rolname = 'waitlist_writer') then
+    create role waitlist_writer login password 'REPLACE_WITH_A_LONG_RANDOM_SECRET';
+  else
+    alter role waitlist_writer login password 'REPLACE_WITH_A_LONG_RANDOM_SECRET';
+  end if;
+end $$;
+
+grant usage  on schema public   to waitlist_writer;
+grant insert on public.waitlist to waitlist_writer;
+-- deliberately NO select/update/delete, and NO grants on other tables.
+
+-- Supabase revokes CONNECT from PUBLIC on the database; grant it explicitly or
+-- the role authenticates and is then refused the database.
+grant connect on database postgres to waitlist_writer;
+
+drop policy if exists waitlist_insert on public.waitlist;
+create policy waitlist_insert on public.waitlist
+  for insert to waitlist_writer
+  with check (true);
+
+-- Deliberately absent: any select/update/delete policy, for ANY role.
+-- Read the list as the owner, manually:
+--   select email, created_at from public.waitlist order by created_at desc;
