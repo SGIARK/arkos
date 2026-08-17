@@ -1,4 +1,4 @@
-"""The control tools: the ones with authority over the loop rather than the world."""
+"""The control tools: the ones that act on the run itself, not on the world."""
 
 from __future__ import annotations
 
@@ -43,7 +43,9 @@ class Ask:
     )
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
-        return ok(args["question"])
+        # Closes the call so the session can park. The human's answer arrives
+        # later as a user message, not as this call's result.
+        return ok(f"Asked: {args['question']}\nThe run is paused until a human answers.")
 
 
 class RequestApproval:
@@ -62,7 +64,7 @@ class RequestApproval:
     )
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
-        return ok(args["action"])
+        return ok(f"Approval requested: {args['action']}\nThe run is paused until a human answers.")
 
 
 class TodoWrite:
@@ -132,7 +134,10 @@ class ReadResult:
         return ok(text)
 
 
-# The runner parks on these instead of continuing. Nothing parks on them yet.
-PARK_TOOLS = frozenset({Ask.spec.name, RequestApproval.spec.name})
+# The runner parks the session after one of these returns, taking the park kind
+# from this map. Each call is closed by its own result first: a transcript with
+# an open tool_call cannot be folded back into messages.
+PARK_KINDS: dict[str, str] = {Ask.spec.name: "ask", RequestApproval.spec.name: "approval"}
+PARK_TOOLS = frozenset(PARK_KINDS)
 
 TOOLS = [FinishTask(), Ask(), RequestApproval(), TodoWrite(), ReadResult()]

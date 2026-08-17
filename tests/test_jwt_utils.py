@@ -1,10 +1,4 @@
-"""Verifying somebody else's token, and minting our own cookie.
-
-Deliberately absent: tests for token issuance from a username, an X-User-ID
-fallback, or a demo mode. All three were deleted — see auth.md's "Deleted" list.
-A test asserting that a forged identity is ACCEPTED is a test that defends the
-hole, so the only thing pinned here is that it is refused.
-"""
+"""Verifying somebody else's token, and minting our own cookie."""
 
 import time
 
@@ -18,7 +12,7 @@ SUPABASE_SECRET = "test-supabase-secret-at-least-32-chars"
 
 
 def _supabase(secret: str | None = None, **claims) -> str:
-    """Mint a token shaped like Supabase's, so these tests need no issuance path of ours."""
+    """Mint a token shaped like the ones Supabase issues."""
     payload = {
         "sub": "8f1d4a02-0000-4000-8000-000000000001",
         "email": "a@example.com",
@@ -63,7 +57,7 @@ class TestSessionCookie:
             read_session(forged)
 
     def test_a_supabase_token_is_not_a_session_cookie(self):
-        """Two trust domains: a token somebody else issued must not pass as ours."""
+        """A Supabase token is refused where a session cookie is expected."""
         with pytest.raises(jwt.PyJWTError):
             read_session(_supabase())
 
@@ -86,7 +80,7 @@ class TestAssertSecureSecrets:
         assert assert_secure_secrets() is None
 
     def test_no_demo_bypass_exists(self, monkeypatch):
-        """The old code let ARK_DEMO_MODE excuse a missing secret. It must not."""
+        """ARK_DEMO_MODE does not excuse a missing session secret."""
         monkeypatch.delenv("ARK_SESSION_SECRET", raising=False)
         monkeypatch.setenv("ARK_DEMO_MODE", "1")
 

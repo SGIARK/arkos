@@ -30,8 +30,7 @@ async def _db():
         await pool.close()
         pytest.skip(f"needs the arkos database (migration 0 applied): {e}")
     yield
-    # A session left `running` is one the startup sweep will fail, here and in
-    # any other process sharing this database.
+    # Seeded rows go away; a session left `running` is swept by any process on this database.
     await pool.execute("DELETE FROM sessions WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM users WHERE id = ANY($1::uuid[])", _seeded)
     _seeded.clear()
@@ -68,12 +67,7 @@ async def test_append_returns_the_seq_and_reads_back_the_same_event():
 
 
 async def test_append_ordering_under_concurrency():
-    """A slow writer commits first, so a live reader can never skip its seq.
-
-    BIGSERIAL assigns before commit. Without the advisory lock the fast writer
-    takes the higher seq and commits while the slow one is still open, and a
-    reader that already sent the higher one never emits the lower.
-    """
+    """A reader following the log sees every seq in order, including one committed late."""
     session_id = await _session()
     seen: list[int] = []
     reading = True
@@ -133,7 +127,7 @@ async def test_transcript_invariant():
     with pytest.raises(slog.TranscriptError):
         await slog.append(session_id, ToolResultEvent(id="c1", ok=True, content="found twice"))
 
-    # Closed, so the run may now end.
+    # The call is closed, so the run may end.
     await slog.append(session_id, DoneEvent(reason="turn_end"))
 
 
@@ -155,12 +149,12 @@ async def test_close_dangling_synthesizes_the_result_nobody_was_alive_to_write()
     assert [c.event.id for c in closed] == ["c1"], "only the open call is closed"
     assert closed[0].event.error_kind == "interrupted"
     assert not closed[0].event.ok
-    # And the run can now end.
+    # The run may now end.
     await slog.append(session_id, DoneEvent(reason="cancelled"))
 
 
 async def test_a_finished_run_does_not_constrain_the_next_one():
-    """The invariant checks read from the last `done`, not from the start of time."""
+    """The invariant is checked over the events after the last `done`."""
     session_id = await _session()
     await slog.append(session_id, ToolCallEvent(id="c1", name="grep", args={}))
     await slog.append(session_id, ToolResultEvent(id="c1", ok=True, content="x"))
@@ -194,7 +188,7 @@ async def test_secrets_in_tool_args_never_reach_the_log():
 
 
 async def test_a_secret_nested_below_a_secret_key_is_still_redacted():
-    """The key naming the secret is often one level above the secret itself."""
+    """Redaction covers every value nested under a secret-named key."""
     session_id = await _session()
     args = {
         "authorization": {"header": "Bearer sk-live-789"},
@@ -222,7 +216,7 @@ async def test_a_blob_round_trips_and_slices():
 
 
 async def test_a_blob_is_unreadable_by_another_user():
-    """Unguessable is not access control: refs are ownership-checked too."""
+    """A blob ref reads only for the user who owns it."""
     mine = await _session()
     ref = await slog.save_blob(mine, "secret")
     other_user = await pool.fetchval("SELECT user_id FROM sessions WHERE id = $1", uuid.UUID(await _session()))
@@ -238,13 +232,13 @@ async def test_an_unparseable_ref_is_a_miss_not_a_crash():
 
 
 async def test_an_earlier_runs_result_does_not_close_a_later_call_with_the_same_id():
-    """A model that repeats a tool_call id must not brick the session."""
+    """A result closes the call of its own run when an earlier run used the same id."""
     session_id = await _session()
     await slog.append(session_id, ToolCallEvent(id="call_1", name="grep", args={}))
     await slog.append(session_id, ToolResultEvent(id="call_1", ok=True, content="first"))
     await slog.append(session_id, DoneEvent(reason="turn_end"))
 
-    # A second run reuses the id. The result must still close it.
+    # A second run reuses the id.
     await slog.append(session_id, ToolCallEvent(id="call_1", name="grep", args={}))
     stored = await slog.append(session_id, ToolResultEvent(id="call_1", ok=True, content="second"))
 
@@ -265,7 +259,7 @@ async def test_a_reused_id_is_still_closable_by_the_sweep():
 
 
 async def test_the_advisory_lock_keys_off_one_canonical_id():
-    """Postgres compares uuids case-insensitively but hashes text exactly."""
+    """Session ids differing only in case write to one session, in seq order."""
     session_id = await _session()
     upper = session_id.upper()
 

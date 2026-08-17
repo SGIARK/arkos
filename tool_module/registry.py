@@ -1,7 +1,8 @@
-"""
-Tool discovery and dispatch. A tool is a module under `tool_module/tools/`
-exposing a `TOOLS` list. MCP tools are namespaced `mcp_*` and the prefix is
-stripped on dispatch, so a remote `read_file` cannot shadow ours.
+"""Tool discovery and dispatch.
+
+A local tool is a module under `tool_module/tools/` exposing a `TOOLS` list.
+MCP tools are namespaced `mcp_*`, and the prefix is stripped on dispatch, so a
+remote tool cannot shadow a local name.
 """
 
 from __future__ import annotations
@@ -60,14 +61,14 @@ def reset() -> None:
 
 async def manifest(user_id: str, *, mcp: McpSource | None = None) -> list[ToolSpec]:
     """Return every tool spec a session may use; without `mcp`, only the local ones."""
-    # Copies, always: ToolSpec is mutable and the local ones are process-cached,
-    # so sharing references lets one session's edit poison every session.
+    # ToolSpec is mutable and the local ones are process-cached, so every caller
+    # gets its own copy.
     specs = [_copy(t.spec) for t in local_tools().values()]
     taken = {s.name for s in specs}
 
     for spec in await mcp.specs(user_id) if mcp is not None else []:
-        # Prefix unconditionally: a remote tool genuinely called mcp_foo would
-        # otherwise dispatch as foo, a name its server does not have.
+        # The prefix is added unconditionally, including to a remote tool whose
+        # own name already starts with it.
         name = f"{MCP_PREFIX}{spec.name}"
         if name in taken:
             logger.warning("dropping MCP tool %s: name collides with %s", spec.name, name)
@@ -104,8 +105,7 @@ def _mcp_spec(name: str, specs: dict[str, ToolSpec] | None) -> ToolSpec:
     known = (specs or {}).get(name)
     if known is not None:
         return known
-    # A remote server does not say whether a tool mutates, so an unrecognised
-    # one is neither readonly nor pre-approved.
+    # An unrecognised remote tool is neither readonly nor pre-approved.
     return ToolSpec(name=name, readonly=False, requires_approval=True)
 
 
@@ -118,12 +118,11 @@ async def dispatch(
     specs: dict[str, ToolSpec] | None = None,
     timeout_s: float = 120.0,
 ) -> ResultEnvelope:
-    """
-    Run one tool by the name the model used.
+    """Run one tool by the name the model used.
 
-    Both halves go through `envelope.execute`, which is the single place the
-    approval gate, the schema check and the timeout are applied. An mcp_* name
-    is wrapped in an adapter rather than routed around it.
+    Local and MCP tools both go through `envelope.execute`, the single place the
+    approval gate, the schema check and the timeout are applied; an mcp_* name is
+    wrapped in an adapter to get there.
     """
     if name.startswith(MCP_PREFIX):
         if mcp_call is None:
@@ -141,11 +140,10 @@ def bind(
     tools: Sequence[ToolSpec] | None = None,
     timeout_s: float | None = None,
 ) -> Callable[[str, dict[str, Any]], Awaitable[ResultEnvelope]]:
-    """
-    Adapt `dispatch` to the `(name, args)` shape `run_turn` requires.
+    """Adapt `dispatch` to the `(name, args)` shape `run_turn` requires.
 
     `tools` is the manifest this turn was built with. It carries each remote
-    tool's `requires_approval`, which is what the gate in `execute` reads.
+    tool's `requires_approval`, which the gate in `execute` reads.
     """
     cap = float(_cfg("tools.call_timeout_s", 120.0)) if timeout_s is None else timeout_s
     specs = {t.name: t for t in tools} if tools else None

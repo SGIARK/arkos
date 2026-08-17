@@ -547,10 +547,12 @@ fires on `finish_reason == "length"` (output truncation), so real input overflow
 still returns `bad_request` → `done{model_error}`, which is the exact violation
 contracts declared resolved by deletion.
 
-**Carded from the Task 4 review, 2026-08-17.** Six items, all deferred here
-deliberately because none permanently kills a session, falsifies the record or
-breaches consent — the bar the review batches used. Interleave them with the
-work above:
+**Carried forward from the Task 4 review — NOT done in Task 5.** These were
+carded here to interleave and did not get picked up before the card closed; they
+are listed under Task 5 only because that is where they were filed. None blocks
+anything. None permanently kills a session, falsifies the record or breaches
+consent, which is the bar the review batches used. Take them with the next piece
+of harness work:
 
 - **SSE backlog is a single `LIMIT 1000` page** (`api.py:397`, and the same loop
   on the LAGGED re-read at `:412`). Past 1000 events the reader sends the page,
@@ -563,11 +565,14 @@ work above:
 - **`projects.updated_at` is written by nothing.** Migration 0 dropped the
   trigger, so `ORDER BY updated_at DESC` in `GET /projects` and `list_projects`
   is creation order forever. A touch on write or a restored trigger, either.
-- **Local tools never blob an oversized result.** `loop.py:_cap_view` records
-  `total_chars` but never calls `ctx.store_blob`, so `ref` is None for every
-  non-MCP tool and a resumed run replays a truncated result with no pointer
-  back. Task 3 closed this for MCP inside `Smithery.call`; it belongs here
-  because rung 1 of the ladder needs every result blobbed, not just MCP's.
+- ~~**Local tools never blob an oversized result.**~~ **DONE in Task 5b:**
+  `run_turn` takes `store_blob`, and an oversized result from one of our own
+  tools now carries a ref. Note what this did NOT change: the message appended
+  to history still holds the full envelope text, capped only in the event. The
+  cap bounds the screen, not the context window, which is the behaviour the
+  2026-08-13 Smithery note describes. A local oversized result therefore reaches
+  the model in full for the rest of that turn, and the ladder can only clear it
+  at the next fold.
 - **`system_events` has zero writers** repo-wide, while `contracts.md:167-176`
   makes it half the logging contract. Its natural home is the same change that
   gives the fold something to report.
@@ -582,11 +587,25 @@ work above:
 
 ## Task 6: Event-driven approvals
 **Done when:** `request_approval` parks (no polling, no timeout-fail); respond
-appends + wakes at cursor; reminder at 1h; **the park closes its own tool_call
-before parking**.
+appends + wakes at cursor; **the park closes its own tool_call before parking**.
 **Touch:** `harness_module` | **P1, 2d** | **Blockers:** 5
 **Test:** zero DB queries while parked; restart preserves the pending approval;
 a parked session's transcript has no open `tool_call`, and folds cleanly on wake.
+
+**The 1h reminder is cut, 2026-08-17 (owner).** It was specified to go out by
+email, and this system sends no mail: there is no mailer, no provider, no
+sending address, and adding one is a feature with its own spec rather than a
+line on this card. A parked session is already visible where a human is looking
+— the project dot turns ochre and the session appears in `GET /attention` — so
+the wait is surfaced by pull, not push. `users.email` stays for identity;
+`schema.md` no longer justifies it by a reminder that does not exist.
+
+Two earlier passes reached the same place and neither was actioned: G46 named
+deleting the line as "the minimum acceptable alternative", and the review reply
+on "why are we firing reminder notifications" recommended cutting it, noting
+that 1h is the same species of magic number as the 2s poll — nothing makes it
+right, and the first question is why not 15m. If a nudge is wanted later, build
+it against real response-time data once the attention surface ships.
 
 **Settled 2026-08-16 (owner): a tool call is never left open.**
 `decision_tables.md` used to call an open call across a park "parked, healthy",
@@ -615,7 +634,7 @@ the tables it reads, so waiting would only have preserved rubble. Deleted:
 `state_module/`, `memory_module/`, `model_module/{ArkModelNew,llm_json,tests_arkmodel}`,
 `agent_module/agent.py`, `base_module/{app,task_runner,tasks,task_store,users,
 main_interface*,depricated}`, `tool_module/slack_notify.py` (its only caller was
-`state_approval.py`, and approval reminders go by email now), and 13 test files.
+`state_approval.py`, and nothing notifies out-of-band now), and 13 test files.
 **Production 9.9k → 4,682 lines; 17.4k → 8.6k with tests. Suite green at 231.**
 CLAUDE.md rewrite is the one part NOT done.
 

@@ -220,7 +220,7 @@ sandbox:                       # promoted out of the deleted computer_agent: blo
   timeout_seconds: 300         # sandbox, since Task 8 (which relocates it) is the
   idle_timeout_seconds: 900    # last deletion. Only computer_agent.llm dies.
 app:
-  public_url: "https://..."    # approval notifications need a deep link
+  public_url: "https://..."    # the one origin /app and the API are served from
 quotas:
   max_unattended_sessions: 5   # per user; only UNATTENDED runs count — an idle
                                # or attended conversation consumes no worker

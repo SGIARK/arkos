@@ -1,12 +1,10 @@
-"""
-Identity: verify Supabase's JWT once, then carry our own session cookie.
+"""Identity: verifies a Supabase JWT once, then carries a session cookie of our own.
 
-Two secrets for two trust domains. `SUPABASE_JWT_SECRET` only verifies tokens
-issued elsewhere; `ARK_SESSION_SECRET` only signs the cookie we issue, and the
-mint is reachable from `POST /auth/session` alone.
+`SUPABASE_JWT_SECRET` verifies tokens issued by Supabase; `ARK_SESSION_SECRET` signs the
+session cookie, minted from `POST /auth/session`.
 
-The cookie is httpOnly, so XSS cannot read it, and the browser attaches it to
-`EventSource` requests, so SSE needs no stream token.
+The cookie is httpOnly, and the browser attaches it to `EventSource` requests, so SSE
+carries no stream token.
 """
 
 from __future__ import annotations
@@ -21,8 +19,7 @@ from config_module.loader import config
 
 _ALG = "HS256"
 
-# Marks a cookie as ours, so a Supabase token in the cookie jar is not read as
-# a session we issued.
+# Issuer claim on the cookies minted here; `read_session` requires it.
 _ISSUER = "arkos"
 
 
@@ -32,7 +29,7 @@ def _secret(name: str) -> str | None:
 
 
 def assert_secure_secrets() -> None:
-    """Refuse to start without both signing secrets. There is no demo bypass."""
+    """Raises unless both signing secrets are present in the environment."""
     missing = [name for name in ("SUPABASE_JWT_SECRET", "ARK_SESSION_SECRET") if not _secret(name)]
     if missing:
         raise RuntimeError(
@@ -45,8 +42,7 @@ def assert_secure_secrets() -> None:
 
 
 def verify_supabase(token: str) -> dict[str, Any]:
-    """
-    Verify a Supabase access token and return its claims.
+    """Verifies a Supabase access token and returns its claims.
 
     Raises:
         jwt.PyJWTError: invalid signature, expired, or wrong audience.
@@ -54,8 +50,8 @@ def verify_supabase(token: str) -> dict[str, Any]:
     secret = _secret("SUPABASE_JWT_SECRET")
     if not secret:
         raise jwt.InvalidKeyError("SUPABASE_JWT_SECRET is unset")
-    # Supabase stamps aud=authenticated, and PyJWT rejects a token whose
-    # audience the caller did not name.
+    # Supabase stamps aud=authenticated, and PyJWT rejects a token whose audience the
+    # caller did not name.
     return jwt.decode(
         token,
         secret,
@@ -65,7 +61,7 @@ def verify_supabase(token: str) -> dict[str, Any]:
 
 
 def extract_bearer(authorization: str | None) -> str | None:
-    """Pull the token out of an `Authorization: Bearer <token>` header."""
+    """Pulls the token out of an `Authorization: Bearer <token>` header."""
     if not authorization:
         return None
     parts = authorization.split(" ", 1)
@@ -78,11 +74,9 @@ def extract_bearer(authorization: str | None) -> str | None:
 
 
 def mint_session(user_id: str, email: str | None = None) -> str:
-    """
-    Sign a session cookie for an already-verified user.
+    """Signs a session cookie for an already-verified user.
 
-    The only legitimate caller is `POST /auth/session`, after `verify_supabase`
-    has returned.
+    Called from `POST /auth/session`, once `verify_supabase` has returned.
     """
     secret = _secret("ARK_SESSION_SECRET")
     if not secret:
@@ -102,11 +96,10 @@ def mint_session(user_id: str, email: str | None = None) -> str:
 
 
 def read_session(cookie: str) -> dict[str, Any]:
-    """
-    Verify a session cookie and return its claims.
+    """Verifies a session cookie and returns its claims.
 
     Raises:
-        jwt.PyJWTError: invalid signature, expired, or not one of ours.
+        jwt.PyJWTError: invalid signature, expired, or issued by someone else.
     """
     secret = _secret("ARK_SESSION_SECRET")
     if not secret:

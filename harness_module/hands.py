@@ -1,9 +1,7 @@
-"""
-The process-wide MCP transport.
+"""The process-wide MCP transport.
 
-One `Smithery` is built at startup and shared. It owns an in-process connection
-cache, so a second instance would mean a second cache and duplicate Smithery
-writes.
+One `Smithery` client is built at startup and shared by every caller; it owns the
+in-process connection cache.
 """
 
 from __future__ import annotations
@@ -19,16 +17,15 @@ _smithery: Smithery | None = None
 
 
 def smithery() -> Smithery | None:
-    """Return the shared client, or None when MCP is not configured."""
+    """Returns the shared client, or None when MCP is not configured."""
     return _smithery
 
 
 async def start() -> Smithery | None:
-    """
-    Build the shared client and bring the no-auth servers up.
+    """Builds the shared client and brings the no-auth servers up.
 
-    A missing api key is not fatal: the manifest ships without MCP tools rather
-    than the server refusing to start.
+    Returns None when `smithery.api_key` is unset; the manifest then ships without MCP
+    tools.
     """
     global _smithery
     if _smithery is not None:
@@ -41,8 +38,7 @@ async def start() -> Smithery | None:
 
     _smithery = Smithery(config.get("mcp_servers") or {}, smithery_config)
     try:
-        # Shared servers carry a workspace credential rather than a user's, so
-        # they come up once at startup.
+        # Shared servers carry a workspace credential, so they come up once at startup.
         await _smithery.initialize_shared()
     except Exception:
         logger.exception("smithery: shared servers did not come up; per-user ones are unaffected")
@@ -50,7 +46,7 @@ async def start() -> Smithery | None:
 
 
 async def stop() -> None:
-    """Close the shared client's HTTP session."""
+    """Closes the shared client's HTTP session and clears it."""
     global _smithery
     if _smithery is not None:
         await _smithery.close()

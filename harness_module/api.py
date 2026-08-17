@@ -1,13 +1,12 @@
-"""
-The HTTP surface: snapshot, subscribe, commands.
+"""The HTTP surface: session snapshots, the event stream, and commands.
 
-One error shape everywhere, `{code, message, retryable}`, and one way in: the
-session cookie. No endpoint reads a user id from a header, body or query
-string, the OAuth callback included.
+Every error response carries `{code, message, retryable}`. The caller is
+identified by the session cookie; no endpoint reads a user id from a header,
+body or query string, the OAuth callback included.
 
-Covers auth, chat and the MCP connections surface. `/approve`,
-`/approvals/{id}/respond`, `/attention`, file upload and browser frames are not
-implemented and return 404 rather than a stub.
+Auth, chat and the MCP connections surface are served here.
+`/approvals/{id}/respond`, `/attention`, file upload and browser frames have no
+route and return 404.
 """
 
 from __future__ import annotations
@@ -30,7 +29,7 @@ from starlette.background import BackgroundTask
 from agent_module.events import TodoEvent, UserEvent
 from config_module.loader import config
 from db import pool
-from harness_module import hands, jwt_utils, lifecycle, runner
+from harness_module import approvals, hands, jwt_utils, lifecycle, runner
 from harness_module import session_log as slog
 from harness_module.stream import LAGGED, stream
 from tool_module.smithery import AuthRequiredError, SmitheryError
@@ -43,11 +42,11 @@ def _cfg(key: str, default: Any) -> Any:
     return default if value is None else value
 
 
-# --- the one error shape -------------------------------------------------------
+# --- error shape ---------------------------------------------------------------
 
 
 class ApiError(Exception):
-    """A refusal, in the shape the frontend switches on."""
+    """An error rendered to the client as `{code, message, retryable}`."""
 
     def __init__(self, status: int, code: str, message: str, retryable: bool = False):
         self.status = status
@@ -74,8 +73,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if not _cfg("app.public_url", ""):
         logger.warning("app.public_url is unset: mutations are not origin-checked and OAuth has no return url")
 
-    # Runs before anything can be woken: `start` refuses a session that still
-    # claims to be running.
+    # Runs before any session can start: `start` refuses a session whose row
+    # still says running.
     with contextlib.suppress(Exception):
         await lifecycle.sweep_interrupted()
     await hands.start()
@@ -91,8 +90,7 @@ app = FastAPI(title="ARKOS", lifespan=lifespan)
 _origin = str(_cfg("app.public_url", "")).rstrip("/")
 app.add_middleware(
     CORSMiddleware,
-    # Defence in depth. /app and the API are served from one origin, so the
-    # cookie arrives because it is same-site.
+    # /app and the API share one origin, so the session cookie is same-site.
     allow_origins=[_origin] if _origin else [],
     allow_credentials=True,
     allow_methods=["*"],
@@ -130,14 +128,13 @@ async def current_user(request: Request) -> str:
 
 
 def _check_origin(request: Request) -> None:
-    """Reject a mutation from another origin. The CSRF cost of cookie auth."""
+    """Reject a mutation whose Origin header names another origin."""
     origin = request.headers.get("origin")
     if origin is None:
-        # Not a browser cross-site request: some same-origin fetches and every
-        # non-browser client send no Origin at all.
+        # Same-origin fetches and non-browser clients send no Origin header.
         return
-    # Fails closed on an unset app.public_url: an unconfigured origin refuses
-    # every browser mutation rather than accepting all of them.
+    # With app.public_url unset, `_origin` is empty and every browser mutation
+    # is refused.
     if origin.rstrip("/") != _origin:
         raise ApiError(403, "bad_origin", "Origin not allowed.")
 
@@ -151,7 +148,7 @@ JsonBody = Body(...)
 
 @app.post("/auth/session", status_code=204)
 async def create_auth_session(authorization: str | None = Header(default=None)) -> Response:
-    """Verify a Supabase token and set the session cookie. The only endpoint reading a bearer token."""
+    """Verify a Supabase token and set the session cookie. The only endpoint that reads a bearer token."""
     token = jwt_utils.extract_bearer(authorization)
     if not token:
         raise ApiError(401, "unauthenticated", "Send the Supabase access token as Authorization: Bearer.")
@@ -203,7 +200,7 @@ async def health() -> dict[str, Any]:
     try:
         await pool.fetchval("SELECT 1")
         database = "ok"
-    except Exception as e:  # noqa: BLE001 - the point is to report it, not raise
+    except Exception as e:  # noqa: BLE001 - the failure is reported in the response body
         database = f"unreachable: {type(e).__name__}"
     return {"status": "ok" if database == "ok" else "degraded", "database": database}
 
@@ -213,11 +210,10 @@ async def health() -> dict[str, Any]:
 
 @app.post("/sessions", status_code=201)
 async def create_session(body: dict[str, Any] = JsonBody, user_id: str = CurrentUser) -> dict[str, Any]:
-    """
-    Open a session on a goal and start its first turn.
+    """Open a session on a goal and start its first turn.
 
-    Only the rate quota is checked here: every session is created attended, so
-    the concurrency quota belongs on `/approve`, where it can bind.
+    A session is created attended, so only the new-session rate quota applies
+    here; the unattended concurrency quota is checked on approve.
     """
     goal = str(body.get("goal") or "").strip()
     if not goal:
@@ -274,7 +270,7 @@ async def get_session(session_id: str, user_id: str = CurrentUser) -> dict[str, 
         "title": row["title"],
         "project_id": str(row["project_id"]) if row["project_id"] else None,
         "status": row["status"],
-        # The UI reads mode to decide whether to offer the approve affordance.
+        # The UI reads mode to decide whether to offer the approve control.
         "mode": row["mode"],
         "terminal_reason": row["terminal_reason"],
         "hops_used": row["hops_used"],
@@ -304,7 +300,7 @@ async def list_projects(user_id: str = CurrentUser) -> list[dict[str, Any]]:
             "id": str(r["id"]),
             "title": r["title"],
             "updated_at": r["updated_at"].isoformat(),
-            # The grid's status dot, rolled up here so N projects cost one query.
+            # Rolled up in the query above, so the project grid costs one round trip.
             "status_rollup": _rollup(r),
             "sessions": r["sessions"],
         }
@@ -318,25 +314,21 @@ async def post_message(
     body: dict[str, Any] = JsonBody,
     user_id: str = CurrentUser,
 ) -> dict[str, Any]:
-    """
-    Append a message to a session, starting a turn if one is not running.
+    """Append a message to a session, starting a turn if one is not running.
 
-    A running session reads the event at its next hop, so this returns 202
-    rather than waiting.
+    A running session picks the event up at its next hop, so the response is
+    202 and carries no reply.
     """
     text = str(body.get("text") or "").strip()
     if not text:
         raise ApiError(400, "invalid_request", "An empty message says nothing.")
     row = await _owned_session(session_id, user_id)
     if row["status"] == "awaiting_approval":
-        # A composer message must not answer a park: an ambiguous "sure" typed
-        # into a chat box is not consent.
-        raise ApiError(409, "awaiting_approval", "This session is waiting on an approval. Answer that first.")
+        return await _answer_by_message(session_id, text)
 
     if not runner.is_running(session_id):
-        # Close any call a dead run left open BEFORE the message goes in. The
-        # other order puts a user event between a call and its result, and the
-        # fold then has to reorder to stay loadable.
+        # Calls left open by a dead run are closed before the message is
+        # appended, so no user event lands between a call and its result.
         for closed in await slog.close_dangling(session_id):
             stream.publish(session_id, closed)
 
@@ -345,14 +337,42 @@ async def post_message(
     return {"accepted": True, "started": started}
 
 
+@app.post("/approvals/{approval_id}/respond", status_code=202)
+async def respond_to_approval(
+    approval_id: str,
+    body: dict[str, Any] = JsonBody,
+    user_id: str = CurrentUser,
+) -> dict[str, Any]:
+    """Answer an open question and wake the session that raised it.
+
+    The answer is appended as a `user` event. The tool call that raised the
+    question was closed before the session parked, so nothing is back-filled.
+    """
+    text = str(body.get("answer") or "").strip()
+    if not text:
+        raise ApiError(400, "invalid_request", "An answer is required.")
+
+    approval = await approvals.get(approval_id, user_id)
+    if approval is None:
+        raise ApiError(404, "not_found", "No such approval.")
+
+    # The UPDATE matches on answered_at IS NULL, so two people answering at once
+    # produce one wake.
+    answered = await approvals.answer(approval_id, text)
+    if answered is None:
+        raise ApiError(409, "already_answered", "That question has already been answered.")
+
+    await _append(answered.session_id, UserEvent(text=text, source="human"))
+    started = await runner.start(answered.session_id, reason="answered")
+    return {"accepted": True, "session_id": answered.session_id, "started": started}
+
+
 @app.post("/sessions/{session_id}/approve", status_code=202)
 async def approve_session(session_id: str, user_id: str = CurrentUser) -> dict[str, Any]:
-    """
-    Hand a session over to run unattended, and start it.
+    """Hand a session over to run unattended, and start it.
 
-    Approving is the handoff: the same session, the same transcript, a different
-    phase. From here `finish_task` is the only way it can end, and the unattended
-    budgets apply.
+    The session keeps its id and its transcript. From here the unattended
+    budgets apply and `finish_task` is its only terminal step.
     """
     row = await _owned_session(session_id, user_id)
     if row["mode"] == "unattended":
@@ -360,8 +380,8 @@ async def approve_session(session_id: str, user_id: str = CurrentUser) -> dict[s
     if row["status"] not in ("idle", "pending"):
         raise ApiError(409, "not_idle", f"A session in {row['status']!r} cannot be handed over.")
 
-    # Checked here rather than at create time: every session is created
-    # attended, so at create time the unattended load is always zero.
+    # Sessions are created attended, so this is the only point at which a
+    # user's unattended load grows.
     await _check_unattended_quota(user_id)
 
     started = await runner.start(session_id, mode="unattended", reason="approved")
@@ -379,10 +399,11 @@ async def cancel_session(session_id: str, user_id: str = CurrentUser) -> dict[st
 @app.get("/results/{ref}")
 async def read_result(ref: str, offset: int = 0, limit: int = 2000, user_id: str = CurrentUser) -> dict[str, Any]:
     """Return a slice of a stored oversized result, scoped to its owner."""
-    text = await slog.read_blob(ref, offset=max(0, offset), limit=max(1, min(limit, 100_000)), user_id=user_id)
+    start = max(0, offset)
+    text = await slog.read_blob(ref, offset=start, limit=max(1, min(limit, 100_000)), user_id=user_id)
     if text is None:
         raise ApiError(404, "not_found", "No such result.")
-    return {"ref": ref, "offset": offset, "content": text}
+    return {"ref": ref, "offset": start, "content": text}
 
 
 # --- the stream ----------------------------------------------------------------
@@ -395,11 +416,10 @@ async def session_events(
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
     user_id: str = CurrentUser,
 ) -> StreamingResponse:
-    """
-    Stream the session's events, replaying anything after `Last-Event-ID` first.
+    """Stream the session's events, replaying anything after `Last-Event-ID` first.
 
-    Every frame carries `id: <seq>`, which is what lets `EventSource` reconnect
-    and resume with no client-side bookkeeping.
+    Every frame carries `id: <seq>`; `EventSource` returns the last id it saw
+    as the `Last-Event-ID` header when it reconnects.
     """
     await _owned_session(session_id, user_id)
     after = _int_or(last_event_id or request.query_params.get("last_event_id"), 0)
@@ -411,11 +431,11 @@ async def session_events(
 
 
 async def _event_stream(session_id: str, after_seq: int) -> AsyncIterator[str]:
-    """
-    Yield SSE frames until the client disconnects.
+    """Yield SSE frames until the client disconnects.
 
-    Subscribes before reading the backlog, so an event appended between the two
-    is not missed; `sent` then drops the overlap.
+    The subscription is opened before the backlog is read, so an event appended
+    during the read still arrives on the queue; `sent` holds the highest seq
+    yielded and drops the overlap.
     """
     keepalive = float(_cfg("harness.sse_keepalive_s", 15))
     try:
@@ -429,12 +449,12 @@ async def _event_stream(session_id: str, after_seq: int) -> AsyncIterator[str]:
                 try:
                     item = await asyncio.wait_for(queue.get(), timeout=keepalive)
                 except TimeoutError:
-                    # Proxies and EventSource drop a stream that sends nothing.
+                    # Proxies and EventSource drop a stream that stays silent.
                     yield ": keepalive\n\n"
                     continue
 
                 if item is LAGGED:
-                    # This consumer fell behind; it rejoins from the log.
+                    # This consumer fell behind its queue; it rejoins from the log.
                     for stored in await slog.get_events(session_id, after_seq=sent, limit=1000):
                         sent = stored.seq
                         yield _frame(stored)
@@ -446,10 +466,10 @@ async def _event_stream(session_id: str, after_seq: int) -> AsyncIterator[str]:
     except asyncio.CancelledError:
         # Starlette cancels this generator when the client disconnects.
         raise
-    except Exception as e:  # noqa: BLE001 - a dead stream reports itself
+    except Exception as e:  # noqa: BLE001 - the failure is sent as a final frame
         logger.exception("session %s: the event stream failed", session_id)
-        # Truncation and completion are indistinguishable to EventSource, so a
-        # silent failure would read as the agent going quiet.
+        # EventSource cannot tell a truncated stream from a finished one, so
+        # the failure is delivered as an error event.
         yield "event: error\ndata: " + json.dumps(
             {"code": "stream_failed", "message": f"{type(e).__name__}: {e}", "retryable": True}
         ) + "\n\n"
@@ -470,11 +490,11 @@ def _wire(stored: slog.StoredEvent) -> dict[str, Any]:
 
 @app.get("/connections")
 async def list_connections(user_id: str = CurrentUser) -> list[dict[str, Any]]:
-    """
-    List every configured server and this user's connection status.
+    """List every configured server and this user's connection status.
 
-    Re-verifies anything not yet connected. `connect()` is idempotent, so this
-    repairs a flow whose popup closed before its opener could re-fetch.
+    A server that is not connected is re-verified before the list is returned;
+    `connect()` is idempotent, so a row left behind by an interrupted OAuth
+    flow is repaired on read.
     """
     client = hands.smithery()
     if client is None:
@@ -483,8 +503,6 @@ async def list_connections(user_id: str = CurrentUser) -> list[dict[str, Any]]:
     if not any(client.needs_repair(r) for r in rows):
         return rows
 
-    # One repair attempt per unconnected server, then re-read. Catches whatever
-    # the OAuth callback's own verification missed.
     for row in rows:
         if client.needs_repair(row):
             await _verify_once(user_id, row["server"])
@@ -500,7 +518,7 @@ async def connect_server(server: str, user_id: str = CurrentUser) -> dict[str, A
     try:
         await client.connect(user_id, server, return_url=_callback_url(server))
     except AuthRequiredError as e:
-        # Expected: the user still has to authorize the server.
+        # The user has not authorized the server yet; they are sent to setup_url.
         return {"server": server, "status": e.state, "setup_url": e.setup_url}
     except SmitheryError as e:
         raise ApiError(502, "upstream_error", f"Smithery refused: {e}", retryable=True) from e
@@ -529,15 +547,12 @@ _POPUP_CLOSE = """<!doctype html><meta charset="utf-8"><title>Connected</title>
 
 @app.get("/oauth/callback/{server}")
 async def oauth_callback(server: str, request: Request) -> HTMLResponse:
-    """
-    Land Smithery's redirect once the user has authorized a server.
+    """Land Smithery's redirect once the user has authorized a server.
 
-    Identity comes from the cookie, never a query parameter: this is a top-level
-    GET, so SameSite=Lax sends it.
-
-    Verification runs after the response as one background attempt. It has to
-    run: dispatch never re-verifies, and revalidation skips unconnected rows, so
-    without it a row can read `auth_required` after a successful authorization.
+    The caller is read from the session cookie; this is a top-level GET, so
+    SameSite=Lax sends it. Verification runs once in the background after the
+    response, since dispatch does not re-verify and revalidation skips
+    unconnected rows.
     """
     try:
         user_id = await current_user(request)
@@ -554,14 +569,14 @@ async def oauth_callback(server: str, request: Request) -> HTMLResponse:
 
 
 async def _verify_once(user_id: str, server: str) -> None:
-    """Re-assert one connection, once. Idempotent, and never retried on a timer."""
+    """Re-assert one connection. Idempotent, and not retried."""
     client = hands.smithery()
     if client is None:
         return
     try:
         await client.connect(user_id, server)
     except AuthRequiredError:
-        # OAuth did not finish. The read-repair on GET /connections covers it.
+        # OAuth did not finish; GET /connections repairs the row on the next read.
         logger.info("oauth callback for %s: still unauthorized", server)
     except Exception:
         logger.exception("oauth callback verification failed for %s", server)
@@ -613,11 +628,32 @@ async def _check_rate_quota(user_id: str) -> None:
         raise ApiError(429, "quota_exceeded", f"{limit} new sessions an hour is the limit.", retryable=True)
 
 
+async def _answer_by_message(session_id: str, text: str) -> dict[str, Any]:
+    """Route a composer message sent to a parked session.
+
+    A question raised by `ask` is answered by the message, and the session
+    wakes. A request raised by `request_approval` is answered only through
+    `/approvals/{id}/respond`, where the action being agreed to is on screen.
+    """
+    open_questions = await approvals.open_for(session_id)
+    if open_questions and open_questions[0].kind == "approval":
+        raise ApiError(
+            409,
+            "awaiting_approval",
+            "This session is waiting on an approval. Answer it from the approval itself.",
+        )
+
+    if open_questions:
+        await approvals.answer(open_questions[0].id, text)
+    await _append(session_id, UserEvent(text=text, source="human"))
+    started = await runner.start(session_id, reason="answered")
+    return {"accepted": True, "started": started}
+
+
 async def _check_unattended_quota(user_id: str) -> None:
     """Enforce the per-user cap on sessions occupying a worker."""
     limit = int(_cfg("quotas.max_unattended_sessions", 5))
-    # Parked counts: an awaiting_approval session is alive and will resume.
-    # Idle and attended sessions occupy nothing.
+    # An awaiting_approval session still holds its worker slot and will resume.
     busy = await pool.fetchval(
         """
         SELECT count(*) FROM sessions

@@ -1,9 +1,7 @@
-"""
-Live fan-out of session events to subscribers.
+"""Live fan-out of session events to subscribers.
 
-The log in Postgres is the record; this only pushes. A subscriber whose queue
-overflows receives a LAGGED sentinel and re-reads from the log after its last
-seq, so a dropped slot costs latency rather than events.
+The log in Postgres is the record; this pushes only. A subscriber whose queue overflows
+receives the LAGGED sentinel and re-reads from the log after its last seq.
 """
 
 from __future__ import annotations
@@ -19,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class Lagged:
-    """Sentinel telling a subscriber its queue overflowed and it must re-read from the log."""
+    """Sentinel telling a subscriber its queue overflowed and it re-reads from the log."""
 
 
 LAGGED = Lagged()
@@ -35,23 +33,22 @@ class SessionStream:
         self._subscribers: dict[str, set[asyncio.Queue[Item]]] = {}
 
     def publish(self, session_id: str, event: StoredEvent) -> None:
-        """Hand one appended event to every subscriber. Never blocks, never raises."""
+        """Hands one appended event to every subscriber. Never blocks, never raises."""
         for queue in list(self._subscribers.get(session_id, ())):
             try:
                 queue.put_nowait(event)
             except asyncio.QueueFull:
-                # The subscriber re-reads from the log, so queued events would
-                # only delay the catch-up.
+                # The subscriber catches up from the log, so its queued events are
+                # dropped and replaced by the sentinel.
                 _drain(queue)
                 queue.put_nowait(LAGGED)
 
     @asynccontextmanager
     async def subscribe(self, session_id: str) -> AsyncIterator[asyncio.Queue[Item]]:
-        """
-        Attach to a session's live events for the life of the context.
+        """Attaches to a session's live events for the life of the context.
 
-        Subscribe before reading the backlog: an event appended between the two
-        would otherwise reach nobody. Readers de-duplicate on seq.
+        Callers subscribe before reading the backlog, so an event appended between the two
+        still arrives; readers de-duplicate on seq.
         """
         queue: asyncio.Queue[Item] = asyncio.Queue(maxsize=self._queue_size)
         self._subscribers.setdefault(session_id, set()).add(queue)

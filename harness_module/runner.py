@@ -1,9 +1,7 @@
-"""
-Drives one turn: fold a session's events into messages, run `run_turn`, and
-translate what it yields into log appends and status transitions.
+"""Drives one turn of a session.
 
-Covers attended sessions. Leases, the approve path, wake-at-cursor resume and
-the context ladder are not implemented here.
+Folds the session's event log into a message list, runs `run_turn` over it, and
+translates what the loop yields into log appends and status transitions.
 """
 
 from __future__ import annotations
@@ -34,11 +32,12 @@ from agent_module.events import (
 from agent_module.loop import Budgets, Dispatch, run_turn
 from config_module.loader import config
 from db import pool
-from harness_module import hands, lifecycle
+from harness_module import approvals, hands, lifecycle
 from harness_module import session_log as slog
 from harness_module.stream import stream
 from tool_module import registry
 from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec
+from tool_module.tools.control import PARK_KINDS
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +65,7 @@ class Session:
 # The live turn per session. At most one; a second start() is a no-op.
 _running: dict[str, asyncio.Task[None]] = {}
 
-# Sessions already signalled. A second cancel waits instead of cancelling again.
+# Sessions already signalled to stop. A second cancel waits for the turn to end.
 _cancelling: set[str] = set()
 
 # Background terminal retries, held so they are not garbage collected.
@@ -74,7 +73,7 @@ _reapers: set[asyncio.Task[None]] = set()
 
 
 async def load(session_id: str) -> Session | None:
-    """Return the session, or None if there is no such row."""
+    """Returns the session, or None if there is no such row."""
     row = await pool.fetchrow(
         """
         SELECT id, user_id, project_id, mode, status, goal, created_at, cursor_seq, hops_used
@@ -102,7 +101,7 @@ async def load(session_id: str) -> Session | None:
 
 @dataclass(slots=True)
 class Folded:
-    """What one fold produced: the view, the hops behind it, and any drop it made."""
+    """One fold's output: the message list, the hop count behind it, and any transform applied."""
 
     messages: list[dict[str, Any]]
     hops_used: int
@@ -110,17 +109,17 @@ class Folded:
 
 
 def _cleared_text(ref: str) -> str:
-    """What a cleared result reads as in the view. The full text is still in result_blobs."""
+    """Returns the placeholder a cleared result shows in the view; the text stays in result_blobs."""
     return f"[cleared from view to make room. read_result(ref={ref!r}) to re-read it]"
 
 
 def _input_budget() -> int:
-    """Tokens available for the view: the window less the output reserve."""
+    """Returns the tokens available for the view: the context window less the output reserve."""
     return max(0, int(_cfg("llm.context_window", 0)) - int(_cfg("llm.max_tokens", 0)))
 
 
 def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
-    """Estimate the view's size. A ratio, because there is no tokenizer for the served model."""
+    """Estimates the view's size in tokens, from a character-per-token ratio."""
     chars = 0
     for message in messages:
         chars += len(str(message.get("content") or ""))
@@ -131,23 +130,20 @@ def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
 
 
 async def fold(session: Session) -> Folded:
-    """
-    Rebuild the model's message list from the session's log.
+    """Rebuilds the model's message list from the session's log.
 
-    Deterministic given (log, config, mode): no clock is read, the date in the
-    system prompt comes from `sessions.created_at`, and the ladder below clears
-    the same results every time it runs on the same log.
+    `user` and `content` events become messages, `tool_call` and `tool_result` become the
+    paired assistant and tool messages, `reasoning` is dropped, and the remaining kinds are
+    UI-only.
 
-    `user` and `content` become messages, `tool_call` and `tool_result` become
-    the paired assistant and tool messages, `reasoning` is dropped, and the
-    remaining kinds are UI-only.
+    The output is a function of (log, config, mode): no clock is read, and the date in the
+    system prompt comes from `sessions.created_at`.
     """
     events = await _all_events(session.id)
     messages, hops_used = _assemble(session, events, frozenset())
 
-    # Rung 0: is the view too big? Rung 1: clear the oldest results holding a
-    # blob ref until it is not. A result with no ref is never cleared -- there
-    # would be no way back to it.
+    # Rung 0 measures the view; rung 1 clears the oldest results holding a blob ref
+    # until it fits. A result with no ref stays, since nothing can read it back.
     budget = _input_budget()
     threshold = float(_cfg("context.recovery_threshold", 0.8))
     ceiling = int(budget * threshold)
@@ -166,10 +162,9 @@ async def fold(session: Session) -> Folded:
         return Folded(messages, hops_used)
 
     if _estimate_tokens(messages) > ceiling:
-        # Rung 1 clears results and nothing else, so a view dominated by the
-        # system prompt and the conversation itself can stay over. Rungs 2-3
-        # (demote, then summarize) are where that goes; until they exist the
-        # hop may still come back done{context_overflow}.
+        # Rung 1 clears results and nothing else, so a view dominated by the system
+        # prompt and the conversation stays over budget and the hop can come back
+        # done{context_overflow}.
         logger.warning(
             "session %s: cleared every stored result and the view is still over budget",
             session.id,
@@ -179,7 +174,7 @@ async def fold(session: Session) -> Folded:
 
 
 def _clearable_refs(events: list[slog.StoredEvent]) -> list[str]:
-    """Every stored result's ref, oldest first."""
+    """Returns every stored result's ref, oldest first."""
     return [
         e.event.ref
         for e in events
@@ -192,12 +187,11 @@ def _assemble(
     events: list[slog.StoredEvent],
     cleared: frozenset[str],
 ) -> tuple[list[dict[str, Any]], int]:
-    """
-    Build the message list from events, with `cleared` refs reduced to a pointer.
+    """Builds the message list from events, with `cleared` refs reduced to a pointer.
 
     Returns:
-        The messages, and the hops spent in the current run (the log after the
-        last `done`).
+        The messages, and the hops spent in the current run (the log after the last
+        `done`).
     """
     messages: list[dict[str, Any]] = [
         {
@@ -216,7 +210,7 @@ def _assemble(
     deferred_users: list[str] = []
 
     def flush_assistant() -> None:
-        """Close the assistant message being built, if there is one."""
+        """Closes the assistant message being built, if there is one."""
         if not pending_text and not pending_calls:
             return
         message: dict[str, Any] = {"role": "assistant", "content": "".join(pending_text) or None}
@@ -231,7 +225,7 @@ def _assemble(
         messages.append({"role": "user", "content": text})
 
     def drain_deferred() -> None:
-        """Emit user messages held back while tool calls were open."""
+        """Emits the user messages held back while tool calls were open."""
         if open_calls:
             return
         for text in deferred_users:
@@ -241,10 +235,10 @@ def _assemble(
     for stored in events:
         event = stored.event
         if isinstance(event, UserEvent):
-            # A message typed while a call was in flight sits between the call
-            # and its result in the log. Emitting it there would put a `tool`
-            # message after a `user` one, which the chat template rejects, so it
-            # is held until the results close. View-only: the log is untouched.
+            # A message typed while a call was in flight sits between the call and its
+            # result in the log. The chat template rejects a `tool` message that follows
+            # a `user` one, so it is held here until the open calls close. The log keeps
+            # its original order.
             if open_calls:
                 deferred_users.append(event.text)
             else:
@@ -261,8 +255,8 @@ def _assemble(
                 }
             )
         elif isinstance(event, ToolResultEvent):
-            # Every call of the hop is buffered by now, so each result lands
-            # directly after the assistant message carrying its call.
+            # Every call of the hop is buffered by now, so each result lands directly
+            # after the assistant message carrying its call.
             flush_assistant()
             body = _cleared_text(event.ref) if event.ref and event.ref in cleared else _result_text(event)
             messages.append({"role": "tool", "tool_call_id": event.id, "content": body})
@@ -283,7 +277,7 @@ def _assemble(
 
 
 async def _all_events(session_id: str, page: int = 500) -> list[slog.StoredEvent]:
-    """Read the session's whole log, one page at a time."""
+    """Reads the session's whole log, one page at a time."""
     out: list[slog.StoredEvent] = []
     cursor = 0
     while True:
@@ -295,7 +289,7 @@ async def _all_events(session_id: str, page: int = 500) -> list[slog.StoredEvent
 
 
 def _result_text(event: ToolResultEvent) -> str:
-    """Return the stored result as the model should see it, with a pointer to any stored tail."""
+    """Returns the stored result as the model sees it, with a pointer to any stored tail."""
     if event.ref and event.total_chars:
         return (
             f"{event.content}\n\n[truncated at {len(event.content)} of {event.total_chars} chars. "
@@ -312,18 +306,16 @@ def _dumps(args: dict[str, Any]) -> str:
 
 
 async def start(session_id: str, *, mode: lifecycle.Mode | None = None, reason: str = "woken") -> bool:
-    """
-    Move a session to `running` and drive one turn in the background.
+    """Moves a session to `running` and drives one turn in the background.
 
     Args:
-        mode: flipped in the same UPDATE as the status. The approve endpoint
-            passes `unattended`; a plain wake passes nothing and keeps the mode
-            the session already has.
+        mode: set in the same UPDATE as the status when given; None keeps the session's
+            current mode.
         reason: recorded on the lifecycle event.
 
     Returns:
-        False if the session is already running, does not exist, or lost the
-        status race to another writer.
+        False if the session is already running, does not exist, or lost the status race
+        to another writer.
     """
     live = _running.get(session_id)
     if live is not None and not live.done():
@@ -334,8 +326,8 @@ async def start(session_id: str, *, mode: lifecycle.Mode | None = None, reason: 
     if session is None:
         return False
     if session.status == "running":
-        # Running with no task here means the owning process died. The startup
-        # sweep fails those; racing it would double-write the terminal.
+        # Running with no task in this process means the owning process died. The
+        # startup sweep fails those sessions.
         logger.warning("session %s is running with no task in this process", session_id)
         return False
     if not await lifecycle.transition(session_id, session.status, "running", reason, mode=mode):
@@ -348,35 +340,40 @@ async def start(session_id: str, *, mode: lifecycle.Mode | None = None, reason: 
 
 
 def is_running(session_id: str) -> bool:
-    """Return True if this process is driving a turn for the session right now."""
+    """Returns True while this process is driving a turn for the session."""
     task = _running.get(session_id)
     return task is not None and not task.done()
 
 
 async def cancel(session_id: str) -> bool:
-    """Stop a session. A live turn is signalled; anything else is written straight to `cancelled`."""
+    """Stops a session.
+
+    A live turn is signalled and awaited; a session with no turn here is written straight
+    to `cancelled`.
+    """
     task = _running.get(session_id)
     if task is not None and not task.done():
         if session_id not in _cancelling:
             _cancelling.add(session_id)
             task.cancel()
-        # asyncio.wait rather than `await task`: it reports completion without
-        # re-raising the task's CancelledError at this caller.
+        # asyncio.wait reports the task's completion without re-raising its
+        # CancelledError in this caller.
         await asyncio.wait({task})
         return True
 
     session = await load(session_id)
     if session is None or session.status in lifecycle.TERMINAL:
         return False
-    # Through the same helper as a live turn, so the transcript gets its
-    # done{cancelled}. A bare transition leaves no `done`, and the fold resets
-    # hops at a `done`, so a restarted session would inherit the old count and
-    # hit max_hops before calling the model.
+    # `_ending` appends the done{cancelled} the transcript needs: the fold resets the
+    # hop count at a `done`, so a restarted session budgets from zero.
     return await _ending(session_id, None, "cancelled", expected=session.status)
 
 
 async def _drive(session_id: str) -> None:
-    """Run one turn to its end. Every exit path writes a terminal, setup included."""
+    """Runs one turn to its end.
+
+    Every exit path writes a terminal, including a failure during setup.
+    """
     sink: _Sink | None = None
     try:
         session = await load(session_id)
@@ -384,21 +381,20 @@ async def _drive(session_id: str) -> None:
             return
         sink = _Sink(session)
 
-        # Close any call the last run left open. The chat template rejects a
-        # tool_call id with no matching tool message, so an unclosed call makes
-        # the session unloadable rather than merely interrupted.
+        # Close any call the last run left open: the chat template rejects a tool_call
+        # id with no matching tool message.
         for closed in await slog.close_dangling(session_id):
             stream.publish(session_id, closed)
 
         folded = await fold(session)
         messages, hops_used = folded.messages, folded.hops_used
         if folded.transform is not None:
-            # View-only, and the log says so happened rather than being rewritten.
+            # The clearing is recorded as an event; the log itself keeps every result.
             sink.emit(folded.transform)
         try:
             tools = await registry.manifest(session.user_id, mcp=hands.smithery())
         except Exception:
-            # An unreachable MCP costs the model its remote tools, not its turn.
+            # An unreachable MCP server leaves the manifest without its remote tools.
             logger.exception("session %s: building the full manifest failed", session_id)
             tools = await registry.manifest(session.user_id)
 
@@ -416,13 +412,28 @@ async def _drive(session_id: str) -> None:
             options=_model_options(),
             store_blob=sink.store_blob,
         ):
+            if isinstance(event, DoneEvent) and sink.parked:
+                # The run ended in the same hop that raised a question. The
+                # terminal wins and no question is recorded: there is nothing
+                # left for an answer to affect.
+                logger.info("session %s ended before its question was recorded", session_id)
+                sink.drop_park()
+                await sink.close(event)
+                return
+            if sink.parked and isinstance(event, BudgetEvent):
+                # A hop boundary: every call of the parking hop has closed, so the
+                # transcript folds cleanly. The loop stops before the next model call.
+                break
             if isinstance(event, DoneEvent):
                 await sink.close(event)
                 return
             sink.emit(event)
             if sink.failure is not None:
-                # Nothing executes off the record: a failed append halts the run.
+                # A failed append halts the run, so nothing executes off the record.
                 raise RuntimeError("the session log could not be written") from sink.failure
+        if sink.parked:
+            await sink.park()
+            return
         await sink.close()
     except asyncio.CancelledError:
         await _shielded(_ending(session_id, sink, "cancelled"))
@@ -435,13 +446,13 @@ async def _drive(session_id: str) -> None:
 
 
 async def _shielded(work: Awaitable[None]) -> None:
-    """Run `work` to completion even if this task is cancelled again while it runs."""
+    """Runs `work` to completion even if this task is cancelled again while it runs."""
     task = asyncio.ensure_future(work)
     while not task.done():
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
-            # A further cancel. The shielded task is untouched, so keep waiting.
+            # A further cancel reaches the shield, not the task, so keep waiting.
             if task.done():
                 break
         except Exception:
@@ -455,15 +466,13 @@ async def _ending(
     reason: str,
     expected: str = "running",
 ) -> bool:
-    """
-    Record the end of a run: close open calls, append the `done`, move the status.
+    """Records the end of a run: closes open calls, appends the `done`, moves the status.
 
-    `sink` is None when the turn died before it was built, and when there is no
-    turn at all — a cancel of a pending, idle or parked session.
+    `sink` is None when the turn died before the sink was built, and when there is no turn
+    at all (a cancel of a pending, idle or parked session).
     """
     if sink is not None:
-        await sink.abort(reason)
-        return True
+        return await sink.abort(reason)
     try:
         status = "cancelled" if reason == "cancelled" else "failed"
         # The invariant refuses a `done` while a call is open.
@@ -477,14 +486,23 @@ async def _ending(
         return False
 
 
+def _park_prompt(name: str, args: dict[str, Any]) -> str:
+    """Returns the text shown to the human, taken from the park tool's arguments."""
+    if name == "ask":
+        return str(args.get("question") or "").strip() or "(no question given)"
+    action = str(args.get("action") or "").strip() or "(no action given)"
+    detail = str(args.get("detail") or "").strip()
+    return f"{action}\n\n{detail}" if detail else action
+
+
 def _model_options() -> dict[str, Any] | None:
-    """Per-call model params, read from config only."""
+    """Returns the per-call model parameters from config, or None when unset."""
     options = config.get("llm.options")
     return dict(options) if options else None
 
 
 def _mcp_call():
-    """Adapt the shared Smithery client to the registry's mcp_call shape, or None if unconfigured."""
+    """Adapts the shared Smithery client to the registry's mcp_call shape, or None if unconfigured."""
     client = hands.smithery()
     if client is None:
         return None
@@ -497,7 +515,7 @@ def _mcp_call():
 
 # --- translating events into a record -----------------------------------------
 
-# End-of-queue marker. Not None, which is a legal value to find in a queue.
+# End-of-queue marker for the writer's queue.
 _STOP = object()
 
 
@@ -511,35 +529,34 @@ class _Barrier:
 
 
 class _Sink:
-    """
-    Appends what the loop yields, and moves the session when the turn ends.
+    """Writes the loop's events to the session log and moves the session at the end of a turn.
 
-    `emit` is synchronous: it queues the event for a writer task, so the loop is
-    never suspended on a database round trip while the model is streaming. Text
-    coalescing follows from that — whatever queues up behind an in-flight append
-    is written as one row.
+    `emit` queues an event and returns; a writer task performs the appends, and
+    consecutive text events still queued are written as a single row.
 
-    Mutating tool calls are the exception. `write_ahead` makes them await
-    `barrier()`, so a side effect cannot happen before the `tool_call` recording
-    its intent is committed. Readonly calls skip the barrier.
+    `write_ahead` wraps dispatch so a non-readonly tool waits, via `barrier()`,
+    until its own `tool_call` event is committed before it runs.
     """
 
     def __init__(self, session: Session):
         self.session = session
         self._queue: asyncio.Queue[Any] = asyncio.Queue()
-        # asyncio.Queue cannot un-get, so a merge that overshoots parks the
-        # event it read here for the next iteration.
+        # asyncio.Queue has no un-get, so a merge that reads one event too many parks
+        # it here for the next iteration.
         self._pushback: list[Any] = []
         self._writer = asyncio.create_task(self._write_loop(), name=f"log:{session.id}")
         # Set when an append fails. The drive loop halts the run on it.
         self.failure: BaseException | None = None
-        # Separate flags so a finish interrupted between the two steps can be
-        # retried without appending a second `done`.
+        # Separate flags, so a finish interrupted between the two steps can be retried
+        # without appending a second `done`.
         self._done_appended = False
         self._terminal_written = False
         self._reaping = False
-        # The ending already on the record. A later abort completes it rather
-        # than contradicting it.
+        # The park tool call whose result arrived, and the arguments it carried. Set on
+        # the result, at which point the call is closed in the transcript.
+        self._park: tuple[str, str, dict[str, Any]] | None = None
+        self._park_calls: dict[str, tuple[str, dict[str, Any]]] = {}
+        # The ending already on the record; a later abort completes this one.
         self._pending_done: DoneEvent | None = None
         self._last_seq = 0
         self._hops = 0
@@ -547,11 +564,11 @@ class _Sink:
     # --- what tools and the loop see -------------------------------------------
 
     async def store_blob(self, content: str) -> str:
-        """Store the full text of an oversized result and return its ref."""
+        """Stores the full text of an oversized result and returns its ref."""
         return await slog.save_blob(self.session.id, content)
 
     def tool_context(self) -> ToolContext:
-        """Build the context tools receive alongside their arguments."""
+        """Builds the context tools receive alongside their arguments."""
         return ToolContext(
             user_id=self.session.user_id,
             session_id=self.session.id,
@@ -562,32 +579,44 @@ class _Sink:
         )
 
     async def _approve(self, name: str, args: dict[str, Any]) -> bool:
-        """
-        Answer a `requires_approval` tool.
+        """Answers a `requires_approval` tool.
 
-        Attended sessions approve automatically: a human is watching the stream
-        and can cancel. Unattended sessions have no one to ask, so they refuse.
+        Attended sessions approve automatically while `approvals.attended_auto_approve`
+        is set; unattended sessions refuse.
         """
         if self.session.mode == "attended" and bool(_cfg("approvals.attended_auto_approve", True)):
             return True
         logger.warning("session %s: %s needs approval and nothing can ask for it yet", self.session.id, name)
         return False
 
+    def drop_park(self) -> None:
+        """Discards a pending park. The question is never written."""
+        self._park = None
+
+    @property
+    def parked(self) -> bool:
+        """True once a park tool has returned a result."""
+        return self._park is not None
+
     def emit(self, event: Event) -> None:
-        """Queue one event for the writer. Never blocks."""
+        """Queues one event for the writer. Never blocks."""
         if isinstance(event, BudgetEvent):
             self._hops = event.hops_used
+        elif isinstance(event, ToolCallEvent) and event.name in PARK_KINDS:
+            self._park_calls[event.id] = (event.name, event.args)
+        elif isinstance(event, ToolResultEvent) and event.ok and event.id in self._park_calls:
+            name, args = self._park_calls[event.id]
+            self._park = (event.id, name, args)
         self._queue.put_nowait(event)
 
     # --- write-ahead for anything that acts --------------------------------------
 
     async def barrier(self) -> None:
-        """
-        Wait until everything queued so far is committed.
+        """Waits until everything queued so far is committed.
 
         Raises:
-            Exception: whatever the writer failed on, so a caller that cannot be
-                recorded does not proceed to act.
+            Exception: the error the writer failed on, so a call that cannot be recorded
+                does not run.
         """
         if self.failure is not None:
             raise self.failure
@@ -598,11 +627,11 @@ class _Sink:
         await waiting
 
     def write_ahead(self, dispatch: Dispatch, tools: Sequence[ToolSpec]) -> Dispatch:
-        """Wrap dispatch so a mutating tool waits for its `tool_call` to be committed."""
+        """Wraps dispatch so a non-readonly tool waits for its `tool_call` to be committed."""
         readonly = {t.name: t.readonly for t in tools}
 
         async def guarded(name: str, args: dict[str, Any]) -> ResultEnvelope:
-            # An unknown name counts as mutating.
+            # An unknown name counts as non-readonly.
             if not readonly.get(name, False):
                 await self.barrier()
             return await dispatch(name, args)
@@ -612,7 +641,7 @@ class _Sink:
     # --- the writer -------------------------------------------------------------
 
     async def _write_loop(self) -> None:
-        """Append queued events in order, merging consecutive text into one row."""
+        """Appends queued events in order, merging consecutive text into one row."""
         while True:
             event = self._pushback.pop() if self._pushback else await self._queue.get()
             if event is _STOP:
@@ -633,7 +662,7 @@ class _Sink:
                 return
 
     def _release_barriers(self, error: BaseException | None) -> None:
-        """Settle every queued barrier, so nothing waits on a writer that has stopped."""
+        """Settles every queued barrier, so nothing waits on a writer that has stopped."""
         pending = self._pushback + [self._queue.get_nowait() for _ in range(self._queue.qsize())]
         self._pushback.clear()
         unwritten = 0
@@ -651,7 +680,7 @@ class _Sink:
             logger.error("session %s: %d event(s) queued after the writer stopped", self.session.id, unwritten)
 
     def _merge_text(self, first: ContentEvent | ReasoningEvent) -> Event:
-        """Merge the run of same-kind text events already queued, without waiting for more."""
+        """Merges the run of same-kind text events already queued, without waiting for more."""
         parts = [first.text]
         while True:
             try:
@@ -670,7 +699,7 @@ class _Sink:
         self._last_seq = stored.seq
 
     async def _drain(self) -> None:
-        """Stop the writer once everything queued is written."""
+        """Stops the writer once everything queued is written."""
         if self._writer.done():
             return
         self._queue.put_nowait(_STOP)
@@ -679,20 +708,16 @@ class _Sink:
     # --- ending -----------------------------------------------------------------
 
     async def _finish(self, done: DoneEvent) -> None:
-        """
-        Append the terminal event and move the session.
+        """Appends the terminal event and moves the session.
 
-        Both steps are guarded separately so an interrupted finish can be
-        retried: `_done_appended` prevents a second `done` row, and
-        `_terminal_written` is set only once the status transition has landed.
-        The first reason to reach here is the one the session ends on.
+        `_done_appended` guards the append and `_terminal_written` the transition, so an
+        interrupted finish can be retried without a second `done` row. The session ends on
+        the first reason to reach here.
         """
         if self._terminal_written:
             return
-        # A partially written finish owns the reason. Without this, an abort
-        # arriving after the `done` was appended but before the transition
-        # landed would move the session on ITS reason, leaving a transcript
-        # saying turn_end next to a status saying failed.
+        # A partly written finish keeps its reason, so the `done` on the transcript and
+        # the status the session lands in agree.
         done = self._pending_done or done
         self._pending_done = done
         try:
@@ -707,7 +732,7 @@ class _Sink:
 
             await self._save_cursor()
             new_status = lifecycle.status_for(done)
-            # An unattended run that ends hands the session back to its human.
+            # An unattended run that reaches a terminal hands the session back attended.
             mode = "attended" if new_status in lifecycle.TERMINAL and self.session.mode == "unattended" else None
             await lifecycle.transition(self.session.id, "running", new_status, done.reason, mode=mode)
             self._terminal_written = True
@@ -716,7 +741,7 @@ class _Sink:
             raise
 
     def _reap_later(self, done: DoneEvent) -> None:
-        """Retry this terminal in the background until it lands or the attempts run out."""
+        """Retries this terminal in the background until it lands or the attempts run out."""
         if self._reaping:
             return
         self._reaping = True
@@ -725,14 +750,15 @@ class _Sink:
         task.add_done_callback(_reapers.discard)
 
     async def _reap(self, done: DoneEvent) -> None:
+        """Calls `_finish` on a doubling backoff, capped at `harness.terminal_retry_max_s`."""
         attempts = int(_cfg("harness.terminal_retry_max", 8))
         base = float(_cfg("harness.terminal_retry_s", 2))
         ceiling = float(_cfg("harness.terminal_retry_max_s", 60))
         for attempt in range(1, attempts + 1):
             await asyncio.sleep(min(base * (2 ** (attempt - 1)), ceiling))
             try:
-                # `_reaping` stays set here, so a failing `_finish` re-enters
-                # `_reap_later` as a no-op instead of spawning another reaper.
+                # `_reaping` stays set, so a failing `_finish` re-enters `_reap_later`
+                # as a no-op and no second reaper starts.
                 await self._finish(done)
             except Exception:
                 logger.warning("session %s: terminal retry %d/%d failed", self.session.id, attempt, attempts)
@@ -747,8 +773,28 @@ class _Sink:
             attempts,
         )
 
+    async def park(self) -> bool:
+        """Suspends the session on its open question.
+
+        No `done` is appended: the run is not over. The approval row and the
+        `awaiting_approval` status carry the wait; nothing is held in memory.
+
+        Returns:
+            True if the status moved to `awaiting_approval`.
+        """
+        if self._park is None:
+            return False
+        await self._drain()
+        call_id, name, args = self._park
+        approval = await approvals.create(self.session.id, call_id, PARK_KINDS[name], _park_prompt(name, args))
+        await self._save_cursor()
+        moved = await lifecycle.transition(self.session.id, "running", "awaiting_approval", name)
+        if moved:
+            logger.info("session %s parked on %s (%s)", self.session.id, name, approval.id)
+        return moved
+
     async def close(self, done: DoneEvent | None = None) -> None:
-        """Finish the turn, synthesizing a terminal if the loop ended without one."""
+        """Finishes the turn, synthesizing a terminal if the loop ended without one."""
         if done is not None:
             await self._finish(done)
             return
@@ -757,15 +803,20 @@ class _Sink:
             logger.error("session %s: the loop ended with no done event", self.session.id)
             await self._finish(DoneEvent(reason="model_error"))
 
-    async def abort(self, reason: str) -> None:
-        """End the run from outside the loop. Failures are logged, not raised: this is the error path."""
+    async def abort(self, reason: str) -> bool:
+        """Ends the run from outside the loop, on the error path. Failures are logged, not raised.
+
+        Returns:
+            True if the terminal reached the database.
+        """
         try:
             await self._finish(DoneEvent(reason=reason))
         except Exception:
             logger.exception("session %s: could not record the %s ending", self.session.id, reason)
+        return self._terminal_written
 
     async def _save_cursor(self) -> None:
-        """Write back the cursor and hop count. Both cache what the log already holds."""
+        """Writes back the cursor and hop count, both caches of what the log holds."""
         with contextlib.suppress(Exception):
             await pool.execute(
                 "UPDATE sessions SET cursor_seq = $2, hops_used = $3 WHERE id = $1",

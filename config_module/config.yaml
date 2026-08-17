@@ -2,13 +2,10 @@ app:
   host: "0.0.0.0"
   port: "1121"
   reload: true
-  # The single origin /app and the API are served from, behind Caddy. Set this
-  # to the real origin in production: mutations carrying any other Origin are
-  # refused, approval notifications deep-link to it, and the OAuth callback URL
-  # is built from it.
-  # Same-site is required: SameSite=Lax sends the cookie only on top-level GETs,
-  # so a cross-site frontend would send none on any EventSource and every SSE
-  # stream would 401.
+  # The origin /app and the API are served from, behind Caddy. Mutations arriving
+  # with any other Origin are refused, approval notifications deep-link here, and
+  # the OAuth callback URL is built from it. The frontend is same-site: with
+  # SameSite=Lax, a cross-site EventSource carries no cookie.
   public_url: "http://localhost:1121"
 
 auth:
@@ -16,27 +13,22 @@ auth:
   cookie_name: "ark_session"
   cookie_secure: true             # false only for plain-http local development
   cookie_samesite: "lax"
-  session_ttl_s: 604800           # 7 days
+  session_ttl_s: 604800           # cookie lifetime in seconds (7 days)
 
 harness:
-  # There is no content-flush interval: the log writer runs behind the loop, so
-  # text that arrives during an in-flight append is merged into one row.
   snapshot_events: 200            # what GET /sessions/{id} returns as recent_events
-  sse_keepalive_s: 15             # proxies drop an idle stream at ~30s
-  # Backoff for retrying a terminal that could not be written. Without it a
-  # database blip mid-finish leaves a live session stuck `running`.
+  sse_keepalive_s: 15             # seconds between SSE keepalives; proxies drop an idle stream at ~30s
+  # Backoff in seconds, and the attempt cap, for retrying a terminal transition
+  # the database refused.
   terminal_retry_s: 2
   terminal_retry_max_s: 60
   terminal_retry_max: 8
 
 context:
-  # Rung 0 trips when the folded view passes this fraction of the input budget
-  # (llm.context_window - llm.max_tokens). Rung 1 then clears the oldest results
-  # that hold a blob ref, oldest first, until the view is back under it.
+  # Fraction of the input budget (llm.context_window - llm.max_tokens) at which
+  # the context ladder starts clearing the oldest blob-backed results.
   recovery_threshold: 0.8
-  # There is no tokenizer for the served model, and the wrong one is worse than
-  # an honest ratio: cl100k over a Qwen vocabulary was a listed violation.
-  chars_per_token: 4
+  chars_per_token: 4              # characters per token in the estimate; there is no tokenizer for this model
   turns: 50                       # short-term transcript window; not read yet
 
 quotas:
@@ -45,40 +37,26 @@ quotas:
   upload_max_mb: 25               # per file, POST /projects/{id}/files
 
 approvals:
-  # Attended sessions approve automatically: a human is watching the stream and
-  # can cancel mid-call. Unattended sessions have no one to ask and refuse.
+  # Whether an attended session approves tool calls without prompting.
+  # Unattended sessions refuse the calls this would have approved.
   attended_auto_approve: true
 
 llm:
-  # Hosted OpenAI for now. Self-hosting needs a GPU, and nothing about the loop
-  # depends on which of the two is serving: client.py is an AsyncOpenAI against
-  # base_url. model_module/run.sh still launches Qwen3-8B when the box is back.
+  # OpenAI-compatible endpoint; client.py is an AsyncOpenAI against base_url.
   base_url: "https://api.openai.com/v1"
   model_name: "gpt-4.1-mini"
-  api_key: "${OPENAI_API_KEY}"   # client.py falls back to "-", which SGLang ignores
-                                 # and a real provider rejects as a 401
-  # gpt-5.x rejects `max_tokens` (it wants max_completion_tokens) and pins
-  # temperature, so it needs a client change before it can be selected here.
-  # The 4.1 family takes the params client.py already sends. gpt-4.1-nano is
-  # cheaper if this is still too expensive; gpt-4o-mini also works.
-  max_tokens: 8192          # output reserve (max completion tokens), NOT the context limit
-  context_window: 128000    # DELIBERATELY under the model's ~1M ceiling. Self-hosted, this
-                            # had to match the SGLang launch flag exactly. Hosted, the rule
-                            # inverts: it must not EXCEED what the API takes, and understating
-                            # is free — it engages the context ladder early and bounds spend,
-                            # where overstating buys a hard failure mid-run.
+  api_key: "${OPENAI_API_KEY}"   # client.py falls back to "-" when this is unset
+  max_tokens: 8192          # tokens reserved for the completion
+  context_window: 128000    # tokens of context assumed when sizing the input budget;
+                            # at or below what the API accepts for model_name
   temperature: 0.7
-  timeout_s: 90             # per request. Task 0a measured a 44s max on Qwen3-8B;
-                            # that number does not transfer, but 90 is still ample.
-  max_retries: 3            # the ONE retry layer. Read as a cap on TOTAL attempts
-                            # per generate() call — contracts names the key
-                            # max_retries but its conformance test pins "<=3
-                            # attempts", and the test is the testable half.
-  retry_backoff_s: 0.5      # first backoff; doubles, with jitter
+  timeout_s: 90             # seconds per request
+  max_retries: 3            # cap on total attempts per generate() call
+  retry_backoff_s: 0.5      # first backoff in seconds; doubles, with jitter
   retry_backoff_max_s: 8.0
 
 budgets:
-  # Keyed by sessions.mode, so nothing maps one vocabulary onto another.
+  # Keyed by sessions.mode. wall_clock_s is seconds of run time.
   attended:   {max_hops: 6,  wall_clock_s: 300}
   unattended: {max_hops: 15, wall_clock_s: 1800}
   per_tool_attempts: 3
@@ -86,10 +64,9 @@ budgets:
 
 tools:
   result_view_cap_chars: 4000   # over this -> blob + ref
-  call_timeout_s: 120           # hard cap on one tool call
-  mcp_cache_ttl_s: 3600         # revalidate a connection's tools/list after this.
-                                # Only refreshes the cached list; never re-PUTs,
-                                # so a restart still costs zero Smithery writes.
+  call_timeout_s: 120           # seconds, hard cap on one tool call
+  mcp_cache_ttl_s: 3600         # seconds before a connection's cached tools/list is revalidated;
+                                # revalidation refreshes the list only, and never re-PUTs
 
 database:
   url: "${DB_URL}"
@@ -98,30 +75,26 @@ database:
 
 
 # Per-user e2b sandbox (files + shell). The E2B SDK reads E2B_API_KEY from the
-# environment directly, so it is intentionally NOT referenced here -- that keeps
-# config load from crashing when the key is unset during early setup.
+# environment directly, so the key is not referenced here.
 sandbox:
   template: "base"                         # e2b template
-  timeout_seconds: 300                     # keep-alive while working
-  idle_timeout_seconds: 900                # pause after this much idle (lifecycle, later)
+  timeout_seconds: 300                     # seconds a sandbox stays alive while working
+  idle_timeout_seconds: 900                # seconds of idle before it pauses (lifecycle, later)
 
-# All MCP traffic flows through Smithery Connect. No local subprocesses, no
-# per-provider OAuth plumbing on our side. Smithery maintains the OAuth apps,
-# stores credentials write-only, and refreshes tokens automatically.
+# All MCP traffic flows through Smithery Connect: it hosts the OAuth apps, stores
+# credentials write-only, and refreshes tokens.
 smithery:
   api_key: "${SMITHERY_API_KEY}"
   namespace: "${SMITHERY_NAMESPACE}"     # e.g. "arkos"
   base_url: "https://api.smithery.ai"
 
 mcp_servers:
-  # requires_auth: true  => Smithery's hosted per-user OAuth flow (user connects in
-  #                         the settings panel). requires_auth: false => shared.
+  # requires_auth: true  => Smithery's hosted per-user OAuth flow (the user connects
+  #                         in the settings panel). false => a shared connection.
   # Add more servers by copying from https://smithery.ai/server/<name>.
   #
-  # auto_approve waives the approval prompt. Absent, every MCP tool requires
-  # approval: a remote server does not say whether a tool mutates, and an
-  # unattended run reaching for these sends mail and opens issues under the
-  # user's name. `true` waives a whole server; a list waives those tools only.
+  # auto_approve waives the approval prompt: `true` for every tool on the server,
+  # or a list for those tools only. Absent, every MCP tool requires approval.
   #   auto_approve: true
   #   auto_approve: [search_issues, get_issue]
 
@@ -161,7 +134,3 @@ mcp_servers:
     mcp_url: "https://search--parallel.run.tools"
     requires_auth: true
     name: "Parallel Web Search"
-
-
-
-

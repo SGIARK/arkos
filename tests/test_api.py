@@ -35,8 +35,7 @@ async def _db(monkeypatch):
         await pool.close()
         pytest.skip(f"needs the arkos database (migration 0 applied): {e}")
 
-    # Nothing here is testing the loop; a turn that actually started would race
-    # the assertions and call a model.
+    # The loop is out of scope here, so start is stubbed and no turn runs.
     started: list[str] = []
     start_calls: list[dict] = []
 
@@ -157,7 +156,7 @@ async def test_test_cookie_session(client):
 
 
 async def test_a_cross_origin_mutation_is_refused(client, monkeypatch):
-    """SameSite=Lax is the first line; the Origin check is the one we control."""
+    """A mutation carrying an Origin other than the configured one is refused."""
     await _signed_in(client)
     monkeypatch.setattr(api, "_origin", "https://app.example.com")
 
@@ -170,7 +169,7 @@ async def test_a_cross_origin_mutation_is_refused(client, monkeypatch):
 
 
 async def test_an_unset_public_url_refuses_browser_mutations_rather_than_all_of_them(client, monkeypatch):
-    """Fails closed: an unconfigured origin is not a reason to accept every origin."""
+    """With no configured origin, a mutation carrying any Origin is refused."""
     await _signed_in(client)
     monkeypatch.setattr(api, "_origin", "")
 
@@ -227,7 +226,7 @@ async def test_creating_a_session_opens_a_project_and_starts_the_turn(client):
         "SELECT status, mode, goal, project_id FROM sessions WHERE id = $1",
         uuid.UUID(body["session_id"]),
     )
-    assert (row["status"], row["mode"]) == ("pending", "attended"), "every session is created attended (D5)"
+    assert (row["status"], row["mode"]) == ("pending", "attended"), "a new session is created attended"
     assert str(row["project_id"]) == body["project_id"]
 
     kinds = [e.event.kind for e in await slog.get_events(body["session_id"])]
@@ -267,7 +266,7 @@ async def test_the_snapshot_carries_the_mode_and_the_recent_events(client):
     body = (await client.get(f"/sessions/{session_id}")).json()
 
     assert body["status"] == "idle"
-    assert body["mode"] == "attended", "the UI needs mode to know whether to offer approve"
+    assert body["mode"] == "attended", "the snapshot dropped the mode"
     assert body["hops_max"] == 6
     assert [e["kind"] for e in body["recent_events"]] == ["user", "content"]
 
@@ -286,7 +285,7 @@ async def test_a_message_appends_and_starts(client):
 
 
 async def test_a_message_closes_a_dead_runs_open_call_before_it_lands(client):
-    """The other order puts a user event between a call and its result."""
+    """A message closes an open tool call before the user event is appended."""
     user_id = await _signed_in(client)
     session_id = await _session_for(user_id)
     await slog.append(session_id, ToolCallEvent(id="c1", name="run_command", args={}))
@@ -298,23 +297,28 @@ async def test_a_message_closes_a_dead_runs_open_call_before_it_lands(client):
     assert kinds == ["tool_call", "tool_result", "user"]
 
 
-async def test_a_composer_message_never_answers_a_park(client):
-    """An ambiguous 'sure' typed into a chat box is not consent."""
+async def test_a_composer_message_to_a_park_with_no_open_question_wakes_it(client):
+    """A session parked with nothing to answer is unstuck by a message.
+
+    Which park kinds accept a message, and which refuse, is covered in
+    tests/test_approvals.py against a real park.
+    """
     user_id = await _signed_in(client)
     session_id = await _session_for(user_id, status="awaiting_approval")
 
-    response = await client.post(f"/sessions/{session_id}/messages", json={"text": "sure"})
+    response = await client.post(f"/sessions/{session_id}/messages", json={"text": "still there?"})
 
-    assert response.status_code == 409
-    assert response.json()["code"] == "awaiting_approval"
-    assert await slog.get_events(session_id) == []
+    assert response.status_code == 202
+    events = [e.event for e in await slog.get_events(session_id)]
+    assert [e.kind for e in events] == ["user"]
+    assert session_id in api.started
 
 
 # --- the handoff ----------------------------------------------------------------
 
 
 async def test_approving_flips_the_mode_and_starts_the_run(client):
-    """Approving is the handoff: one session, one transcript, a different phase."""
+    """Approving asks for the unattended mode and starts the run on the same session."""
     user_id = await _signed_in(client)
     session_id = await _session_for(user_id, status="idle", mode="attended")
 
@@ -323,8 +327,7 @@ async def test_approving_flips_the_mode_and_starts_the_run(client):
     assert response.status_code == 202
     assert response.json()["mode"] == "unattended"
     assert session_id in api.started
-    # The endpoint's job is to ask for the flip; making it atomic with the
-    # status change is runner.start's, and is pinned in test_runner.
+    # The endpoint asks for the flip; test_runner pins that start applies it atomically.
     assert api.start_calls[-1]["mode"] == "unattended"
     assert api.start_calls[-1]["reason"] == "approved"
 
@@ -350,7 +353,7 @@ async def test_approving_twice_is_refused(client):
 
 
 async def test_the_unattended_quota_binds_where_it_can_fire(client, monkeypatch):
-    """At create time the unattended load is always zero, so this is the only place it binds."""
+    """The unattended quota is counted at approval, and a refusal leaves the row unchanged."""
     user_id = await _signed_in(client)
     monkeypatch.setattr(api, "_cfg", lambda key, default: 1 if key == "quotas.max_unattended_sessions" else default)
     await _session_for(user_id, status="running", mode="unattended")
@@ -489,7 +492,7 @@ async def test_streaming_first_token():
 
 
 async def test_a_mid_stream_failure_sends_an_error_chunk_not_a_truncation(monkeypatch):
-    """Truncation and completion look identical to EventSource."""
+    """A stream that fails mid-flight ends with an error frame."""
     session_id = await _new_session()
 
     async def boom(*a, **kw):
@@ -506,10 +509,9 @@ async def test_a_mid_stream_failure_sends_an_error_chunk_not_a_truncation(monkey
 
 
 async def test_a_lagging_subscriber_rejoins_from_the_log_instead_of_losing_events(monkeypatch):
-    """A dropped queue slot is a latency problem, not a lost event."""
+    """A subscriber whose queue overflows catches up from the log."""
     session_id = await _new_session()
-    # A two-slot stream, so overflowing it costs three appends rather than three
-    # hundred round trips to a remote database.
+    # A two-slot queue, so three appends overflow it.
     monkeypatch.setattr(api, "stream", SessionStream(queue_size=2))
 
     gen = api._event_stream(session_id, after_seq=0).__aiter__()

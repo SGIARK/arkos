@@ -1,5 +1,5 @@
-"""
-The model client: one cached client, one streamed `generate`, one retry layer.
+"""The model client: one cached client, one streamed `generate`, one retry layer.
+
 Raises ModelError and nothing else; CancelledError propagates.
 """
 
@@ -35,7 +35,7 @@ from model_module.errors import ModelError
 
 logger = logging.getLogger(__name__)
 
-# `background` is an unattended run with no human watching.
+# `background` is an unattended run; `interactive` has a human waiting on it.
 Source = Literal["interactive", "background"]
 
 
@@ -73,7 +73,7 @@ class ToolCallDelta:
 @dataclass(slots=True)
 class Finish:
     reason: str | None
-    # Not dict[str, int]: SGLang sends *_tokens_details as None.
+    # SGLang sends *_tokens_details as None, so the values are not all ints.
     usage: dict[str, Any] | None = None
 
 
@@ -92,7 +92,7 @@ def get_client() -> AsyncOpenAI:
 
     base_url = str(_cfg("llm.base_url", ""))
     api_key = str(_cfg("llm.api_key", "-"))
-    # In the key because it is only read at construction.
+    # Part of the cache key: the SDK reads it only at construction.
     timeout = float(_cfg("llm.timeout_s", 90))
     key = (base_url, api_key, timeout)
 
@@ -119,10 +119,8 @@ _TERMINAL = (
     UnprocessableEntityError,
 )
 
-# A request too long for the model comes back as an ordinary 400. Providers
-# word it differently, so both the machine-readable code and the prose are
-# checked; a miss costs the run a `model_error` instead of a recoverable
-# `context_overflow`, which is the failure this exists to stop being silent.
+# A request too long for the model comes back as an ordinary 400, worded
+# differently by each provider, so both the error code and the prose are checked.
 _OVERFLOW_CODE = "context_length_exceeded"
 _OVERFLOW_TEXT = re.compile(
     r"context[ _-]?length|maximum context|context window|too many tokens|reduce the length|"
@@ -148,7 +146,7 @@ def _classify(exc: Exception, source: Source) -> ModelError:
     if isinstance(exc, APIConnectionError):
         return ModelError(f"cannot reach the model: {exc}", retryable=True, kind="connect", cause=exc)
     if isinstance(exc, RateLimitError):
-        # An unattended run yields the GPU slot rather than queueing for it.
+        # Overload is retryable only for a run with a human waiting.
         return ModelError(
             f"model overloaded: {exc}",
             retryable=source != "background",
@@ -157,8 +155,7 @@ def _classify(exc: Exception, source: Source) -> ModelError:
         )
     if isinstance(exc, _TERMINAL):
         if isinstance(exc, BadRequestError) and _is_context_overflow(exc):
-            # Distinct from bad_request: the loop can recover from this one by
-            # shrinking the view, where a malformed request is simply dead.
+            # Its own kind: the loop recovers from this one by shrinking the view.
             return ModelError(f"the request exceeded the context window: {exc}", retryable=False,
                               kind="context_overflow", cause=exc)
         kind = "auth" if isinstance(exc, (AuthenticationError, PermissionDeniedError)) else "bad_request"
@@ -176,7 +173,7 @@ def _classify(exc: Exception, source: Source) -> ModelError:
     if isinstance(exc, (APIError, APIResponseValidationError)):
         # A body-level error after 200 OK; a retry reproduces it.
         return ModelError(f"model stream failed: {exc}", retryable=False, kind="stream", cause=exc)
-    # Our own bug; retrying cannot fix code.
+    # Anything the SDK does not raise is a bug on this side.
     return ModelError(
         f"model call failed ({type(exc).__name__}): {exc}",
         retryable=False,
@@ -203,8 +200,7 @@ async def generate(
     source: Source = "interactive",
     options: dict[str, Any] | None = None,
 ) -> AsyncIterator[Delta]:
-    """
-    One model turn, streamed.
+    """One model turn, streamed.
 
     Args:
         messages: OpenAI-shape messages, built by the fold.
@@ -220,7 +216,7 @@ async def generate(
         ModelError: and nothing else. CancelledError propagates.
     """
     try:
-        # max(1, ...) keeps a nonsense config value from emptying the range below.
+        # max(1, ...) keeps the attempt range below non-empty.
         max_attempts = max(1, int(_cfg("llm.max_retries", 3)))
     except (TypeError, ValueError) as e:
         raise ModelError(f"bad llm.max_retries in config: {e}", retryable=False, kind="bad_request", cause=e) from e
@@ -230,11 +226,11 @@ async def generate(
     for attempt in range(1, max_attempts + 1):
         started = False
         try:
-            # aclosing closes the HTTP stream on abandon rather than at GC.
+            # aclosing closes the HTTP stream as soon as the iterator is abandoned.
             async with aclosing(_stream_once(messages, tools, source, options)) as attempt_stream:
                 async for delta in attempt_stream:
                     # Past the first delta the attempt is committed: a retry would
-                    # duplicate deltas already emitted, so the loop retries the hop.
+                    # duplicate deltas the caller has already seen.
                     started = True
                     yield delta
             return
@@ -323,7 +319,7 @@ async def _stream_once(
     except Exception as e:
         raise _classify(e, source) from e
     finally:
-        # Frees the decode slot and pooled connection on the abandon path.
+        # Frees the decode slot and the pooled connection.
         await stream.close()
 
     yield Finish(reason=finish_reason, usage=usage)

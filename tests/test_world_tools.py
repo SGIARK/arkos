@@ -78,7 +78,7 @@ async def test_the_five_world_tools_ship_in_the_manifest():
 
     for name in ("list_projects", "get_project", "list_sessions", "get_session", "list_files"):
         assert name in specs, f"{name} is missing from the manifest"
-        assert specs[name].readonly, f"{name} reads, so the loop may batch it in parallel"
+        assert specs[name].readonly, f"{name} is not marked readonly"
         assert not specs[name].requires_approval
 
 
@@ -137,7 +137,7 @@ async def test_get_session_carries_the_tail_of_the_transcript():
     body = json.loads((await _run("get_session", {"session_id": session_id}, user_id)).content)
 
     assert body["goal"] == "find the receipt"
-    # budget meters are noise to a reader; user text and replies are not
+    # recent_events carries user text and replies; budget meters are left out.
     assert [e["kind"] for e in body["recent_events"]] == ["user", "content"]
 
 
@@ -155,7 +155,7 @@ async def test_list_files_reports_an_empty_project_plainly():
 
 
 async def test_another_users_project_is_not_found_not_forbidden():
-    """`not_found` for both, or the tool becomes an existence oracle."""
+    """Another user's row and an id that exists nowhere both report `not_found`."""
     mine, theirs = await _user(), await _user()
     their_project = await _project(theirs, "Secret")
     their_session = await _session(theirs, their_project)

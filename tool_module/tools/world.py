@@ -1,9 +1,7 @@
-"""
-The world tools: what the model can see of its own installation.
+"""The world tools: what the model can see of its own installation.
 
-All reads, each scoped to `ctx.user_id` in SQL rather than filtered afterwards.
-Another user's row and a missing row both read as `not_found`, so these cannot
-be used to probe for what other people have.
+All reads, each scoped to `ctx.user_id` in the SQL itself. Another user's row
+and a missing row both come back as `not_found`.
 """
 
 from __future__ import annotations
@@ -15,7 +13,7 @@ from typing import Any
 from db import pool
 from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, fail, ok
 
-# A request for "everything" returns a page, not the table.
+# Every list tool returns at most one page.
 _DEFAULT_LIMIT = 50
 _MAX_LIMIT = 200
 
@@ -124,8 +122,8 @@ class ListSessions:
     )
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
-        # A NULL parameter means "no filter", so one query serves all four
-        # combinations of the two optional arguments.
+        # A NULL parameter means "no filter", so one query serves every
+        # combination of the two optional arguments.
         rows = await pool.fetch(
             """
             SELECT id, project_id, title, goal, status, mode, terminal_reason,
@@ -182,8 +180,7 @@ class GetSession:
             wanted = max(0, min(int(args.get("events") or 20), _MAX_LIMIT))
         except (TypeError, ValueError):
             wanted = 20
-        # Only the kinds a reader gets meaning from; budget meters and status
-        # labels are noise here.
+        # Only the kinds that carry transcript content.
         tail = await pool.fetch(
             """
             SELECT kind, payload, ts FROM (

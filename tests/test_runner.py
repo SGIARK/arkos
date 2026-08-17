@@ -100,7 +100,7 @@ def model(monkeypatch):
 
 @pytest.fixture
 def tools(monkeypatch):
-    """A manifest of two tools, dispatched to a recorder rather than the world."""
+    """A manifest of two tools whose dispatch records the calls it is given."""
     calls: list[tuple[str, dict]] = []
 
     async def manifest(user_id, mcp=None):
@@ -155,7 +155,7 @@ async def test_reasoning_is_never_replayed_into_context():
 
 
 async def test_event_replay_deterministic():
-    """Same log, byte-identical context — the prompt cache and replay both need it."""
+    """Folding one log twice produces identical messages."""
     session_id = await _session()
     await slog.append(session_id, UserEvent(text="hi"))
     await slog.append(session_id, ContentEvent(text="hello"))
@@ -231,7 +231,7 @@ async def test_the_transcript_records_the_whole_turn(model, tools):
 
 
 async def test_streamed_content_is_coalesced_not_one_row_per_chunk(model, tools):
-    """A 500-token reply must not be 500 rows and 500 round trips."""
+    """Streamed text chunks are merged into a few content events."""
     session_id = await _session()
     await slog.append(session_id, UserEvent(text="go"))
     model.arm(_text(*[f"chunk{i} " for i in range(40)]))
@@ -283,7 +283,7 @@ async def test_cancel_leaves_a_transcript_that_says_why(model, tools, monkeypatc
 
 
 async def test_cancel_on_an_idle_session_still_writes_a_done():
-    """The fold resets hops at a done, so a bare transition breaks the restart."""
+    """Cancelling an idle session appends a done event alongside the status change."""
     session_id = await _session(status="idle")
 
     assert await runner.cancel(session_id)
@@ -314,11 +314,11 @@ async def test_a_restarted_session_budgets_from_zero_after_a_cancel():
 
     hops = (await runner.fold(await runner.load(session_id))).hops_used
 
-    assert hops == 0, "a restart would hit max_hops before calling the model"
+    assert hops == 0, "the hop count did not reset"
 
 
 async def test_two_concurrent_cancels_produce_exactly_one_terminal(model, tools, monkeypatch):
-    """One impatient click, or two tabs retrying, must not interrupt the cleanup."""
+    """Two cancels racing each other write one terminal between them."""
     session_id = await _session()
     await slog.append(session_id, UserEvent(text="go"))
 
@@ -341,13 +341,13 @@ async def test_two_concurrent_cancels_produce_exactly_one_terminal(model, tools,
 
     assert (row["status"], row["terminal_reason"]) == ("cancelled", "cancelled")
     assert len(dones) == 1, f"expected one terminal, got {[d.reason for d in dones]}"
-    # And it is restartable rather than stuck.
+    # The session starts again after the cancel.
     assert await runner.start(session_id)
     await runner.cancel(session_id)
 
 
 async def test_the_reaper_lands_a_terminal_the_database_refused(model, tools, monkeypatch):
-    """A blip mid-finish must not leave a live session stuck running."""
+    """A terminal transition the database refuses is retried by the reaper until it lands."""
     session_id = await _session()
     await slog.append(session_id, UserEvent(text="go"))
     model.arm(_text("done"))
@@ -362,7 +362,7 @@ async def test_the_reaper_lands_a_terminal_the_database_refused(model, tools, mo
         return await real_transition(*args, **kwargs)
 
     monkeypatch.setattr(runner.lifecycle, "transition", flaky)
-    # Only the delays, not the attempt count: int(0.05) is zero attempts.
+    # Delays only; the attempt cap keeps its configured value.
     delays = {"harness.terminal_retry_s": 0.05, "harness.terminal_retry_max_s": 0.05}
     monkeypatch.setattr(runner, "_cfg", lambda key, default: delays.get(key, default))
 
@@ -383,7 +383,7 @@ async def test_the_reaper_lands_a_terminal_the_database_refused(model, tools, mo
 
 
 async def test_resume_verify_on_wake(model, tools):
-    """A call the last run left open is closed before anything else, or the session is unloadable."""
+    """A call the previous run left open is closed before the resumed turn calls the model."""
     session_id = await _session()
     await slog.append(session_id, UserEvent(text="go"))
     await slog.append(session_id, ToolCallEvent(id="orphan", name="grep", args={}))
@@ -398,7 +398,7 @@ async def test_resume_verify_on_wake(model, tools):
     assert interrupted, "the dangling call was never closed"
     assert interrupted[0].error_kind == "interrupted"
     assert not interrupted[0].ok
-    # And the model was handed the repair, not a broken message list.
+    # The repaired result is in the messages the model was sent.
     assert any(m.get("tool_call_id") == "orphan" for m in model.messages_seen[0])
 
 
@@ -417,11 +417,7 @@ async def test_the_hop_count_is_written_back_as_a_cache(model, tools):
 
 
 async def _settle(session_id: str, timeout: float = 45.0) -> None:
-    """Wait for the background turn to finish.
-
-    Generous, because a turn is several appends against a remote database and
-    this bound is about not hanging the suite, not about latency.
-    """
+    """Wait for the background turn to finish; the timeout bounds a hung suite."""
     task = runner._running.get(session_id)
     if task is not None:
         await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
@@ -439,8 +435,7 @@ def _assert_loadable(messages: list[dict]) -> None:
             open_ids = {c["id"] for c in message.get("tool_calls") or []}
         elif role == "tool":
             assert message["tool_call_id"] in open_ids, (
-                f"message {i}: tool result {message['tool_call_id']!r} answers no preceding "
-                f"assistant tool_calls. The chat template rejects this and the session is unloadable."
+                f"message {i}: tool result {message['tool_call_id']!r} answers no preceding tool_calls"
             )
         elif role == "user":
             # A user message ends the assistant turn it follows.
@@ -448,7 +443,7 @@ def _assert_loadable(messages: list[dict]) -> None:
 
 
 async def test_a_message_typed_mid_call_still_folds_legally():
-    """Steering while a tool is in flight must not brick the session."""
+    """A user message appended between a call and its result still folds legally."""
     session_id = await _session()
     await slog.append(session_id, UserEvent(text="do it"))
     await slog.append(session_id, ToolCallEvent(id="c1", name="grep", args={}))
@@ -458,13 +453,13 @@ async def test_a_message_typed_mid_call_still_folds_legally():
     messages = (await runner.fold(await runner.load(session_id))).messages
 
     _assert_loadable(messages)
-    # The steer is not lost, only moved after the result that was already open.
+    # The message is kept, ordered after the result that was already open.
     assert [m["content"] for m in messages if m["role"] == "user"] == ["do it", "actually, hurry"]
     assert messages.index({"role": "tool", "tool_call_id": "c1", "content": "found"}) < len(messages) - 1
 
 
 async def test_an_interrupted_call_repaired_after_a_user_message_still_folds_legally():
-    """The repair can land after the message that woke the session."""
+    """A synthesized result appended after a user message still folds legally."""
     session_id = await _session()
     await slog.append(session_id, ToolCallEvent(id="c1", name="run_command", args={}))
     await slog.append(session_id, UserEvent(text="any update?"))
@@ -497,14 +492,14 @@ async def test_the_loop_mints_tool_call_ids_that_do_not_repeat_across_turns():
 
     minted = [first.finish(set())[0].id, second.finish(set())[0].id]
 
-    assert minted[0] != minted[1], "a fresh turn must not re-mint an earlier turn's id"
+    assert minted[0] != minted[1], "two turns minted the same tool call id"
 
 
 # --- the handoff to an unattended run -----------------------------------------
 
 
 async def test_start_flips_the_mode_in_the_same_update_as_the_status(monkeypatch):
-    """No window where a session is unattended for budgets but recorded attended."""
+    """start writes the new mode and the new status in one update."""
     session_id = await _session(status="idle", mode="attended")
 
     async def noop(_session_id):
@@ -541,7 +536,7 @@ async def test_a_plain_wake_leaves_the_mode_alone(monkeypatch):
 
 @pytest.fixture
 def small_budgets(monkeypatch):
-    """Shrink the hop cap so budget exhaustion is testable in a few round trips."""
+    """A hop cap low enough that a run exhausts it in a few round trips."""
 
     def load(mode="attended"):
         return runner.Budgets(max_hops=2, wall_clock_s=30.0, per_tool_attempts=3, model_retries=1)
@@ -560,12 +555,12 @@ async def test_an_unattended_run_completes_only_through_finish_task(model, tools
     row = await pool.fetchrow("SELECT status, mode, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id))
 
     assert (row["status"], row["terminal_reason"]) == ("completed", "completed")
-    # The run is over, so the session belongs to its human again.
+    # The finished run hands the session back as attended.
     assert row["mode"] == "attended"
 
 
 async def test_text_alone_never_completes_an_unattended_run(model, tools, small_budgets):
-    """Budget exhaustion is `failed{max_hops}`, never `completed`."""
+    """An unattended run that only produces text ends as failed with reason max_hops."""
     session_id = await _session(mode="unattended")
     await slog.append(session_id, UserEvent(text="do the thing"))
     model.arm(_text("I have finished!"), _text("Truly finished."), _text("Done."))
@@ -595,7 +590,7 @@ async def test_the_nudge_lands_in_the_transcript_before_the_budget_runs_out(mode
 
 
 async def test_a_finish_task_that_fails_does_not_complete_the_run(model, monkeypatch, small_budgets):
-    """Completion comes from the result, never from the call."""
+    """A finish_task whose result is an error leaves the run uncompleted."""
     session_id = await _session(mode="unattended")
     await slog.append(session_id, UserEvent(text="go"))
 
@@ -625,12 +620,12 @@ async def test_a_finish_task_that_fails_does_not_complete_the_run(model, monkeyp
 
 
 async def test_a_killed_run_resumes_without_repeating_its_side_effect(model, tools):
-    """The outcome of an unclosed call is unknown, so it is surfaced, never re-run."""
+    """A resumed run reports the unclosed call as interrupted and does not dispatch it again."""
     session_id = await _session(mode="unattended", status="running")
     await slog.append(session_id, UserEvent(text="send the invoice"))
     await slog.append(session_id, ToolCallEvent(id="c1", name="send_email", args={"to": "a@b.c"}))
 
-    # The process died here. Startup fails the session rather than requeueing it.
+    # The process died here; the startup sweep fails the session.
     await runner.lifecycle.sweep_interrupted()
     failed = await pool.fetchrow("SELECT status, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id))
 
@@ -653,10 +648,11 @@ async def test_a_killed_run_resumes_without_repeating_its_side_effect(model, too
 
 @pytest.fixture
 def tiny_window(monkeypatch):
-    """A window small enough that a few results overflow it."""
+    """A window small enough that a few results overflow it.
 
-    # The system prompt is ~650 tokens and rung 1 cannot clear it, so the
-    # ceiling has to sit above that floor for the ladder to have room to work.
+    The ceiling sits above the ~650-token system prompt, which rung 1 cannot clear.
+    """
+
     def cfg(key, default):
         return {
             "llm.context_window": 1600,
@@ -703,14 +699,14 @@ async def test_the_ladder_clears_the_oldest_results_first(tiny_window):
     dropped = folded.transform.dropped_refs
 
     assert dropped == refs[: len(dropped)], "clearing must start at the oldest"
-    # What was cleared points at how to get it back; what survived is intact.
+    # A cleared result keeps its ref in the view, next to the tool that reads it back.
     for ref in dropped:
         assert any(ref in str(m.get("content")) for m in folded.messages)
     assert any("read_result" in str(m.get("content")) for m in folded.messages)
 
 
 async def test_a_result_with_no_ref_is_never_cleared(tiny_window):
-    """There would be no way back to it."""
+    """A result carrying no blob ref stays in the view."""
     session_id = await _session()
     await slog.append(session_id, UserEvent(text="go"))
     for i in range(6):
@@ -724,7 +720,7 @@ async def test_a_result_with_no_ref_is_never_cleared(tiny_window):
 
 
 async def test_the_same_log_folds_byte_identically_twice(tiny_window):
-    """Prompt caching and replay both depend on it, ladder included."""
+    """A log that trips the ladder folds to the same messages and the same drops twice."""
     session_id = await _session()
     await _bulky_log(session_id)
     session = await runner.load(session_id)
@@ -746,7 +742,7 @@ async def test_a_view_under_budget_is_left_alone(tiny_window):
 
 
 async def test_the_drop_is_recorded_in_the_transcript(model, tools, tiny_window):
-    """View-only: the log says a drop happened, and is not rewritten."""
+    """A drop appends one view_transform event and leaves the stored results as they were."""
     session_id = await _session()
     await _bulky_log(session_id)
     before = len(await slog.get_events(session_id))
@@ -760,13 +756,13 @@ async def test_the_drop_is_recorded_in_the_transcript(model, tools, tiny_window)
     results = [e.event for e in events if e.event.kind == "tool_result"]
 
     assert len(transforms) == 1 and transforms[0].dropped_refs
-    # The stored results still hold their own text; only the view changed.
+    # The stored results still hold their own text.
     assert all("cleared from view" not in r.content for r in results)
     assert len(events) > before
 
 
 async def test_rung_1_clears_results_and_nothing_else(monkeypatch):
-    """A view dominated by the prompt cannot be rescued by clearing results."""
+    """Rung 1 clears results and stops there, even when the view is still over the ceiling."""
 
     def cfg(key, default):
         return {
@@ -782,6 +778,6 @@ async def test_rung_1_clears_results_and_nothing_else(monkeypatch):
 
     folded = await runner.fold(await runner.load(session_id))
 
-    # It cleared everything it could and stopped, rather than looping or lying.
+    # Every clearable result is gone and the view is still over the ceiling.
     assert folded.transform.dropped_refs == refs
     assert runner._estimate_tokens(folded.messages) > int(runner._input_budget() * 0.8)

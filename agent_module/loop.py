@@ -1,7 +1,7 @@
-"""
-The agent loop: one `run_turn`. Never touches Postgres, and is the only caller
-of the model. Tool errors are model input, not control flow: a failed tool comes
-back as a tool_result the model can read.
+"""The agent loop: one `run_turn`.
+
+The only caller of the model, and it touches no database. A failed tool comes
+back to the model as a tool_result rather than ending the turn.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 Mode = Literal["attended", "unattended"]
 
-# The control tool that makes an unattended exit safe.
+# The only tool that ends an unattended run.
 FINISH_TOOL = "finish_task"
 
 
@@ -45,7 +45,7 @@ def _cfg(key: str, default: Any) -> Any:
 
 
 def _require(key: str) -> Any:
-    """Read a config value that the code holds no opinion about."""
+    """Read a config value that has no default in code."""
     value = config.get(key)
     if value is None:
         raise RuntimeError(f"config is missing {key!r}, and budgets have no defaults in code")
@@ -63,16 +63,10 @@ class Budgets:
     def load(cls, mode: Mode = "attended") -> Budgets:
         """Load the budgets for one session mode from config.
 
-        Keyed by `mode` so the caller passes what it already has. An attended
-        session gets a short leash because a human is watching it; an unattended
-        one gets room to finish.
-
-        Every value comes from config and none is defaulted here: a budget the
-        code can supply on its own is a second source of truth, and the copy
-        that drifts is the one nobody is reading.
+        Every value comes from config; none is defaulted here.
 
         Raises:
-            RuntimeError: on a missing key, at startup rather than mid-run.
+            RuntimeError: when a key is missing.
         """
         return cls(
             max_hops=int(_require(f"budgets.{mode}.max_hops")),
@@ -98,14 +92,14 @@ class _State:
     """Carried across hops within one turn."""
 
     budgets: Budgets
-    # Consecutive failures; a success clears the streak.
+    # Consecutive failures per tool; a success clears the streak.
     failures: dict[str, int] = field(default_factory=dict)
-    # Counts dispatches in flight, so a parallel fan-out cannot outrun the cap.
+    # Dispatches in flight per tool, so a parallel fan-out cannot outrun the cap.
     in_flight: dict[str, int] = field(default_factory=dict)
     # One malformed-args round trip per turn is not charged as a hop.
     repair_available: bool = True
     repair_pending: bool = False
-    # Set when finish_task actually returns ok, never from the call alone.
+    # Set when finish_task returns ok, not when it is called.
     finished: bool = False
 
 
@@ -120,8 +114,7 @@ async def run_turn(
     options: dict[str, Any] | None = None,
     store_blob: StoreBlob | None = None,
 ) -> AsyncIterator[Event]:
-    """
-    Run one turn to its end, yielding events as they happen.
+    """Run one turn to its end, yielding events as they happen.
 
     `messages` is mutated in place.
 
@@ -133,14 +126,11 @@ async def run_turn(
         dispatch: executes one tool and returns an envelope.
         hops_used: hops already spent, counted from the log across a resume.
         options: per-call model params from config.
-        store_blob: stores the full text of an oversized result and returns its
-            ref. Injected for the same reason as `dispatch`: the loop does not
-            know what a session is, let alone where a blob lives.
+        store_blob: stores the full text of an oversized result and returns its ref.
 
     Yields:
         Events from the vocabulary, ending with exactly one `done`.
     """
-    # Unattended runs yield the GPU slot on overload instead of queueing for it.
     source: model_client.Source = "background" if mode == "unattended" else "interactive"
     by_name = {t.name: t for t in tools}
     schemas = [t.to_openai() for t in tools]
@@ -160,7 +150,7 @@ async def run_turn(
             yield DoneEvent(reason="wall_clock")
             return
 
-        # A repair round trip or a model re-attempt is the same hop trying again.
+        # A repair round trip or a model re-attempt continues the current hop.
         charged = not state.repair_pending and not reattempt
         state.repair_pending = False
         reattempt = False
@@ -170,7 +160,7 @@ async def run_turn(
 
         hop = _Hop()
         try:
-            # Bounds the whole hop, model plus tools, not just the gap between hops.
+            # Bounds the whole hop, model plus tools.
             async with asyncio.timeout(remaining):
                 async for delta in model_client.generate(messages, schemas, source=source, options=options):
                     event = hop.absorb(delta)
@@ -188,11 +178,10 @@ async def run_turn(
                     if hop.text:
                         messages.append({"role": "assistant", "content": hop.text})
                     if mode == "attended":
-                        # The human is the continuation, so stopping is safe.
                         yield DoneEvent(reason="turn_end")
                         return
                     if not hop.text:
-                        # Nothing to act on; looping would only spend budget.
+                        # An empty reply leaves nothing to continue from.
                         yield DoneEvent(reason="model_error")
                         return
                     if not nudged and hops_used == budgets.max_hops - 1:
@@ -223,9 +212,7 @@ async def run_turn(
             return
         except ModelError as e:
             if e.kind == "context_overflow":
-                # The view is too large for the model. Recording it as what it
-                # is keeps it out of the model_error bucket, where a recoverable
-                # condition would be indistinguishable from a dead one.
+                # A recoverable condition, kept out of the model_error bucket.
                 logger.error("hop exceeded the context window: %s", e)
                 yield DoneEvent(reason="context_overflow")
                 return
@@ -238,7 +225,7 @@ async def run_turn(
             yield DoneEvent(reason="model_error")
             return
         except asyncio.CancelledError:
-            # Record why the run stopped before the cancellation propagates.
+            # The run's last event, emitted before the cancellation propagates.
             yield DoneEvent(reason="cancelled")
             raise
 
@@ -281,9 +268,8 @@ class _Hop:
         calls = [self._calls[i] for i in sorted(self._calls)]
         for call in calls:
             if not call.id or call.id in seen_ids:
-                # Unique across every turn of every session, not merely within
-                # this one: `seen_ids` starts empty each turn, so a counter would
-                # mint the same id again and the log could not tell them apart.
+                # `seen_ids` starts empty each turn, so the replacement has to be
+                # unique across every turn of every session.
                 call.id = f"call_{uuid.uuid4().hex[:12]}"
             seen_ids.add(call.id)
         return calls
@@ -312,8 +298,7 @@ async def _run_batch(
     messages: list[dict[str, Any]],
     store_blob: StoreBlob | None = None,
 ) -> AsyncIterator[Event]:
-    """
-    Validate the batch, then dispatch what survives concurrently.
+    """Validate the batch, then dispatch what survives concurrently.
 
     Results are yielded as they land, not in call order. Every call is closed by
     exactly one result before this returns, on every exit path.
@@ -354,7 +339,7 @@ async def _run_batch(
     if not runnable:
         return
 
-    # asyncio.wait, not as_completed: the task object is what maps a result to its call.
+    # The task object is what maps a completed dispatch back to its call.
     tasks = {asyncio.create_task(dispatch(c.name, a)): c for c, a in runnable}
     pending = set(tasks)
     try:
@@ -406,9 +391,7 @@ async def _settle(
     content, total = _cap_view(envelope.content)
     ref = envelope.ref
     if total is not None and ref is None and store_blob is not None:
-        # The event keeps the preview, so without a blob the tail is simply
-        # lost: a resumed run replays the truncated text with no way back to
-        # the rest, and the context ladder has nothing to point at either.
+        # The event carries only the preview; the blob holds the rest.
         try:
             ref = await store_blob(envelope.content)
         except Exception:

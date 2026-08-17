@@ -30,8 +30,8 @@ async def _db():
         await pool.close()
         pytest.skip(f"needs the arkos database (migration 0 applied): {e}")
     yield
-    # The sweep is global by design, so a session left `running` would be swept
-    # by the next test's sweep and by anything else sharing this database.
+    # The sweep is global, so a session left `running` is swept by the next test
+    # and by anything else sharing this database.
     await pool.execute("DELETE FROM sessions WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM users WHERE id = ANY($1::uuid[])", _seeded)
     _seeded.clear()
@@ -62,7 +62,7 @@ async def _row(session_id: str):
 
 
 async def test_lifecycle_transitions():
-    """Only the ALLOWED map, and a move out of the wrong status changes nothing."""
+    """Only moves in the ALLOWED map are legal, and a move from the wrong status changes nothing."""
     session_id = await _session(status="pending")
 
     assert await lc.transition(session_id, "pending", "running", "claimed")
@@ -78,7 +78,7 @@ async def test_lifecycle_transitions():
 
 
 async def test_cancel_wins_a_live_race():
-    """Two writers, one status: the loser returns False rather than overwriting."""
+    """Of two transitions out of one status, exactly one returns True."""
     session_id = await _session(status="running")
 
     cancelled, completed = await asyncio.gather(
@@ -100,12 +100,12 @@ async def test_a_terminal_move_records_the_reason_verbatim():
     row = await _row(session_id)
 
     assert row["status"] == "failed"
-    assert row["terminal_reason"] == "max_hops", "terminal_reason is done.reason, not a second vocabulary"
+    assert row["terminal_reason"] == "max_hops", "terminal_reason is the reason it was given"
     assert row["ended_at"] is not None
 
 
 async def test_turn_end_leaves_no_terminal_marks():
-    """`idle` is alive and waiting, not finished."""
+    """A move to `idle` leaves terminal_reason and ended_at unset."""
     session_id = await _session(status="running")
 
     await lc.transition(session_id, "running", "idle", "turn_end")
@@ -128,7 +128,7 @@ async def test_reopening_a_terminal_session_clears_the_terminal_marks():
 
 
 async def test_mode_flips_in_the_same_update_as_the_status():
-    """No window where a session is unattended for budgets but recorded attended."""
+    """A transition sets mode in the same update as status."""
     session_id = await _session(status="idle", mode="attended")
 
     await lc.transition(session_id, "idle", "running", "approved", mode="unattended")
@@ -185,12 +185,12 @@ async def test_the_sweep_fails_a_running_session_and_says_why_in_the_transcript(
     kinds = [e.event.kind for e in await slog.get_events(session_id)]
 
     assert (row["status"], row["terminal_reason"]) == ("failed", "interrupted")
-    # The dangling call is closed first, or the session could never be folded again.
+    # The dangling call is closed ahead of the done event.
     assert kinds == ["tool_call", "tool_result", "done", "lifecycle"]
 
 
 async def test_the_sweep_leaves_idle_conversations_alone():
-    """Deploys must not kill open chats."""
+    """The sweep leaves an `idle` session at `idle`."""
     session_id = await _session(status="idle")
 
     await lc.sweep_interrupted()

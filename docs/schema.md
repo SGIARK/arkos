@@ -178,11 +178,12 @@ repeat_tasks  -- untouched; watching is scrapped for this redesign
 
 ---
 
-`users` stays `{id, email, created_at}` deliberately: the 1h approval reminder
-goes out by EMAIL, which Supabase already supplies, rather than the Slack DM the
-old code sent via `users.slack_user_id`. That column, `username`, and `last_seen`
-are gone with no successor. If Slack DMs are wanted back, `slack_user_id` has to
-return here first.
+`users` stays `{id, email, created_at}`. `email` comes from the Supabase token
+and identifies the account to a human reading the operator console; nothing
+sends mail. `slack_user_id`, `username` and `last_seen` are gone with no
+successor. A session waiting on a human is surfaced by its `awaiting_approval`
+status — the project dot and `GET /attention` — not by an outbound message. Any
+push channel would be a new feature with its own spec.
 
 **Config keys are labels, never durable keys.** A connection is identified by its
 `mcp_url` and addressed by a stored `connection_id`. Change the url and it is
