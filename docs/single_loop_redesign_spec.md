@@ -352,9 +352,13 @@ expand/contract and no bridge: this drops the old tables outright, so **the app
 is DOWN from the moment 0c runs until Task 4 lands.** That is the price of a
 clean overhaul, and it is accepted. Reap all e2b sandboxes first (see the
 migration header).
-**Status:** DONE — applied 2026-08-13. 15 tables in `public`, `waitlist` (8 rows)
-and `repeat_tasks` preserved. Two teardown gaps found only by running it against
-the real database; both fixed in the same commit (see Implementation Notes).
+**Status:** DONE — applied 2026-08-13 to the ark box. 15 tables in `public`,
+`waitlist` (8 rows) and `repeat_tasks` preserved. Two teardown gaps found only by
+running it against the real database; both fixed in the same commit (see
+Implementation Notes).
+**Re-applied 2026-08-16 to a NEW Supabase project** — that ark database is no
+longer the target. See the Implementation Note at the end of this file for the
+project ref, what carried over and what did not.
 
 ## Task 1: Model client rewrite
 **Done when:** one cached client (timeout=90, max_retries=0); the only retry
@@ -883,3 +887,63 @@ Not folded in, still open for the owner: the endpoint rows this needs in
 `runner.py` cannot pick a budget without, and the app port, which is 1121 in
 config, 1112 in Dockerfile/compose, 1113 in the frontend fallback and 1114 in the
 README.
+
+**2026-08-16 — the database moved. 0c re-applied to a new Supabase project.**
+The target is now project **`sbtbbytesjobdpmqojlr`** (`db.sbtbbytesjobdpmqojlr.
+supabase.co:5432`, PostgreSQL 17.6). The ark box database that 0c ran against on
+2026-08-13 is no longer the backend's database, so every row count and table
+inventory recorded in the 08-13 notes describes a machine we have moved off.
+
+Migration 0 applied cleanly on the first run: all 12 contract tables created,
+nothing missing. Verified afterwards — the three CHECK constraints
+(`sessions_mode_check`, `sessions_status_check`, `session_events_kind_check`) and
+both `approvals` indexes including `idx_approvals_one_open_per_call`, the partial
+unique that makes a double-park impossible.
+
+The whole teardown half was a no-op, because the project was clean: no `vecs`
+schema, no mem0 `memories` view, no `user_oauth_tokens`, no old chain. The two
+holes that only the real ark database exposed on 08-13 (see that note) could not
+have been found here. Keep the teardown anyway — it is what makes the migration
+safe to run against a database that HAS that history, and the drops are all
+`IF EXISTS`.
+
+**What did NOT come across, and this is the part to remember:**
+
+- **The 8 waitlist signups.** Migration 0 preserves a `waitlist` table, it does
+  not create one, so the rows do not travel. This project has its own `waitlist`
+  with **3 rows** and they are unrelated to the ark box's 8. If those 8 are real
+  signups, they are still on the old host and nobody is reading them.
+- **`repeat_tasks`.** Absent here. It was out of scope anyway (watching was
+  scrapped) but the "carried over untouched" line in the 0c card is now only half
+  true.
+
+Settled by running it, not by argument: the Vercel waitlist function
+authenticates as **`waitlist_writer`**, not `anon`. The `waitlist_insert` RLS
+policy and that role's INSERT grant were intact before and after the migration,
+which is why live signups never noticed. So `003_waitlist_anon_insert.sql` on
+`origin/vercel-landing` is NOT needed here, and should not be applied — the
+role-based grant is the stricter of the two. G-note for whoever revisits: do not
+"fix" this by granting anon.
+
+Two operational facts about this database, both written into `.env.example`
+because they cost an hour each to rediscover:
+
+- **The password must be percent-encoded.** Supabase passwords routinely contain
+  `@`, and a raw `@` does not error — the DSN silently reparses and everything
+  after it becomes the host.
+- **`db.<ref>.supabase.co` resolves AAAA-only.** Fine from a dev machine; a
+  default Docker bridge and most CI runners are IPv4-only and fail with "Network
+  is unreachable". The transaction pooler is the way out, and `db/pool.py`'s
+  `statement_cache_size=0` is already exactly what the pooler requires.
+
+**Consequence for Task 14.** That card is P0 and blocks 0c and Task 4 because the
+ark host's integrity was unestablished. The database half of that concern is now
+moot — this is a fresh managed project, not the box in question. The host-side
+items in `~/dev/vulnerabilities.md` stand on their own and are not addressed by
+the move. Task 14 should be re-scoped to what is actually left rather than
+carried as a blanket blocker on Task 4.
+
+Side effect worth knowing: with a live database reachable from `.env`, the 33
+`tests/test_smithery.py` cases that skip without one now run. The suite went from
+222 passing with 33 skipped to 250 passing with none — so Task 3d had, until
+now, no verified coverage on any machine without a database.
