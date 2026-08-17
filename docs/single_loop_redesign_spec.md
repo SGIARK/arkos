@@ -35,7 +35,7 @@ before Task 7 deletes the fallback machinery.
 
 This document is the why and the build plan.
 
-**Status:** Tasks 0-5 and 7 done · 8 partial · **Task 6 is next** |
+**Status:** Tasks 0-7 done · 8 partial · **Task 8 is next** |
 **Author:** John Wallace | **Last updated:** 2026-08-17
 
 **Where things actually stand, for a session picking this up cold:**
@@ -44,7 +44,7 @@ This document is the why and the build plan.
 |---|---|
 | Database | Supabase `sbtbbytesjobdpmqojlr`, migration 0 applied, 12 tables |
 | Model | hosted OpenAI, `gpt-4.1-mini` — `run_turn` verified end to end against it |
-| Suite | 359 passing; `pip install -r requirements-dev.txt` then `pytest` |
+| Suite | 383 passing; `pip install -r requirements-dev.txt` then `pytest` |
 | HTTP server | `harness_module/api.py`, `uvicorn harness_module.api:app`. Needs `SUPABASE_JWT_SECRET` and `ARK_SESSION_SECRET` |
 | Blocking decisions | none — endpoints, budgets, port, approval default, callback trigger all settled 2026-08-16/17 |
 
@@ -591,6 +591,10 @@ appends + wakes at cursor; **the park closes its own tool_call before parking**.
 **Touch:** `harness_module` | **P1, 2d** | **Blockers:** 5
 **Test:** zero DB queries while parked; restart preserves the pending approval;
 a parked session's transcript has no open `tool_call`, and folds cleanly on wake.
+
+**Status:** DONE 2026-08-17. The park lives in the harness, not the tool: the
+control tools return an ordinary result so the call closes, and the sink parks
+on seeing that result. Tests in `tests/test_approvals.py`.
 
 **The 1h reminder is cut, 2026-08-17 (owner).** It was specified to go out by
 email, and this system sends no mail: there is no mailer, no provider, no
