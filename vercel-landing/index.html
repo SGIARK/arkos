@@ -64,10 +64,8 @@ h1 .accent{color:var(--accent)}
 .signup.done + .signup-note{display:none}
 .signup.done ~ .signup-thanks{display:block}
 /* Failure keeps the inputs on screen — the whole point is that they can retry. */
-.signup-error{display:none;font-size:13px;color:var(--stop);text-align:center;margin-top:14px}
+.signup-error{display:none;font-size:13px;color:var(--accent);text-align:center;margin-top:14px}
 .signup.failed ~ .signup-error{display:block}
-.signup.failed + .signup-note{display:none}
-.signup.invalid input{border-color:var(--stop)}
 .signup.sending button{opacity:.55;cursor:default}
 
 /* mockup frame */
@@ -169,8 +167,8 @@ h1{font-size:24px}
 <span class="kicker">sandboxed ai agent</span>
 <h1>buddy runs your browser and computer tasks.</h1>
 <p class="sub">it drafts the reply, files the form, triages the board, then waits for your <span class="accent">ok</span>.</p>
-<form class="signup" id="signup-form" novalidate onsubmit="return handleSignup(event)">
-<input type="email" placeholder="you@company.com" autocomplete="email">
+<form class="signup" id="signup-form" onsubmit="return handleSignup(event)">
+<input type="email" placeholder="you@company.com" required>
 <button type="submit">join the waitlist</button>
 <input type="text" name="company_website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0"></form>
 <div class="signup-note">no spam. one email, when we launch.</div>
@@ -227,8 +225,8 @@ h1{font-size:24px}
 <div class="closing">
 <h2>be first to try buddy</h2>
 <p>we're onboarding a small group ahead of launch.</p>
-<form class="signup" novalidate onsubmit="return handleSignup(event)">
-<input type="email" placeholder="you@company.com" autocomplete="email">
+<form class="signup" onsubmit="return handleSignup(event)">
+<input type="email" placeholder="you@company.com" required>
 <button type="submit">join the waitlist</button>
 <input type="text" name="company_website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0"></form>
 <div class="signup-thanks">you're on the list. we'll be in touch.</div>
@@ -244,26 +242,6 @@ const next=html.getAttribute('data-theme')==='dark'?null:'dark';
 if(next){html.setAttribute('data-theme','dark');document.querySelector('.theme-btn').textContent='light';}
 else{html.removeAttribute('data-theme');document.querySelector('.theme-btn').textContent='dark';}
 }
-// Same sanity gate as the server, so the page never posts something the
-// function would just 400. Validating here is what lets the form use
-// novalidate: the browser's native bubble cannot be styled at all, so it
-// always looked foreign against the rest of the page.
-const EMAIL_RE=/^[^@\s]{1,64}@[^@\s]{1,255}\.[^@\s]{2,}$/;
-
-// Matches the CSS `~` sibling selectors, so markup and styling agree on which
-// message belongs to which form.
-function siblingWith(form,cls){
-let n=form.nextElementSibling;
-while(n){if(n.classList.contains(cls))return n;n=n.nextElementSibling;}
-return null;
-}
-function setError(form,msg){
-const el=siblingWith(form,'signup-error');
-if(el)el.textContent=msg;
-form.classList.add('failed','invalid');
-}
-function clearError(form){form.classList.remove('failed','invalid');}
-
 function handleSignup(e){
 e.preventDefault();
 const form=e.target;
@@ -273,12 +251,7 @@ const emailEl=form.querySelector('input[type=email]');
 const email=(emailEl?emailEl.value:'').trim().toLowerCase();
 // Bots that fill the honeypot: pretend success, send nothing.
 if(hp&&hp.value){form.classList.add('done');return false;}
-clearError(form);
-if(!EMAIL_RE.test(email)){
-  setError(form,email?"that doesn't look like an email address.":"enter your email to join.");
-  if(emailEl)emailEl.focus();
-  return false;
-}
+form.classList.remove('failed');
 form.classList.add('sending');
 fetch('/api/waitlist',{
   method:'POST',
@@ -290,19 +263,14 @@ fetch('/api/waitlist',{
   // A duplicate signup returns 204 too, so a repeat visitor still sees success
   // and we still leak no signal about who is already on the list.
   if(r.ok){form.classList.add('done');}
-  else{setError(form,'something went wrong. please try again later.');}
+  else{form.classList.add('failed');}
 }).catch(function(){
   // Network failure / offline.
   form.classList.remove('sending');
-  setError(form,'something went wrong. please try again later.');
+  form.classList.add('failed');
 });
 return false;
 }
-// Clear the red state as soon as they start fixing it, rather than leaving the
-// error up until the next submit.
-document.querySelectorAll('.signup input[type=email]').forEach(function(i){
-i.addEventListener('input',function(){clearError(i.form);});
-});
 const io=new IntersectionObserver((entries)=>{
 entries.forEach(en=>{if(en.isIntersecting){en.target.classList.add('in');io.unobserve(en.target);}});
 },{threshold:.2});
