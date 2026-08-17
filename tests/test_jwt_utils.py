@@ -1,148 +1,95 @@
-"""JWT issue/decode and the auth dependency in harness_module/jwt_utils.py."""
+"""JWT verification and the auth dependency in harness_module/jwt_utils.py.
 
-from __future__ import annotations
+Deliberately absent: tests for token issuance, an X-User-ID fallback, or a demo
+mode. All three were deleted — see auth.md's "Deleted" list. A test asserting
+that a forged identity is ACCEPTED is a test that defends the hole, so the only
+thing pinned here is that it is refused.
+"""
 
 import time
-import uuid
-from unittest.mock import patch
 
 import jwt
 import pytest
 from fastapi import HTTPException
 
-from harness_module.jwt_utils import (
-    _extract_bearer,
-    decode_token,
-    get_current_user,
-    issue_token,
-)
+from harness_module import jwt_utils
+from harness_module.jwt_utils import assert_secure_secret, decode_token, get_current_user
 
 
-class TestIssueToken:
-    def test_issues_string_token(self):
-        token = issue_token("user-1", "alice")
-        assert isinstance(token, str)
-        # JWT is three base64-ish chunks separated by dots
-        assert token.count(".") == 2
-
-    def test_payload_round_trips_through_decode(self):
-        token = issue_token("user-1", "alice")
-        payload = decode_token(token)
-        assert payload["sub"] == "user-1"
-        assert payload["username"] == "alice"
-        assert "iat" in payload
-        assert "exp" in payload
-
-    def test_accepts_uuid_for_user_id(self):
-        u = uuid.uuid4()
-        token = issue_token(u, "bob")
-        payload = decode_token(token)
-        assert payload["sub"] == str(u)
-
-    def test_exp_in_future(self):
-        token = issue_token("u", "n")
-        payload = decode_token(token)
-        assert payload["exp"] > int(time.time())
+def _token(secret: str = None, **claims) -> str:
+    """Mint a token the way Supabase would, so these tests do not need issue_token."""
+    payload = {"sub": "u-1", "username": "alice", "exp": int(time.time()) + 300, **claims}
+    return jwt.encode(payload, secret or jwt_utils._SECRET, algorithm="HS256")
 
 
 class TestDecodeToken:
+    def test_round_trips_a_valid_token(self):
+        payload = decode_token(_token())
+        assert payload["sub"] == "u-1"
+        assert payload["username"] == "alice"
+
     def test_rejects_token_signed_with_wrong_secret(self):
-        bad = jwt.encode({"sub": "x"}, "wrong-secret", algorithm="HS256")
         with pytest.raises(jwt.PyJWTError):
-            decode_token(bad)
+            decode_token(_token(secret="a-different-secret-entirely"))
 
     def test_rejects_expired_token(self):
-        # iat and exp both in 1970.
-        with patch("harness_module.jwt_utils._SECRET", "ark-dev-secret-change-me"):
-            past = jwt.encode(
-                {"sub": "u", "username": "n", "iat": 1, "exp": 100},
-                "ark-dev-secret-change-me",
-                algorithm="HS256",
-            )
-            with pytest.raises(jwt.ExpiredSignatureError):
-                decode_token(past)
-
-    def test_rejects_garbage(self):
-        with pytest.raises(jwt.PyJWTError):
-            decode_token("not.a.token")
+        with pytest.raises(jwt.ExpiredSignatureError):
+            decode_token(_token(exp=int(time.time()) - 1))
 
 
-class TestExtractBearer:
-    def test_returns_token_from_valid_header(self):
-        assert _extract_bearer("Bearer abc.def.ghi") == "abc.def.ghi"
+class TestAssertSecureSecret:
+    def test_raises_when_secret_unset(self, monkeypatch):
+        monkeypatch.setattr(jwt_utils, "_SECRET", None)
+        with pytest.raises(RuntimeError, match="ARK_JWT_SECRET"):
+            assert_secure_secret()
 
-    def test_case_insensitive_scheme(self):
-        assert _extract_bearer("bearer abc") == "abc"
-        assert _extract_bearer("BEARER abc") == "abc"
+    def test_passes_when_secret_set(self, monkeypatch):
+        monkeypatch.setattr(jwt_utils, "_SECRET", "a-real-secret-thirty-two-chars-ok")
+        assert_secure_secret() is None
 
-    def test_returns_none_for_missing_header(self):
-        assert _extract_bearer(None) is None
-        assert _extract_bearer("") is None
-
-    def test_returns_none_for_wrong_scheme(self):
-        assert _extract_bearer("Basic abc") is None
-        assert _extract_bearer("Token abc") is None
-
-    def test_returns_none_for_malformed_header(self):
-        assert _extract_bearer("just-a-string") is None
-        assert _extract_bearer("Bearer ") is None
+    def test_no_demo_bypass_exists(self, monkeypatch):
+        # The old code let ARK_DEMO_MODE excuse a missing secret. It must not.
+        monkeypatch.setattr(jwt_utils, "_SECRET", None)
+        monkeypatch.setenv("ARK_DEMO_MODE", "1")
+        with pytest.raises(RuntimeError):
+            assert_secure_secret()
 
 
 class TestGetCurrentUser:
     @pytest.mark.asyncio
     async def test_accepts_valid_bearer_token(self):
-        token = issue_token("u-1", "alice")
-        result = await get_current_user(authorization=f"Bearer {token}", x_user_id=None)
-        assert result == {"user_id": "u-1", "username": "alice"}
-
-    @pytest.mark.asyncio
-    async def test_falls_back_to_x_user_id_header(self, monkeypatch):
-        # Backwards-compat path: no Bearer, but X-User-ID is set. The fallback is
-        # gated on ARK_DEMO_MODE, so the test sets it rather than inheriting it
-        # from the developer's shell — it used to pass only where .env had it.
-        monkeypatch.setenv("ARK_DEMO_MODE", "1")
-        result = await get_current_user(authorization=None, x_user_id="legacy-id")
-        assert result == {"user_id": "legacy-id", "username": "legacy-id"}
-
-    @pytest.mark.asyncio
-    async def test_x_user_id_rejected_when_demo_mode_off(self, monkeypatch):
-        # The half that matters for prod: without demo mode the header is refused.
-        monkeypatch.delenv("ARK_DEMO_MODE", raising=False)
-        with pytest.raises(HTTPException) as exc:
-            await get_current_user(authorization=None, x_user_id="legacy-id")
-        assert exc.value.status_code == 401
-
-    @pytest.mark.asyncio
-    async def test_bearer_takes_precedence_over_x_user_id(self):
-        token = issue_token("real-user", "alice")
-        result = await get_current_user(
-            authorization=f"Bearer {token}",
-            x_user_id="should-be-ignored",
-        )
-        assert result["user_id"] == "real-user"
-
-    @pytest.mark.asyncio
-    async def test_rejects_missing_credentials(self):
-        with pytest.raises(HTTPException) as excinfo:
-            await get_current_user(authorization=None, x_user_id=None)
-        assert excinfo.value.status_code == 401
-
-    @pytest.mark.asyncio
-    async def test_rejects_invalid_bearer_token(self):
-        with pytest.raises(HTTPException) as excinfo:
-            await get_current_user(authorization="Bearer garbage", x_user_id=None)
-        assert excinfo.value.status_code == 401
-        assert "invalid token" in excinfo.value.detail
+        assert await get_current_user(authorization=f"Bearer {_token()}") == {
+            "user_id": "u-1",
+            "username": "alice",
+        }
 
     @pytest.mark.asyncio
     async def test_username_defaults_to_anon_when_missing(self):
-        # Forge a token with no username field
-        from harness_module.jwt_utils import _SECRET
-
-        token = jwt.encode(
-            {"sub": "u", "iat": int(time.time()), "exp": int(time.time()) + 60},
-            _SECRET,
-            algorithm="HS256",
-        )
-        result = await get_current_user(authorization=f"Bearer {token}", x_user_id=None)
+        result = await get_current_user(authorization=f"Bearer {_token(username=None)}")
         assert result["username"] == "anon"
+
+    @pytest.mark.asyncio
+    async def test_rejects_missing_header(self):
+        with pytest.raises(HTTPException) as exc:
+            await get_current_user(authorization=None)
+        assert exc.value.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_rejects_garbage_token(self):
+        with pytest.raises(HTTPException) as exc:
+            await get_current_user(authorization="Bearer garbage")
+        assert exc.value.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_rejects_non_bearer_scheme(self):
+        with pytest.raises(HTTPException) as exc:
+            await get_current_user(authorization="Basic dXNlcjpwYXNz")
+        assert exc.value.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_x_user_id_header_is_not_a_credential(self, monkeypatch):
+        """The deleted bypass, pinned shut: no header and no env var revives it."""
+        monkeypatch.setenv("ARK_DEMO_MODE", "1")
+        with pytest.raises(HTTPException) as exc:
+            await get_current_user(authorization=None)
+        assert exc.value.status_code == 401
