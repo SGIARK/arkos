@@ -16,7 +16,7 @@ from db import pool
 from harness_module import runner
 from harness_module import session_log as slog
 from model_module import client as mc
-from tool_module.envelope import ToolSpec, ok
+from tool_module.envelope import ToolSpec, fail, ok
 
 pytestmark = pytest.mark.asyncio
 
@@ -415,8 +415,12 @@ async def test_the_hop_count_is_written_back_as_a_cache(model, tools):
     assert row["cursor_seq"] > 0
 
 
-async def _settle(session_id: str, timeout: float = 10.0) -> None:
-    """Wait for the background turn to finish."""
+async def _settle(session_id: str, timeout: float = 45.0) -> None:
+    """Wait for the background turn to finish.
+
+    Generous, because a turn is several appends against a remote database and
+    this bound is about not hanging the suite, not about latency.
+    """
     task = runner._running.get(session_id)
     if task is not None:
         await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
@@ -493,3 +497,151 @@ async def test_the_loop_mints_tool_call_ids_that_do_not_repeat_across_turns():
     minted = [first.finish(set())[0].id, second.finish(set())[0].id]
 
     assert minted[0] != minted[1], "a fresh turn must not re-mint an earlier turn's id"
+
+
+# --- the handoff to an unattended run -----------------------------------------
+
+
+async def test_start_flips_the_mode_in_the_same_update_as_the_status(monkeypatch):
+    """No window where a session is unattended for budgets but recorded attended."""
+    session_id = await _session(status="idle", mode="attended")
+
+    async def noop(_session_id):
+        return None
+
+    monkeypatch.setattr(runner, "_drive", noop)
+    assert await runner.start(session_id, mode="unattended", reason="approved")
+    await _settle(session_id)
+
+    row = await pool.fetchrow("SELECT mode, status FROM sessions WHERE id = $1", uuid.UUID(session_id))
+    events = [e.event for e in await slog.get_events(session_id)]
+
+    assert (row["mode"], row["status"]) == ("unattended", "running")
+    assert [e.kind for e in events] == ["lifecycle"]
+    assert (events[0].from_, events[0].to, events[0].reason) == ("idle", "running", "approved")
+
+
+async def test_a_plain_wake_leaves_the_mode_alone(monkeypatch):
+    session_id = await _session(status="idle", mode="unattended")
+
+    async def noop(_session_id):
+        return None
+
+    monkeypatch.setattr(runner, "_drive", noop)
+    await runner.start(session_id)
+    await _settle(session_id)
+
+    row = await pool.fetchrow("SELECT mode FROM sessions WHERE id = $1", uuid.UUID(session_id))
+    assert row["mode"] == "unattended"
+
+
+# --- how an unattended run may and may not end ---------------------------------
+
+
+@pytest.fixture
+def small_budgets(monkeypatch):
+    """Shrink the hop cap so budget exhaustion is testable in a few round trips."""
+
+    def load(mode="attended"):
+        return runner.Budgets(max_hops=2, wall_clock_s=30.0, per_tool_attempts=3, model_retries=1)
+
+    monkeypatch.setattr(runner.Budgets, "load", load)
+
+
+async def test_an_unattended_run_completes_only_through_finish_task(model, tools):
+    session_id = await _session(mode="unattended")
+    await slog.append(session_id, UserEvent(text="do the thing"))
+    model.arm(_call("finish_task", '{"summary": "did it"}'))
+
+    await runner.start(session_id)
+    await _settle(session_id)
+
+    row = await pool.fetchrow("SELECT status, mode, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id))
+
+    assert (row["status"], row["terminal_reason"]) == ("completed", "completed")
+    # The run is over, so the session belongs to its human again.
+    assert row["mode"] == "attended"
+
+
+async def test_text_alone_never_completes_an_unattended_run(model, tools, small_budgets):
+    """Budget exhaustion is `failed{max_hops}`, never `completed`."""
+    session_id = await _session(mode="unattended")
+    await slog.append(session_id, UserEvent(text="do the thing"))
+    model.arm(_text("I have finished!"), _text("Truly finished."), _text("Done."))
+
+    await runner.start(session_id)
+    await _settle(session_id)
+
+    row = await pool.fetchrow("SELECT status, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id))
+    dones = [e.event.reason for e in await slog.get_events(session_id) if e.event.kind == "done"]
+
+    assert (row["status"], row["terminal_reason"]) == ("failed", "max_hops")
+    assert dones == ["max_hops"]
+
+
+async def test_the_nudge_lands_in_the_transcript_before_the_budget_runs_out(model, tools, small_budgets):
+    session_id = await _session(mode="unattended")
+    await slog.append(session_id, UserEvent(text="go"))
+    model.arm(_text("thinking out loud"), _text("still going"))
+
+    await runner.start(session_id)
+    await _settle(session_id)
+
+    users = [e.event for e in await slog.get_events(session_id) if e.event.kind == "user"]
+
+    assert [u.source for u in users] == ["human", "system"]
+    assert "finish_task" in users[1].text
+
+
+async def test_a_finish_task_that_fails_does_not_complete_the_run(model, monkeypatch, small_budgets):
+    """Completion comes from the result, never from the call."""
+    session_id = await _session(mode="unattended")
+    await slog.append(session_id, UserEvent(text="go"))
+
+    async def manifest(user_id, mcp=None):
+        return [ToolSpec(name="finish_task")]
+
+    def bind(ctx, **kw):
+        async def dispatch(name, args):
+            return fail("upstream_error", "the summary was rejected")
+
+        return dispatch
+
+    monkeypatch.setattr(runner.registry, "manifest", manifest)
+    monkeypatch.setattr(runner.registry, "bind", bind)
+    model.arm(_call("finish_task", '{"summary": "s"}'), _call("finish_task", '{"summary": "s"}', id="c2"))
+
+    await runner.start(session_id)
+    await _settle(session_id)
+
+    row = await pool.fetchrow("SELECT status, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id))
+
+    assert row["status"] == "failed"
+    assert row["terminal_reason"] != "completed"
+
+
+# --- resume ---------------------------------------------------------------------
+
+
+async def test_a_killed_run_resumes_without_repeating_its_side_effect(model, tools):
+    """The outcome of an unclosed call is unknown, so it is surfaced, never re-run."""
+    session_id = await _session(mode="unattended", status="running")
+    await slog.append(session_id, UserEvent(text="send the invoice"))
+    await slog.append(session_id, ToolCallEvent(id="c1", name="send_email", args={"to": "a@b.c"}))
+
+    # The process died here. Startup fails the session rather than requeueing it.
+    await runner.lifecycle.sweep_interrupted()
+    failed = await pool.fetchrow("SELECT status, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id))
+
+    # A human restarts it.
+    model.arm(_call("finish_task", '{"summary": "verified, already sent"}'))
+    await runner.start(session_id)
+    await _settle(session_id)
+
+    dispatched = [name for name, _ in tools]
+    results = [e.event for e in await slog.get_events(session_id) if e.event.kind == "tool_result"]
+
+    assert (failed["status"], failed["terminal_reason"]) == ("failed", "interrupted")
+    assert "send_email" not in dispatched, "the side effect was repeated"
+    assert results[0].error_kind == "interrupted"
+    assert "verify before retrying" in results[0].content

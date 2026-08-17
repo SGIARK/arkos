@@ -225,9 +225,15 @@ def _dumps(args: dict[str, Any]) -> str:
 # --- driving a turn ------------------------------------------------------------
 
 
-async def start(session_id: str) -> bool:
+async def start(session_id: str, *, mode: lifecycle.Mode | None = None, reason: str = "woken") -> bool:
     """
     Move a session to `running` and drive one turn in the background.
+
+    Args:
+        mode: flipped in the same UPDATE as the status. The approve endpoint
+            passes `unattended`; a plain wake passes nothing and keeps the mode
+            the session already has.
+        reason: recorded on the lifecycle event.
 
     Returns:
         False if the session is already running, does not exist, or lost the
@@ -246,7 +252,7 @@ async def start(session_id: str) -> bool:
         # sweep fails those; racing it would double-write the terminal.
         logger.warning("session %s is running with no task in this process", session_id)
         return False
-    if not await lifecycle.transition(session_id, session.status, "running", "woken"):
+    if not await lifecycle.transition(session_id, session.status, "running", reason, mode=mode):
         return False
 
     task = asyncio.create_task(_drive(session_id), name=f"turn:{session_id}")

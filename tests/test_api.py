@@ -39,7 +39,7 @@ async def _db(monkeypatch):
     # the assertions and call a model.
     started: list[str] = []
 
-    async def fake_start(session_id: str) -> bool:
+    async def fake_start(session_id: str, **kw) -> bool:
         started.append(session_id)
         return True
 
@@ -305,6 +305,79 @@ async def test_a_composer_message_never_answers_a_park(client):
     assert response.status_code == 409
     assert response.json()["code"] == "awaiting_approval"
     assert await slog.get_events(session_id) == []
+
+
+# --- the handoff ----------------------------------------------------------------
+
+
+async def test_approving_flips_the_mode_and_starts_the_run(client):
+    """Approving is the handoff: one session, one transcript, a different phase."""
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id, status="idle", mode="attended")
+
+    response = await client.post(f"/sessions/{session_id}/approve")
+
+    assert response.status_code == 202
+    assert response.json()["mode"] == "unattended"
+    row = await pool.fetchrow("SELECT mode, status FROM sessions WHERE id = $1", uuid.UUID(session_id))
+    assert row["mode"] == "unattended"
+    assert session_id in api.started
+
+
+async def test_a_running_session_cannot_be_handed_over(client):
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id, status="running")
+
+    response = await client.post(f"/sessions/{session_id}/approve")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "not_idle"
+
+
+async def test_approving_twice_is_refused(client):
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id, status="idle", mode="unattended")
+
+    response = await client.post(f"/sessions/{session_id}/approve")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "already_unattended"
+
+
+async def test_the_unattended_quota_binds_where_it_can_fire(client, monkeypatch):
+    """At create time the unattended load is always zero, so this is the only place it binds."""
+    user_id = await _signed_in(client)
+    monkeypatch.setattr(api, "_cfg", lambda key, default: 1 if key == "quotas.max_unattended_sessions" else default)
+    await _session_for(user_id, status="running", mode="unattended")
+    blocked = await _session_for(user_id, status="idle", mode="attended")
+
+    response = await client.post(f"/sessions/{blocked}/approve")
+
+    assert response.status_code == 429
+    assert response.json()["code"] == "quota_exceeded"
+    row = await pool.fetchrow("SELECT mode, status FROM sessions WHERE id = $1", uuid.UUID(blocked))
+    assert (row["mode"], row["status"]) == ("attended", "idle"), "the refusal changed nothing"
+
+
+async def test_an_attended_session_does_not_consume_the_unattended_quota(client, monkeypatch):
+    user_id = await _signed_in(client)
+    monkeypatch.setattr(api, "_cfg", lambda key, default: 1 if key == "quotas.max_unattended_sessions" else default)
+    await _session_for(user_id, status="running", mode="attended")
+    mine = await _session_for(user_id, status="idle", mode="attended")
+
+    response = await client.post(f"/sessions/{mine}/approve")
+
+    assert response.status_code == 202
+
+
+async def test_another_users_session_cannot_be_approved(client):
+    theirs_user = str(uuid.uuid4())
+    _seeded.append(uuid.UUID(theirs_user))
+    await pool.execute("INSERT INTO users (id) VALUES ($1)", uuid.UUID(theirs_user))
+    theirs = await _session_for(theirs_user, status="idle")
+    await _signed_in(client)
+
+    assert (await client.post(f"/sessions/{theirs}/approve")).status_code == 404
 
 
 async def test_projects_roll_up_to_one_dot_each(client):

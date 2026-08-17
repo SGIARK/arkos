@@ -345,6 +345,31 @@ async def post_message(
     return {"accepted": True, "started": started}
 
 
+@app.post("/sessions/{session_id}/approve", status_code=202)
+async def approve_session(session_id: str, user_id: str = CurrentUser) -> dict[str, Any]:
+    """
+    Hand a session over to run unattended, and start it.
+
+    Approving is the handoff: the same session, the same transcript, a different
+    phase. From here `finish_task` is the only way it can end, and the unattended
+    budgets apply.
+    """
+    row = await _owned_session(session_id, user_id)
+    if row["mode"] == "unattended":
+        raise ApiError(409, "already_unattended", "This session is already running unattended.")
+    if row["status"] not in ("idle", "pending"):
+        raise ApiError(409, "not_idle", f"A session in {row['status']!r} cannot be handed over.")
+
+    # Checked here rather than at create time: every session is created
+    # attended, so at create time the unattended load is always zero.
+    await _check_unattended_quota(user_id)
+
+    started = await runner.start(session_id, mode="unattended", reason="approved")
+    if not started:
+        raise ApiError(409, "not_idle", "The session moved before it could be started.")
+    return {"accepted": True, "mode": "unattended"}
+
+
 @app.post("/sessions/{session_id}/cancel", status_code=202)
 async def cancel_session(session_id: str, user_id: str = CurrentUser) -> dict[str, Any]:
     await _owned_session(session_id, user_id)
@@ -586,6 +611,22 @@ async def _check_rate_quota(user_id: str) -> None:
     )
     if recent >= limit:
         raise ApiError(429, "quota_exceeded", f"{limit} new sessions an hour is the limit.", retryable=True)
+
+
+async def _check_unattended_quota(user_id: str) -> None:
+    """Enforce the per-user cap on sessions occupying a worker."""
+    limit = int(_cfg("quotas.max_unattended_sessions", 5))
+    # Parked counts: an awaiting_approval session is alive and will resume.
+    # Idle and attended sessions occupy nothing.
+    busy = await pool.fetchval(
+        """
+        SELECT count(*) FROM sessions
+         WHERE user_id = $1 AND mode = 'unattended' AND status IN ('running', 'awaiting_approval')
+        """,
+        _uuid(user_id, "user"),
+    )
+    if busy >= limit:
+        raise ApiError(429, "quota_exceeded", f"{limit} unattended sessions at once is the limit.", retryable=True)
 
 
 def _budgets_for(mode: str) -> int:
