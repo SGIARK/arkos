@@ -31,6 +31,11 @@ context:
   chars_per_token: 4              # characters per token in the estimate; there is no tokenizer for this model
   turns: 50                       # short-term transcript window; not read yet
 
+system_log:
+  # The operational log: batched, best-effort, never on a request path.
+  flush_interval_s: 5
+  retain_days: 30         # pruned at startup
+
 leases:
   # The sandbox and browser are shared per user and keep state between calls, so
   # one session holds them for its whole run.

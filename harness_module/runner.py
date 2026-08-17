@@ -33,7 +33,7 @@ from agent_module.events import (
 from agent_module.loop import Budgets, Dispatch, run_turn
 from config_module.loader import config
 from db import pool
-from harness_module import approvals, hands, leases, lifecycle
+from harness_module import approvals, hands, leases, lifecycle, system_log
 from harness_module import session_log as slog
 from harness_module.stream import stream
 from tool_module import registry
@@ -387,8 +387,18 @@ async def _drive(session_id: str) -> None:
         for closed in await slog.close_dangling(session_id):
             stream.publish(session_id, closed)
 
+        started = time.monotonic()
         folded = await fold(session)
         messages, hops_used = folded.messages, folded.hops_used
+        system_log.record(
+            "fold",
+            session_id=session_id,
+            user_id=session.user_id,
+            ms=round((time.monotonic() - started) * 1000),
+            messages=len(messages),
+            hops_used=hops_used,
+            cleared=len(folded.transform.dropped_refs) if folded.transform else 0,
+        )
         if folded.transform is not None:
             # The clearing is recorded as an event; the log itself keeps every result.
             sink.emit(folded.transform)
@@ -620,14 +630,29 @@ class _Sink:
         deadline = time.monotonic() + float(_cfg("leases.wait_timeout_s", 120))
         announced = False
 
+        waiting_since = time.monotonic()
         while True:
             if await leases.acquire(resource_key, self.session.id, ttl):
                 self._leases.add(resource_key)
+                if announced:
+                    system_log.record(
+                        "lease_wait",
+                        session_id=self.session.id,
+                        resource=resource,
+                        waited_ms=round((time.monotonic() - waiting_since) * 1000),
+                    )
                 return
             if not announced:
                 self.emit(StatusEvent(label=f"waiting for the {resource}"))
                 announced = True
             if time.monotonic() >= deadline:
+                system_log.record(
+                    "lease_timeout",
+                    level="warn",
+                    session_id=self.session.id,
+                    resource=resource,
+                    waited_ms=round((time.monotonic() - waiting_since) * 1000),
+                )
                 raise ToolUnavailable(
                     "timeout",
                     f"The {resource} is in use by another session and did not free up. Try again, "
@@ -806,8 +831,17 @@ class _Sink:
                 # `_reaping` stays set, so a failing `_finish` re-enters `_reap_later`
                 # as a no-op and no second reaper starts.
                 await self._finish(done)
-            except Exception:
+            except Exception as e:  # noqa: BLE001 - recorded, then retried
                 logger.warning("session %s: terminal retry %d/%d failed", self.session.id, attempt, attempts)
+                system_log.record(
+                    "terminal_retry",
+                    level="warn",
+                    session_id=self.session.id,
+                    attempt=attempt,
+                    of=attempts,
+                    reason=done.reason,
+                    error=type(e).__name__,
+                )
                 continue
             if self._terminal_written:
                 logger.warning("session %s: terminal written on retry %d", self.session.id, attempt)
@@ -817,6 +851,9 @@ class _Sink:
             self.session.id,
             done.reason,
             attempts,
+        )
+        system_log.record(
+            "terminal_abandoned", level="error", session_id=self.session.id, reason=done.reason, attempts=attempts
         )
 
     async def park(self) -> bool:

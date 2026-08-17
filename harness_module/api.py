@@ -29,7 +29,7 @@ from starlette.background import BackgroundTask
 from agent_module.events import TodoEvent, UserEvent
 from config_module.loader import config
 from db import pool
-from harness_module import approvals, hands, jwt_utils, lifecycle, runner
+from harness_module import approvals, hands, jwt_utils, lifecycle, runner, system_log
 from harness_module import session_log as slog
 from harness_module.stream import LAGGED, stream
 from tool_module.smithery import AuthRequiredError, SmitheryError
@@ -78,9 +78,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     with contextlib.suppress(Exception):
         await lifecycle.sweep_interrupted()
     await hands.start()
+    await system_log.start()
     try:
         yield
     finally:
+        await system_log.stop()
         await hands.stop()
         await pool.close()
 

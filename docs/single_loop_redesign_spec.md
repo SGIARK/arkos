@@ -35,7 +35,7 @@ before Task 7 deletes the fallback machinery.
 
 This document is the why and the build plan.
 
-**Status:** Tasks 0-7 done · 8 partial · **Task 8 is next** |
+**Status:** Tasks 0-8 done · **Task 9 is next** |
 **Author:** John Wallace | **Last updated:** 2026-08-17
 
 **Where things actually stand, for a session picking this up cold:**
@@ -44,7 +44,7 @@ This document is the why and the build plan.
 |---|---|
 | Database | Supabase `sbtbbytesjobdpmqojlr`, migration 0 applied, 12 tables |
 | Model | hosted OpenAI, `gpt-4.1-mini` — `run_turn` verified end to end against it |
-| Suite | 383 passing; `pip install -r requirements-dev.txt` then `pytest` |
+| Suite | 424 passing, plus 4 `integration` tests that boot a real e2b sandbox and are deselected by default (`pytest -m integration` runs them) |
 | HTTP server | `harness_module/api.py`, `uvicorn harness_module.api:app`. Needs `SUPABASE_JWT_SECRET` and `ARK_SESSION_SECRET` |
 | Blocking decisions | none — endpoints, budgets, port, approval default, callback trigger all settled 2026-08-16/17 |
 
@@ -660,14 +660,30 @@ released on terminal and on park.**
 **Touch:** `computer_module/` → `tool_module/sandbox/` | **P1, 3d** | **Blockers:** 1, 2, 6
 **Test:** one task does MCP → sandbox code → browser in a single run, no
 re-spawn, no upfront typing; sandbox boots only at first sandbox call.
-**Status:** PARTIAL. `computer_module` is gone: agent/model/runner/router/store
-deleted, `sandbox.py` → `tool_module/sandbox/manager.py` and `tools.py` →
-`tool_module/sandbox/tools.py`. That is the dissolution, not the integration.
-**Still to do, and nothing calls this code yet:** put the toolset behind
-`envelope.execute`, register it in the manifest, lazy-provision on first sandbox
-call, and move `manager.py` off psycopg2 onto `db.pool` — migration 0 rebuilt
-`user_sandboxes` with a UUID `user_id` where it still expects TEXT, so its DB
-half is broken until then. Both files carry a header saying so.
+**Status:** DONE 2026-08-17, in three commits (8a the toolset, 8b leases,
+8c the operational log). `computer_module` was gone already; what landed here is
+the integration it was missing.
+**What that took, since none of it was a matter of wiring.** The toolset was
+still in the pre-redesign shape — OpenAI schemas and a dispatch returning
+strings — so it was rewritten as seven tools in the current protocol and
+registered through `tool_module/tools/sandbox.py`. Its `todo_write` was dropped:
+`control.py` already provides that name. Read-before-edit moved onto
+`ToolContext.scratch`, so it is enforced in `validate`, before the sandbox is
+touched. `manager.py` moved onto `db.pool` and onto the columns migration 0
+actually created — it had been reading `e2b_sandbox_id` and a `status` column
+that does not exist, over psycopg2, against a TEXT `user_id` that is now UUID.
+Three broken things, none of which anything had ever run.
+
+The e2b SDK is imported inside the two functions that need it, so the process
+starts and the manifest builds without e2b installed, as `browser_tool` already
+does. The manifest is 17 tools; `browser_task` (Task 9) makes 18.
+
+**Tested against a real sandbox**, under the `integration` marker:
+`tests/test_sandbox_integration.py` boots e2b for a file and command round trip,
+resume from the stored id after the in-process handle is dropped, one sandbox
+per user, and the credential check the card asks for — it runs `env` inside the
+sandbox and asserts neither the names nor the values of our secrets appear.
+Each test kills its sandbox in a `finally`, because an orphan keeps billing.
 
 **Status of the lease half, DONE 2026-08-17:** `harness_module/leases.py` holds
 `acquire`/`release`/`release_all`/`holder` against `resource_leases`. The sink
@@ -681,11 +697,16 @@ Leases carry an expiry so a dead process does not hold a resource forever.
 asks for that "using the same active-segment accounting park already needs", and
 park does not have it either, so neither does this.
 
-**Moved here from Task 5, 2026-08-17:** the first `system_events` writers, and
-the `resource_leases` machinery. The operational log gets three writers, decided
-2026-08-17 and scoped by the contracts rule "record what you would query during
-an incident": fold duration per wake, terminal-reaper attempts, and the lease
-waits and expiries this card creates. Batched, best-effort, never blocking.
+**The operational log, DONE 2026-08-17:** `harness_module/system_log.py` queues
+records in memory and a background task writes them in one statement per batch,
+pruned at `system_log.retain_days`. `record()` is synchronous and never raises,
+so nothing on a request or token path waits for it, and a failed write drops the
+batch rather than retrying a poison one. Three writers, scoped by the contracts
+rule "record what you would query during an incident": `fold` (ms, messages,
+hops, results cleared), `terminal_retry` and `terminal_abandoned`, and
+`lease_wait` and `lease_timeout`. Shutdown asks the loop to finish rather than
+cancelling it: a cancel landing inside an in-flight write loses that batch,
+because `flush` has already taken it off the queue.
 
 The `resource_leases` machinery. Task 5
 owns the SESSION claim (the conditional UPDATE in `lifecycle.transition`); what
