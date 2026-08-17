@@ -306,7 +306,10 @@ async def _drive(session_id: str) -> None:
             logger.exception("session %s: building the full manifest failed", session_id)
             tools = await registry.manifest(session.user_id)
 
-        dispatch = sink.write_ahead(registry.bind(sink.tool_context(), mcp_call=_mcp_call()), tools)
+        dispatch = sink.write_ahead(
+            registry.bind(sink.tool_context(), mcp_call=_mcp_call(), tools=tools),
+            tools,
+        )
         async for event in run_turn(
             messages,
             tools,

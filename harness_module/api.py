@@ -131,12 +131,14 @@ async def current_user(request: Request) -> str:
 
 def _check_origin(request: Request) -> None:
     """Reject a mutation from another origin. The CSRF cost of cookie auth."""
-    if not _origin:
-        return
     origin = request.headers.get("origin")
-    # Some same-origin fetches send no Origin at all; a cross-site form post
-    # always does, which is the case this closes.
-    if origin is not None and origin.rstrip("/") != _origin:
+    if origin is None:
+        # Not a browser cross-site request: some same-origin fetches and every
+        # non-browser client send no Origin at all.
+        return
+    # Fails closed on an unset app.public_url: an unconfigured origin refuses
+    # every browser mutation rather than accepting all of them.
+    if origin.rstrip("/") != _origin:
         raise ApiError(403, "bad_origin", "Origin not allowed.")
 
 

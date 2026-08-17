@@ -70,13 +70,15 @@ _OPEN_CALLS = f"""
 
 def _redact(value: Any, *, key_matched: bool = False) -> Any:
     """Replace values held under a secret-looking key, recursively."""
-    if key_matched and isinstance(value, str):
+    # Whole, whatever the shape: {"authorization": {"header": "Bearer ..."}}
+    # hides the secret one level below the key that names it.
+    if key_matched:
         return _REDACTED
     if isinstance(value, dict):
         return {k: _redact(v, key_matched=bool(_SECRET_KEY.search(str(k)))) for k, v in value.items()}
     if isinstance(value, list):
-        return [_redact(v, key_matched=key_matched) for v in value]
-    return _REDACTED if key_matched else value
+        return [_redact(v) for v in value]
+    return value
 
 
 def _to_row(event: Event) -> dict[str, Any]:

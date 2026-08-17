@@ -12,6 +12,11 @@ def _ctx(**kw):
     return ToolContext(user_id="u1", **kw)
 
 
+def _approving(**kw):
+    """A context that answers the consent gate, for tests about routing rather than consent."""
+    return _ctx(approve=lambda name, args: True, **kw)
+
+
 class _Mcp:
     """A stand-in for the Smithery half."""
 
@@ -70,7 +75,7 @@ async def test_dispatch_strips_the_prefix_before_calling_mcp():
         seen["name"] = bare
         return ok("sent")
 
-    result = await reg.dispatch("mcp_send_email", {"to": "x"}, _ctx(), mcp_call=mcp_call)
+    result = await reg.dispatch("mcp_send_email", {"to": "x"}, _approving(), mcp_call=mcp_call)
 
     assert seen["name"] == "send_email"
     assert result.ok is True
@@ -81,7 +86,7 @@ async def test_a_raising_mcp_transport_is_still_an_envelope():
     async def mcp_call(bare, args, ctx):
         raise ConnectionError("smithery down")
 
-    result = await reg.dispatch("mcp_send_email", {}, _ctx(), mcp_call=mcp_call)
+    result = await reg.dispatch("mcp_send_email", {}, _approving(), mcp_call=mcp_call)
 
     assert result.ok is False and result.error_kind == "upstream_error"
     assert "smithery down" in result.content
@@ -162,6 +167,7 @@ async def test_a_remote_tool_cannot_take_one_of_our_names():
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
 async def test_dispatch_routes_each_half_to_the_right_place():
     """Where each name actually lands, local or remote."""
     seen = []
@@ -170,8 +176,8 @@ async def test_dispatch_routes_each_half_to_the_right_place():
         seen.append(bare)
         return ok("remote")
 
-    ours = await reg.dispatch("finish_task", {"summary": "s"}, _ctx(), mcp_call=mcp_call)
-    theirs = await reg.dispatch("mcp_finish_task", {}, _ctx(), mcp_call=mcp_call)
+    ours = await reg.dispatch("finish_task", {"summary": "s"}, _approving(), mcp_call=mcp_call)
+    theirs = await reg.dispatch("mcp_finish_task", {}, _approving(), mcp_call=mcp_call)
 
     assert ours.content == "s" and seen == ["finish_task"]
     assert theirs.content == "remote"
@@ -183,7 +189,7 @@ async def test_a_hung_mcp_call_is_capped():
         await asyncio.sleep(5)
         return ok("never")
 
-    result = await reg.dispatch("mcp_slow", {}, _ctx(), mcp_call=hangs, timeout_s=0.05)
+    result = await reg.dispatch("mcp_slow", {}, _approving(), mcp_call=hangs, timeout_s=0.05)
     assert result.error_kind == "timeout"
 
 
@@ -232,3 +238,78 @@ def test_park_tools_are_named_not_hardcoded():
     from tool_module.tools.control import PARK_TOOLS
 
     assert {"ask", "request_approval"} == PARK_TOOLS
+
+
+# --- the approval gate is not bypassable by the mcp branch --------------------
+
+
+@pytest.mark.asyncio
+async def test_an_mcp_call_passes_through_the_approval_gate():
+    """The gate lives in envelope.execute; the mcp branch must not route around it."""
+    asked: list[str] = []
+    ran: list[str] = []
+
+    async def mcp_call(bare, args, ctx):
+        ran.append(bare)
+        return ok("sent")
+
+    async def deny(name, args):
+        asked.append(name)
+        return False
+
+    specs = {"mcp_send_email": ToolSpec(name="mcp_send_email", requires_approval=True)}
+    result = await reg.dispatch(
+        "mcp_send_email", {"to": "x"}, _ctx(approve=deny), mcp_call=mcp_call, specs=specs
+    )
+
+    assert asked == ["mcp_send_email"], "the human was never asked"
+    assert ran == [], "the tool ran despite the refusal"
+    assert not result.ok
+
+
+@pytest.mark.asyncio
+async def test_an_approved_mcp_call_runs():
+    async def mcp_call(bare, args, ctx):
+        return ok(f"sent via {bare}")
+
+    specs = {"mcp_send_email": ToolSpec(name="mcp_send_email", requires_approval=True)}
+    result = await reg.dispatch(
+        "mcp_send_email", {}, _ctx(approve=lambda n, a: True), mcp_call=mcp_call, specs=specs
+    )
+
+    assert result.ok
+    assert result.content == "sent via send_email"
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_mcp_tool_is_not_pre_approved():
+    """A name absent from the manifest gets the conservative spec, not a free pass."""
+    ran: list[str] = []
+
+    async def mcp_call(bare, args, ctx):
+        ran.append(bare)
+        return ok("sent")
+
+    result = await reg.dispatch("mcp_mystery", {}, _ctx(approve=lambda n, a: False), mcp_call=mcp_call)
+
+    assert ran == []
+    assert not result.ok
+
+
+@pytest.mark.asyncio
+async def test_bind_carries_the_manifest_so_the_gate_can_read_it():
+    ran: list[str] = []
+
+    async def mcp_call(bare, args, ctx):
+        ran.append(bare)
+        return ok("sent")
+
+    dispatch = reg.bind(
+        _ctx(approve=lambda n, a: False),
+        mcp_call=mcp_call,
+        tools=[ToolSpec(name="mcp_send_email", requires_approval=True)],
+    )
+    result = await dispatch("mcp_send_email", {})
+
+    assert ran == []
+    assert not result.ok

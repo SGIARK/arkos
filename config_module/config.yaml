@@ -2,12 +2,14 @@ app:
   host: "0.0.0.0"
   port: "1121"
   reload: true
-  # The single origin /app and the API are served from, behind Caddy. Approval
-  # notifications deep-link to it, and mutations are origin-checked against it.
+  # The single origin /app and the API are served from, behind Caddy. Set this
+  # to the real origin in production: mutations carrying any other Origin are
+  # refused, approval notifications deep-link to it, and the OAuth callback URL
+  # is built from it.
   # Same-site is required: SameSite=Lax sends the cookie only on top-level GETs,
   # so a cross-site frontend would send none on any EventSource and every SSE
   # stream would 401.
-  public_url: ""
+  public_url: "http://localhost:1121"
 
 auth:
   jwt_audience: "authenticated"   # what Supabase stamps on its access tokens

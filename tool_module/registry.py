@@ -6,11 +6,10 @@ stripped on dispatch, so a remote `read_file` cannot shadow ours.
 
 from __future__ import annotations
 
-import asyncio
 import importlib
 import logging
 import pkgutil
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Protocol
 
 from config_module.loader import config
@@ -88,32 +87,49 @@ def _copy(spec: ToolSpec, *, name: str | None = None) -> ToolSpec:
     )
 
 
+class _McpTool:
+    """Adapts one remote tool to the `Tool` protocol, so it runs through `execute`."""
+
+    def __init__(self, spec: ToolSpec, bare_name: str, mcp_call: McpCall):
+        self.spec = spec
+        self._bare = bare_name
+        self._call = mcp_call
+
+    async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
+        return await self._call(self._bare, args, ctx)
+
+
+def _mcp_spec(name: str, specs: dict[str, ToolSpec] | None) -> ToolSpec:
+    """Return the manifest spec for an mcp_* name, or a conservative stand-in."""
+    known = (specs or {}).get(name)
+    if known is not None:
+        return known
+    # A remote server does not say whether a tool mutates, so an unrecognised
+    # one is neither readonly nor pre-approved.
+    return ToolSpec(name=name, readonly=False, requires_approval=True)
+
+
 async def dispatch(
     name: str,
     args: dict[str, Any],
     ctx: ToolContext,
     *,
     mcp_call: McpCall | None = None,
+    specs: dict[str, ToolSpec] | None = None,
     timeout_s: float = 120.0,
 ) -> ResultEnvelope:
-    """Run one tool by the name the model used; `mcp_call` handles the mcp_* half."""
+    """
+    Run one tool by the name the model used.
+
+    Both halves go through `envelope.execute`, which is the single place the
+    approval gate, the schema check and the timeout are applied. An mcp_* name
+    is wrapped in an adapter rather than routed around it.
+    """
     if name.startswith(MCP_PREFIX):
         if mcp_call is None:
             return fail("not_found", f"No MCP transport available for {name!r}.")
-        bare = name[len(MCP_PREFIX) :]
-        try:
-            async with asyncio.timeout(timeout_s):
-                result = await mcp_call(bare, args, ctx)
-        except asyncio.CancelledError:
-            raise
-        except TimeoutError:
-            return fail("timeout", f"{name} did not finish within {timeout_s:.0f}s. It may have taken effect.")
-        except Exception as e:
-            logger.exception("mcp dispatch failed for %s", name)
-            return fail("upstream_error", f"{name} failed: {type(e).__name__}: {e}")
-        if not isinstance(result, ResultEnvelope):
-            return fail("upstream_error", f"{name} returned a malformed result.", retryable=False)
-        return result
+        tool = _McpTool(_mcp_spec(name, specs), name[len(MCP_PREFIX) :], mcp_call)
+        return await execute(name, args, ctx, lookup=lambda _name: tool, timeout_s=timeout_s)
 
     return await execute(name, args, ctx, lookup=local_tools().get, timeout_s=timeout_s)
 
@@ -122,12 +138,19 @@ def bind(
     ctx: ToolContext,
     *,
     mcp_call: McpCall | None = None,
+    tools: Sequence[ToolSpec] | None = None,
     timeout_s: float | None = None,
 ) -> Callable[[str, dict[str, Any]], Awaitable[ResultEnvelope]]:
-    """Adapt `dispatch` to the `(name, args)` shape `run_turn` requires."""
+    """
+    Adapt `dispatch` to the `(name, args)` shape `run_turn` requires.
+
+    `tools` is the manifest this turn was built with. It carries each remote
+    tool's `requires_approval`, which is what the gate in `execute` reads.
+    """
     cap = float(_cfg("tools.call_timeout_s", 120.0)) if timeout_s is None else timeout_s
+    specs = {t.name: t for t in tools} if tools else None
 
     async def dispatch_bound(name: str, args: dict[str, Any]) -> ResultEnvelope:
-        return await dispatch(name, args, ctx, mcp_call=mcp_call, timeout_s=cap)
+        return await dispatch(name, args, ctx, mcp_call=mcp_call, specs=specs, timeout_s=cap)
 
     return dispatch_bound

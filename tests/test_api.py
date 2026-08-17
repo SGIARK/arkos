@@ -153,6 +153,40 @@ async def test_test_cookie_session(client):
         assert foreign.status_code == 401, f"{method} {path} accepted a cookie we did not sign"
 
 
+async def test_a_cross_origin_mutation_is_refused(client, monkeypatch):
+    """SameSite=Lax is the first line; the Origin check is the one we control."""
+    await _signed_in(client)
+    monkeypatch.setattr(api, "_origin", "https://app.example.com")
+
+    same_site = await client.post("/sessions", json={"goal": "ours"}, headers={"Origin": "https://app.example.com"})
+    cross_site = await client.post("/sessions", json={"goal": "theirs"}, headers={"Origin": "https://evil.example"})
+
+    assert same_site.status_code == 201
+    assert cross_site.status_code == 403
+    assert cross_site.json()["code"] == "bad_origin"
+
+
+async def test_an_unset_public_url_refuses_browser_mutations_rather_than_all_of_them(client, monkeypatch):
+    """Fails closed: an unconfigured origin is not a reason to accept every origin."""
+    await _signed_in(client)
+    monkeypatch.setattr(api, "_origin", "")
+
+    from_browser = await client.post("/sessions", json={"goal": "x"}, headers={"Origin": "https://anywhere"})
+    no_origin = await client.post("/sessions", json={"goal": "y"})
+
+    assert from_browser.status_code == 403
+    assert no_origin.status_code == 201, "a non-browser client sends no Origin at all"
+
+
+async def test_a_read_is_not_origin_checked(client, monkeypatch):
+    await _signed_in(client)
+    monkeypatch.setattr(api, "_origin", "https://app.example.com")
+
+    response = await client.get("/auth/me", headers={"Origin": "https://evil.example"})
+
+    assert response.status_code == 200
+
+
 async def test_auth_me_reports_the_signed_in_user(client):
     user_id = await _signed_in(client)
 

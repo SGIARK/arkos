@@ -193,6 +193,23 @@ async def test_secrets_in_tool_args_never_reach_the_log():
     assert "hunter2" not in str(payload)
 
 
+async def test_a_secret_nested_below_a_secret_key_is_still_redacted():
+    """The key naming the secret is often one level above the secret itself."""
+    session_id = await _session()
+    args = {
+        "authorization": {"header": "Bearer sk-live-789"},
+        "credentials": {"user": "alice", "pw": "hunter2"},
+        "tokens": ["sk-live-000", "sk-live-111"],
+    }
+
+    stored = await slog.append(session_id, ToolCallEvent(id="c1", name="http", args=args))
+    payload = await pool.fetchval("SELECT payload FROM session_events WHERE seq = $1", stored.seq)
+
+    assert "sk-live-789" not in str(payload)
+    assert "hunter2" not in str(payload)
+    assert "sk-live-000" not in str(payload)
+
+
 # --- blobs --------------------------------------------------------------------
 
 
