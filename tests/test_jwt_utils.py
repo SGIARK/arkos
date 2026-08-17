@@ -96,10 +96,21 @@ class TestGetCurrentUser:
         assert result == {"user_id": "u-1", "username": "alice"}
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_x_user_id_header(self):
-        # Backwards-compat path: no Bearer, but X-User-ID is set.
+    async def test_falls_back_to_x_user_id_header(self, monkeypatch):
+        # Backwards-compat path: no Bearer, but X-User-ID is set. The fallback is
+        # gated on ARK_DEMO_MODE, so the test sets it rather than inheriting it
+        # from the developer's shell — it used to pass only where .env had it.
+        monkeypatch.setenv("ARK_DEMO_MODE", "1")
         result = await get_current_user(authorization=None, x_user_id="legacy-id")
         assert result == {"user_id": "legacy-id", "username": "legacy-id"}
+
+    @pytest.mark.asyncio
+    async def test_x_user_id_rejected_when_demo_mode_off(self, monkeypatch):
+        # The half that matters for prod: without demo mode the header is refused.
+        monkeypatch.delenv("ARK_DEMO_MODE", raising=False)
+        with pytest.raises(HTTPException) as exc:
+            await get_current_user(authorization=None, x_user_id="legacy-id")
+        assert exc.value.status_code == 401
 
     @pytest.mark.asyncio
     async def test_bearer_takes_precedence_over_x_user_id(self):

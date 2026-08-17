@@ -1,21 +1,27 @@
-openai>=1.61.0
+# Runtime dependencies. Dev/test extras live in requirements-dev.txt.
+
+# --- model ---
+openai>=1.61.0            # AsyncOpenAI against SGLang's OpenAI-compatible endpoint
+
+# --- config ---
 pyyaml>=6.0.2
-pydantic>=2.10.6
-requests>=2.32.3
-fastapi>=0.115.0
-uvicorn>=0.32.0
-asyncpg>=0.29.0
-psycopg2-binary>=2.9.11
-vecs
-mem0ai
-sentence-transformers
 python-dotenv>=1.0.0
-aiohttp>=3.9.0
-httpx>=0.27.0
-tiktoken>=0.7.0
-json-repair>=0.30.0
-google-auth-oauthlib>=1.2.0
+
+# --- http surface (harness_module/api.py, Task 4) ---
+fastapi>=0.115.0
+uvicorn>=0.32.0           # not imported; Dockerfile CMD runs it
+pydantic>=2.10.6          # imported lazily in tool_module/browser_actions.py
 PyJWT>=2.8.0
-browser-use>=0.12.0,<0.13
-playwright>=1.49.0
+
+# --- database ---
+asyncpg>=0.29.0           # db/pool.py — the async path, one pool per process
+psycopg2-binary>=2.9.11   # db/migrate.py (CLI) and tool_module/sandbox/manager.py.
+                          # Task 8 moves the sandbox half onto db.pool; migrate.py
+                          # is a sync CLI and correctly stays on psycopg2.
+
+# --- tools ---
+aiohttp>=3.9.0            # Smithery MCP transport
+httpx>=0.27.0
 e2b-code-interpreter>=2.7.0
+browser-use>=0.12.0,<0.13 # imported lazily so arkos boots without it
+playwright>=1.49.0
