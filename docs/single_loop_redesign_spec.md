@@ -414,8 +414,10 @@ is a straight cutover, and the app is down until it lands.
 **Done when:** chat routes through `run_turn`; first token before
 completion (measured); memory auto-injection code DELETED (memory removed);
 SSE error chunk on mid-stream failure; chat transcripts ride `session_events`;
-an attended turn ends in `idle`.
-**Touch:** `harness_module/app.py` | **P0, 2d** | **Blockers:** 1-3, 0c applied
+an attended turn ends in `idle`; the five **`world` tools** ship in the manifest;
+a **system prompt** exists and a file owns it; the **MCP connections surface** is
+reachable over HTTP.
+**Touch:** `harness_module/api.py` | **P0, 4d** | **Blockers:** 1-3, 0c applied
 **Note:** `app.py` is DELETED (Task 7 ran early), so this is now "write
 `harness/api.py`" rather than "untangle app.py". There is no HTTP server until
 it lands. `harness_module/` currently holds only `jwt_utils.py` and
@@ -423,20 +425,86 @@ it lands. `harness_module/` currently holds only `jwt_utils.py` and
 **Test:** first SSE chunk arrives before mocked model finishes; forced mid-stream
 exception yields an error chunk, not truncation.
 
+**Folded in 2026-08-16** — three pieces contracts requires that no card owned.
+All three need the harness, so they belong here and nowhere earlier:
+
+- **The five `world` tools** — `list_projects` · `get_project` · `list_sessions`
+  · `get_session` · `list_files`. They appear once in the whole doc set
+  (`contracts.md:376`) and Task 3 closed DONE having built only the control set,
+  so the manifest ships 5 of the ~20 tools contracts promises. They are reads
+  against `projects`/`sessions`, which is why they could not have been built
+  before now.
+- **The system prompt.** No system prompt exists in live code. `run_turn` takes
+  `messages` already built, so whoever assembles the first message owns it — that
+  is `api.py`. G44 pinned this to Task 2 and Task 2 shipped without it. The
+  finishing contract (`finish_task` vs bare text), read-before-edit and the
+  unique-`old_string` rule all have to be taught somewhere, and
+  `tool_module/sandbox/tools.py`'s descriptions already assume they were. Port
+  the surviving discipline from `git show cf27b08^:computer_module/prompt.py`
+  (57 lines, the only prompt in repo history written for a native-tool-calling
+  loop). Move the nudge text out of `agent_module/loop.py:175-178` in the same
+  change: it is hardcoded English under a contract that bans magic values.
+- **The MCP connections + OAuth surface.** `smithery.py` kept `connect()` /
+  `disconnect()` / `status()` but every route that reached them died with
+  `app.py`, and the endpoint table has no row for them — so D24's "the id is
+  minted at connect time" has no path a human can walk, and `auth_required`'s
+  setup URL points at a page that does not exist. Needs list · connect ·
+  disconnect · `GET /oauth/callback/{service}`, plus one `Smithery` constructed
+  at startup (nothing in production constructs one today), `initialize_shared()`
+  called so no-auth servers come up, and `close()` on shutdown. Prior art:
+  `git show cf27b08^:base_module/app.py:302-511` — note the callback retries
+  `_ensure_user_server` 3x at 1.5s because Smithery's token is not ready when the
+  redirect fires. **Adding endpoint rows to `contracts.md` needs owner sign-off
+  (G36/G37).**
+
 ## Task 5: Unattended runs on the new loop
 **Done when:** runner per contracts.md (wake/fold/lease); `POST /sessions/{id}/approve`
 flips attended → unattended; completion ONLY via `finish_task` when unattended;
 `idle` on an attended turn end; terminal reason recorded; budgets enforced;
-cancel wins races.
-**Touch:** `harness_module` runner/task_store/tasks | **P1, 3d** | **Blockers:** 4
+cancel wins races; **context-recovery ladder rungs 0-1 live in the fold**.
+**Touch:** `harness_module` runner/task_store/tasks | **P1, 4d** | **Blockers:** 4
 **Test:** kill mid-task → resume at cursor, no duplicate side effects; budget
-exhaustion → `failed{max_hops}`, never completed.
+exhaustion → `failed{max_hops}`, never completed; a log that overflows the input
+budget folds to a view under it, and the same log folds byte-identically twice.
+
+**Folded in 2026-08-16 — the context-recovery ladder.** Scoped into v1 at
+Proposed Approach above, given an invariant at `contracts.md:161-165`, and built
+by no card. It lands here rather than in Task 4 because the fold is this task's,
+because rung 1 needs the `result_blobs` Task 4 delivers, and because a 6-hop
+attended turn rarely overflows while a 15-hop worker run is where it actually
+bites. Required: estimate the view per hop; over `context.recovery_threshold`
+(0.8) of `llm.context_window - llm.max_tokens`, clear the oldest tool results
+whose tool is in `context.clearable_tools`, replaced in the VIEW with
+`[cleared, ref b_x, re-read if needed]`; full content stays in `result_blobs`;
+every drop appended as a `view_transform` event; the log is never rewritten.
+Two prerequisites, both currently missing: `config.yaml` has no `context:` block
+at all, and `llm.context_window` is read by zero lines of code. Fix
+`done{context_overflow}` in the same change — `agent_module/loop.py:157` only
+fires on `finish_reason == "length"` (output truncation), so real input overflow
+still returns `bad_request` → `done{model_error}`, which is the exact violation
+contracts declared resolved by deletion.
 
 ## Task 6: Event-driven approvals
 **Done when:** `request_approval` parks (no polling, no timeout-fail); respond
-appends + wakes at cursor; reminder at 1h.
+appends + wakes at cursor; reminder at 1h; **the park closes its own tool_call
+before parking**.
 **Touch:** `harness_module` | **P1, 2d** | **Blockers:** 5
-**Test:** zero DB queries while parked; restart preserves the pending approval.
+**Test:** zero DB queries while parked; restart preserves the pending approval;
+a parked session's transcript has no open `tool_call`, and folds cleanly on wake.
+
+**Settled 2026-08-16 (owner): a tool call is never left open.**
+`decision_tables.md` used to call an open call across a park "parked, healthy",
+contradicting `contracts.md:52`. The owner ruled for contracts, and the mechanics
+agree: SGLang's chat template rejects a request whose `tool_call` id has no
+matching tool message, so parking with the call open makes the session
+unwakeable on the next load — the park would brick the session it exists to
+suspend. So `request_approval` / `ask` return a real result ("asked, awaiting a
+human"), the call closes, and the session parks with a clean transcript. The
+answer arrives later as a `user` event, which is what wakes the run; respond
+never back-fills a `tool_result`, and no resume has to reconcile one. Full
+rationale in `decision_tables.md:37-49`. Note the current stubs at
+`tool_module/tools/control.py:45-46,64-65` already return `ok()` immediately,
+which is the correct half — what is missing is the park itself.
 
 ## Task 7: Delete the old machinery
 **Done when:** state_module, old step/step_stream, llm_json repair, memory_module,
@@ -477,11 +545,22 @@ half is broken until then. Both files carry a header saying so.
 `status` events; frame stream keyed (user, session) + cookie-authed + announced by
 event and rendered in the right-hand canvas (replacing the fixed corner pane); result is a real envelope from history (ok/errors/ref), never a bare
 string; graceful-stop budget with `wait_for` backstop; config collapses to a
-`browser:` yaml section; WARNING on dropped register_* kwargs.
+`browser:` yaml section; WARNING on dropped register_* kwargs; **`browser_task`
+is in the manifest and reachable from `run_turn`**.
 **Touch:** `tool_module/browser_tool.py`, `browser_stream.py`,
 `harness_module/browser_routes.py` | **P2, 2d** | **Blockers:** 1
 **Test:** budget kills at deadline with partial results; step events appear in
-the session log; stream requires ownership; failure ≠ empty string.
+the session log; stream requires ownership; failure ≠ empty string;
+`manifest()` contains `browser_task`.
+
+**Folded in 2026-08-16 — registration was missing from the done-when.** Every
+other item above leashes a browser the model cannot currently reach:
+`register_browser_tool()` (`browser_tool.py:365-389`) calls
+`tool_manager.register_local_tool()`, an API that died with the ToolManager in
+Task 3, so no class in the repo defines it and `browser_task` appears in no
+manifest. Task 8 states its equivalent explicitly ("register it in the
+manifest"); this card did not, and a card can be completed exactly as written
+while leaving the tool unreachable. Registration is now part of done.
 
 ## Tasks 10-11: moved to `docs/looking_glass_spec.md`
 (Looking Glass v1; Projects + Command Center.)
@@ -773,3 +852,34 @@ Two consequences to carry forward. **There is no HTTP server** until Task 4
 writes one — `app.py` is gone rather than half-alive. And `harness_module/` is down
 to two files, so Open Question 5 (keep the name or rename to `harness/`) costs
 nothing to settle now and should be settled before Task 4 puts an api.py in it.
+
+**2026-08-16 — five orphans folded into existing cards; no new task.** A
+full-repo audit against contracts found five things contracts requires that no
+card owned. Written up on the cards themselves (Task 4 ×3, Task 5, Task 9)
+rather than as a new task, because each one belongs to work already scheduled and
+a sixth card would have been a second place to look.
+
+What the audit says about them as a group is the part worth keeping: **none was
+a coding mistake.** Each is a seam between two cards where neither card's
+done-when claimed it. The world tools fell between Task 3 (built the tool layer,
+before `projects`/`sessions` existed) and Task 4 (builds the tables, was not
+asked for the tools). The prompt fell between Task 2 (takes `messages` already
+built) and Task 4 (builds them). The connections surface fell between Task 3
+(kept the business logic) and Task 7 (deleted the routes). Browser registration
+fell between Task 9 (leashes the tool) and Task 3 (deleted the API it registers
+through). The ladder was scoped in prose and given an invariant, but prose is not
+a card.
+
+The lesson for the remaining cards: **a done-when that does not say "reachable"
+does not make it reachable.** Task 8 said "register it in the manifest" and is
+the only integration card that cannot be completed while leaving its code
+unwired. Every other card should be read against that bar before it is started.
+
+Two estimates moved with the scope: Task 4 2d → 4d, Task 5 3d → 4d.
+
+Not folded in, still open for the owner: the endpoint rows this needs in
+`contracts.md` (G36/G37 — contracts is law and needs sign-off), the
+`interactive|worker` vs `attended|unattended` budget-profile mapping that
+`runner.py` cannot pick a budget without, and the app port, which is 1121 in
+config, 1112 in Dockerfile/compose, 1113 in the frontend fallback and 1114 in the
+README.

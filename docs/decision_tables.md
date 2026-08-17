@@ -24,8 +24,7 @@ reopened later must still load cleanly, hence the repair below.
 | Loading a session, tail of log | Status | Action |
 |---|---|---|
 | `done{...}` | terminal | nothing to do |
-| `tool_call`, no result | `awaiting_approval` | parked, healthy — leave open; the respond event closes it |
-| `tool_call`, no result | any other | nothing wrote a failure (the process died mid-call) — append `tool_result{ok:false, interrupted}`: "outcome unknown, verify before retrying" |
+| `tool_call`, no result | any, `awaiting_approval` included | nothing wrote a failure (the process died mid-call) — append `tool_result{ok:false, interrupted}`: "outcome unknown, verify before retrying". A park closes its own call before parking, so in `awaiting_approval` this row means the process died between the two |
 | `tool_result` / assistant text / user message | — | load as-is |
 | empty | — | fresh session: system prompt + goal |
 
@@ -34,6 +33,19 @@ log on *every* load (nothing is held in memory). SGLang's chat template rejects
 a request where a `tool_call` id has no matching tool message, so an unclosed
 call makes that conversation permanently unloadable, not just once. Writing the
 stand-in IS the "tool call failed" record nobody was alive to write.
+
+**Settled 2026-08-16 (owner): a tool call is never left open — a park closes its
+own call first.** This document used to say an open call in `awaiting_approval`
+was "parked, healthy", which contradicted the transcript invariant at
+`contracts.md:52` and, more damningly, the paragraph directly above: a session
+that parks with its call open cannot be folded back into messages, so it is
+unwakeable on the very next load — the park would brick the session it exists to
+suspend. `request_approval` and `ask` therefore return a real result ("asked, awaiting
+a human"), the call closes, and the session parks with a clean transcript. The
+human's answer arrives later as a `user` event, which is what wakes the run; it
+is not that call's return value. Consequence for Task 6: the respond endpoint
+appends a `user` event and wakes at the cursor — it never back-fills a
+`tool_result`, and there is no state in which a resume has to reconcile one.
 
 ## 2. End of a hop — what did the model produce?
 
@@ -46,7 +58,7 @@ stand-in IS the "tool call failed" record nobody was alive to write.
 | a tool fails `per_tool_attempts` times in a row | any | further calls closed `upstream_error` without dispatch; a success at any point clears the streak |
 | empty completion (no text, no calls) | any | `done{model_error}`; looping on nothing just spends the budget |
 | `finish_reason: length` with no calls | any | `done{context_overflow}` |
-| `request_approval` / `ask` | any | park → `awaiting_approval`, exit loop, leave the tool_call open |
+| `request_approval` / `ask` | any | close the tool_call with its result FIRST, then park → `awaiting_approval`, exit loop. The answer arrives later as a `user` event, not as this call's result |
 | `todo_write` | any | replace the current list (latest-wins); emit `todo` event; older todo results drop out of the view |
 | text only | attended | `done{turn_end}` → `idle` (non-terminal: no `terminal_reason`, no `ended_at`) |
 | text only | unattended | append, inject nudge, loop |
