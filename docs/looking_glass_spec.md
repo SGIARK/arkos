@@ -132,6 +132,17 @@ calls and text stream live; mid-run suggestion lands as a user event at the next
 hop; an ask is answered in-window and the task continues; no code path lets the
 human execute a tool.
 
+**Carded from the Task 4 review, 2026-08-17.** The frontend talks to an API that
+no longer exists: `frontend/seed.jsx:156` calls `/auth/demo-login`, `:201-250`
+call `/tasks` and `/computer/tasks`, and `frontend/components.jsx:217` opens
+`/v1/browser/stream?user_id=…`. Separately, **nothing serves `/app`** —
+`harness_module/api.py` mounts no static files and no `/app` route. That is not
+cosmetic: `contracts.md:299-306` makes same-origin `/app` a deployment
+requirement, because SameSite=Lax sends no cookie to a cross-site `EventSource`
+and both SSE streams would 401 on every connect while the tests still passed.
+Add both to this card's done-when: the grid and window read the endpoint table
+in `contracts.md`, and `/app` is served same-origin with the API.
+
 ## Task LG-2: Projects + Command Center
 **Done when:** `projects`/`project_files` tables; project-per-task default;
 `GET /projects` rollup; file upload + sandbox mount; `GET /attention` at three

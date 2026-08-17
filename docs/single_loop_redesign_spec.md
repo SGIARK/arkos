@@ -530,6 +530,39 @@ fires on `finish_reason == "length"` (output truncation), so real input overflow
 still returns `bad_request` → `done{model_error}`, which is the exact violation
 contracts declared resolved by deletion.
 
+**Carded from the Task 4 review, 2026-08-17.** Six items, all deferred here
+deliberately because none permanently kills a session, falsifies the record or
+breaches consent — the bar the review batches used. Interleave them with the
+work above:
+
+- **SSE backlog is a single `LIMIT 1000` page** (`api.py:397`, and the same loop
+  on the LAGGED re-read at `:412`). Past 1000 events the reader sends the page,
+  then jumps `sent` to the next live event and the middle is unrecoverable on
+  that connection. Page until a short page is returned, both places.
+- **`lifecycle` events are appended but never published** (`lifecycle.py:114`),
+  so the status pill only moves on reconnect. `transition()` should return the
+  `StoredEvent` and let the caller publish it AFTER commit — publishing inside
+  the transaction would leak a seq that is not yet visible to readers.
+- **`projects.updated_at` is written by nothing.** Migration 0 dropped the
+  trigger, so `ORDER BY updated_at DESC` in `GET /projects` and `list_projects`
+  is creation order forever. A touch on write or a restored trigger, either.
+- **Local tools never blob an oversized result.** `loop.py:_cap_view` records
+  `total_chars` but never calls `ctx.store_blob`, so `ref` is None for every
+  non-MCP tool and a resumed run replays a truncated result with no pointer
+  back. Task 3 closed this for MCP inside `Smithery.call`; it belongs here
+  because rung 1 of the ladder needs every result blobbed, not just MCP's.
+- **`system_events` has zero writers** repo-wide, while `contracts.md:167-176`
+  makes it half the logging contract. Its natural home is the same change that
+  gives the fold something to report.
+- **Three conformance gaps.** `test_retry_budget_bounded` does not exist by that
+  name (its substance is spread across `test_model_client.py` and
+  `test_loop.py`). `test_streaming_first_token` pins only the SSE fan-out — its
+  fake model appends straight to the log, so nothing pins the thing the sink
+  exists for; drive `run_turn` with a slow fake append and assert the model
+  stream never stalls. `test_event_replay_deterministic` folds a two-event log
+  twice in one process and can only fail on a clock read; fold a realistic log
+  with tool calls, mid-call steering and several `done` boundaries.
+
 ## Task 6: Event-driven approvals
 **Done when:** `request_approval` parks (no polling, no timeout-fail); respond
 appends + wakes at cursor; reminder at 1h; **the park closes its own tool_call
@@ -598,6 +631,12 @@ is in the manifest and reachable from `run_turn`**.
 **Test:** budget kills at deadline with partial results; step events appear in
 the session log; stream requires ownership; failure ≠ empty string;
 `manifest()` contains `browser_task`.
+
+**Carded from the Task 4 review, 2026-08-17.** `harness_module/browser_routes.py`
+is now mounted by no application — `api.py` deliberately leaves it out, because
+`_resolve_user_id` still trusts a client-supplied id. It is dead code carrying a
+live violations row, and the line numbers cited at `contracts.md:551` are stale.
+Delete it when this card lands its replacement.
 
 **Folded in 2026-08-16 — registration was missing from the done-when.** Every
 other item above leashes a browser the model cannot currently reach:
@@ -1058,6 +1097,45 @@ a code change. Unattended refuses and logs, rather than guessing yes.
 blocks describing deleted modules, and `app.system_prompt` was the pre-redesign
 ARK prompt that `prompts.py` now owns. All four are gone.
 `browser_routes.py:27` was the only live reader of any of them.
+
+**2026-08-17 — Task 4 reviewed, and the transcript was the weak half.** Twelve
+findings, worked in three batches; the rest carded onto Tasks 5, 9 and LG-1
+rather than fixed. What is worth carrying forward is the shape of the failures:
+four of the five in batch 1 ended in a session that could never be loaded again,
+and none of them was reachable by reading a single file. Each needed the log
+format, the fold and the chat template held in mind at once.
+
+- **A tool_result closed a call it did not answer.** `_OPEN_CALLS` bounded the
+  call side to the current run but left the result side unbounded, and the loop
+  minted `call_0_1` as the first synthetic id of EVERY turn (`seen_ids` is
+  per-turn). So turn 2's call was matched by turn 1's result, the legitimate
+  result was refused, the run died, and `close_dangling` could not see the call
+  either. Fixed both halves: `r.seq > c.seq`, and a uuid suffix on synthetic ids.
+- **A user message stranded a call.** `post_message` appended the user event
+  before `_drive` ran the wake repair, so the log read `tool_call / user /
+  tool_result` and the fold emitted `assistant(tool_calls) → user → tool`, which
+  OpenAI rejects. Fixed at both ends: the endpoint closes dangling calls first,
+  and the fold holds a user event that lands mid-call until the results close.
+  The second half is what covers steering, which no write-side ordering can
+  prevent. It is view-only, so replay stays deterministic.
+- **The advisory lock keyed off the caller's spelling of the session id.**
+  Postgres compares uuids case-insensitively and hashes text exactly, so an
+  uppercased id in a URL took a different lock and serialized against nothing —
+  silently un-doing the one guarantee that append exists to give.
+- **The consent gate was unreachable.** `registry.dispatch` returned before
+  `envelope.execute` for every `mcp_*` name, and `execute` is where
+  `requires_approval` is read. Every MCP tool ran ungated and `_Sink._approve`
+  was dead code, which made the Task 4 note about attended auto-approval false
+  when it was written. The mcp branch now runs through `execute` like anything
+  else.
+
+Two bugs were found by writing the test rather than by reading. A cancel landing
+during turn SETUP (fold, manifest, wake repair — all network awaits) left the
+row `running` with no task, which `start` then refuses forever. And a `_finish`
+interrupted after appending its `done` but before the transition would later be
+completed by an abort carrying a DIFFERENT reason, so the transcript said
+`turn_end` beside a status saying `failed`; the first reason to reach `_finish`
+now owns the ending.
 
 **2026-08-16 — the database moved. 0c re-applied to a new Supabase project.**
 The target is now project **`sbtbbytesjobdpmqojlr`** (`db.sbtbbytesjobdpmqojlr.
