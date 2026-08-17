@@ -881,12 +881,33 @@ unwired. Every other card should be read against that bar before it is started.
 
 Two estimates moved with the scope: Task 4 2d → 4d, Task 5 3d → 4d.
 
-Not folded in, still open for the owner: the endpoint rows this needs in
-`contracts.md` (G36/G37 — contracts is law and needs sign-off), the
-`interactive|worker` vs `attended|unattended` budget-profile mapping that
-`runner.py` cannot pick a budget without, and the app port, which is 1121 in
-config, 1112 in Dockerfile/compose, 1113 in the frontend fallback and 1114 in the
-README.
+All three of the decisions this note left open were settled on 2026-08-16.
+`contracts.md` gained the auth and MCP connection endpoint rows (G36/G37). The
+app port is whatever `config_module/config.yaml` says: the 1113 frontend fallback
+and the README's 1114 are gone, and the Dockerfile's 1112 is left for the
+container refactor. And the budget vocabulary collapsed rather than being mapped
+— see the note below.
+
+**2026-08-16 — three names for one question, now one.** `sessions.mode`
+(`attended|unattended`), the `budgets:` keys (`interactive|worker`) and
+`client.Source` (`interactive|background`) were three vocabularies for a single
+predicate: is a human waiting? They arrived from different documents at
+different times — mode from D5, the budget keys from the config block, `source`
+from Task 1 — and nothing had ever consumed all three at once, so nobody
+reconciled them. `runner.py` is the first code that would have had to, which is
+why this surfaced at the Task 4 boundary and not earlier.
+
+Resolved by deleting a vocabulary, not by writing the mapping down: the budget
+keys are now `attended` / `unattended`, so `Budgets.load(mode)` takes what the
+caller already has. `mode` could not move — it is a CHECK constraint in
+migration 0, the lifecycle table's trigger column, and the name in
+`max_unattended_sessions` — and the budget keys were two lines of yaml.
+
+`client.Source` deliberately stays `interactive | background`. `model_module`
+must not know what a session is, so that is a layer boundary rather than a third
+vocabulary; `agent_module/loop.py:123` derives it from `mode` in one line. The
+word `interactive` now appears in exactly three places, all of them that one
+concept.
 
 **2026-08-16 — the database moved. 0c re-applied to a new Supabase project.**
 The target is now project **`sbtbbytesjobdpmqojlr`** (`db.sbtbbytesjobdpmqojlr.

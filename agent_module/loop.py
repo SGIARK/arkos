@@ -32,7 +32,6 @@ from tool_module.envelope import ResultEnvelope, ToolSpec
 logger = logging.getLogger(__name__)
 
 Mode = Literal["attended", "unattended"]
-Profile = Literal["interactive", "worker"]
 
 # The control tool that makes an unattended exit safe.
 FINISH_TOOL = "finish_task"
@@ -51,12 +50,17 @@ class Budgets:
     model_retries: int
 
     @classmethod
-    def load(cls, profile: Profile = "interactive") -> Budgets:
-        """Load the budgets for one profile from config."""
-        fallback = {"interactive": (6, 300.0), "worker": (15, 1800.0)}[profile]
+    def load(cls, mode: Mode = "attended") -> Budgets:
+        """Load the budgets for one session mode from config.
+
+        Keyed by `mode` so the caller passes what it already has. An attended
+        session gets a short leash because a human is watching it; an unattended
+        one gets room to finish.
+        """
+        fallback = {"attended": (6, 300.0), "unattended": (15, 1800.0)}[mode]
         return cls(
-            max_hops=int(_cfg(f"budgets.{profile}.max_hops", fallback[0])),
-            wall_clock_s=float(_cfg(f"budgets.{profile}.wall_clock_s", fallback[1])),
+            max_hops=int(_cfg(f"budgets.{mode}.max_hops", fallback[0])),
+            wall_clock_s=float(_cfg(f"budgets.{mode}.wall_clock_s", fallback[1])),
             per_tool_attempts=int(_cfg("budgets.per_tool_attempts", 3)),
             model_retries=int(_cfg("budgets.model_retries", 3)),
         )

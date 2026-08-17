@@ -219,7 +219,7 @@ async def test_the_bound_dispatch_satisfies_the_loop(monkeypatch):
         async for e in lp.run_turn(
             [{"role": "user", "content": "go"}],
             await reg.manifest("u1"),
-            lp.Budgets.load("interactive"),
+            lp.Budgets.load("attended"),
             "attended",
             dispatch=dispatch,
         )

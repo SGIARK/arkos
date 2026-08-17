@@ -15,7 +15,7 @@ CAP = int(lp._cfg("tools.result_view_cap_chars", 4000))
 
 def _budgets(**over):
     """Config-loaded budgets with per-test overrides."""
-    b = lp.Budgets.load("worker")
+    b = lp.Budgets.load("unattended")
     for key, value in over.items():
         setattr(b, key, value)
     return b

@@ -197,9 +197,9 @@ context:
   recovery_threshold: 0.8      # rung 0 trips at this fraction of input budget
   clearable_tools: [read_file, grep, glob, list_dir, search]   # rung 1 whitelist
   turns: 50                    # short-term transcript window (today: ignored)
-budgets:
-  interactive: {max_hops: 6,  wall_clock_s: 300}
-  worker:      {max_hops: 15, wall_clock_s: 1800}
+budgets:                       # keyed by sessions.mode — one vocabulary, nothing to map
+  attended:   {max_hops: 6,  wall_clock_s: 300}
+  unattended: {max_hops: 15, wall_clock_s: 1800}
   per_tool_attempts: 3
 tools:
   result_view_cap_chars: 4000  # over this -> blob + ref
@@ -228,8 +228,15 @@ quota returns the standard `{code, message, retryable}` error. The
 count-then-act race on the concurrency check is real and unhandled in v1.
 
 `context_window` must match how the SGLang server was actually launched
-(`--context-length`), not the model's theoretical max. Budgets differ per role,
+(`--context-length`), not the model's theoretical max. Budgets differ per mode,
 which is why they are passed INTO `run_turn` rather than read inside it.
+
+**One predicate, derived not restated: is a human waiting?** `sessions.mode` is
+the only input. Budgets key off it directly (`Budgets.load(mode)`), and the
+client's `source` derives from it in one line — `background` when unattended, so
+an unattended run yields the GPU slot on overload instead of queueing for it.
+`source` stays `interactive | background` because `model_module` must not know
+what a session is; that is a layer boundary, not a second vocabulary.
 
 **Concurrency model (the scalability law).** One asyncio event loop; every
 session is a coroutine, never an OS thread. NO blocking I/O in any async path —
