@@ -276,7 +276,11 @@ async def cancel(session_id: str) -> bool:
     session = await load(session_id)
     if session is None or session.status in lifecycle.TERMINAL:
         return False
-    return await lifecycle.transition(session_id, session.status, "cancelled", "cancelled")
+    # Through the same helper as a live turn, so the transcript gets its
+    # done{cancelled}. A bare transition leaves no `done`, and the fold resets
+    # hops at a `done`, so a restarted session would inherit the old count and
+    # hit max_hops before calling the model.
+    return await _ending(session_id, None, "cancelled", expected=session.status)
 
 
 async def _drive(session_id: str) -> None:
@@ -345,21 +349,32 @@ async def _shielded(work: Awaitable[None]) -> None:
             break
 
 
-async def _ending(session_id: str, sink: _Sink | None, reason: str) -> None:
-    """Record the end of a run. `sink` is None when the turn died before it was built."""
+async def _ending(
+    session_id: str,
+    sink: _Sink | None,
+    reason: str,
+    expected: str = "running",
+) -> bool:
+    """
+    Record the end of a run: close open calls, append the `done`, move the status.
+
+    `sink` is None when the turn died before it was built, and when there is no
+    turn at all — a cancel of a pending, idle or parked session.
+    """
     if sink is not None:
         await sink.abort(reason)
-        return
+        return True
     try:
         status = "cancelled" if reason == "cancelled" else "failed"
-        # A session woken from a run that left a call open still holds it here,
-        # and the invariant refuses a `done` until it is closed.
+        # The invariant refuses a `done` while a call is open.
         for closed in await slog.close_dangling(session_id):
             stream.publish(session_id, closed)
-        await slog.append(session_id, DoneEvent(reason=reason))
-        await lifecycle.transition(session_id, "running", status, reason)
+        stored = await slog.append(session_id, DoneEvent(reason=reason))
+        stream.publish(session_id, stored)
+        return await lifecycle.transition(session_id, expected, status, reason)
     except Exception:
         logger.exception("session %s: could not record the %s ending", session_id, reason)
+        return False
 
 
 def _model_options() -> dict[str, Any] | None:
@@ -423,6 +438,9 @@ class _Sink:
         self._done_appended = False
         self._terminal_written = False
         self._reaping = False
+        # The ending already on the record. A later abort completes it rather
+        # than contradicting it.
+        self._pending_done: DoneEvent | None = None
         self._last_seq = 0
         self._hops = 0
 
@@ -563,9 +581,16 @@ class _Sink:
         Both steps are guarded separately so an interrupted finish can be
         retried: `_done_appended` prevents a second `done` row, and
         `_terminal_written` is set only once the status transition has landed.
+        The first reason to reach here is the one the session ends on.
         """
         if self._terminal_written:
             return
+        # A partially written finish owns the reason. Without this, an abort
+        # arriving after the `done` was appended but before the transition
+        # landed would move the session on ITS reason, leaving a transcript
+        # saying turn_end next to a status saying failed.
+        done = self._pending_done or done
+        self._pending_done = done
         try:
             if not self._done_appended:
                 await self._drain()

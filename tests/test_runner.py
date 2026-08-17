@@ -31,7 +31,12 @@ async def _db():
         await pool.close()
         pytest.skip(f"needs the arkos database (migration 0 applied): {e}")
     yield
+    for task in list(runner._reapers) + list(runner._running.values()):
+        task.cancel()
     runner._running.clear()
+    runner._reapers.clear()
+    runner._cancelling.clear()
+    await asyncio.sleep(0)
     await pool.execute("DELETE FROM sessions WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM users WHERE id = ANY($1::uuid[])", _seeded)
     _seeded.clear()
@@ -276,13 +281,104 @@ async def test_cancel_leaves_a_transcript_that_says_why(model, tools, monkeypatc
     assert [d.reason for d in dones] == ["cancelled"]
 
 
-async def test_cancel_on_an_idle_session_writes_it_straight_to_cancelled():
+async def test_cancel_on_an_idle_session_still_writes_a_done():
+    """The fold resets hops at a done, so a bare transition breaks the restart."""
     session_id = await _session(status="idle")
 
     assert await runner.cancel(session_id)
 
     row = await pool.fetchrow("SELECT status FROM sessions WHERE id = $1", uuid.UUID(session_id))
+    dones = [e.event for e in await slog.get_events(session_id) if e.event.kind == "done"]
+
     assert row["status"] == "cancelled"
+    assert [d.reason for d in dones] == ["cancelled"]
+
+
+async def test_cancelling_an_idle_session_closes_a_call_a_dead_run_left_open():
+    session_id = await _session(status="idle")
+    await slog.append(session_id, ToolCallEvent(id="c1", name="run_command", args={}))
+
+    assert await runner.cancel(session_id)
+
+    kinds = [e.event.kind for e in await slog.get_events(session_id)]
+    assert kinds == ["tool_call", "tool_result", "done", "lifecycle"]
+
+
+async def test_a_restarted_session_budgets_from_zero_after_a_cancel():
+    from agent_module.events import BudgetEvent
+
+    session_id = await _session(status="running")
+    await slog.append(session_id, BudgetEvent(hops_used=6, hops_max=6))
+    await runner.cancel(session_id)
+
+    _, hops = await runner.fold(await runner.load(session_id))
+
+    assert hops == 0, "a restart would hit max_hops before calling the model"
+
+
+async def test_two_concurrent_cancels_produce_exactly_one_terminal(model, tools, monkeypatch):
+    """One impatient click, or two tabs retrying, must not interrupt the cleanup."""
+    session_id = await _session()
+    await slog.append(session_id, UserEvent(text="go"))
+
+    def slow(messages, tools=None, **kw):
+        async def gen():
+            yield mc.TextDelta(text="starting")
+            await asyncio.sleep(30)
+            yield mc.Finish(reason="stop")
+
+        return gen()
+
+    monkeypatch.setattr(mc, "generate", slow)
+
+    await runner.start(session_id)
+    await asyncio.sleep(0.4)
+    await asyncio.gather(runner.cancel(session_id), runner.cancel(session_id))
+
+    row = await pool.fetchrow("SELECT status, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id))
+    dones = [e.event for e in await slog.get_events(session_id) if e.event.kind == "done"]
+
+    assert (row["status"], row["terminal_reason"]) == ("cancelled", "cancelled")
+    assert len(dones) == 1, f"expected one terminal, got {[d.reason for d in dones]}"
+    # And it is restartable rather than stuck.
+    assert await runner.start(session_id)
+    await runner.cancel(session_id)
+
+
+async def test_the_reaper_lands_a_terminal_the_database_refused(model, tools, monkeypatch):
+    """A blip mid-finish must not leave a live session stuck running."""
+    session_id = await _session()
+    await slog.append(session_id, UserEvent(text="go"))
+    model.arm(_text("done"))
+
+    real_transition = runner.lifecycle.transition
+    failures = {"left": 1}
+
+    async def flaky(*args, **kwargs):
+        if failures["left"] and args[2] in ("idle", "completed", "failed", "cancelled"):
+            failures["left"] -= 1
+            raise RuntimeError("the database went away")
+        return await real_transition(*args, **kwargs)
+
+    monkeypatch.setattr(runner.lifecycle, "transition", flaky)
+    # Only the delays, not the attempt count: int(0.05) is zero attempts.
+    delays = {"harness.terminal_retry_s": 0.05, "harness.terminal_retry_max_s": 0.05}
+    monkeypatch.setattr(runner, "_cfg", lambda key, default: delays.get(key, default))
+
+    await runner.start(session_id)
+    await _settle(session_id)
+
+    # The turn ended without a terminal; the reaper retries behind it.
+    for _ in range(40):
+        row = await pool.fetchrow("SELECT status FROM sessions WHERE id = $1", uuid.UUID(session_id))
+        if row["status"] != "running":
+            break
+        await asyncio.sleep(0.1)
+
+    dones = [e.event for e in await slog.get_events(session_id) if e.event.kind == "done"]
+
+    assert row["status"] == "idle", "the reaper never landed the terminal"
+    assert len(dones) == 1, "the retry appended a second done"
 
 
 async def test_resume_verify_on_wake(model, tools):
