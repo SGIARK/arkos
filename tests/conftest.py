@@ -23,9 +23,10 @@ os.environ.setdefault("SMITHERY_API_KEY", "sk-test-smithery-key")
 os.environ.setdefault("SMITHERY_NAMESPACE", "arkos-test")
 os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-test-token")
 
-# jwt_utils reads ARK_JWT_SECRET at IMPORT time via os.environ.get(K, DEFAULT),
-# so an empty value is used as the signing key instead of falling back and PyJWT
-# rejects it. Force a usable one when .env left it blank; `or` not setdefault,
-# because setdefault treats "" as already set.
-if not os.environ.get("ARK_JWT_SECRET"):
-    os.environ["ARK_JWT_SECRET"] = "test-secret-at-least-32-characters-long"
+# Two secrets, two trust domains: SUPABASE_JWT_SECRET verifies a token somebody
+# else issued, ARK_SESSION_SECRET signs the cookie we issue. `or` not setdefault,
+# because setdefault treats an empty value from .env as already set.
+if not os.environ.get("SUPABASE_JWT_SECRET"):
+    os.environ["SUPABASE_JWT_SECRET"] = "test-supabase-secret-at-least-32-chars"
+if not os.environ.get("ARK_SESSION_SECRET"):
+    os.environ["ARK_SESSION_SECRET"] = "test-session-secret-at-least-32-chars"

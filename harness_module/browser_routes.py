@@ -12,7 +12,6 @@ import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
-from config_module.loader import config
 from tool_module.browser_stream import broker
 
 router = APIRouter()
@@ -22,10 +21,14 @@ logger = logging.getLogger(__name__)
 _KEEPALIVE_SECONDS = 15.0
 
 
-def _resolve_user_id(request: Request) -> str:
-    return (
-        request.headers.get("X-User-ID") or request.query_params.get("user_id") or config.get("memory.fallback_user_id")
-    )
+def _resolve_user_id(request: Request) -> str | None:
+    """Read the caller's claimed id.
+
+    A listed contract violation: it trusts the client. Task 9 replaces this
+    route with `GET /sessions/{id}/browser/frames`, cookie-authed and keyed by
+    (user, session), which is why `api.py` does not mount this router.
+    """
+    return request.headers.get("X-User-ID") or request.query_params.get("user_id")
 
 
 @router.get("/v1/browser/stream")

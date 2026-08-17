@@ -35,7 +35,7 @@ before Task 7 deletes the fallback machinery.
 
 This document is the why and the build plan.
 
-**Status:** Tasks 0-3 and 7 done · 8 partial · **Task 4 is next** |
+**Status:** Tasks 0-4 and 7 done · 8 partial · **Task 5 is next** |
 **Author:** John Wallace | **Last updated:** 2026-08-17
 
 **Where things actually stand, for a session picking this up cold:**
@@ -44,8 +44,8 @@ This document is the why and the build plan.
 |---|---|
 | Database | Supabase `sbtbbytesjobdpmqojlr`, migration 0 applied, 12 tables |
 | Model | hosted OpenAI, `gpt-4.1-mini` — `run_turn` verified end to end against it |
-| Suite | 252 passing; `pip install -r requirements-dev.txt` then `pytest` |
-| HTTP server | **none.** Task 4 writes the first one |
+| Suite | 311 passing; `pip install -r requirements-dev.txt` then `pytest` |
+| HTTP server | `harness_module/api.py`, `uvicorn harness_module.api:app`. Needs `SUPABASE_JWT_SECRET` and `ARK_SESSION_SECRET` |
 | Blocking decisions | none — endpoints, budgets, port, approval default, callback trigger all settled 2026-08-16/17 |
 
 The 33 `tests/test_smithery.py` cases need a live `DB_URL` and skip without one,
@@ -442,6 +442,15 @@ it lands. `harness_module/` currently holds only `jwt_utils.py` and
 `browser_routes.py`; the naming question (Open Question 5) is now free to settle.
 **Test:** first SSE chunk arrives before mocked model finishes; forced mid-stream
 exception yields an error chunk, not truncation.
+**Status:** DONE 2026-08-17, in four commits (4a lifecycle + session_log,
+4b prompt + world tools, 4c runner + stream, 4d api). `harness_module/` now holds
+`api · runner · lifecycle · session_log · stream · hands · jwt_utils`. Three
+deviations from the card, each recorded in Implementation Notes below: the card
+said "touch api.py" but chat needs the fold, so a Task 4 runner exists and Task 5
+extends it; `Sink` writes behind the loop rather than inline; and `jwt_utils` was
+rewritten around two secrets. Not built here, and absent rather than stubbed:
+`/approve` (5), `/approvals/{id}/respond` (6), `/attention` and file upload
+(Looking Glass), browser frames (9).
 
 **Folded in 2026-08-16** — three pieces contracts requires that no card owned.
 All three need the harness, so they belong here and nowhere earlier:
@@ -997,6 +1006,58 @@ and the repair retry stays regardless, so nothing is blocked — but do not cite
 that number as evidence about this configuration. `reasoning` events simply stop
 occurring: `reasoning_content` is SGLang's field, and the fold drops reasoning
 anyway.
+
+**2026-08-17 — Task 4: three deviations, and one of them was a latency bug.**
+
+**The sink writes behind the loop, and the flush-window config key is gone.**
+The first cut coalesced streamed `content` events on a timer before appending.
+It did nothing, because the producer is serialized behind the consumer: the loop
+yields a chunk, awaits the append, and only then produces the next one. So the
+buffer never held more than one chunk, and every delta paid a full round trip —
+about 150ms to the Supabase primary, which is thirty seconds of pure latency on
+a 200-chunk reply. `Sink.emit` is now synchronous: it queues the event and a
+writer task drains it, merging whatever piled up behind an in-flight append.
+Coalescing became adaptive rather than tuned, so `harness.content_flush_ms` was
+removed rather than defaulted. This is what contracts already called
+write-behind persistence; the timer version was write-through wearing its name.
+
+A consequence worth knowing: a failed append is now discovered one event late.
+The writer records it and the drive loop raises on the next `emit`, so the run
+still halts rather than continuing unrecorded — one event of lag is the price of
+keeping Postgres off the token path.
+
+**A Task 4 runner exists.** The card says "touch `api.py`", but chat transcripts
+riding `session_events` means the second message of a conversation is rebuilt
+from the log, and that is the fold. `runner.py` is here with the attended half
+(fold · drive · translate · cancel · verify-on-wake); Task 5 adds leases,
+wake-at-cursor, the approve path and the ladder. Its seams are marked in the
+module docstring.
+
+**Found by a test, and it was real:** a cancel landing during turn SETUP — the
+wake repair, the fold, the manifest build, all network awaits — left the row
+`running` with no task behind it, and `start()` refuses to touch a running
+session, so only a restart cleared it. Every exit path now records a terminal,
+with or without a sink.
+
+**`jwt_utils` was rewritten around two secrets**, replacing `ARK_JWT_SECRET`.
+`SUPABASE_JWT_SECRET` verifies a token somebody else issued and never signs.
+`ARK_SESSION_SECRET` signs the cookie we issue, reachable only from
+`POST /auth/session` after that verification returns. One secret for both would
+have meant a token we verify and a token we mint being interchangeable, which is
+the shape `demo-login` had. Supabase stamps `aud=authenticated` and PyJWT
+refuses an audience the caller did not ask for, so it is named in config rather
+than switched off.
+
+**Approvals, attended:** `mcp_*` tools require approval by default (2026-08-16)
+and Task 6 owns the park, so Task 4 had to answer them somehow. Attended
+auto-approves, per G38 — the human is watching the stream and can cancel
+mid-call — behind `approvals.attended_auto_approve` so it is a config edit, not
+a code change. Unattended refuses and logs, rather than guessing yes.
+
+**Config cleanup in the same commit:** `memory:`, `embedding:` and `state:` were
+blocks describing deleted modules, and `app.system_prompt` was the pre-redesign
+ARK prompt that `prompts.py` now owns. All four are gone.
+`browser_routes.py:27` was the only live reader of any of them.
 
 **2026-08-16 — the database moved. 0c re-applied to a new Supabase project.**
 The target is now project **`sbtbbytesjobdpmqojlr`** (`db.sbtbbytesjobdpmqojlr.

@@ -438,23 +438,40 @@ class Smithery:
 
     # ---------- settings panel ----------
 
-    async def status(self, user_id: str) -> list[dict[str, Any]]:
-        """Return the per-user services and whether they are connected, for the UI."""
-        stored = await self._load(user_id)
+    async def connections(self, user_id: str) -> list[dict[str, Any]]:
+        """
+        Return every configured server and where this user stands with it.
+
+        One row per `mcp_servers:` entry, connected or not, because the panel has
+        to offer the ones they have not connected yet. Shared servers are read
+        from the shared table: they have no user, and showing them per-user would
+        imply a grant that does not exist.
+        """
+        per_user = await self._load(user_id)
+        shared = await self._load(None)
         out = []
         for label, spec in self.servers.items():
-            if not spec.get("requires_auth"):
-                continue
-            conn = stored.get(spec["mcp_url"])
+            mcp_url = spec["mcp_url"]
+            requires_auth = bool(spec.get("requires_auth"))
+            owner = user_id if requires_auth else None
+            conn = (per_user if requires_auth else shared).get(mcp_url)
             out.append(
                 {
-                    "service": label,
+                    "server": label,
                     "name": spec.get("name", label),
-                    "connected": bool(conn and conn.connected),
-                    "setup_url": self._setup_urls.get((user_id, spec["mcp_url"])),
+                    "mcp_url": mcp_url,
+                    "requires_auth": requires_auth,
+                    "status": conn.status if conn else "disconnected",
+                    "tool_count": len(conn.tools) if conn else 0,
+                    "refreshed_at": conn.refreshed_at.isoformat() if conn and conn.refreshed_at else None,
+                    "setup_url": self._setup_urls.get((owner, mcp_url)),
                 }
             )
         return out
+
+    def needs_repair(self, row: dict[str, Any]) -> bool:
+        """True for a per-user server that is configured but not usable, so a read can re-verify it."""
+        return bool(row["requires_auth"]) and row["status"] != CONNECTED
 
     async def close(self) -> None:
         await self.client.close()

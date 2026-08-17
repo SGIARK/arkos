@@ -46,7 +46,9 @@ pip install -r requirements-dev.txt  # dev only
 * `tests/` -- pytest test suite
 
 Mid-redesign: `state_module`, `memory_module` and `computer_module` were deleted
-on 2026-08-13, and most of `harness_module` is not written yet. See
+on 2026-08-13. `harness_module` was written in Task 4 and holds `api`, `runner`,
+`lifecycle`, `session_log`, `stream`, `hands` and `jwt_utils`; unattended runs,
+approvals and the browser leash are Tasks 5, 6 and 9. See
 `docs/single_loop_redesign_spec.md`.
 
 ## CI/CD Pipeline
@@ -177,8 +179,9 @@ You need to create a `.env` and set `DB_URL` before starting the application:
    ```bash
    python -m uvicorn harness_module.api:app
    ```
-   NOTE: `harness_module/api.py` does not exist yet — Task 4 writes it. There is
-   deliberately no HTTP server between the database cutover and that task.
+   It refuses to start without `SUPABASE_JWT_SECRET` and `ARK_SESSION_SECRET`
+   (see `.env.example`): without them tokens are unverifiable and sessions
+   unsignable, and there is no demo bypass.
 
 2. **Access the UI**: Port-forward to `app.port` from `config_module/config.yaml` and navigate to `/app` in your browser.
 
