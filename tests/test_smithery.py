@@ -250,6 +250,29 @@ async def test_a_failed_revalidation_keeps_the_tools_we_had():
     assert [s.name for s in specs] == ["create_issue"]
 
 
+async def test_mcp_tools_require_approval_unless_config_waives_it():
+    """The unknown resolves safely: unattended runs do not get silent write access."""
+    user_id = _user()
+    await _seed_user(user_id)
+    await _hands(FakeClient()).connect(user_id, "linear")
+
+    default = await _hands(FakeClient()).specs(user_id)
+    assert [s.requires_approval for s in default] == [True]
+    assert [s.readonly for s in default] == [False]
+
+    whole_server = _hands(FakeClient())
+    whole_server.servers["linear"]["auto_approve"] = True
+    assert [s.requires_approval for s in await whole_server.specs(user_id)] == [False]
+
+    by_name = _hands(FakeClient())
+    by_name.servers["linear"]["auto_approve"] = ["create_issue"]
+    assert [s.requires_approval for s in await by_name.specs(user_id)] == [False]
+
+    other = _hands(FakeClient())
+    other.servers["linear"]["auto_approve"] = ["something_else"]
+    assert [s.requires_approval for s in await other.specs(user_id)] == [True]
+
+
 async def test_a_revoked_grant_found_while_refreshing_is_recorded():
     """Revocation must surface within one TTL, not wait for someone to call a tool."""
     user_id = _user()

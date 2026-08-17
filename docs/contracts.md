@@ -572,5 +572,22 @@ specs.
 
 Settled 2026-08-13: `base_module` is renamed **`harness_module`** — the four
 control-plane files (`lifecycle` · `session_log` · `runner` · `api`) land there
-in Tasks 4-5. Still open (owner to settle): per-event `version` vs per-session
-schema version.
+in Tasks 4-5.
+
+Settled 2026-08-16: **`version` is per-event**, not per-session. A session
+outlives a deploy and rows are never rewritten, so one transcript legally holds
+events of mixed versions; a per-session version cannot describe that without a
+rewrite the append-only rule forbids. Already the shipped shape —
+`events.py:47` stamps every event and `parse_event` upcasts, migration 0:127 is
+a per-row column.
+
+Settled 2026-08-16: **`mcp_*` tools require approval by default.** A remote
+server does not tell us whether a tool mutates. That unknown already resolves
+conservatively for concurrency (`readonly=False`, so writes never batch), and it
+now resolves the same way for consent, rather than being conservative about
+latency and permissive about consequences. Attended runs hardly notice; an
+unattended one is fifteen hops of unsupervised Gmail, Slack, GitHub and Linear
+otherwise, which is the tool class this whole approval surface exists for. Waive
+per server with `mcp_servers.<label>.auto_approve` — `true`, or a list of tool
+names. Loosening a default is a config edit; tightening one after unattended
+runs have been sending mail is an incident.

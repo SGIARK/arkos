@@ -86,6 +86,13 @@ mcp_servers:
   # requires_auth: true  => Smithery's hosted per-user OAuth flow (user connects in
   #                         the settings panel). requires_auth: false => shared.
   # Add more servers by copying from https://smithery.ai/server/<name>.
+  #
+  # auto_approve waives the approval prompt. Absent, every MCP tool requires
+  # approval: a remote server does not say whether a tool mutates, and an
+  # unattended run reaching for these sends mail and opens issues under the
+  # user's name. `true` waives a whole server; a list waives those tools only.
+  #   auto_approve: true
+  #   auto_approve: [search_issues, get_issue]
 
   linear:
     mcp_url: "https://linear.run.tools"

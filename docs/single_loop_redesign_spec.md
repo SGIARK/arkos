@@ -666,6 +666,15 @@ the spine. Task-level acceptance tests live on each card above.
   sandbox by design (heavy work forks to a worker session), so it can't do quick
   math or parse a pasted CSV inline. If that proves annoying in real use, add a
   single ephemeral repl tool (no persistent sandbox). One-tool addition.
+- **Session-scoped approval grants at the mode flip.** `mcp_*` tools require
+  approval by default as of 2026-08-16, and `mcp_servers.<label>.auto_approve`
+  is the only escape — all-or-nothing per server, decided in config by whoever
+  edits the file rather than by the person running the task. An unattended run
+  that parks on every `create_comment` is useless, and the answer to that is
+  scoping approvals, not removing them. The seam already exists: mode flips to
+  unattended when a human approves the plan (decision_tables 2b), which is the
+  natural place to grant "this run may use these write tools", shown once, at
+  the moment someone is already reading. Blocked by Task 6.
 - Context recovery rungs 2-3 + the reactive arm (see Proposed Approach).
 - Watching/triggers (scrapped from this redesign; own feature).
 - Looking Glass two-way (operator tool takeover; hop-boundary arbitration).

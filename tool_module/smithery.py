@@ -385,7 +385,15 @@ class Smithery:
     async def specs(self, user_id: str) -> list[ToolSpec]:
         """Return every MCP tool this user can reach, named bare; `registry.manifest` prefixes them."""
         routes = await self._routes(user_id)
-        return [_to_spec(r.tool) for r in routes.values() if r.conn.connected]
+        return [
+            _to_spec(r.tool, self._auto_approve_for(r.conn.mcp_url))
+            for r in routes.values()
+            if r.conn.connected
+        ]
+
+    def _auto_approve_for(self, mcp_url: str) -> Any:
+        """The `auto_approve` setting for the server behind a url, absent meaning approve nothing."""
+        return (self.servers.get(self._label(mcp_url)) or {}).get("auto_approve")
 
     # ---------- the dispatch half ----------
 
@@ -468,17 +476,32 @@ def _owner_for(spec: dict[str, Any], user_id: str | None) -> str | None:
     return user_id
 
 
-def _to_spec(tool: dict[str, Any]) -> ToolSpec:
+def _auto_approved(name: str, setting: Any) -> bool:
+    """Read `mcp_servers.<label>.auto_approve`: `true` waives the whole server, a list waives those names."""
+    if setting is True:
+        return True
+    if isinstance(setting, (list, tuple, set)):
+        return name in setting
+    return False
+
+
+def _to_spec(tool: dict[str, Any], auto_approve: Any = None) -> ToolSpec:
     """
     Convert one cached `tools/list` entry into a ToolSpec.
 
-    Never readonly: a remote server does not tell us whether a tool mutates.
+    A remote server does not tell us whether a tool mutates, so both unknowns
+    resolve the safe way: never readonly, so the loop cannot batch a write in
+    parallel, and approval required, because an unattended run reaching for
+    Gmail or GitHub takes actions that leave the building. Waive it per server
+    in config, which is where a decision about a specific server belongs.
     """
+    name = tool["name"]
     return ToolSpec(
-        name=tool["name"],
+        name=name,
         description=tool.get("description") or "",
         input_schema=tool.get("inputSchema") or tool.get("input_schema") or {},
         readonly=False,
+        requires_approval=not _auto_approved(name, auto_approve),
     )
 
 
