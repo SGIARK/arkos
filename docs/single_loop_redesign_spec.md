@@ -949,6 +949,41 @@ vocabulary; `agent_module/loop.py:123` derives it from `mode` in one line. The
 word `interactive` now appears in exactly three places, all of them that one
 concept.
 
+**2026-08-17 — the model is hosted OpenAI for now.** `llm.base_url` is
+`https://api.openai.com/v1` and `model_name` is `gpt-4.1-mini`. Self-hosting
+needs an NVIDIA GPU and there is not one on the machine doing the work; nothing
+in the loop cares, because `client.py` is an `AsyncOpenAI` pointed at
+`base_url`. `model_module/run.sh` still launches Qwen3-8B with the right parser
+flags for when the box comes back.
+
+Verified end to end through `run_turn`, not through a hand-rolled request: a
+tool turn ran get_weather and finish_task and ended `done{completed}`, and a text
+turn streamed 41 `content` events with a 1.66s TTFT and ended `done{turn_end}`.
+Both tool calls arrived in ONE hop — OpenAI does parallel tool calling, and
+`_batch_by_readonly` split them correctly since `finish_task` is not readonly.
+
+Three things this exposed:
+
+- **`llm.api_key` did not exist.** `client.py` falls back to `"-"`, which SGLang
+  ignores and a real provider answers with a 401 that names no cause. It is now
+  `${OPENAI_API_KEY}` in config, like every other secret.
+- **gpt-5.x cannot be selected without a client change.** It rejects
+  `max_tokens` in favour of `max_completion_tokens` and pins temperature. The
+  4.1 family takes the parameters `client.py` already sends; gpt-4.1-nano and
+  gpt-4o-mini were verified working too, if cost matters more than quality.
+- **`context_window` is deliberately 128000, under the model's ~1M ceiling.**
+  Self-hosted, contracts requires it to MATCH the SGLang launch flag. Hosted, the
+  rule inverts to must-not-EXCEED: understating is free and bounds spend, while
+  overstating buys a hard failure mid-run.
+
+**Task 0a's measurement does not transfer.** 0/22 malformed calls was Qwen3-8B
+with `--tool-call-parser qwen25 --reasoning-parser qwen3`, and its own note says
+to re-measure if either changes. This changes both. The direction is favourable
+and the repair retry stays regardless, so nothing is blocked — but do not cite
+that number as evidence about this configuration. `reasoning` events simply stop
+occurring: `reasoning_content` is SGLang's field, and the fold drops reasoning
+anyway.
+
 **2026-08-16 — the database moved. 0c re-applied to a new Supabase project.**
 The target is now project **`sbtbbytesjobdpmqojlr`** (`db.sbtbbytesjobdpmqojlr.
 supabase.co:5432`, PostgreSQL 17.6). The ark box database that 0c ran against on

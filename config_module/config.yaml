@@ -14,16 +14,26 @@ app:
     Always stay in character as ARK when responding.
 
 llm:
-  base_url: "http://localhost:30000/v1"
-  model_name: "Qwen/Qwen3-8B"
+  # Hosted OpenAI for now. Self-hosting needs a GPU, and nothing about the loop
+  # depends on which of the two is serving: client.py is an AsyncOpenAI against
+  # base_url. model_module/run.sh still launches Qwen3-8B when the box is back.
+  base_url: "https://api.openai.com/v1"
+  model_name: "gpt-4.1-mini"
+  api_key: "${OPENAI_API_KEY}"   # client.py falls back to "-", which SGLang ignores
+                                 # and a real provider rejects as a 401
+  # gpt-5.x rejects `max_tokens` (it wants max_completion_tokens) and pins
+  # temperature, so it needs a client change before it can be selected here.
+  # The 4.1 family takes the params client.py already sends. gpt-4.1-nano is
+  # cheaper if this is still too expensive; gpt-4o-mini also works.
   max_tokens: 8192          # output reserve (max completion tokens), NOT the context limit
-  context_window: 40960     # total in+out the model accepts. SGLang on :30000 launched without
-                            # --context-length, so it defaults to Qwen3-8B's native 40960
-                            # (verified via /v1/models max_model_len). If --context-length is
-                            # ever set below this, lower to match.
+  context_window: 128000    # DELIBERATELY under the model's ~1M ceiling. Self-hosted, this
+                            # had to match the SGLang launch flag exactly. Hosted, the rule
+                            # inverts: it must not EXCEED what the API takes, and understating
+                            # is free — it engages the context ladder early and bounds spend,
+                            # where overstating buys a hard failure mid-run.
   temperature: 0.7
-  timeout_s: 90             # per request. Measured max was 44s (Task 0a), so this
-                            # is ~2x headroom, not a guess.
+  timeout_s: 90             # per request. Task 0a measured a 44s max on Qwen3-8B;
+                            # that number does not transfer, but 90 is still ample.
   max_retries: 3            # the ONE retry layer. Read as a cap on TOTAL attempts
                             # per generate() call — contracts names the key
                             # max_retries but its conformance test pins "<=3
