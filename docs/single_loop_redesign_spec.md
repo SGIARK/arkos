@@ -35,7 +35,21 @@ before Task 7 deletes the fallback machinery.
 
 This document is the why and the build plan.
 
-**Status:** Task 0 (preflight) in progress | **Author:** John Wallace | **Last updated:** 2026-08-13
+**Status:** Tasks 0-3 and 7 done · 8 partial · **Task 4 is next** |
+**Author:** John Wallace | **Last updated:** 2026-08-17
+
+**Where things actually stand, for a session picking this up cold:**
+
+| | |
+|---|---|
+| Database | Supabase `sbtbbytesjobdpmqojlr`, migration 0 applied, 12 tables |
+| Model | hosted OpenAI, `gpt-4.1-mini` — `run_turn` verified end to end against it |
+| Suite | 252 passing; `pip install -r requirements-dev.txt` then `pytest` |
+| HTTP server | **none.** Task 4 writes the first one |
+| Blocking decisions | none — endpoints, budgets, port, approval default, callback trigger all settled 2026-08-16/17 |
+
+The 33 `tests/test_smithery.py` cases need a live `DB_URL` and skip without one,
+so a green run of 219 is not the same as a green run of 252. Set `.env` first.
 
 ---
 
