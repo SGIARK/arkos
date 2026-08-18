@@ -7,14 +7,15 @@ changed and commits it. Between the two the sandbox is free to be destroyed:
 whatever survives there is a warm start, not the record.
 
 Bytes move store -> harness -> sandbox and back. The sandbox is never given a
-credential and never reaches the store itself (D28), so the manifest below is
-the only thing it is trusted with, and only as a hint about what it already has.
+credential and never reaches the store itself (D28), and it is asked nothing
+about its own contents that is not verified: both directions hash the files on
+disk and compare against the tree, so a stale or tampered record cannot decide
+what is transferred, kept or deleted.
 """
 
 from __future__ import annotations
 
 import io
-import json
 import logging
 import posixpath
 import shlex
@@ -29,11 +30,6 @@ logger = logging.getLogger(__name__)
 
 # Where claimed projects appear inside the sandbox.
 MOUNT_ROOT = "/home/user/projects"
-
-# What was materialized last time, so a resumed sandbox transfers only the
-# difference. A hint: every path in it is verified against the tree before it
-# is trusted to be current.
-MANIFEST_PATH = "/home/user/.arkos/manifest.json"
 
 _STAGING_TAR = "/tmp/arkos-materialize.tar"
 _FLUSH_TAR = "/tmp/arkos-flush.tar"
@@ -79,9 +75,10 @@ async def materialize(sandbox: SandboxIO, user_id: str, claims: list[Claim]) -> 
     """
     Put the claimed subtrees in the sandbox, transferring only what is missing.
 
-    A fresh sandbox receives everything. A resumed one receives the difference
-    between its manifest and the tree as it stands now, and has files the tree
-    no longer contains removed.
+    A fresh sandbox receives everything. A resumed one receives only the files
+    whose contents differ from the tree, and has anything the tree does not
+    contain deleted — including a file another session removed while this
+    sandbox slept, which would otherwise be resurrected by the next flush.
     """
     wanted: dict[str, str] = {}
     contents: dict[str, tuple[str, str]] = {}
@@ -91,9 +88,12 @@ async def materialize(sandbox: SandboxIO, user_id: str, claims: list[Claim]) -> 
             wanted[mounted] = entry.content_hash
             contents[mounted] = (claim.project_id, entry.content_hash)
 
-    present = await _read_manifest(sandbox, user_id)
-    stale = [path for path, digest in wanted.items() if present.get(path) != digest]
-    removed = tuple(sorted(set(present) - set(wanted)))
+    # What is actually on disk, by hash. The sandbox's own record of what it
+    # holds is not consulted: it is stale the moment a flush commits, and a
+    # file it forgot about is exactly the file a deletion needs removed.
+    on_disk = await _sweep(sandbox, user_id, claims)
+    stale = [path for path, digest in wanted.items() if on_disk.get(path) != digest]
+    removed = tuple(sorted(set(on_disk) - set(wanted)))
 
     payload: list[tuple[str, bytes]] = []
     for path in sorted(stale):
@@ -122,7 +122,6 @@ async def materialize(sandbox: SandboxIO, user_id: str, claims: list[Claim]) -> 
         if result["exit_code"] != 0:
             raise store.StoreError(f"materialize failed to extract: {result['stderr'][:200]}")
 
-    await _write_manifest(sandbox, user_id, wanted)
     logger.info(
         "materialized %d file(s) for user %s (%d transferred, %d removed)",
         len(wanted),
@@ -142,19 +141,34 @@ class Flushed:
     discarded: tuple[str, ...] = ()
 
 
-async def flush(sandbox: SandboxIO, user_id: str, claims: list[Claim], manifest: dict[str, str]) -> Flushed:
+async def flush(
+    sandbox: SandboxIO,
+    user_id: str,
+    claims: list[Claim],
+    manifest: dict[str, str] | None = None,
+) -> Flushed:
     """
     Commit what the sandbox changed back to the store.
 
-    One sha256sum sweep says what is there now; the manifest says what was put
-    there. Only the differences have their bytes read back, and every file's
-    row is written from a hash, so an unchanged file costs nothing.
+    One sha256sum sweep says what is on disk now and the tree says what the store
+    holds. Only the differences have their bytes read back, and every file's row
+    is written from a hash, so an unchanged file costs nothing. A path the tree
+    has and the sweep does not is a deletion, which falls out of replacing the
+    subtree rather than needing a rule.
+
+    `manifest` is accepted for callers that already have the materialized map;
+    when absent the tree is read instead, which is the same answer.
 
     A read claim commits nothing. Its edits are discarded and named in the
     return value, because silently keeping or silently dropping them are both
     worse than saying which.
     """
     current = await _sweep(sandbox, user_id, claims)
+    if manifest is None:
+        manifest = {}
+        for claim in claims:
+            for entry in await store.read_tree(claim.project_id, claim.subpath):
+                manifest[posixpath.join(claim.mount, entry.path)] = entry.content_hash
     changed = sorted(path for path, digest in current.items() if manifest.get(path) != digest)
 
     contents: dict[str, bytes] = await _read_out(sandbox, user_id, changed) if changed else {}
@@ -251,25 +265,6 @@ async def _read_out(sandbox: SandboxIO, user_id: str, paths: list[str]) -> dict[
                 if extracted is not None:
                     out["/" + member.name.lstrip("/")] = extracted.read()
     return out
-
-
-async def _read_manifest(sandbox: SandboxIO, user_id: str) -> dict[str, str]:
-    """What the sandbox says it already has. Absent or unreadable means nothing."""
-    try:
-        raw = await sandbox.read_file(user_id, MANIFEST_PATH)
-    except Exception:
-        return {}
-    try:
-        loaded = json.loads(raw)
-    except (TypeError, ValueError):
-        logger.warning("manifest in the sandbox for user %s is unreadable; treating it as empty", user_id)
-        return {}
-    return {str(k): str(v) for k, v in loaded.items()} if isinstance(loaded, dict) else {}
-
-
-async def _write_manifest(sandbox: SandboxIO, user_id: str, manifest: dict[str, str]) -> None:
-    await sandbox.exec(user_id, f"mkdir -p {shlex.quote(posixpath.dirname(MANIFEST_PATH))}")
-    await sandbox.write_file(user_id, MANIFEST_PATH, json.dumps(manifest, sort_keys=True))
 
 
 async def _remove(sandbox: SandboxIO, user_id: str, paths: tuple[str, ...]) -> None:

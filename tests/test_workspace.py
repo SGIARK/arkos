@@ -7,7 +7,6 @@ so "byte-identical" is checked against real extracted files rather than a call l
 from __future__ import annotations
 
 import io
-import json
 import posixpath
 import tarfile
 import uuid
@@ -92,7 +91,7 @@ def _claim(project_id: str, slug: str = "taxes", **kw) -> workspace.Claim:
 async def test_a_fresh_sandbox_materializes_byte_identical_to_the_store():
     user_id, project_id = await _project()
     await store.commit_tree(project_id, [_file("src/main.py", "print(1)\n"), _file("README.md", "# Taxes\n")])
-    sandbox = FakeSandbox()
+    sandbox = _sweeping(FakeSandbox())
 
     result = await workspace.materialize(sandbox, user_id, [_claim(project_id)])
 
@@ -104,7 +103,7 @@ async def test_a_fresh_sandbox_materializes_byte_identical_to_the_store():
 async def test_everything_arrives_in_one_write_and_one_extract():
     user_id, project_id = await _project()
     await store.commit_tree(project_id, [_file(f"f{i}.txt", str(i)) for i in range(10)])
-    sandbox = FakeSandbox()
+    sandbox = _sweeping(FakeSandbox())
 
     await workspace.materialize(sandbox, user_id, [_claim(project_id)])
 
@@ -118,7 +117,7 @@ async def test_two_claims_mount_side_by_side():
     _, second = await _project("Notes")
     await store.commit_tree(first, [_file("a.txt", "1")])
     await store.commit_tree(second, [_file("b.txt", "2")])
-    sandbox = FakeSandbox()
+    sandbox = _sweeping(FakeSandbox())
 
     await workspace.materialize(
         sandbox, user_id, [_claim(first, "taxes"), _claim(second, "notes")]
@@ -131,7 +130,7 @@ async def test_two_claims_mount_side_by_side():
 async def test_only_the_claimed_subtree_is_mounted():
     user_id, project_id = await _project()
     await store.commit_tree(project_id, [_file("src/a.py", "1"), _file("secrets/b.txt", "2")])
-    sandbox = FakeSandbox()
+    sandbox = _sweeping(FakeSandbox())
 
     await workspace.materialize(sandbox, user_id, [_claim(project_id, subpath="/src")])
 
@@ -145,7 +144,7 @@ async def test_only_the_claimed_subtree_is_mounted():
 async def test_a_resumed_sandbox_transfers_only_what_changed():
     user_id, project_id = await _project()
     await store.commit_tree(project_id, [_file("a.txt", "one"), _file("b.txt", "two"), _file("c.txt", "three")])
-    sandbox = FakeSandbox()
+    sandbox = _sweeping(FakeSandbox())
     await workspace.materialize(sandbox, user_id, [_claim(project_id)])
 
     await store.commit_tree(project_id, [_file("a.txt", "one"), _file("b.txt", "CHANGED"), _file("c.txt", "three")])
@@ -158,7 +157,7 @@ async def test_a_resumed_sandbox_transfers_only_what_changed():
 async def test_a_resumed_sandbox_with_nothing_changed_transfers_nothing():
     user_id, project_id = await _project()
     await store.commit_tree(project_id, [_file("a.txt", "one")])
-    sandbox = FakeSandbox()
+    sandbox = _sweeping(FakeSandbox())
     await workspace.materialize(sandbox, user_id, [_claim(project_id)])
 
     result = await workspace.materialize(sandbox, user_id, [_claim(project_id)])
@@ -171,7 +170,7 @@ async def test_a_file_the_tree_no_longer_has_is_removed_from_the_sandbox():
     """The manifest is a hint about what is there; the tree decides what should be."""
     user_id, project_id = await _project()
     await store.commit_tree(project_id, [_file("keep.txt", "1"), _file("gone.txt", "2")])
-    sandbox = FakeSandbox()
+    sandbox = _sweeping(FakeSandbox())
     await workspace.materialize(sandbox, user_id, [_claim(project_id)])
 
     await store.commit_tree(project_id, [_file("keep.txt", "1")])
@@ -186,9 +185,9 @@ async def test_a_sandbox_claiming_to_have_files_it_does_not_is_not_believed_abou
     """The manifest is compared to hashes, so a stale entry is re-sent."""
     user_id, project_id = await _project()
     await store.commit_tree(project_id, [_file("a.txt", "real")])
-    sandbox = FakeSandbox()
+    sandbox = _sweeping(FakeSandbox())
     mounted = f"{workspace.MOUNT_ROOT}/taxes/a.txt"
-    sandbox.files[workspace.MANIFEST_PATH] = json.dumps({mounted: "0" * 64}).encode()
+    sandbox.files[mounted] = b"something else entirely"
 
     result = await workspace.materialize(sandbox, user_id, [_claim(project_id)])
 
@@ -196,26 +195,25 @@ async def test_a_sandbox_claiming_to_have_files_it_does_not_is_not_believed_abou
     assert sandbox.files[mounted] == b"real"
 
 
-async def test_an_unreadable_manifest_is_treated_as_empty():
+async def test_a_sandbox_is_asked_nothing_about_its_own_contents():
+    """Both directions hash the files on disk rather than trusting a record."""
     user_id, project_id = await _project()
     await store.commit_tree(project_id, [_file("a.txt", "1")])
-    sandbox = FakeSandbox()
-    sandbox.files[workspace.MANIFEST_PATH] = b"{ this is not json"
+    sandbox = _sweeping(FakeSandbox())
+
+    await workspace.materialize(sandbox, user_id, [_claim(project_id)])
+
+    assert not any("manifest" in p for p in sandbox.files)
+
+
+async def test_materialize_reports_the_tree_it_put_there():
+    user_id, project_id = await _project()
+    await store.commit_tree(project_id, [_file("a.txt", "1")])
+    sandbox = _sweeping(FakeSandbox())
 
     result = await workspace.materialize(sandbox, user_id, [_claim(project_id)])
 
-    assert result.transferred == 1
-
-
-async def test_the_manifest_records_what_was_materialized():
-    user_id, project_id = await _project()
-    await store.commit_tree(project_id, [_file("a.txt", "1")])
-    sandbox = FakeSandbox()
-
-    await workspace.materialize(sandbox, user_id, [_claim(project_id)])
-    written = json.loads(sandbox.files[workspace.MANIFEST_PATH].decode())
-
-    assert written == {f"{workspace.MOUNT_ROOT}/taxes/a.txt": store.sha256(b"1")}
+    assert result.manifest == {f"{workspace.MOUNT_ROOT}/taxes/a.txt": store.sha256(b"1")}
 
 
 # --- degenerate cases ----------------------------------------------------------------
@@ -223,7 +221,7 @@ async def test_the_manifest_records_what_was_materialized():
 
 async def test_an_empty_project_materializes_nothing_and_does_not_fail():
     user_id, project_id = await _project()
-    sandbox = FakeSandbox()
+    sandbox = _sweeping(FakeSandbox())
 
     result = await workspace.materialize(sandbox, user_id, [_claim(project_id)])
 
@@ -239,7 +237,7 @@ async def test_a_tree_row_whose_blob_is_gone_skips_that_file_rather_than_guessin
         uuid.UUID(project_id),
         "f" * 64,
     )
-    sandbox = FakeSandbox()
+    sandbox = _sweeping(FakeSandbox())
 
     result = await workspace.materialize(sandbox, user_id, [_claim(project_id)])
 
@@ -273,7 +271,7 @@ async def test_nothing_in_the_transfer_carries_a_credential():
     """Bytes flow store -> harness -> sandbox; the sandbox is given no way to reach the store."""
     user_id, project_id = await _project()
     await store.commit_tree(project_id, [_file("a.txt", "1")])
-    sandbox = FakeSandbox()
+    sandbox = _sweeping(FakeSandbox())
 
     await workspace.materialize(sandbox, user_id, [_claim(project_id)])
     everything = " ".join(sandbox.commands) + " " + " ".join(str(v) for v in sandbox.files.values())
@@ -473,3 +471,50 @@ async def test_an_archive_that_cannot_be_built_is_raised_not_swallowed():
 
     with pytest.raises(store.StoreError, match="cannot read"):
         await workspace.flush(sandbox, user_id, [_claim(project_id)], manifest)
+
+
+# --- deletions must survive a warm sandbox ------------------------------------------
+
+
+async def test_a_deletion_by_another_session_is_not_resurrected_by_a_warm_sandbox():
+    """A creates and flushes; B deletes and flushes; A's warm sandbox must not bring it back."""
+    user_id, project_id = await _project()
+    await store.commit_tree(project_id, [_file("keep.txt", "1")])
+
+    # Session A materializes and adds a file.
+    a = _sweeping(FakeSandbox())
+    manifest_a = (await workspace.materialize(a, user_id, [_claim(project_id)])).manifest
+    a.files[f"{workspace.MOUNT_ROOT}/taxes/doomed.txt"] = b"created by A"
+    await workspace.flush(a, user_id, [_claim(project_id)], manifest_a)
+    assert "doomed.txt" in [e.path for e in await store.read_tree(project_id)]
+
+    # Session B, its own sandbox, deletes it and flushes.
+    b = _sweeping(FakeSandbox())
+    manifest_b = (await workspace.materialize(b, user_id, [_claim(project_id)])).manifest
+    del b.files[f"{workspace.MOUNT_ROOT}/taxes/doomed.txt"]
+    await workspace.flush(b, user_id, [_claim(project_id)], manifest_b)
+    assert "doomed.txt" not in [e.path for e in await store.read_tree(project_id)]
+
+    # A's sandbox is still warm and still has the file on disk.
+    assert f"{workspace.MOUNT_ROOT}/taxes/doomed.txt" in a.files
+    manifest_a2 = (await workspace.materialize(a, user_id, [_claim(project_id)])).manifest
+
+    assert f"{workspace.MOUNT_ROOT}/taxes/doomed.txt" not in a.files, "the deletion was undone"
+    await workspace.flush(a, user_id, [_claim(project_id)], manifest_a2)
+    tree = [e.path for e in await store.read_tree(project_id)]
+    assert "doomed.txt" not in tree, "the deletion came back through the tree"
+
+
+async def test_a_deletion_survives_a_sandbox_that_kept_no_record():
+    """Deletions are derived from the disk, so there is no record to lose."""
+    user_id, project_id = await _project()
+    await store.commit_tree(project_id, [_file("keep.txt", "1"), _file("doomed.txt", "2")])
+    sandbox = _sweeping(FakeSandbox())
+    await workspace.materialize(sandbox, user_id, [_claim(project_id)])
+
+    await store.commit_tree(project_id, [_file("keep.txt", "1")])
+    manifest = (await workspace.materialize(sandbox, user_id, [_claim(project_id)])).manifest
+
+    assert f"{workspace.MOUNT_ROOT}/taxes/doomed.txt" not in sandbox.files
+    await workspace.flush(sandbox, user_id, [_claim(project_id)], manifest)
+    assert [e.path for e in await store.read_tree(project_id)] == ["keep.txt"]
