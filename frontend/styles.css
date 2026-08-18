@@ -365,3 +365,23 @@ a.button {
 .modal-foot { display: flex; justify-content: space-between; padding-top: 4px; }
 button.danger { color: var(--stop); border-color: var(--stop); }
 
+/* --- the canvas --------------------------------------------------------- */
+
+.canvas {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  overflow: hidden;
+  margin: 12px 0;
+  background: var(--surface);
+}
+.canvas-head {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-soft);
+  font-size: 12.5px;
+}
+.canvas img { display: block; width: 100%; }
+.canvas .empty { padding: 28px 12px; text-align: center; font-size: 12.5px; }
+

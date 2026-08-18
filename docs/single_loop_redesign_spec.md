@@ -1056,6 +1056,28 @@ is now mounted by no application — `api.py` deliberately leaves it out, becaus
 live violations row, and the line numbers cited at `contracts.md:551` are stale.
 Delete it when this card lands its replacement.
 
+**DONE 2026-08-18, rebuilt rather than restored.** `tool_module/browser/`
+(`tool.py`, `stream.py`) written against the contract, not against the files
+8.10 deleted. All four leash strands: every step is a `status` event; the result
+is an envelope built from the run's own history with the record behind a `ref`;
+the budget is ASKED first (the step callback stops the agent, so partial results
+survive) with `wait_for` only as the backstop; and a `browser_use` version that
+drops one of our kwargs logs at WARNING rather than going quietly blind. Frames
+are keyed `(user_id, session_id)` and served by
+`GET /sessions/{id}/browser/frames`, ownership-checked — and captured only while
+someone is actually watching. `browser_task` is in the manifest, which is the
+half the old one never had. Config collapsed to one `browser:` section, with a
+coherence check that the backstop sits outside the graceful stop.
+
+**What is NOT proven:** the vendor calls. 16 tests fake `browser_use` to prove
+the leash, and a mock encodes what we believe the API is, so believing it twice
+proves nothing. `tests/test_browser_integration.py` is the one that asks the
+real library — a cheap half that checks `Agent`'s signature still has our
+kwargs, and an expensive half that runs a real task. Neither has been run: this
+machine has no browser and could not install one. Run it before trusting a
+browser run in production. Custom actions (the old `browser_actions`) were not
+rebuilt: nothing in the card asked for them.
+
 **Folded in 2026-08-16 — registration was missing from the done-when.** Every
 other item above leashes a browser the model cannot currently reach:
 `register_browser_tool()` (`browser_tool.py:365-389`) calls

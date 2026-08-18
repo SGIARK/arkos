@@ -50,6 +50,16 @@ store:
   prefix: "arkos"
   root: ".arkos-store"
 
+browser:
+  # The rented specialist (browser_task). One section, so a knob is never in two
+  # places: the model it thinks with defaults to the session model above.
+  headless: true
+  max_steps: 25                   # the vendor's own cap on how many steps it plans
+  wall_clock_s: 240               # at this point it is ASKED to stop, keeping partial results
+  hard_timeout_s: 300             # the wait_for backstop, for a run that ignores being asked.
+                                  # Must exceed wall_clock_s or the ask never gets its chance.
+  frame_interval_s: 1.0           # seconds between frames pushed to a watching UI
+
 memory:
   # What the agent carries between sessions: MEMORY.md (the curated core) and
   # the notes it appends, in `memory_files`. Read by the memory tools, and the

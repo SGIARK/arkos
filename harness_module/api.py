@@ -35,6 +35,7 @@ from db import pool
 from harness_module import approvals, hands, jwt_utils, lifecycle, runner, store, system_log, workspace
 from harness_module import session_log as slog
 from harness_module.stream import LAGGED, stream
+from tool_module.browser.stream import broker as frames
 from tool_module.sandbox import manager as sandbox_manager
 from tool_module.smithery import AuthRequiredError, SmitheryError
 
@@ -784,6 +785,37 @@ def _wire(stored: slog.StoredEvent) -> dict[str, Any]:
 
 
 # --- MCP connections ------------------------------------------------------------
+
+
+@app.get("/sessions/{session_id}/browser/frames")
+async def browser_frames(session_id: str, user_id: str = CurrentUser) -> StreamingResponse:
+    """Watch what the browser is looking at, while it looks.
+
+    A side-channel, not the event stream: frames are never appended, never
+    replayed and carry no seq. Keyed by (user, session) and ownership-checked
+    like everything else — the implementation this replaces trusted a user id
+    from the query string, which is the violation the deletion closed.
+    """
+    await _owned_session(session_id, user_id)
+    return StreamingResponse(
+        _frame_stream(user_id, session_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+async def _frame_stream(user_id: str, session_id: str) -> AsyncIterator[str]:
+    """Yield frames until the viewer goes away. Keepalives, because a browser
+    run can think for a while between pictures."""
+    keepalive = float(_cfg("harness.sse_keepalive_s", 15))
+    async with frames.subscribe(user_id, session_id) as queue:
+        while True:
+            try:
+                frame = await asyncio.wait_for(queue.get(), timeout=keepalive)
+            except TimeoutError:
+                yield ": keepalive\n\n"
+                continue
+            yield f"event: frame\ndata: {json.dumps({'jpeg': frame})}\n\n"
 
 
 @app.get("/connections")

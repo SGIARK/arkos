@@ -609,7 +609,7 @@ class _Sink:
         return ToolContext(
             user_id=self.session.user_id,
             session_id=self.session.id,
-            emit_status=lambda label: self.emit(StatusEvent(label=label)),
+            emit_status=lambda label, url=None: self.emit(StatusEvent(label=label, url=url)),
             store_blob=self.store_blob,
             read_blob=lambda ref, offset, limit: slog.read_blob(ref, offset, limit, user_id=self.session.user_id),
             approve=self._approve,

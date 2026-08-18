@@ -118,6 +118,46 @@ function EventRow({ event }) {
   }
 }
 
+/* The browser's frames, while it is browsing.
+
+   Mounted from the `status` event that announced the url and dropped when the
+   run ends: frames are a side-channel, never events, so there is nothing to
+   replay and nothing to scroll back to. It is a panel in the window rather than
+   an overlay in the corner — choosing to watch is the difference between
+   watching and being interrupted. */
+function Canvas({ url, onClose }) {
+  const [frame, setFrame] = useState(null);
+
+  useEffect(() => {
+    if (!url) return undefined;
+    const source = new EventSource(url, { withCredentials: true });
+    source.addEventListener("frame", (e) => {
+      try {
+        setFrame(JSON.parse(e.data).jpeg);
+      } catch (err) {
+        /* a malformed frame is one dropped picture, not a broken pane */
+      }
+    });
+    return () => source.close();
+  }, [url]);
+
+  return (
+    <div className="canvas">
+      <div className="canvas-head">
+        <span>the browser</span>
+        <button className="link" onClick={onClose}>
+          hide
+        </button>
+      </div>
+      {frame ? (
+        <img alt="what the browser is looking at" src={"data:image/jpeg;base64," + frame} />
+      ) : (
+        <p className="empty">waiting for the first frame…</p>
+      )}
+    </div>
+  );
+}
+
 /* The one question a parked session is waiting on, answered here rather than
    somewhere else: the person watching is the person who answers. */
 function Question({ item, onAnswered, onError }) {
@@ -176,6 +216,8 @@ function SessionWindow({ sessionId, onBack, onError, onActivity }) {
   const [questions, setQuestions] = useState([]);
   const [text, setText] = useState("");
   const [live, setLive] = useState(false);
+  // The frame stream a `status` event announced, if the run is still going.
+  const [canvas, setCanvas] = useState(null);
   const tail = useRef(null);
   const seen = useRef(new Set());
 
@@ -221,10 +263,13 @@ function SessionWindow({ sessionId, onBack, onError, onActivity }) {
               // of, so it is told then and not on a timer.
               if (onActivity) onActivity();
             }
+            if (event.kind === "status" && event.url) setCanvas(event.url);
             if (event.kind === "budget") {
               setSession((s) => (s ? { ...s, hops_used: event.hops_used, hops_max: event.hops_max } : s));
             }
             if (event.kind === "done") {
+              // The run is over, so there is nothing left to look at.
+              setCanvas(null);
               refreshQuestions();
               if (onActivity) onActivity();
             }
@@ -288,6 +333,8 @@ function SessionWindow({ sessionId, onBack, onError, onActivity }) {
           <button onClick={() => api.approve(sessionId).catch(onError)}>Let it run</button>
         )}
       </div>
+
+      {canvas && <Canvas url={canvas} onClose={() => setCanvas(null)} />}
 
       {questions.map((item) => (
         <Question key={item.approval_id} item={item} onAnswered={refreshQuestions} onError={onError} />

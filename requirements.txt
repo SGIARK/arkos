@@ -39,5 +39,8 @@ e2b-code-interpreter>=2.7.0   # imported lazily, so the app boots without it.
                               # STAYS: the 08-17 audit line calling it droppable
                               # predates 8a, which made the sandbox live.
 
-# browser-use and playwright left with the pre-redesign browser code in 8.10.
-# Task 9 rebuilds against contracts and re-adds whatever it actually needs.
+# Back with Task 9, which rebuilt the browser against contracts. Imported inside
+# the call, so the process starts, the manifest builds and every other tool works
+# on a host that has neither.
+browser-use>=0.12.0,<0.13
+playwright>=1.49.0

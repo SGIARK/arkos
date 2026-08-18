@@ -850,6 +850,42 @@ async def test_a_published_status_can_be_fetched_by_the_seq_it_announced():
     assert [e.seq for e in replay][0] == seen[0].seq, "the announced seq was not yet readable"
 
 
+# --- the browser's frame side-channel ---------------------------------------------
+
+
+async def test_the_frame_stream_requires_owning_the_session(client):
+    """The implementation this replaces took a user id from the query string."""
+    theirs = str(uuid.uuid4())
+    _seeded.append(uuid.UUID(theirs))
+    await pool.execute("INSERT INTO users (id) VALUES ($1)", uuid.UUID(theirs))
+    their_session = await _session_for(theirs)
+    await _signed_in(client)
+
+    assert (await client.get(f"/sessions/{their_session}/browser/frames")).status_code == 404
+
+
+async def test_a_frame_reaches_the_watcher_of_that_session(client):
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id)
+
+    frames = [
+        frame
+        async for frame in _read_frames(api._frame_stream(user_id, session_id), user_id, session_id)
+    ]
+
+    assert frames and "jpeg" in frames[0]
+
+
+async def _read_frames(stream, user_id, session_id):
+    """Publish one frame once the stream is subscribed, then read it back."""
+    gen = stream.__aiter__()
+    task = asyncio.create_task(gen.__anext__())
+    await asyncio.sleep(0)
+    api.frames.publish(user_id, session_id, "ZmFrZS1qcGVn")
+    yield await asyncio.wait_for(task, timeout=5)
+    await gen.aclose()
+
+
 # --- the app is served from the API's own origin ---------------------------------
 
 

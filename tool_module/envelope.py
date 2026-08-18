@@ -96,7 +96,9 @@ class ToolContext:
 
     user_id: str
     session_id: str | None = None
-    emit_status: Callable[[str], None] | None = None
+    # `(label)` or `(label, url)`. The url is an ephemeral side-channel to mount
+    # — the browser's frame stream — and is never stored for replay.
+    emit_status: Callable[..., None] | None = None
     store_blob: Callable[[str], Awaitable[str]] | None = None
     read_blob: Callable[[str, int, int], Awaitable[str | None]] | None = None
     approve: Callable[[str, dict[str, Any]], Awaitable[bool]] | None = None

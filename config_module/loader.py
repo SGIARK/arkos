@@ -119,6 +119,14 @@ class ConfigLoader:
                 "quota permits could never get a computer"
             )
 
+        asked = float(self.get("browser.wall_clock_s") or 0)
+        forced = float(self.get("browser.hard_timeout_s") or 0)
+        if asked and forced <= asked:
+            problems.append(
+                f"browser.hard_timeout_s ({forced}) is not above browser.wall_clock_s ({asked}): "
+                "the backstop would fire before the graceful stop could return partial results"
+            )
+
         if problems:
             raise RuntimeError("incoherent configuration: " + "; ".join(problems))
 

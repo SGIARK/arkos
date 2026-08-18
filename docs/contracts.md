@@ -314,7 +314,7 @@ chat plumbing. One error shape everywhere: `{code, message, retryable}`.
 | `GET /projects/{id}/files` | — | `[{file_id, path, name, size, mtime}]` — tree rows; no sandbox is woken |
 | `POST /projects/{id}/files` | multipart (`file`, optional `path`) | `{file_id, name, path, size}` |
 | `GET /results/{ref}` | `offset&limit` | blob slice (ownership-checked) |
-| `GET /sessions/{id}/browser/frames` | — | SSE JPEG side-channel, keyed (user, session), announced by a `status` event, rendered in the canvas panel (not a corner overlay) |
+| `GET /sessions/{id}/browser/frames` | — | SSE JPEG side-channel (`event: frame`, `{jpeg}` base64), keyed (user, session), ownership-checked, announced by a `status` event, rendered in the canvas panel (not a corner overlay). Nothing is captured while nobody is subscribed |
 | `POST /sessions/{id}/approve` | — | 202 — attended → **unattended**; the run begins |
 | `GET /connections` | — | `[{server, name, mcp_url, requires_auth, status, tool_count, refreshed_at}]` — `mcp_servers:` joined to `user_connections` + `shared_connections` |
 | `POST /connections/{server}/connect` | — | `{setup_url}` — mints the id, writes the `pending` row, PUTs to Smithery. Idempotent: reconnect reuses the stored id |
@@ -730,10 +730,10 @@ on concurrently running sessions. None of this exists in prod until it does —
 
 | Violation | Breaks | Where |
 |---|---|---|
-| ~~browser frame queue keyed by user only; concurrent tasks clobber each other~~ **resolved by deletion (8.10); Task 9 rebuilds against the contract** | (user, task) stream keying | file deleted |
-| ~~`/v1/browser/stream` trusts client-supplied user_id, no auth~~ **resolved by deletion (8.10); Task 9 rebuilds against the contract** | every-endpoint ownership check | file deleted |
-| ~~browser returns bare string; failure and empty are both `""`~~ **resolved by deletion (8.10); Task 9 rebuilds against the contract** | tool_result envelope | file deleted |
-| ~~zero step callbacks wired; 3-min silent tool call~~ **resolved by deletion (8.10); Task 9 rebuilds against the contract** | progress-as-status-events | file deleted |
+| ~~browser frame queue keyed by user only; concurrent tasks clobber each other~~ **REBUILT in Task 9**: `FrameBroker` is keyed `(user_id, session_id)` | (user, task) stream keying | `tool_module/browser/stream.py` |
+| ~~`/v1/browser/stream` trusts client-supplied user_id, no auth~~ **REBUILT in Task 9**: `GET /sessions/{id}/browser/frames`, cookie-authed and ownership-checked like everything else | every-endpoint ownership check | `harness_module/api.py` |
+| ~~browser returns bare string; failure and empty are both `""`~~ **REBUILT in Task 9**: the envelope is built from the run history, `ok` from its own verdict, the record behind a `ref` | tool_result envelope | `tool_module/browser/tool.py` |
+| ~~zero step callbacks wired; 3-min silent tool call~~ **REBUILT in Task 9**: every step is a `status` event, and a vendor that drops the callback logs at WARNING | progress-as-status-events | `tool_module/browser/tool.py` |
 | ~~`run.sh` launches with NO parser flags; `llm.model_name` is `"tgi"`~~ FIXED in Task 0a(i) | one authoritative model: **Qwen3-8B**, `--tool-call-parser qwen25`, `--reasoning-parser qwen3` | `config_module/config.yaml`, `model_module/run.sh` |
 | ~~`logging_module` mandated by CLAUDE.md does not exist; 35 `print()`s in prod~~ RESOLVED 2026-08-13 | two-logs contract above | the 35 were 27 in a misplaced test, 7 in `db/migrate.py` (a CLI, where print is correct) and 1 in a build script. Zero in production paths. `logging_module` itself is still unbuilt (D17) |
 
