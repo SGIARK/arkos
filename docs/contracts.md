@@ -473,6 +473,54 @@ directory are durable; the running instance is not. Lazily booted on first use,
 torn down when idle, respawned against the persisted state on the next lease.
 "Persistent browser" means the logins survive, not that a browser stays warm.
 
+### store — the agent's filesystem
+
+Bytes in object storage we own, the tree in Postgres, the sandbox disk a cache
+(D27). `harness_module/store.py` owns it, because the store is the harness's and
+never the sandbox's (D28).
+
+```
+put_blob(content) -> sha256          # content-addressed, immutable, write-once
+get_blob(sha256) -> bytes
+read_tree(project_id) -> [TreeEntry{path, content_hash, size, mtime}]
+commit_tree(project_id, entries)     # blobs FIRST, rows LAST, in one transaction
+diff_tree(a, b) -> paths that differ by hash
+append_note(user_id, text) -> path   # one file per note
+```
+
+**Layout is fixed.** `{prefix}/blobs/{hh}/{sha256}` for bytes;
+`{user}/memory/{MEMORY.md, notes/}` and `{user}/projects/{project-id}/` for the
+tree. Keyed by project id so a rename moves nothing; mounted under the project
+slug, because the model reads paths as context and a mounted name should be
+human.
+
+**Blobs first, rows last.** A commit uploads every missing blob before it flips
+tree rows, and flips them in one transaction. A crash between the two leaves the
+previous tree intact and whole: an orphan blob costs storage, a tree row
+pointing at a blob that is not there costs a file. Commits are idempotent, so a
+retry after a partial upload is safe.
+
+**The cache fills and empties on the lease.** Acquiring the sandbox lease
+materializes the session's claimed subtrees; release, park and terminal flush
+them back. A flush that fails is loud in `system_events`, retried on the
+reaper's backoff, and **the sandbox is not killed until the flush lands**. e2b
+`pause` is a warm-keep, so deleting a paused sandbox loses nothing.
+
+**Memory never mounts.** `{user}/memory/` is excluded structurally, not by a
+filter: project subtrees are the only mountable thing, and the mount path has no
+branch that can reach memory. The sandbox executes model-authored code, and
+memory is the most sensitive distillate in the system. Sessions may only
+`append_note`; `MEMORY.md` is rewritten by the compaction job alone.
+
+**Claims are the unit of conflict** (D29). A session declares
+`(project_id, subpath, mode)` at creation. The set is the sole source of which
+leases it takes (`project:{id}` for each write claim) and what appears in its
+sandbox. Nothing unclaimed is mounted. A read claim materializes without a lease
+and its flush is a no-op, with discarded edits logged.
+
+**No store credentials enter the sandbox.** Bytes flow store → harness → e2b
+API, never sandbox → store.
+
 ### (computer_module: dissolved)
 
 With its agent deleted, `computer_module` had no reason to be a module. The

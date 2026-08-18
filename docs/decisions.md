@@ -46,6 +46,39 @@ cannot be in two places, so fan-out needs five projects (or `create_session`
 returns later); the full manifest is always present, which lazy provisioning
 makes free.
 
+**D27 · Storage is separated from compute.** The agent's files live in object
+storage we own, with the tree in Postgres: `project_files` carries
+`path, content_hash, size, mtime` and no bytes, and blobs are content-addressed
+by sha256. The sandbox disk is a cache, filled at lease acquire and flushed at
+release. e2b's own persistence is demoted to a warm-start optimization, so
+deleting a paused sandbox loses nothing. A filesystem is bytes plus a tree; both
+halves are ours. Content addressing buys dedup across projects, snapshots that
+cost a row copy, and crash-safe writes, because a blob is written once and never
+mutated. *Cost:* every lease acquire pays a materialize and every release pays a
+flush, so a project too large for eager sync needs the lazy-mount rung that does
+not exist yet; and the vendor's filesystem being a cache means a warm resume
+must diff rather than trust what it finds.
+
+**D28 · The agent lives outside the computer.** The loop, the transcript writer
+and every credential stay in the harness; the sandbox holds files and runs
+commands. Nothing that can read the model's context or the user's secrets is
+inside a box that executes model-authored code. Inner loops are allowed only as
+leashed tools behind the tool boundary, which is what `browser_task` already is.
+*Cost:* bytes cross the harness on the way in and out rather than the sandbox
+pulling them directly, which is a transfer we pay for and a credential we never
+hand over.
+
+**D29 · The unit of conflict is the path set, named and persisted as claims.**
+A session declares its claims at creation — `(project_id, subpath, mode)` — and
+that set is the sole source of two things: which leases it takes, and what
+appears in its sandbox. Nothing unclaimed is mounted. Write claims take
+`project:{id}`; read claims mount leaselessly and discard their edits. Memory is
+shared, never leased, append-gated and compacted on its own. Fixing the set at
+creation is what keeps the lease story race-free: a session cannot acquire its
+way into a deadlock halfway through. *Cost:* no mid-session "add folder" without
+a design for re-acquisition, and a session that guessed its claims wrongly has
+to be restarted rather than widened.
+
 
 ---
 

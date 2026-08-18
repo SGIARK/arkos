@@ -35,7 +35,7 @@ before Task 7 deletes the fallback machinery.
 
 This document is the why and the build plan.
 
-**Status:** Tasks 0-8 done · **Task 9 is next** |
+**Status:** Tasks 0-8 done · **Tasks 8.1-8.9 (the store) are next**, then 9 / LG-1 |
 **Author:** John Wallace | **Last updated:** 2026-08-17
 
 **Where things actually stand, for a session picking this up cold:**
@@ -715,6 +715,155 @@ because the sandbox toolset this card registers is their first caller. Held for
 the whole session, not per call; released on terminal and on park; a contended
 session stays `running` and says so with a `status` event rather than parking.
 It is in the done-when above so the card cannot close with it unreachable.
+
+**Superseded in part, 2026-08-18:** Tasks 8.1-8.9 below demote this card's
+persistence story. e2b's filesystem stops being where the agent's files live
+(D27); it becomes a cache of a store we own, and pause/resume becomes a
+warm-start optimization rather than durability.
+
+## Tasks 8.1-8.9: The store — the agent's filesystem, owned by us
+
+Added 2026-08-18 (owner), from the storage/compute design sessions. The problem
+they answer: as shipped, e2b's per-sandbox filesystem is the source of truth for
+the agent's files — the vendor holds the agent's life, browsing files requires
+booting a computer, and Looking Glass open question 2 (file sync back) has no
+answer because files exist in two places. The resolution is one place: bytes in
+object storage we control, the tree in Postgres, the sandbox disk demoted to a
+cache filled at lease acquire and flushed at release. A filesystem is bytes plus
+a tree; blobs are content-addressed by sha256 (dedup, cheap snapshots, safe
+crash-time writes), the tree is rows. Total ~6.5d across nine cards; 8.1-8.3
+land while thinking, 8.4-8.5 are the heart, the rest interleave.
+
+### Task 8.1: The rulings — storage, residence, and claims become law
+**Done when:** `decisions.md` gains **D27** (storage separated from compute:
+bytes in object storage we own, tree in Postgres, sandbox disk is a cache filled
+at lease acquire and flushed at release; e2b persistence demoted to warm-start),
+**D28** (the agent lives outside the computer: loop, transcript writer, and
+credentials never enter the sandbox; inner loops only as leashed tools), **D29**
+(the unit of conflict is the path set, named and persisted as **claims**:
+declared at session creation, sole source of both lease acquisition and sandbox
+contents; memory is shared, never leased, append-gated, compacted alone).
+`contracts.md` gains the store section (layout, the memory-never-mounts rule,
+the blobs-first-rows-last flush invariant). `looking_glass_spec.md` open
+question 2 is struck as dissolved: there are not two places.
+**Touch:** docs only | **P1, 0.5d** | **Blockers:** none
+**Test:** none (law); each card below pins one piece of it.
+
+### Task 8.2: Schema and config for the store
+**Done when:** migration adds tree columns to `project_files`
+(`path, content_hash, size, mtime`; no bytes column) and creates
+**`session_claims`** `(session_id, project_id, subpath DEFAULT '/', mode
+'read'|'write')`; `config.yaml` gains `store:` (`bucket`, `prefix`); layout is
+fixed as `{user}/memory/{MEMORY.md, notes/}` and `{user}/projects/{project-id}/`
+— store keyed by project id (rename-safe), mounted by slug (the model reads
+paths as context, so mounted names are human).
+**Touch:** `db/migrations/`, `config.yaml`, `schema.md` | **P1, 0.5d** | **Blockers:** 8.1
+**Test:** migration applies to an empty DB and one carrying Task-8-era rows;
+CHECK on `mode`; claims cascade on session delete.
+
+### Task 8.3: `store.py` — blobs and trees
+**Done when:** `harness_module/store.py` exists (the store is the harness's,
+per D28): `put_blob`/`get_blob` content-addressed under `blobs/{hh}/{sha256}`,
+immutable, write-once; `read_tree(project_id)` and
+`commit_tree(project_id, entries)` where commit uploads missing blobs FIRST and
+flips tree rows in ONE transaction — a crashed commit leaves the old tree intact
+and whole; `diff_tree` by hash. No sandbox, no e2b, no tools: pure store,
+unit-testable against a scratch bucket.
+**Touch:** `harness_module/store.py` | **P1, 1d** | **Blockers:** 8.2
+**Test:** same content in two projects stores one blob; kill between blob upload
+and row flip → old tree reads back intact; commit is idempotent on retry.
+
+### Task 8.4: Materialize — the cache fills at lease acquire
+**Done when:** acquiring the sandbox lease materializes the session's claimed
+subtrees: read tree rows → fetch blobs the sandbox lacks → ONE tar upload via
+`files.write` → ONE `tar xf` via `commands.run` into `~/projects/{slug}`. A
+resumed sandbox diffs the manifest and transfers only missing hashes (warm start
+kept, trust removed). No store credentials enter the sandbox; bytes flow
+store → harness → e2b API.
+**Touch:** `store.py`, lease call site in `tool_module/sandbox/tools.py` | **P1, 0.5d** | **Blockers:** 8.3
+**Test:** fresh sandbox materializes byte-identical to the store; resumed
+sandbox with N-1 of N blobs transfers exactly one; a sweep of the sandbox env
+for store credentials finds nothing.
+
+### Task 8.5: Flush — the cache empties at release, park, and terminal
+**Done when:** release/park/terminal runs one `sha256sum` sweep via
+`commands.run`, diffs against the materialized tree, tar-batches changed files
+out, and calls `commit_tree`. A failed flush is loud in `system_events`, retried
+on the reaper's backoff, and **the sandbox is not killed until the flush lands**.
+e2b `pause` is now officially a cache warm-keep: deleting a paused sandbox loses
+nothing.
+**Touch:** `store.py`, runner/sink ending paths | **P1, 1d** | **Blockers:** 8.3, 8.4
+**Test:** write → release → a fresh sandbox for a different session reads the
+file byte-identical; kill the process between write and flush → next acquire
+reconciles from the intact last tree; delete the e2b sandbox outright → nothing
+lost; flush uploads only changed hashes.
+
+### Task 8.6: Claims consumed end to end
+**Done when:** `POST /sessions` accepts optional `claims` (default: a write
+claim on the session's own project, so existing flows change zero);
+`materialize` mounts exactly the claimed subtrees and nothing else; leases
+derive from write claims (`project:{id}` per claim; `sandbox:{user}` remains for
+the box itself); a read claim materializes leaseless and its flush is a no-op
+with discarded edits logged; `GET /sessions/{id}` returns the claims for Looking
+Glass to render. Mid-session grant additions ("add folder"): carded, not built —
+a claim set fixed at creation is what keeps the lease story race-free.
+**Touch:** `api.py`, `store.py`, `leases.py`, `runner.py` | **P1, 1d** | **Blockers:** 8.4, 8.5
+**Test:** claims A(write)+B(read) → both mount, edits in A flush, edits in B
+discarded and logged; two sessions with disjoint claims run with zero
+contention; a second session claiming A waits on `project:{A}` with a `status`
+event, no hops burned; nothing unclaimed appears in the sandbox.
+
+### Task 8.7: Upload and browse without a boot
+**Done when:** `POST /projects/{id}/files` (the missing endpoint) writes blob +
+tree row to the STORE; `quotas.upload_max_mb` finally has its reader; an upload
+during a held write lease is written through to the live sandbox, otherwise it
+waits in the store for the next materialize; `GET /projects` and file listings
+read tree rows only — no sandbox awake to browse. This is LG-2's upload half,
+landing where it naturally lives.
+**Touch:** `api.py`, `store.py` | **P1, 1d** | **Blockers:** 8.3 (8.6 for write-through)
+**Test:** upload while cold → listed immediately, present at next materialize;
+upload mid-lease → the running session reads it same turn; oversized → the
+standard error shape; listing a 100-file project boots nothing.
+
+### Task 8.8: The memory region, structurally sealed
+**Done when:** `{user}/memory/` exists in the store (`MEMORY.md` + `notes/`);
+`materialize` structurally excludes it — not a filter, a different code path:
+project subtrees are the only mountable things, because the sandbox runs
+model-authored code and memory is the most sensitive distillate in the system;
+`store.py` gains the append gate `append_note(user_id, text)` (one file per
+note, so concurrent appends cannot collide); `MEMORY.md` is compactor-owned —
+sessions append notes, only the (future) compaction job rewrites the curated
+core. NOT here: memory tools in the manifest, search, the compactor — those are
+the memory reimplementation card, which now has its floor.
+**Touch:** `store.py`, `contracts.md` memory section | **P2, 0.5d** | **Blockers:** 8.3
+**Test:** a session with every claim still has no `memory/` in its sandbox; two
+concurrent `append_note` calls land as separate files; nothing in the repo
+writes `MEMORY.md`.
+
+### Task 8.9: The probe and the hardening pass
+**Done when:** the **FUSE probe** is run and recorded in Implementation Notes
+(open a sandbox, check `/dev/fuse`, attempt an `rclone mount` on a scratch
+bucket) — it decides whether the lazy-mount rung is open on e2b for the day
+eager sync gets slow; a periodic store snapshot exists (`commit_tree` makes
+snapshots cheap: a snapshot is a saved copy of tree rows) with the restore path
+tested once; the revisit triggers are written down: materialize/flush over a few
+seconds on real projects; a project too big for eager sync (the FUSE/self-host
+fork); sandbox-hour cost crossing self-host on owned metal; a customer
+forbidding third-party VMs even ephemerally.
+**Touch:** Implementation Notes, `store.py`, one script | **P2, 0.5d** | **Blockers:** 8.4
+**Test:** restore a project to a prior snapshot and materialize it; the probe
+result is written down whichever way it lands.
+
+**Explicitly not in 8.1-8.9:** FUSE/lazy materialization; branches and merge
+(same-project parallelism = the second session waits on the lease, v1 forever
+until it hurts — when it hurts, branch-per-session and merge-at-flush, conflicts
+surfacing as an `ask`); memory tools and the compactor; vector search;
+multi-project session UI; per-project computers; self-hosted sandboxing.
+**For LG-1's card, not here:** session creation is placeful — the grid-level
+composer creates a new project (default, zero clicks), composing inside a
+project creates the session there with its claim, and a busy project (write
+lease held) is disclosed in the composer before creation, offering queue-behind
+or open-the-running-session.
 
 ## Task 9: Browser tool on a leash
 **Done when:** per contracts.md browser section — step callback wired to

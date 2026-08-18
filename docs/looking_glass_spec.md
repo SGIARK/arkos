@@ -184,6 +184,10 @@ files) · composer + EventSource wiring.
 1. ~~Does the chat window become a Looking Glass window?~~ Resolved: they are the
    same window on the same session (D5). Remaining detail: does the approve
    affordance render as a plan card inline, or as a button on the composer?
-2. File sync back: when a task writes a file in its sandbox, when does it become
-   a project file (on finish_task? on every write?) and what wins on conflict
-   with a mid-run upload? Undesigned; must be settled before LG-2.
+2. ~~File sync back: when a task writes a file in its sandbox, when does it
+   become a project file, and what wins on conflict with a mid-run upload?~~
+   **Dissolved by D27 (2026-08-18).** The question assumed files live in two
+   places. They live in one: the store holds them, and the sandbox disk is a
+   cache filled at lease acquire and flushed at release. A file becomes a
+   project file when the flush commits its tree, and a mid-run upload is written
+   through to the held sandbox rather than racing it. See spec Tasks 8.1-8.9.
