@@ -1,27 +1,36 @@
 # Runtime dependencies. Dev/test extras live in requirements-dev.txt.
 
 # --- model ---
-openai>=1.61.0            # AsyncOpenAI against SGLang's OpenAI-compatible endpoint
+openai>=1.61.0            # AsyncOpenAI against whatever llm.base_url points at
 
 # --- config ---
 pyyaml>=6.0.2
 python-dotenv>=1.0.0
 
-# --- http surface (harness_module/api.py, Task 4) ---
+# --- http surface (harness_module/api.py) ---
 fastapi>=0.115.0
-uvicorn>=0.32.0           # not imported; Dockerfile CMD runs it
+starlette>=0.40.0         # BackgroundTask, imported directly by api.py. A FastAPI
+                          # dependency, named here because we import it ourselves.
+uvicorn>=0.32.0           # not imported; the Dockerfile CMD runs it
 pydantic>=2.10.6          # imported lazily in tool_module/browser_actions.py
 PyJWT>=2.8.0
+cryptography>=42.0.0      # PyJWT needs it for the ES256 tokens Supabase signs
+                          # with. On a Python whose platform tag predates the
+                          # published wheels, pip falls back to building from
+                          # Rust source: install with --only-binary=:all:.
 
 # --- database ---
-asyncpg>=0.29.0           # db/pool.py — the async path, one pool per process
-psycopg2-binary>=2.9.11   # db/migrate.py (CLI) and tool_module/sandbox/manager.py.
-                          # Task 8 moves the sandbox half onto db.pool; migrate.py
-                          # is a sync CLI and correctly stays on psycopg2.
+asyncpg>=0.29.0           # db/pool.py, the async path, one pool per process
+psycopg2-binary>=2.9.11   # db/migrate.py only, which is a sync CLI and stays sync
+
+# --- store (harness_module/store.py) ---
+# Bytes go to Supabase Storage over its REST API, so httpx below is the whole
+# client. No S3 SDK: the bucket is reached with the same HTTP stack as everything
+# else, and the backend is swappable behind a three-method protocol.
 
 # --- tools ---
 aiohttp>=3.9.0            # Smithery MCP transport
-httpx>=0.27.0
-e2b-code-interpreter>=2.7.0
-browser-use>=0.12.0,<0.13 # imported lazily so arkos boots without it
+httpx>=0.27.0             # the store's Supabase Storage client
+e2b-code-interpreter>=2.7.0   # imported lazily, so the app boots without it
+browser-use>=0.12.0,<0.13     # imported lazily, so the app boots without it
 playwright>=1.49.0

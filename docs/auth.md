@@ -27,7 +27,13 @@ reset, and OAuth-social login if we ever want it.
 - **Frontend:** logs in with `supabase-js`; posts that JWT ONCE to
   `/auth/session`; thereafter holds nothing — the cookie does the work.
 - **Backend:** `jwt_utils.py` stops minting tokens and instead VERIFIES
-  Supabase's JWT (their JWKS / JWT secret). `sub` claim → our `users` row
+  Supabase's JWT. Settled 2026-08-18 by checking the live project: it signs
+  with an **ES256 key published at `/auth/v1/.well-known/jwks.json`**, so
+  verification fetches that key rather than sharing a secret. The HS256
+  `SUPABASE_JWT_SECRET` path remains for a project still signing with one, and
+  the algorithm named in a token only selects among the mechanisms actually
+  configured — an unlisted `alg` is refused, never trusted. `sub` claim → our
+  `users` row
   (create-on-first-login, keyed by Supabase user id; username becomes profile
   data, not identity).
 - **Deleted:** `demo-login`, `issue_token`, `ARK_DEMO_MODE` and the `X-User-ID`

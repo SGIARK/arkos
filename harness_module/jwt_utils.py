@@ -29,35 +29,91 @@ def _secret(name: str) -> str | None:
 
 
 def assert_secure_secrets() -> None:
-    """Raises unless both signing secrets are present in the environment."""
-    missing = [name for name in ("SUPABASE_JWT_SECRET", "ARK_SESSION_SECRET") if not _secret(name)]
-    if missing:
+    """Refuses to start without a way to sign sessions and a way to verify tokens.
+
+    Verification needs one of two things: a project URL, which is where the
+    signing keys are fetched from, or the shared HS256 secret for a project
+    still signing with one.
+    """
+    if not _secret("ARK_SESSION_SECRET"):
         raise RuntimeError(
-            f"{', '.join(missing)} unset. Refusing to start: without them tokens are "
-            "unverifiable and sessions unsignable. See .env.example."
+            "ARK_SESSION_SECRET is unset. Refusing to start: sessions would be unsignable. See .env.example."
+        )
+    if not jwks_url() and not _secret("SUPABASE_JWT_SECRET"):
+        raise RuntimeError(
+            "No way to verify a Supabase token. Set SUPABASE_URL, or a Supabase database.url to derive "
+            "it from, so signing keys can be fetched; or SUPABASE_JWT_SECRET for a project still signing "
+            "with a shared secret. See .env.example."
         )
 
 
 # --- verifying somebody else's token ------------------------------------------
 
 
+# Supabase signs with an asymmetric key published at the project's JWKS
+# endpoint. A shared HS256 secret is the older scheme, still used by projects
+# that have not moved.
+_ASYMMETRIC = ("ES256", "RS256", "EdDSA")
+
+_jwks_client: Any = None
+
+
+def jwks_url() -> str | None:
+    """Where the project publishes the keys its tokens are signed with."""
+    from harness_module import store
+
+    project = store.project_url()
+    return f"{project}/auth/v1/.well-known/jwks.json" if project else None
+
+
+def _jwks() -> Any:
+    """The JWKS client. It caches keys and refetches when it meets an unknown kid."""
+    global _jwks_client
+    if _jwks_client is None:
+        url = jwks_url()
+        if url is None:
+            return None
+        _jwks_client = jwt.PyJWKClient(url, cache_keys=True)
+    return _jwks_client
+
+
+def reset_jwks() -> None:
+    """Drop the cached JWKS client, for tests and key rotation."""
+    global _jwks_client
+    _jwks_client = None
+
+
 def verify_supabase(token: str) -> dict[str, Any]:
     """Verifies a Supabase access token and returns its claims.
 
+    The algorithm named in the token's header selects which key to check it
+    against, but only from the mechanisms this deployment has: an asymmetric
+    token against the project's published key, HS256 against the shared secret.
+    A token naming anything else is refused. Supabase stamps aud=authenticated,
+    and PyJWT rejects a token whose audience the caller did not name.
+
     Raises:
-        jwt.PyJWTError: invalid signature, expired, or wrong audience.
+        jwt.PyJWTError: invalid signature, expired, wrong audience, or an
+            algorithm this deployment cannot verify.
     """
-    secret = _secret("SUPABASE_JWT_SECRET")
-    if not secret:
-        raise jwt.InvalidKeyError("SUPABASE_JWT_SECRET is unset")
-    # Supabase stamps aud=authenticated, and PyJWT rejects a token whose audience the
-    # caller did not name.
-    return jwt.decode(
-        token,
-        secret,
-        algorithms=[_ALG],
-        audience=config.get("auth.jwt_audience") or "authenticated",
-    )
+    audience = config.get("auth.jwt_audience") or "authenticated"
+    algorithm = jwt.get_unverified_header(token).get("alg", "")
+
+    if algorithm in _ASYMMETRIC:
+        client = _jwks()
+        if client is None:
+            raise jwt.InvalidKeyError(
+                f"the token is signed with {algorithm}, and no project URL is configured to fetch keys from"
+            )
+        return jwt.decode(token, client.get_signing_key_from_jwt(token).key, algorithms=[algorithm], audience=audience)
+
+    if algorithm == _ALG:
+        secret = _secret("SUPABASE_JWT_SECRET")
+        if not secret:
+            raise jwt.InvalidKeyError("the token is signed with HS256, and SUPABASE_JWT_SECRET is unset")
+        return jwt.decode(token, secret, algorithms=[_ALG], audience=audience)
+
+    raise jwt.InvalidAlgorithmError(f"tokens signed with {algorithm!r} are not accepted")
 
 
 def extract_bearer(authorization: str | None) -> str | None:
