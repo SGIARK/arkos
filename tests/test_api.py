@@ -18,7 +18,7 @@ from httpx import ASGITransport, AsyncClient
 
 from agent_module.events import ContentEvent, DoneEvent, ToolCallEvent, UserEvent
 from db import pool
-from harness_module import api, approvals, lifecycle, runner
+from harness_module import api, approvals, lifecycle, runner, store
 from harness_module import session_log as slog
 from harness_module.stream import SessionStream, stream
 from tests.dbgate import require_db
@@ -641,6 +641,75 @@ async def test_the_home_sessions_project_is_in_the_grid_like_any_other(client):
         "SELECT project_id FROM sessions WHERE id = $1", uuid.UUID(home)
     )
     assert str(home_project) in [p["id"] for p in projects]
+
+
+async def test_one_question_shows_at_all_three_scopes_and_resolves_from_any(client):
+    """An approval is a state of the session, not something a surface owns."""
+    user_id = await _signed_in(client)
+    project_id = await pool.fetchval(
+        "INSERT INTO projects (user_id, title) VALUES ($1, 'Taxes') RETURNING id", uuid.UUID(user_id)
+    )
+    session_id = str(
+        await pool.fetchval(
+            "INSERT INTO sessions (user_id, project_id, mode, status, title) "
+            "VALUES ($1, $2, 'unattended', 'awaiting_approval', 'filing') RETURNING id",
+            uuid.UUID(user_id),
+            project_id,
+        )
+    )
+    opened = await approvals.create(session_id, "c1", "ask", "which account?")
+
+    everywhere = (await client.get("/attention")).json()
+    in_project = (await client.get(f"/attention?project_id={project_id}")).json()
+    in_window = (await client.get(f"/attention?session_id={session_id}")).json()
+
+    assert [a["approval_id"] for a in everywhere] == [opened.id]
+    assert [a["approval_id"] for a in in_project] == [opened.id]
+    assert [a["approval_id"] for a in in_window] == [opened.id]
+
+    # Resolved from the window; it leaves every scope at once, because there is
+    # one row.
+    answered = await client.post(f"/approvals/{opened.id}/respond", json={"answer": "the joint one"})
+
+    assert answered.status_code == 202
+    assert (await client.get("/attention")).json() == []
+    assert (await client.get(f"/attention?project_id={project_id}")).json() == []
+    assert (await client.get(f"/attention?session_id={session_id}")).json() == []
+
+
+async def test_attention_in_another_users_window_reads_as_absent(client):
+    theirs = str(uuid.uuid4())
+    _seeded.append(uuid.UUID(theirs))
+    await pool.execute("INSERT INTO users (id) VALUES ($1)", uuid.UUID(theirs))
+    their_session = await _session_for(theirs, status="awaiting_approval")
+    await approvals.create(their_session, "c1", "ask", "their private question")
+    await _signed_in(client)
+
+    assert (await client.get(f"/attention?session_id={their_session}")).status_code == 404
+
+
+async def test_an_uploaded_file_is_in_the_project_and_in_the_next_sandbox(client, tmp_path):
+    """The card's end-to-end: upload a file, a session reads it from its box."""
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        await _signed_in(client)
+        created = (await client.post("/sessions", json={"goal": "do the taxes"})).json()
+        project_id = created["project_id"]
+
+        uploaded = await client.post(
+            f"/projects/{project_id}/files",
+            files={"file": ("receipts.csv", b"date,amount\n2026-08-18,12", "text/csv")},
+        )
+        listed = (await client.get(f"/projects/{project_id}/files")).json()
+
+        assert uploaded.status_code == 201
+        assert [f["path"] for f in listed] == ["receipts.csv"]
+
+        # And it is what materialize would put in the box.
+        tree = await store.read_tree(project_id)
+        assert await store.get_blob(tree[0].content_hash) == b"date,amount\n2026-08-18,12"
+    finally:
+        store.use_blobs(None)
 
 
 # --- signing in -------------------------------------------------------------------

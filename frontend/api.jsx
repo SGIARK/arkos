@@ -119,8 +119,33 @@ const api = {
   projectSessions: (projectId) => request("GET", `/projects/${projectId}/sessions`),
   session: (sessionId) => request("GET", `/sessions/${sessionId}`),
   files: (projectId) => request("GET", `/projects/${projectId}/files`),
-  attention: (projectId) =>
-    request("GET", projectId ? `/attention?project_id=${encodeURIComponent(projectId)}` : "/attention"),
+  /* One query at three scopes: nothing is the Command Center, a project is its
+     list, a session is one window. */
+  attention: (scope) => {
+    const query = !scope
+      ? ""
+      : scope.session_id
+        ? `?session_id=${encodeURIComponent(scope.session_id)}`
+        : `?project_id=${encodeURIComponent(scope.project_id)}`;
+    return request("GET", "/attention" + query);
+  },
+
+  /* Multipart, so it goes around `request` rather than through it: the browser
+     sets its own boundary and a Content-Type we invented would break it. */
+  async upload(projectId, file) {
+    const form = new FormData();
+    form.append("file", file);
+    const response = await fetch(`${API}/projects/${projectId}/files`, {
+      method: "POST",
+      credentials: "same-origin",
+      body: form,
+    });
+    if (!response.ok) {
+      const shape = await response.json().catch(() => ({}));
+      throw new ApiError(shape.code || "upload_failed", shape.message || `Could not upload ${file.name}.`);
+    }
+    return response.json();
+  },
 
   /* --- connections ------------------------------------------------------ */
 

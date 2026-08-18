@@ -57,23 +57,6 @@ function Reasoning({ event }) {
   );
 }
 
-function Todo({ event }) {
-  const items = event.items || [];
-  if (!items.length) return null;
-  return (
-    <div className="ev ev-todo">
-      {items.map((item, i) => (
-        <div key={i} className={"todo-item todo-" + (item.status || "pending")}>
-          <span className="todo-mark">
-            {item.status === "completed" ? "✓" : item.status === "in_progress" ? "▸" : "○"}
-          </span>
-          {item.text || item.title || String(item)}
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function EventRow({ event }) {
   switch (event.kind) {
     case "user":
@@ -94,7 +77,7 @@ function EventRow({ event }) {
     case "status":
       return <div className="ev ev-status">{event.label}</div>;
     case "todo":
-      return <Todo event={event} />;
+      return null; // pinned in the right panel, where it stays glanceable
     case "budget":
       return null; // the meter in the header carries this
     case "lifecycle":
@@ -116,46 +99,6 @@ function EventRow({ event }) {
       // A kind this build does not know renders as a row rather than crashing.
       return <div className="ev ev-unknown">{event.kind}</div>;
   }
-}
-
-/* The browser's frames, while it is browsing.
-
-   Mounted from the `status` event that announced the url and dropped when the
-   run ends: frames are a side-channel, never events, so there is nothing to
-   replay and nothing to scroll back to. It is a panel in the window rather than
-   an overlay in the corner — choosing to watch is the difference between
-   watching and being interrupted. */
-function Canvas({ url, onClose }) {
-  const [frame, setFrame] = useState(null);
-
-  useEffect(() => {
-    if (!url) return undefined;
-    const source = new EventSource(url, { withCredentials: true });
-    source.addEventListener("frame", (e) => {
-      try {
-        setFrame(JSON.parse(e.data).jpeg);
-      } catch (err) {
-        /* a malformed frame is one dropped picture, not a broken pane */
-      }
-    });
-    return () => source.close();
-  }, [url]);
-
-  return (
-    <div className="canvas">
-      <div className="canvas-head">
-        <span>the browser</span>
-        <button className="link" onClick={onClose}>
-          hide
-        </button>
-      </div>
-      {frame ? (
-        <img alt="what the browser is looking at" src={"data:image/jpeg;base64," + frame} />
-      ) : (
-        <p className="empty">waiting for the first frame…</p>
-      )}
-    </div>
-  );
 }
 
 /* The one question a parked session is waiting on, answered here rather than
@@ -218,13 +161,16 @@ function SessionWindow({ sessionId, onBack, onError, onActivity }) {
   const [live, setLive] = useState(false);
   // The frame stream a `status` event announced, if the run is still going.
   const [canvas, setCanvas] = useState(null);
+  // The latest plan, pinned in the panel rather than buried up the transcript.
+  const [todo, setTodo] = useState(null);
   const tail = useRef(null);
   const seen = useRef(new Set());
 
   const refreshQuestions = useCallback(async () => {
     try {
-      const open = await api.attention();
-      setQuestions(open.filter((q) => q.session_id === sessionId));
+      // Asked at session scope: the same rows the rail and the grid show, from
+      // the one query, narrowed to this window.
+      setQuestions(await api.attention({ session_id: sessionId }));
     } catch (e) {
       onError(e);
     }
@@ -244,6 +190,9 @@ function SessionWindow({ sessionId, onBack, onError, onActivity }) {
         const recent = snapshot.recent_events || [];
         seen.current = new Set(recent.map((e) => e.seq));
         setEvents(recent);
+        // The panel shows the latest plan the snapshot already carries.
+        const plans = recent.filter((e) => e.kind === "todo");
+        if (plans.length) setTodo(plans[plans.length - 1].items);
         await refreshQuestions();
 
         const last = recent.length ? recent[recent.length - 1].seq : 0;
@@ -264,6 +213,7 @@ function SessionWindow({ sessionId, onBack, onError, onActivity }) {
               if (onActivity) onActivity();
             }
             if (event.kind === "status" && event.url) setCanvas(event.url);
+            if (event.kind === "todo") setTodo(event.items);
             if (event.kind === "budget") {
               setSession((s) => (s ? { ...s, hops_used: event.hops_used, hops_max: event.hops_max } : s));
             }
@@ -334,17 +284,24 @@ function SessionWindow({ sessionId, onBack, onError, onActivity }) {
         )}
       </div>
 
-      {canvas && <Canvas url={canvas} onClose={() => setCanvas(null)} />}
-
       {questions.map((item) => (
         <Question key={item.approval_id} item={item} onAnswered={refreshQuestions} onError={onError} />
       ))}
 
-      <div className="transcript">
-        {events.map((event) => (
-          <EventRow key={event.seq} event={event} />
-        ))}
-        <div ref={tail} />
+      <div className="window-body">
+        <div className="transcript">
+          {events.map((event) => (
+            <EventRow key={event.seq} event={event} />
+          ))}
+          <div ref={tail} />
+        </div>
+
+        <RightPanel
+          projectId={session.project_id}
+          todo={todo}
+          browserUrl={canvas}
+          onError={onError}
+        />
       </div>
 
       <form className="composer" onSubmit={suggest}>

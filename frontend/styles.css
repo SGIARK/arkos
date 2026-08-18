@@ -365,23 +365,71 @@ a.button {
 .modal-foot { display: flex; justify-content: space-between; padding-top: 4px; }
 button.danger { color: var(--stop); border-color: var(--stop); }
 
-/* --- the canvas --------------------------------------------------------- */
+/* --- the right panel ---------------------------------------------------- */
 
-.canvas {
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-  overflow: hidden;
-  margin: 12px 0;
-  background: var(--surface);
+.window-body { display: flex; gap: 20px; align-items: flex-start; }
+.window-body .transcript { flex: 1; min-width: 0; }
+
+.panel {
+  width: 300px;
+  flex: none;
+  position: sticky;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 16px;
 }
-.canvas-head {
+.panel-block { border: 1px solid var(--line); border-radius: var(--r); padding: 11px 12px; }
+.panel-canvas { padding: 0; overflow: hidden; }
+.panel-empty { padding: 22px 12px; text-align: center; font-size: 12.5px; }
+
+.canvas-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.canvas-tabs .tab { font-size: 12.5px; display: flex; align-items: center; gap: 6px; }
+.panel-hide { margin-left: auto; font-size: 12px; }
+
+.panel-tab {
+  position: sticky;
+  top: 16px;
+  align-self: flex-start;
+  padding: 8px 6px;
+  color: var(--ink-faint);
+}
+
+.frame { display: block; width: 100%; }
+
+.files { display: flex; flex-direction: column; max-height: 46vh; overflow-y: auto; }
+.files.over { background: var(--surface); outline: 1px dashed var(--accent); outline-offset: -4px; }
+.file {
   display: flex;
   justify-content: space-between;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--line);
-  color: var(--ink-soft);
+  gap: 10px;
+  padding: 6px 12px;
   font-size: 12.5px;
 }
-.canvas img { display: block; width: 100%; }
-.canvas .empty { padding: 28px 12px; text-align: center; font-size: 12.5px; }
+.file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-size { color: var(--ink-faint); flex: none; }
+.drop {
+  display: block;
+  padding: 12px;
+  margin: 6px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r);
+  text-align: center;
+  color: var(--ink-faint);
+  font-size: 12px;
+  cursor: pointer;
+}
+.drop:hover { border-color: var(--accent); color: var(--ink-soft); }
+
+@media (max-width: 900px) {
+  .window-body { flex-direction: column; }
+  .panel { width: 100%; position: static; }
+}
 

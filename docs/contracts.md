@@ -308,7 +308,7 @@ chat plumbing. One error shape everywhere: `{code, message, retryable}`.
 | `POST /sessions/{id}/cancel` | — | 202 |
 | `POST /approvals/{id}/respond` | `{answer}` | 202 — appends event, wakes at cursor |
 | `GET /projects` | — | `[{id, title, status_rollup, updated_at}]` |
-| `GET /attention` | `project_id?` | pending approvals/asks (same query, any scope), oldest first, each carrying its session and project |
+| `GET /attention` | `project_id?` `session_id?` | pending approvals/asks, oldest first, each carrying its session and project. One query at three scopes — no filter is the Command Center, `project_id` is a project's list, `session_id` is one window — because an approval is a state of the session, not something a surface owns |
 | `GET /sessions` | `status?` | `[{session_id, title, status, mode, project_id, project_title, hops_used/max, last_event_at}]` — the user's sessions across every project. The rail asks `?status=running`; the per-project list does not compose into a view that spans tabs |
 | `GET /projects/{id}/sessions` | — | `[{session_id, title, status, mode, hops_used/max, open_questions, last_event_at}]` — how the grid gets from a bubble to a window, most recently active first |
 | `GET /projects/{id}/files` | — | `[{file_id, path, name, size, mtime}]` — tree rows; no sandbox is woken |

@@ -4,7 +4,7 @@ Companion to `docs/single_loop_redesign_spec.md` (build plan) and
 `docs/contracts.md` (law: event vocabulary, endpoints, lifecycle).
 Scope: the product surfaces — Looking Glass, Projects, Command Center.
 
-**Status:** LG-1 + LG-1.5/1.6/1.7 DONE (unrendered — first browser pass is the gate before Task 9) · LG-2 after Task 9 | **Author:** John Wallace | **Last updated:** 2026-08-18
+**Status:** LG-1, LG-1.5/1.6/1.7 and LG-2 DONE (unrendered — a first browser pass is the outstanding gate) | **Author:** John Wallace | **Last updated:** 2026-08-18
 
 ---
 
@@ -315,6 +315,33 @@ scopes, resolvable from any, same wake event.
 **Priority:** P2 | **Effort:** 3-4d | **Blockers:** LG-1, redesign Tasks 6, 8
 **Test:** upload a file, task reads it from its sandbox; its approval shows in
 project list AND Command Center; resolving from either resumes at cursor.
+
+**Status: DONE 2026-08-18.** Most of this card was already standing when it
+came up, built underneath it by the store work: `projects`/`project_files`
+(migration 0 + 0001), project-per-session by default (`POST /sessions` makes one
+when none is named), the `GET /projects` rollup, and upload + sandbox mount
+(Tasks 8.4 and 8.7 — an upload lands in the store and is written through to
+every live box holding a materialized claim). What was actually missing was
+smaller than the card, and it is worth saying so rather than restating the card
+as if it had all been built here.
+
+Built now: **`GET /attention` at the third scope.** It had user and project;
+`session_id` completes it, and the window asks at its own scope instead of
+fetching the account and filtering in the browser. One row, three projections,
+answered from any of them — pinned by a test that opens one question, sees it at
+all three scopes, resolves it from the window, and watches it leave all three.
+
+And the **right panel**: a pinned TODO above one canvas, files or browser, your
+choice, collapsible with the choice remembered per browser. The plan moved out
+of the transcript into the panel where it stays glanceable rather than scrolling
+away. Files are listed from the tree, uploaded by drop or picker, and a live
+browser run gives the Browser tab an activity dot — available, never stealing
+focus. Task 9's frame pane moved in here, which is where the design always said
+it went.
+
+Not built: project memory as a third canvas (D8 — a tab for a feature that is
+not in the product), and the human tool takeover the card defers by design.
+Still unrendered: no browser has run any of this.
 
 ### Build decomposition (tracking tasks)
 Backend: per-session SSE stream · session snapshot · steer/pause-cancel/read_result

@@ -496,16 +496,26 @@ async def list_project_sessions(project_id: str, user_id: str = CurrentUser) -> 
 
 
 @app.get("/attention")
-async def attention(project_id: str | None = None, user_id: str = CurrentUser) -> list[dict[str, Any]]:
+async def attention(
+    project_id: str | None = None,
+    session_id: str | None = None,
+    user_id: str = CurrentUser,
+) -> list[dict[str, Any]]:
     """Every question waiting on this human, oldest first.
 
-    One query at any scope: `project_id` narrows it, its absence is the whole
-    account. Approvals and asks are the same row and the same wait — what
-    differs is the answer, so the caller is told `kind` and nothing else
-    branches here.
+    One query at three scopes: no filter is the whole account (the Command
+    Center), `project_id` is that project's list, `session_id` is the one
+    window. The same row appears in all three — an approval is a state of the
+    session, not something a surface owns — and answering it anywhere writes
+    the same response and wakes the session at its cursor.
+
+    Approvals and asks are the same row and the same wait; what differs is the
+    answer, so the caller is told `kind` and nothing else branches here.
     """
     if project_id is not None:
         await _owned_project(project_id, user_id)
+    if session_id is not None:
+        await _owned_session(session_id, user_id)
 
     rows = await pool.fetch(
         """
@@ -517,10 +527,12 @@ async def attention(project_id: str | None = None, user_id: str = CurrentUser) -
          WHERE s.user_id = $1
            AND a.answered_at IS NULL
            AND ($2::uuid IS NULL OR s.project_id = $2)
+           AND ($3::uuid IS NULL OR s.id = $3)
          ORDER BY a.created_at
         """,
         _uuid(user_id, "user"),
         _uuid(project_id, "project") if project_id is not None else None,
+        _uuid(session_id, "session") if session_id is not None else None,
     )
     return [
         {
