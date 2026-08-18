@@ -577,6 +577,47 @@ async def list_project_files(project_id: str, user_id: str = CurrentUser) -> lis
     ]
 
 
+@app.get("/projects/{project_id}/files/{file_id}")
+async def read_project_file(project_id: str, file_id: str, user_id: str = CurrentUser) -> dict[str, Any]:
+    """One file's contents, read from the store without waking anything.
+
+    The computer view is a filesystem you can read, and listing rows is only
+    half of that. Text is returned decoded; anything that is not UTF-8 says so
+    rather than arriving as mojibake, because a reader pane that renders a PNG
+    as characters is worse than one that admits it cannot.
+    """
+    await _owned_project(project_id, user_id)
+    row = await pool.fetchrow(
+        "SELECT path, content_hash, size, mtime FROM project_files WHERE id = $1 AND project_id = $2",
+        _uuid(file_id, "file"),
+        _uuid(project_id, "project"),
+    )
+    if row is None:
+        raise ApiError(404, "not_found", "No such file.")
+
+    blob = await store.get_blob(row["content_hash"])
+    if blob is None:
+        raise ApiError(410, "blob_missing", "The store no longer holds this file's contents.")
+
+    try:
+        text = blob.decode()
+    except UnicodeDecodeError:
+        return {
+            "path": row["path"],
+            "size": row["size"],
+            "mtime": row["mtime"].isoformat(),
+            "text": None,
+            "binary": True,
+        }
+    return {
+        "path": row["path"],
+        "size": row["size"],
+        "mtime": row["mtime"].isoformat(),
+        "text": text,
+        "binary": False,
+    }
+
+
 @app.post("/projects/{project_id}/files", status_code=201)
 async def upload_project_file(
     project_id: str,

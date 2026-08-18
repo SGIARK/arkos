@@ -1,112 +1,63 @@
 /* =========================================================
-   Root: sign in, then the chat you already have.
+   app — root: state, routing, theme, rail, command bar
 
-   The landing is the chat, not the grid. The product is a companion with
-   memory, so opening the app is walking up to your desk where ARK already is —
-   the home session, an ordinary attended session the server made on first
-   login. Looking Glass is the Projects tab, one click away, where work lives in
-   its project bubbles.
+   The design's frame. `watching` is not in the nav: nothing in the system
+   watches a source on a schedule, and a rail entry for a feature that does not
+   exist is a promise the product cannot keep. Everything else is here — desk,
+   approvals, computer, looking glass, chat.
 
-   Two tabs and a rail. The old nav (desk / tasks / watching / approvals /
-   computer / chat) described an architecture that no longer exists: a session
-   is the conversation and the run, so watching one and talking to it are the
-   same window.
+   Looking glass is the projects surface and only that. The ambient bar at the
+   bottom talks to the home session, which is the standing conversation; the
+   looking glass hides it, because a session's own composer is in its window.
    ========================================================= */
 
-function SignIn({ onSignedIn }) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [problem, setProblem] = useState(null);
-
-  const submit = async (e) => {
-    e.preventDefault();
-    setBusy(true);
-    setProblem(null);
-    try {
-      onSignedIn(await api.signIn(email, password));
-    } catch (err) {
-      setProblem(err.message || "Sign-in failed.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="signin">
-      <form onSubmit={submit}>
-        <h1>ARK</h1>
-        <input
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="you@example.com"
-          autoComplete="username"
-          required
-        />
-        <input
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder="Password"
-          autoComplete="current-password"
-          required
-        />
-        <button className="primary" type="submit" disabled={busy || !email || !password}>
-          {busy ? "signing in…" : "sign in →"}
-        </button>
-        {problem && <p className="problem">{problem}</p>}
-        {/* No reset link: accounts are made in the Supabase dashboard until
-            there are real users to self-serve. */}
-      </form>
-    </div>
-  );
-}
-
-/* Failures surface here rather than in a console nobody has open. */
-function Problem({ error, onDismiss }) {
-  if (!error) return null;
-  return (
-    <div className="banner" role="alert">
-      <span>{error.message || error.code || "Something failed."}</span>
-      <button className="link" onClick={onDismiss}>
-        dismiss
-      </button>
-    </div>
-  );
-}
+const NAV = ["desk", "approvals", "computer", "looking glass", "chat"];
 
 function App() {
+  const [theme, setTheme] = useState(() => localStorage.getItem("ark-theme") || "light");
   const [user, setUser] = useState(null);
   const [booting, setBooting] = useState(true);
-  const [tab, setTab] = useState("chat");
-  // Only meaningful in the Projects tab; the Chat tab always shows home.
-  const [openSession, setOpenSession] = useState(null);
-  const [error, setError] = useState(null);
+  const [gone, setGone] = useState(false);
+  const [view, setView] = useState(() => {
+    const hash = decodeURIComponent(location.hash.replace("#", ""));
+    return NAV.includes(hash) ? hash : "chat";
+  });
   const [settings, setSettings] = useState(false);
-  const [theme, setTheme] = useState(() => localStorage.getItem("ark-theme") || "light");
-  // Bumped when something happened that the rail's two sections are made of.
+  const [error, setError] = useState(null);
+  const [floaters, setFloaters] = useState([]);
+  // Bumped when something happened that the counts are made of.
   const [pulse, setPulse] = useState(0);
+  const [waiting, setWaiting] = useState([]);
+  // A session opened from somewhere other than the grid — the desk, say.
+  const [jump, setJump] = useState(null);
+  const inputRef = useRef(null);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
     localStorage.setItem("ark-theme", theme);
   }, [theme]);
 
+  useEffect(() => {
+    location.hash = encodeURIComponent(view);
+  }, [view]);
+
   /* The cookie may already be good, so the page asks before it offers a form. */
   useEffect(() => {
     api
       .me()
-      .then(setUser)
+      .then((who) => {
+        setUser(who);
+        setGone(true);
+      })
       .catch(() => setUser(null))
       .finally(() => setBooting(false));
   }, []);
 
   const onError = useCallback((e) => {
-    // An expired or missing cookie is not an error to shout about; it is a
-    // sign-in.
+    // A missing cookie is a sign-in, not an error to shout about.
     if (e && (e.code === "unauthenticated" || e.code === "http_401")) {
       setUser(null);
+      setGone(false);
       return;
     }
     setError(e);
@@ -114,109 +65,184 @@ function App() {
 
   const bump = useCallback(() => setPulse((n) => n + 1), []);
 
-  const home = user && user.home_session_id;
+  /* The pending count in the topbar, and the alert dot on the rail. */
+  useEffect(() => {
+    if (!user) return;
+    api.attention().then(setWaiting).catch(() => {});
+  }, [user, pulse]);
 
-  /* One place decides where a session id lands: home opens the Chat tab,
-     anything else opens it in Projects. */
-  const openSessionAnywhere = useCallback(
-    (sessionId) => {
-      if (home && sessionId === home) {
-        setTab("chat");
-        setOpenSession(null);
-      } else {
-        setTab("projects");
-        setOpenSession(sessionId);
+  useEffect(() => {
+    function key(e) {
+      if (e.key === "/" && document.activeElement !== inputRef.current) {
+        e.preventDefault();
+        if (inputRef.current) inputRef.current.focus();
       }
-      bump();
-    },
-    [home, bump],
-  );
+      if (e.key === "Escape") {
+        if (settings) setSettings(false);
+        else if (inputRef.current) {
+          inputRef.current.value = "";
+          inputRef.current.blur();
+        }
+      }
+    }
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [settings]);
 
-  const signOut = async () => {
+  async function signIn(who) {
+    setUser(who);
+    setTimeout(() => setGone(true), 30);
+  }
+
+  async function signOut() {
     try {
       await api.signOut();
     } catch (e) {
-      // Whatever the server said, this browser is done with the session.
+      /* whatever the server said, this browser is done with the session */
     }
-    setUser(null);
-    setOpenSession(null);
     setSettings(false);
-    setTab("chat");
-  };
+    setGone(false);
+    setTimeout(() => setUser(null), 450);
+  }
 
-  if (booting) return <div className="empty boot">…</div>;
-  if (!user) return <SignIn onSignedIn={setUser} />;
+  /* The ambient bar speaks to the home session: one standing conversation,
+     reachable from every view. What is said floats up and folds away, and the
+     chat view has the durable copy. */
+  const home = user && user.home_session_id;
 
-  const showChat = tab === "chat";
+  async function say(text) {
+    if (!home) return;
+    const id = "f" + Date.now();
+    setFloaters((f) => [...f, { id, who: "you", text }]);
+    setTimeout(() => {
+      setFloaters((f) => f.map((x) => (x.id === id ? { ...x, fold: true } : x)));
+      setTimeout(() => setFloaters((f) => f.filter((x) => x.id !== id)), 460);
+    }, 2400);
+    try {
+      await api.send(home, text);
+      bump();
+    } catch (e) {
+      onError(e);
+    }
+  }
 
-  return (
-    <div className="app">
-      <header className="topbar">
-        <span className="brand">ARK</span>
-        <nav className="tabs">
-          <button
-            className={"tab" + (showChat ? " on" : "")}
-            onClick={() => {
-              setTab("chat");
-              bump();
-            }}
-          >
-            Chat
-          </button>
-          <button
-            className={"tab" + (!showChat ? " on" : "")}
-            onClick={() => {
-              setTab("projects");
-              setOpenSession(null);
-              bump();
-            }}
-          >
-            Projects
-          </button>
-        </nav>
-        <span className="who">{user.email || user.user_id}</span>
-      </header>
+  function onKey(e) {
+    if (e.key === "Enter" && e.target.value.trim()) {
+      say(e.target.value.trim());
+      e.target.value = "";
+    }
+  }
 
-      <Problem error={error} onDismiss={() => setError(null)} />
+  if (booting) return <div className="login" />;
+  if (!user) return <Login gone={gone} onSignedIn={signIn} />;
 
-      {settings && (
-        <SettingsModal user={user} onClose={() => setSettings(false)} onSignOut={signOut} />
-      )}
-
-      <div className="body">
-        <Rail
-          refreshKey={pulse}
-          openSession={showChat ? home : openSession}
-          onOpenSession={openSessionAnywhere}
-          onSettings={() => setSettings(true)}
-          theme={theme}
-          onTheme={setTheme}
-          onError={onError}
-        />
-
-        <main className="surface">
-          {showChat ? (
-            home ? (
-              /* No back link: the tabs are how you leave the chat. */
-              <SessionWindow sessionId={home} onError={onError} onActivity={bump} />
-            ) : (
-              <Empty glyph="◇">
-                no home session yet — sign out and back in, and the server will make one
-              </Empty>
-            )
-          ) : openSession ? (
-            <SessionWindow
-              sessionId={openSession}
-              onBack={() => setOpenSession(null)}
-              onError={onError}
-              onActivity={bump}
-            />
-          ) : (
-            <Grid onOpenSession={openSessionAnywhere} onError={onError} />
-          )}
-        </main>
+  const ambient = (
+    <div className="ambient">
+      <span className="prompt">ark&gt;</span>
+      <input
+        ref={inputRef}
+        spellCheck={false}
+        autoComplete="off"
+        placeholder="tell ark what to do. or just think out loud."
+        onKeyDown={onKey}
+      />
+      <div className="hints">
+        <span className="hint">
+          <kbd>/</kbd> focus
+        </span>
+        <span className="hint">
+          <kbd>enter</kbd> send
+        </span>
+        <span className="hint">
+          <kbd>esc</kbd> clear
+        </span>
+      </div>
+      <div className="floaters">
+        {floaters.map((f) => (
+          <div className={"floater" + (f.fold ? " fold" : "")} key={f.id}>
+            <span className="who">{f.who}</span>
+            {f.text}
+          </div>
+        ))}
       </div>
     </div>
+  );
+
+  const views = {
+    desk: <DeskView onError={onError} pulse={pulse} onOpenSession={(id) => { setJump(id); setView("looking glass"); }} />,
+    approvals: <ApprovalsView onError={onError} pulse={pulse} />,
+    computer: <ComputerView onError={onError} />,
+    "looking glass": <LookingGlassView onError={onError} pulse={pulse} onPulse={bump} jump={jump} onJumped={() => setJump(null)} />,
+    chat: <ChatView sessionId={home} onError={onError} onPulse={bump} />,
+  };
+
+  const pending = waiting.length;
+  const bare = view === "looking glass";
+
+  return (
+    <React.Fragment>
+      <div className={"app" + (bare ? " no-ambient" : "")}>
+        <div className="rail">
+          <div className="mark">
+            <span className="glyph">a</span>
+            <span className="pip" />
+          </div>
+          <nav>
+            {NAV.map((v) => (
+              <a
+                key={v}
+                className={(view === v ? "active" : "") + (v === "approvals" && pending > 0 ? " alert" : "")}
+                onClick={() => setView(v)}
+              >
+                {v}
+              </a>
+            ))}
+          </nav>
+          <div className="foot">
+            <button className="theme-btn" onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}>
+              {theme === "light" ? "dark" : "light"}
+            </button>
+          </div>
+        </div>
+
+        <div className="topbar">
+          <div className="crumbs">
+            <span>
+              ark <b>v1</b>
+            </span>
+            <span className="sep">/</span>
+            <span>
+              user <b>{user.email || user.user_id}</b>
+            </span>
+          </div>
+          <div className="right">
+            <span className={"pill" + (pending > 0 ? " attn" : "")} onClick={() => setView("approvals")}>
+              {pending > 0 && <Dot kind="work" />}
+              {pending} pending
+            </span>
+            <button className="icon-btn" onClick={() => setSettings(true)}>
+              settings
+            </button>
+          </div>
+        </div>
+
+        <main key={view}>
+          {error && (
+            <div className="banner" role="alert">
+              <span>{error.message || error.code || "something failed"}</span>
+              <button onClick={() => setError(null)}>dismiss</button>
+            </div>
+          )}
+          {views[view]}
+        </main>
+
+        {!bare && ambient}
+      </div>
+
+      {settings && (
+        <SettingsModal user={user} onClose={() => setSettings(false)} onSignOut={signOut} onError={onError} />
+      )}
+    </React.Fragment>
   );
 }
 

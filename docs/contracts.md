@@ -312,6 +312,7 @@ chat plumbing. One error shape everywhere: `{code, message, retryable}`.
 | `GET /sessions` | `status?` | `[{session_id, title, status, mode, project_id, project_title, hops_used/max, last_event_at}]` — the user's sessions across every project. The rail asks `?status=running`; the per-project list does not compose into a view that spans tabs |
 | `GET /projects/{id}/sessions` | — | `[{session_id, title, status, mode, hops_used/max, open_questions, last_event_at}]` — how the grid gets from a bubble to a window, most recently active first |
 | `GET /projects/{id}/files` | — | `[{file_id, path, name, size, mtime}]` — tree rows; no sandbox is woken |
+| `GET /projects/{id}/files/{file_id}` | — | `{path, size, mtime, text, binary}` — one file's contents from the store, no sandbox woken. `binary: true` with `text: null` when it is not UTF-8: a reader that renders a PNG as characters is worse than one that says it cannot |
 | `POST /projects/{id}/files` | multipart (`file`, optional `path`) | `{file_id, name, path, size}` |
 | `GET /results/{ref}` | `offset&limit` | blob slice (ownership-checked) |
 | `GET /sessions/{id}/browser/frames` | — | SSE JPEG side-channel (`event: frame`, `{jpeg}` base64), keyed (user, session), ownership-checked, announced by a `status` event, rendered in the canvas panel (not a corner overlay). Nothing is captured while nobody is subscribed |

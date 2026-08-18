@@ -712,6 +712,64 @@ async def test_an_uploaded_file_is_in_the_project_and_in_the_next_sandbox(client
         store.use_blobs(None)
 
 
+async def test_a_file_reads_back_out_of_the_store(client, tmp_path):
+    """The computer view is a filesystem you can read, and rows are half of that."""
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        await _signed_in(client)
+        created = (await client.post("/sessions", json={"goal": "taxes"})).json()
+        project_id = created["project_id"]
+        uploaded = (
+            await client.post(
+                f"/projects/{project_id}/files",
+                files={"file": ("notes.md", b"# Notes\n\nline two", "text/markdown")},
+            )
+        ).json()
+
+        body = (await client.get(f"/projects/{project_id}/files/{uploaded['file_id']}")).json()
+
+        assert body["path"] == "notes.md"
+        assert body["text"] == "# Notes\n\nline two"
+        assert body["binary"] is False
+    finally:
+        store.use_blobs(None)
+
+
+async def test_a_file_that_is_not_text_says_so_rather_than_mangling_itself(client, tmp_path):
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        await _signed_in(client)
+        created = (await client.post("/sessions", json={"goal": "pictures"})).json()
+        project_id = created["project_id"]
+        uploaded = (
+            await client.post(
+                f"/projects/{project_id}/files",
+                files={"file": ("logo.png", b"\x89PNG\r\n\x1a\n\xff\xfe", "image/png")},
+            )
+        ).json()
+
+        body = (await client.get(f"/projects/{project_id}/files/{uploaded['file_id']}")).json()
+
+        assert body["binary"] is True
+        assert body["text"] is None
+    finally:
+        store.use_blobs(None)
+
+
+async def test_another_users_file_cannot_be_read(client):
+    theirs = str(uuid.uuid4())
+    _seeded.append(uuid.UUID(theirs))
+    await pool.execute("INSERT INTO users (id) VALUES ($1)", uuid.UUID(theirs))
+    their_project = await pool.fetchval(
+        "INSERT INTO projects (user_id, title) VALUES ($1, 'Theirs') RETURNING id", uuid.UUID(theirs)
+    )
+    await _signed_in(client)
+
+    response = await client.get(f"/projects/{their_project}/files/{uuid.uuid4()}")
+
+    assert response.status_code == 404
+
+
 # --- signing in -------------------------------------------------------------------
 
 

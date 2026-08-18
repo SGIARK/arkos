@@ -131,6 +131,7 @@ const api = {
     return { ...body, recent_events: (body.recent_events || []).map(asEvent) };
   },
   files: (projectId) => request("GET", `/projects/${projectId}/files`),
+  file: (projectId, fileId) => request("GET", `/projects/${projectId}/files/${fileId}`),
   /* One query at three scopes: nothing is the Command Center, a project is its
      list, a session is one window. */
   attention: (scope) => {
