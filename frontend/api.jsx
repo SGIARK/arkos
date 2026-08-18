@@ -78,6 +78,15 @@ async function request(method, path, body) {
   return payload;
 }
 
+/* The wire carries `{seq, ts, kind, version, payload:{...}}`; every renderer
+   wants one flat event. Flattened here, once, at the boundary — so "store-shape
+   is wire-shape" is true of what the components actually receive, and no
+   renderer has to know the envelope exists. */
+function asEvent(raw) {
+  const { payload, ...rest } = raw || {};
+  return { ...rest, ...(payload || {}) };
+}
+
 const api = {
   ApiError,
 
@@ -117,7 +126,10 @@ const api = {
   projects: () => request("GET", "/projects"),
   sessions: (status) => request("GET", status ? `/sessions?status=${encodeURIComponent(status)}` : "/sessions"),
   projectSessions: (projectId) => request("GET", `/projects/${projectId}/sessions`),
-  session: (sessionId) => request("GET", `/sessions/${sessionId}`),
+  async session(sessionId) {
+    const body = await request("GET", `/sessions/${sessionId}`);
+    return { ...body, recent_events: (body.recent_events || []).map(asEvent) };
+  },
   files: (projectId) => request("GET", `/projects/${projectId}/files`),
   /* One query at three scopes: nothing is the Command Center, a project is its
      list, a session is one window. */
@@ -185,7 +197,7 @@ const api = {
       } catch (err) {
         return;
       }
-      onEvent(payload);
+      onEvent(asEvent(payload));
     };
     for (const kind of EVENT_KINDS) source.addEventListener(kind, handle);
     source.addEventListener("error", (e) => {
