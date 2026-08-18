@@ -151,10 +151,17 @@ def sandbox(monkeypatch):
     class Fake:
         def __init__(self):
             self.commands = []
+            self.files = {}
 
         async def exec(self, session_id, command, timeout=120):
             self.commands.append(command)
             return {"stdout": "ok", "stderr": "", "exit_code": 0}
+
+        async def write_file(self, session_id, path, content):
+            self.files[path] = content
+
+        async def read_file(self, session_id, path):
+            return self.files[path]
 
         async def reap(self, session_id):
             await sandbox_manager.release_slot(session_id)

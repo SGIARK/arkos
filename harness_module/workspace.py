@@ -11,11 +11,19 @@ credential and never reaches the store itself (D28), and it is asked nothing
 about its own contents that is not verified: both directions hash the files on
 disk and compare against the tree, so a stale or tampered record cannot decide
 what is transferred, kept or deleted.
+
+A flush may only commit against a workspace that proves it was materialized.
+`materialize` leaves a sentinel in the box and records its nonce against the
+session's slot; `flush` reads both and aborts unless they agree. The proof is
+about the box, not its contents, so a session that deleted every file still
+commits that deletion, while an empty, replaced or foreign box commits nothing.
 """
 
 from __future__ import annotations
 
+import hashlib
 import io
+import json
 import logging
 import posixpath
 import shlex
@@ -32,6 +40,9 @@ logger = logging.getLogger(__name__)
 
 # Where claimed projects appear inside the sandbox.
 MOUNT_ROOT = "/home/user/projects"
+
+# The sentinel, outside MOUNT_ROOT so no sweep of the claimed mounts can see it.
+SENTINEL = "/home/user/.ark/materialized.json"
 
 _STAGING_TAR = "/tmp/arkos-materialize.tar"
 _FLUSH_TAR = "/tmp/arkos-flush.tar"
@@ -59,6 +70,7 @@ class Materialized:
     transferred: int
     bytes_sent: int
     removed: tuple[str, ...] = ()
+    nonce: str = ""
 
 
 class SandboxIO(Protocol):
@@ -164,6 +176,7 @@ async def materialize(sandbox: SandboxIO, session_id: str, claims: list[Claim]) 
         if result["exit_code"] != 0:
             raise store.StoreError(f"materialize failed to extract: {result['stderr'][:200]}")
 
+    nonce = await _seal(sandbox, session_id, claims, wanted)
     logger.info(
         "materialized %d file(s) for session %s (%d transferred, %d removed)",
         len(wanted),
@@ -171,7 +184,71 @@ async def materialize(sandbox: SandboxIO, session_id: str, claims: list[Claim]) 
         len(payload),
         len(removed),
     )
-    return Materialized(manifest=wanted, transferred=len(payload), bytes_sent=bytes_sent, removed=removed)
+    return Materialized(
+        manifest=wanted, transferred=len(payload), bytes_sent=bytes_sent, removed=removed, nonce=nonce
+    )
+
+
+def _tree_hash(manifest: dict[str, str]) -> str:
+    """One hash over the materialized tree: path and content hash, in path order."""
+    body = "\n".join(f"{path}:{digest}" for path, digest in sorted(manifest.items()))
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
+async def _seal(sandbox: SandboxIO, session_id: str, claims: list[Claim], manifest: dict[str, str]) -> str:
+    """Write the sentinel into the box and record its nonce against the session's slot.
+
+    The box is written first: a nonce recorded for a sentinel that never landed
+    refuses the next flush, which is the safe direction to fail.
+
+    Raises:
+        StoreError: the session holds no slot, so there is nowhere to record the
+            nonce and nothing may be committed from this box later.
+    """
+    nonce = _uuid_module.uuid4().hex
+    payload = {
+        "nonce": nonce,
+        "tree_hash": _tree_hash(manifest),
+        "claims": [{"project_id": c.project_id, "subpath": c.subpath, "mount": c.mount} for c in claims],
+    }
+    await sandbox.write_file(session_id, SENTINEL, json.dumps(payload))
+    recorded = await pool.execute(
+        "UPDATE session_sandboxes SET workspace_nonce = $2 WHERE session_id = $1",
+        _uuid(session_id),
+        nonce,
+    )
+    if not recorded.endswith(" 1"):
+        raise store.StoreError(f"session {session_id} holds no sandbox slot to seal")
+    return nonce
+
+
+async def _verify_seal(sandbox: SandboxIO, session_id: str, manifest: dict[str, str] | None) -> None:
+    """Refuse a flush from a box that cannot prove it is the one that was materialized.
+
+    Raises:
+        StoreError: the sentinel is missing, unreadable, or names a different
+            workspace. The caller keeps the box and its leases: the disk may
+            still hold the only copy of the work.
+    """
+    expected = await pool.fetchval(
+        "SELECT workspace_nonce FROM session_sandboxes WHERE session_id = $1", _uuid(session_id)
+    )
+    try:
+        raw = await sandbox.read_file(session_id, SENTINEL)
+        sealed = json.loads(raw)
+    except Exception as e:  # noqa: BLE001 - a missing or corrupt sentinel is one answer: no proof
+        raise store.StoreError(
+            f"refusing to flush session {session_id}: the sandbox carries no materialize sentinel ({e})"
+        ) from e
+
+    if not expected or sealed.get("nonce") != expected:
+        raise store.StoreError(
+            f"refusing to flush session {session_id}: the sandbox was materialized for another workspace"
+        )
+    if manifest is not None and sealed.get("tree_hash") != _tree_hash(manifest):
+        raise store.StoreError(
+            f"refusing to flush session {session_id}: the sandbox holds a different tree than the flush expects"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,7 +281,13 @@ async def flush(
     A read claim commits nothing. Its edits are discarded and named in the
     return value, because silently keeping or silently dropping them are both
     worse than saying which.
+
+    Raises:
+        StoreError: the box cannot prove it is the one that was materialized. An
+        empty sweep of a replaced box would otherwise commit an empty tree, which
+        is a deletion of the project.
     """
+    await _verify_seal(sandbox, session_id, manifest)
     current = await _sweep(sandbox, session_id, claims)
     if manifest is None:
         manifest = {}

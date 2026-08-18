@@ -519,6 +519,16 @@ and terminal flush them back and then reap the box. A flush that fails is loud i
 until the flush lands** — the reap is downstream of the commit, so the cache is
 never destroyed while it holds the only copy of an edit.
 
+**A flush may only commit against a workspace that proves it was materialized.**
+`materialize` writes a sentinel into the box (`/home/user/.ark/materialized.json`:
+a nonce and the hash of the tree it laid down) and records the nonce against the
+session's slot; `flush` reads both and aborts, loudly and without giving up the
+box, unless they agree. The proof is about the box, not its contents: a session
+that deleted every file still commits that deletion, while a box that was
+replaced, emptied or materialized for another session commits nothing. Without
+it an empty sweep is indistinguishable from a delete-all, and a box that died
+mid-run replaces the project's tree with no rows at all.
+
 **Memory never mounts.** `{user}/memory/` is excluded structurally, not by a
 filter: project subtrees are the only mountable thing, and the mount path has no
 branch that can reach memory. The sandbox executes model-authored code, and

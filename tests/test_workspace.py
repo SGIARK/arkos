@@ -18,6 +18,7 @@ import pytest_asyncio
 from db import pool
 from harness_module import store, workspace
 from tests.dbgate import require_db
+from tool_module.sandbox import manager as sandbox_manager
 
 pytestmark = pytest.mark.asyncio
 
@@ -77,12 +78,34 @@ async def _project(title: str = "Taxes") -> tuple[str, str]:
     project_id = await pool.fetchval(
         "INSERT INTO projects (user_id, title) VALUES ($1, $2) RETURNING id", user_id, title
     )
-    session_id = await pool.fetchval(
-        "INSERT INTO sessions (user_id, project_id, mode, status) VALUES ($1, $2, 'attended', 'idle') RETURNING id",
-        user_id,
-        project_id,
+    session_id = str(
+        await pool.fetchval(
+            "INSERT INTO sessions (user_id, project_id, mode, status) VALUES ($1, $2, 'attended', 'idle') "
+            "RETURNING id",
+            user_id,
+            project_id,
+        )
     )
-    return str(session_id), str(project_id)
+    # A box always has a slot to record its sentinel against.
+    assert await sandbox_manager.claim_slot(session_id)
+    return session_id, str(project_id)
+
+
+async def _second_session(session_id: str) -> str:
+    """Another session of the same user, for the tests that run two boxes."""
+    row = await pool.fetchrow(
+        "SELECT user_id, project_id FROM sessions WHERE id = $1", uuid.UUID(session_id)
+    )
+    other = str(
+        await pool.fetchval(
+            "INSERT INTO sessions (user_id, project_id, mode, status) VALUES ($1, $2, 'attended', 'idle') "
+            "RETURNING id",
+            row["user_id"],
+            row["project_id"],
+        )
+    )
+    assert await sandbox_manager.claim_slot(other)
+    return other
 
 
 def _file(path: str, content: str) -> store.FileContent:
@@ -370,8 +393,9 @@ async def test_a_second_session_reads_what_the_first_wrote_byte_identical():
     first.files[f"{workspace.MOUNT_ROOT}/taxes/notes.md"] = b"v2 written by session one"
     await workspace.flush(first, session_id, [_claim(project_id)], manifest)
 
+    later = await _second_session(session_id)
     second = _sweeping(FakeSandbox())
-    await workspace.materialize(second, session_id, [_claim(project_id)])
+    await workspace.materialize(second, later, [_claim(project_id)])
 
     assert second.files[f"{workspace.MOUNT_ROOT}/taxes/notes.md"] == b"v2 written by session one"
 
@@ -497,10 +521,11 @@ async def test_a_deletion_by_another_session_is_not_resurrected_by_a_warm_sandbo
     assert "doomed.txt" in [e.path for e in await store.read_tree(project_id)]
 
     # Session B, its own sandbox, deletes it and flushes.
+    other = await _second_session(session_id)
     b = _sweeping(FakeSandbox())
-    manifest_b = (await workspace.materialize(b, session_id, [_claim(project_id)])).manifest
+    manifest_b = (await workspace.materialize(b, other, [_claim(project_id)])).manifest
     del b.files[f"{workspace.MOUNT_ROOT}/taxes/doomed.txt"]
-    await workspace.flush(b, session_id, [_claim(project_id)], manifest_b)
+    await workspace.flush(b, other, [_claim(project_id)], manifest_b)
     assert "doomed.txt" not in [e.path for e in await store.read_tree(project_id)]
 
     # A's sandbox is still warm and still has the file on disk.
@@ -526,3 +551,65 @@ async def test_a_deletion_survives_a_sandbox_that_kept_no_record():
     assert f"{workspace.MOUNT_ROOT}/taxes/doomed.txt" not in sandbox.files
     await workspace.flush(sandbox, session_id, [_claim(project_id)], manifest)
     assert [e.path for e in await store.read_tree(project_id)] == ["keep.txt"]
+
+
+# --- the sentinel: only a materialized workspace may commit -------------------------
+
+
+async def test_a_box_that_died_between_materialize_and_flush_commits_nothing():
+    """The tree the box was meant to write back is the tree that survives."""
+    session_id, project_id = await _project()
+    await store.commit_tree(project_id, [_file("a.txt", "important"), _file("b.txt", "also important")])
+    box = _sweeping(FakeSandbox())
+    manifest = (await workspace.materialize(box, session_id, [_claim(project_id)])).manifest
+    box.files[f"{workspace.MOUNT_ROOT}/taxes/a.txt"] = b"edited, not yet flushed"
+
+    # The box dies; the next call gets a fresh one with an empty disk.
+    replacement = _sweeping(FakeSandbox())
+    with pytest.raises(store.StoreError, match="sentinel"):
+        await workspace.flush(replacement, session_id, [_claim(project_id)], manifest)
+
+    tree = {e.path for e in await store.read_tree(project_id)}
+    assert tree == {"a.txt", "b.txt"}, "an empty box committed a deletion of the project"
+
+
+async def test_a_box_materialized_for_another_session_may_not_commit():
+    session_id, project_id = await _project()
+    await store.commit_tree(project_id, [_file("a.txt", "mine")])
+    mine = _sweeping(FakeSandbox())
+    manifest = (await workspace.materialize(mine, session_id, [_claim(project_id)])).manifest
+
+    other = await _second_session(session_id)
+    theirs = _sweeping(FakeSandbox())
+    await workspace.materialize(theirs, other, [_claim(project_id)])
+
+    with pytest.raises(store.StoreError, match="another workspace"):
+        await workspace.flush(theirs, session_id, [_claim(project_id)], manifest)
+
+
+async def test_deleting_every_file_still_commits():
+    """The proof is about the box, not its contents: a real delete-all is not a lost box."""
+    session_id, project_id = await _project()
+    await store.commit_tree(project_id, [_file("a.txt", "1"), _file("b.txt", "2")])
+    sandbox = _sweeping(FakeSandbox())
+    manifest = (await workspace.materialize(sandbox, session_id, [_claim(project_id)])).manifest
+    for path in list(sandbox.files):
+        if path.startswith(f"{workspace.MOUNT_ROOT}/taxes/"):
+            del sandbox.files[path]
+
+    result = await workspace.flush(sandbox, session_id, [_claim(project_id)], manifest)
+
+    assert result.committed == 0
+    assert await store.read_tree(project_id) == []
+
+
+async def test_the_sentinel_is_not_committed_as_a_project_file():
+    session_id, project_id = await _project()
+    await store.commit_tree(project_id, [_file("a.txt", "1")])
+    sandbox = _sweeping(FakeSandbox())
+    manifest = (await workspace.materialize(sandbox, session_id, [_claim(project_id)])).manifest
+
+    await workspace.flush(sandbox, session_id, [_claim(project_id)], manifest)
+
+    assert workspace.SENTINEL in sandbox.files, "the box was never sealed"
+    assert [e.path for e in await store.read_tree(project_id)] == ["a.txt"]

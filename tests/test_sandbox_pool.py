@@ -51,6 +51,11 @@ class FakeBoxes:
             _, path, body = command.split(" ", 2)
             box.files[path] = body.encode()
             return {"stdout": "", "stderr": "", "exit_code": 0}
+        # `die` stands in for a box that vanishes mid-run: the next call to this
+        # session builds a fresh one with an empty disk.
+        if command == "die":
+            self.boxes.pop(session_id, None)
+            return {"stdout": "", "stderr": "", "exit_code": 0}
         return await box.exec(session_id, command, timeout)
 
     async def write_file(self, session_id: str, path: str, content) -> None:
@@ -221,10 +226,11 @@ async def test_two_sessions_of_one_user_run_at_once_and_flush_to_their_own_store
 
     first_tree = {e.path for e in await store.read_tree(first_project)}
     second_tree = {e.path for e in await store.read_tree(second_project)}
-    written = await store.read_tree(first_project)
     assert first_tree == {"a.txt", "mine.txt"}
     assert second_tree == {"b.txt", "mine.txt"}
-    assert await store.get_blob(next(e for e in written if e.path == "mine.txt").content_hash) == b"hello from one"
+    for project, slug in ((first_project, "one"), (second_project, "two")):
+        entry = next(e for e in await store.read_tree(project) if e.path == "mine.txt")
+        assert await store.get_blob(entry.content_hash) == f"hello from {slug}".encode()
     assert sorted(boxes.reaped) == sorted([first, second])
     assert await _slots(user_id) == 0
 
@@ -395,3 +401,21 @@ async def test_a_flush_that_lands_is_followed_by_the_reap(boxes, model, patient,
     await _drive(session_id)
 
     assert order == ["flush", "reap"]
+
+
+async def test_a_box_that_dies_mid_run_takes_neither_the_tree_nor_the_slot(boxes, model, patient):
+    """The sentinel refuses the flush, so the session keeps its box and the store keeps its tree."""
+    user_id = await _user()
+    project_id = await _project(user_id, "Fragile")
+    await store.commit_tree(project_id, [_file("a.txt", "committed")])
+    session_id = await _session(user_id, project_id)
+    model("die")
+
+    with contextlib.suppress(Exception):
+        await _drive(session_id)
+
+    tree = await store.read_tree(project_id)
+    assert [e.path for e in tree] == ["a.txt"]
+    assert await store.get_blob(tree[0].content_hash) == b"committed"
+    assert boxes.reaped == [], "the box was reaped though its flush never landed"
+    assert await _slots(user_id) == 1
