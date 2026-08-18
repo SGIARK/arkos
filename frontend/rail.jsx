@@ -36,7 +36,7 @@ function Rail({ refreshKey, openSession, onOpenSession, onSettings, theme, onThe
     <aside className="rail">
       <div className="rail-section">
         <span className="kicker">Needs you</span>
-        {!waiting.length && <p className="empty rail-empty">Nothing waiting.</p>}
+        {!waiting.length && <div className="rail-empty">nothing waiting</div>}
         {waiting.map((item) => (
           <button
             key={item.approval_id}
@@ -44,7 +44,7 @@ function Rail({ refreshKey, openSession, onOpenSession, onSettings, theme, onThe
             onClick={() => onOpenSession(item.session_id)}
             title={item.prompt}
           >
-            <span className="dot dot-wait" />
+            <Dot kind="work" />
             <span className="rail-text">{item.prompt}</span>
             <span className="rail-sub">{item.project_title || item.session_title || "session"}</span>
           </button>
@@ -53,7 +53,7 @@ function Rail({ refreshKey, openSession, onOpenSession, onSettings, theme, onThe
 
       <div className="rail-section">
         <span className="kicker">Running</span>
-        {!running.length && <p className="empty rail-empty">Nothing running.</p>}
+        {!running.length && <div className="rail-empty">nothing running</div>}
         {running.map((session) => (
           <button
             key={session.session_id}
@@ -61,7 +61,7 @@ function Rail({ refreshKey, openSession, onOpenSession, onSettings, theme, onThe
             onClick={() => onOpenSession(session.session_id)}
             title={session.title || "untitled session"}
           >
-            <span className="dot dot-run" />
+            <Spinner />
             <span className="rail-text">{session.title || "untitled session"}</span>
             <span className="rail-sub">
               {session.project_title || "no project"} · {session.hops_used}/{session.hops_max}

@@ -6,43 +6,47 @@
    sessions is in, so the whole page is one request.
    ========================================================= */
 
-function Dot({ status, title }) {
-  return <span className={"dot dot-" + statusTone(status)} title={title || statusLabel(status)} />;
-}
-
 /* One project. Clicking it opens its sessions; the dot says whether anything in
    there wants a human. */
 function ProjectBubble({ project, waiting, onOpen }) {
   return (
-    <button className="bubble" onClick={() => onOpen(project)}>
-      <div className="bubble-top">
-        <Dot status={project.status_rollup} />
-        <span className="bubble-title">{project.title}</span>
+    <div className="card bubble" onClick={() => onOpen(project)}>
+      <div className="top">
+        <span className="src">
+          <Dot status={project.status_rollup} /> {statusLabel(project.status_rollup)}
+        </span>
+        <span className="when">{relTime(project.updated_at)}</span>
       </div>
+      <div className="bubble-title">{project.title}</div>
       <div className="bubble-foot">
         <span>{project.sessions === 1 ? "1 session" : project.sessions + " sessions"}</span>
-        <span>{relTime(project.updated_at)}</span>
+        {waiting > 0 && (
+          <span className="bubble-waiting">{waiting === 1 ? "1 question" : waiting + " questions"}</span>
+        )}
       </div>
-      {waiting > 0 && (
-        <div className="bubble-waiting">{waiting === 1 ? "1 question" : waiting + " questions"}</div>
-      )}
-    </button>
+    </div>
   );
 }
 
 /* The sessions inside one project, once its bubble is open. */
 function SessionRow({ session, onOpen }) {
   return (
-    <button className="srow" onClick={() => onOpen(session.session_id)}>
-      <Dot status={session.status} title={statusLabel(session.status, session.terminal_reason)} />
-      <span className="srow-title">{session.title || "untitled session"}</span>
-      <span className="srow-meta">
-        {session.mode === "unattended" && <span className="tag">unattended</span>}
-        {session.open_questions > 0 && <span className="tag tag-wait">needs you</span>}
-        <span className="hops">
-          {session.hops_used}/{session.hops_max}
+    <button className="row" onClick={() => onOpen(session.session_id)}>
+      <span className="label">
+        {session.status === "running" ? (
+          <Spinner />
+        ) : (
+          <Dot status={session.status} title={statusLabel(session.status, session.terminal_reason)} />
+        )}
+        <span className="text">
+          {session.title || "untitled session"}
+          <span className="src"> · {statusLabel(session.status, session.terminal_reason)}</span>
         </span>
-        <span>{relTime(session.last_event_at)}</span>
+      </span>
+      {session.mode === "unattended" && <span className="tag">unattended</span>}
+      {session.open_questions > 0 && <span className="tag accent">needs you</span>}
+      <span className="when">
+        {session.hops_used}/{session.hops_max} · {relTime(session.last_event_at)}
       </span>
     </button>
   );
@@ -56,15 +60,21 @@ function Attention({ items, onOpenSession }) {
   return (
     <div className="attention">
       <h2>Waiting on you</h2>
-      {items.map((item) => (
-        <button key={item.approval_id} className="arow" onClick={() => onOpenSession(item.session_id)}>
-          <span className={"tag " + (item.kind === "ask" ? "tag-ask" : "tag-wait")}>{item.kind}</span>
-          <span className="arow-prompt">{item.prompt}</span>
-          <span className="arow-meta">
-            {item.project_title || "no project"} · {relTime(item.created_at)}
-          </span>
-        </button>
-      ))}
+      <div className="stack">
+        {items.map((item) => (
+          <button key={item.approval_id} className="row" onClick={() => onOpenSession(item.session_id)}>
+            <span className="label">
+              <Dot kind="work" />
+              <span className="text">
+                {item.prompt}
+                <span className="src"> · {item.project_title || "no project"}</span>
+              </span>
+            </span>
+            <span className="tag accent">{item.kind}</span>
+            <span className="when">{relTime(item.created_at)}</span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -135,16 +145,18 @@ function Grid({ onOpenSession, onError }) {
             </button>
             <h2>{open.title}</h2>
           </div>
-          {sessions.map((session) => (
-            <SessionRow key={session.session_id} session={session} onOpen={onOpenSession} />
-          ))}
-          {!sessions.length && <p className="empty">Nothing has run in this project yet.</p>}
+          <div className="stack">
+            {sessions.map((session) => (
+              <SessionRow key={session.session_id} session={session} onOpen={onOpenSession} />
+            ))}
+          </div>
+          {!sessions.length && <Empty glyph="◇">nothing has run in this project yet</Empty>}
         </div>
       ) : (
         <>
           <h2>Projects</h2>
-          {loading && <p className="empty">Loading…</p>}
-          {!loading && !projects.length && <p className="empty">No projects yet. Start something below.</p>}
+          {loading && <Empty>reading…</Empty>}
+          {!loading && !projects.length && <Empty glyph="◇">nothing here yet — start something below</Empty>}
           <div className="bubbles">
             {projects.map((project) => (
               <ProjectBubble
@@ -165,8 +177,8 @@ function Grid({ onOpenSession, onError }) {
           placeholder={open ? `Start something in ${open.title}…` : "Start something new…"}
           aria-label="What should ARK do?"
         />
-        <button type="submit" disabled={!goal.trim()}>
-          Start
+        <button className="primary" type="submit" disabled={!goal.trim()}>
+          start →
         </button>
       </form>
     </div>

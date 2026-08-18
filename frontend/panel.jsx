@@ -62,7 +62,7 @@ function FilesCanvas({ projectId, onError }) {
     }
   };
 
-  if (!projectId) return <p className="empty panel-empty">This session has no project.</p>;
+  if (!projectId) return <Empty>this session has no project</Empty>;
 
   return (
     <div
@@ -78,8 +78,8 @@ function FilesCanvas({ projectId, onError }) {
         send(e.dataTransfer.files);
       }}
     >
-      {files === null && <p className="empty panel-empty">Loading…</p>}
-      {files !== null && !files.length && <p className="empty panel-empty">No files yet.</p>}
+      {files === null && <div className="empty panel-empty">reading…</div>}
+      {files !== null && !files.length && <div className="empty panel-empty">no files yet</div>}
       {(files || []).map((file) => (
         <div className="file" key={file.file_id} title={file.path}>
           <span className="file-name">{file.path}</span>
@@ -114,11 +114,11 @@ function BrowserCanvas({ url }) {
     return () => source.close();
   }, [url]);
 
-  if (!url) return <p className="empty panel-empty">No browser run yet.</p>;
+  if (!url) return <div className="empty panel-empty">no browser run yet</div>;
   return frame ? (
     <img className="frame" alt="what the browser is looking at" src={"data:image/jpeg;base64," + frame} />
   ) : (
-    <p className="empty panel-empty">waiting for the first frame…</p>
+    <div className="empty panel-empty">waiting for the first frame…</div>
   );
 }
 
@@ -153,7 +153,7 @@ function RightPanel({ projectId, todo, browserUrl, onError }) {
           <button className={"tab" + (canvas === "browser" ? " on" : "")} onClick={() => setCanvas("browser")}>
             Browser
             {/* Available, not demanding: a live run gets a dot, never focus. */}
-            {browserUrl && <span className="dot dot-run" />}
+            {browserUrl && <Dot kind="live" />}
           </button>
           <button className="link panel-hide" onClick={() => setOpen(false)}>
             hide

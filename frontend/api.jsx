@@ -233,16 +233,6 @@ function relTime(iso) {
   return Math.floor(s / 86400) + "d ago";
 }
 
-/* The dot. One vocabulary for a project's rollup and a session's own status,
-   because they are the same statuses and the grid shows both. */
-function statusTone(status) {
-  if (status === "running") return "run";
-  if (status === "awaiting_approval") return "wait";
-  if (status === "failed") return "stop";
-  if (status === "completed" || status === "cancelled") return "done";
-  return "idle";
-}
-
 function statusLabel(status, terminalReason) {
   if (status === "awaiting_approval") return "waiting on you";
   if (status === "failed" && terminalReason) return "failed: " + terminalReason;

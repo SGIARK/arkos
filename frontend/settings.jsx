@@ -112,19 +112,19 @@ function SettingsModal({ user, onClose, onSignOut }) {
 
         <section>
           <span className="kicker">Tools &amp; connections</span>
-          {rows === null && <p className="empty">Loading…</p>}
+          {rows === null && <Empty>reading…</Empty>}
           {problem && <p className="problem">{problem}</p>}
           {rows !== null && !rows.length && (
-            <p className="empty">
-              No servers configured. Add entries to <code>mcp_servers</code> in config.yaml.
-            </p>
+            <Empty glyph="◇">
+              no servers configured — add entries to <code>mcp_servers</code> in config.yaml
+            </Empty>
           )}
           {(rows || []).map((row) => {
             const connected = row.status === "connected";
             return (
               <div className="conn" key={row.server}>
                 <span className="conn-name">
-                  <span className={"dot " + (connected ? "dot-run" : "dot-idle")} />
+                  <Dot kind={connected ? "live" : ""} />
                   {row.name || row.server}
                   {connected && row.tool_count > 0 && (
                     <span className="conn-count">{row.tool_count} tools</span>
@@ -138,7 +138,7 @@ function SettingsModal({ user, onClose, onSignOut }) {
                     <span className="empty">always on</span>
                   ) : connected ? (
                     <button className="ghost" disabled={busy[row.server]} onClick={() => disconnect(row.server)}>
-                      Disconnect
+                      disconnect
                     </button>
                   ) : links[row.server] ? (
                     /* The popup was blocked, so the flow becomes a link the
@@ -150,11 +150,11 @@ function SettingsModal({ user, onClose, onSignOut }) {
                       rel="noopener"
                       onClick={() => watch(row.server, null)}
                     >
-                      Authorize →
+                      authorize →
                     </a>
                   ) : (
-                    <button disabled={busy[row.server]} onClick={() => connect(row.server)}>
-                      {busy[row.server] ? "…" : "Connect"}
+                    <button className="primary" disabled={busy[row.server]} onClick={() => connect(row.server)}>
+                      {busy[row.server] ? "…" : "connect"}
                     </button>
                   )}
                 </span>
@@ -165,16 +165,16 @@ function SettingsModal({ user, onClose, onSignOut }) {
 
         <section>
           <span className="kicker">Account</span>
-          <p className="empty">
-            Signed in as <b>{(user && (user.email || user.user_id)) || "—"}</b>
-          </p>
+          <div className="empty bare">
+            signed in as <b>{(user && (user.email || user.user_id)) || "—"}</b>
+          </div>
         </section>
 
         <div className="modal-foot">
           <button className="ghost danger" onClick={onSignOut}>
-            Sign out
+            sign out
           </button>
-          <button onClick={onClose}>Close</button>
+          <button onClick={onClose}>close</button>
         </div>
       </div>
     </div>

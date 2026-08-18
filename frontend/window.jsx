@@ -101,58 +101,6 @@ function EventRow({ event }) {
   }
 }
 
-/* The one question a parked session is waiting on, answered here rather than
-   somewhere else: the person watching is the person who answers. */
-function Question({ item, onAnswered, onError }) {
-  const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const answer = async (value) => {
-    setBusy(true);
-    try {
-      await api.answer(item.approval_id, value);
-      setText("");
-      onAnswered();
-    } catch (e) {
-      onError(e);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="question">
-      <div className="question-prompt">
-        <span className={"tag " + (item.kind === "ask" ? "tag-ask" : "tag-wait")}>{item.kind}</span>
-        {item.prompt}
-      </div>
-      {item.kind === "approval" ? (
-        <div className="question-actions">
-          <button disabled={busy} onClick={() => answer("yes")}>
-            Approve
-          </button>
-          <button className="ghost" disabled={busy} onClick={() => answer("no")}>
-            Decline
-          </button>
-        </div>
-      ) : (
-        <form
-          className="question-actions"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (text.trim()) answer(text.trim());
-          }}
-        >
-          <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Your answer…" />
-          <button type="submit" disabled={busy || !text.trim()}>
-            Send
-          </button>
-        </form>
-      )}
-    </div>
-  );
-}
-
 function SessionWindow({ sessionId, onBack, onError, onActivity }) {
   const [session, setSession] = useState(null);
   const [events, setEvents] = useState([]);
@@ -253,7 +201,7 @@ function SessionWindow({ sessionId, onBack, onError, onActivity }) {
     }
   };
 
-  if (!session) return <div className="window"><p className="empty">Opening…</p></div>;
+  if (!session) return <Empty>opening…</Empty>;
 
   const ended = ["completed", "failed", "cancelled"].includes(session.status);
 
@@ -265,28 +213,39 @@ function SessionWindow({ sessionId, onBack, onError, onActivity }) {
             ← projects
           </button>
         )}
-        <Dot status={session.status} />
+        {session.status === "running" ? <Spinner /> : <Dot status={session.status} />}
         <h2>{session.title || "untitled session"}</h2>
         <span className="window-meta">
           <span className="hops">
             hop {session.hops_used}/{session.hops_max}
           </span>
           {session.mode === "unattended" && <span className="tag">unattended</span>}
-          {live && <span className="tag tag-live">live</span>}
+          {live && <span className="tag accent">live</span>}
         </span>
         {session.status === "running" && (
           <button className="ghost" onClick={() => api.cancel(sessionId).catch(onError)}>
-            Cancel
+            cancel
           </button>
         )}
         {session.mode === "attended" && session.status === "idle" && (
-          <button onClick={() => api.approve(sessionId).catch(onError)}>Let it run</button>
+          <button className="primary" onClick={() => api.approve(sessionId).catch(onError)}>
+            let it run →
+          </button>
         )}
       </div>
 
-      {questions.map((item) => (
-        <Question key={item.approval_id} item={item} onAnswered={refreshQuestions} onError={onError} />
-      ))}
+      {questions.length > 0 && (
+        <div className="stack questions">
+          {questions.map((item) => (
+            <ApprovalCard
+              key={item.approval_id}
+              item={item}
+              onResolve={refreshQuestions}
+              onError={onError}
+            />
+          ))}
+        </div>
+      )}
 
       <div className="window-body">
         <div className="transcript">
@@ -311,8 +270,8 @@ function SessionWindow({ sessionId, onBack, onError, onActivity }) {
           placeholder={ended ? "Say something to start it again…" : "Suggest something…"}
           aria-label="Suggest something"
         />
-        <button type="submit" disabled={!text.trim()}>
-          Send
+        <button className="primary" type="submit" disabled={!text.trim()}>
+          send →
         </button>
       </form>
     </div>

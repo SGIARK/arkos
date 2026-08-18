@@ -52,8 +52,8 @@ function SignIn({ onSignedIn }) {
           autoComplete="current-password"
           required
         />
-        <button type="submit" disabled={busy || !email || !password}>
-          {busy ? "Signing in…" : "Sign in"}
+        <button className="primary" type="submit" disabled={busy || !email || !password}>
+          {busy ? "signing in…" : "sign in →"}
         </button>
         {problem && <p className="problem">{problem}</p>}
         {/* No reset link: accounts are made in the Supabase dashboard until
@@ -200,9 +200,9 @@ function App() {
               /* No back link: the tabs are how you leave the chat. */
               <SessionWindow sessionId={home} onError={onError} onActivity={bump} />
             ) : (
-              <p className="empty">
-                No home session yet. Sign out and back in, and the server will make one.
-              </p>
+              <Empty glyph="◇">
+                no home session yet — sign out and back in, and the server will make one
+              </Empty>
             )
           ) : openSession ? (
             <SessionWindow
