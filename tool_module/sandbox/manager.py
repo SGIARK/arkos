@@ -142,7 +142,8 @@ class SandboxManager:
         sandbox = await self.get_or_create(user_id)
         return await asyncio.to_thread(sandbox.files.read, path)
 
-    async def write_file(self, user_id: str, path: str, content: str) -> None:
+    async def write_file(self, user_id: str, path: str, content: str | bytes) -> None:
+        """Write a file. Bytes go through unchanged, which is what a tar transfer needs."""
         sandbox = await self.get_or_create(user_id)
         await asyncio.to_thread(sandbox.files.write, path, content)
 

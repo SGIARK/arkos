@@ -18,8 +18,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import logging
 import os
+import re
+import tarfile
 import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -419,6 +422,28 @@ def diff_tree(before: Sequence[TreeEntry], after: Sequence[TreeEntry]) -> TreeDi
         changed=frozenset(p for p in old.keys() & new.keys() if old[p] != new[p]),
         removed=frozenset(old.keys() - new.keys()),
     )
+
+
+def build_tar(files: Sequence[tuple[str, bytes]]) -> bytes:
+    """Pack (path, content) pairs into an uncompressed tar.
+
+    One archive per materialize keeps the transfer to a single write and a
+    single extract, whatever the file count.
+    """
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for path, content in files:
+            info = tarfile.TarInfo(name=path)
+            info.size = len(content)
+            info.mtime = 0  # a stable archive for the same content
+            archive.addfile(info, io.BytesIO(content))
+    return buffer.getvalue()
+
+
+def slug(title: str, fallback: str) -> str:
+    """A directory name for a project. Mounted names are read by the model as context."""
+    cleaned = re.sub(r"[^a-z0-9]+", "-", (title or "").lower()).strip("-")
+    return cleaned[:48] or fallback
 
 
 def _relative(subpath: str) -> str:
