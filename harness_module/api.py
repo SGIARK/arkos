@@ -708,7 +708,8 @@ async def _read_within_quota(file: UploadFile) -> bytes:
     """Read an upload, refusing it as soon as it passes `quotas.upload_max_mb`.
 
     Chunked and checked as it goes, so an oversized upload is refused rather
-    than held in memory first.
+    than held in memory first. Zero bytes is a file like any other — a
+    `.gitkeep`, a placeholder — and is stored as one.
     """
     limit = int(_cfg("quotas.upload_max_mb", 25)) * 1024 * 1024
     chunks: list[bytes] = []
@@ -718,8 +719,6 @@ async def _read_within_quota(file: UploadFile) -> bytes:
         if total > limit:
             raise ApiError(413, "file_too_large", f"{limit // (1024 * 1024)} MB is the limit for one file.")
         chunks.append(chunk)
-    if not total:
-        raise ApiError(400, "invalid_request", "The file is empty.")
     return b"".join(chunks)
 
 

@@ -23,6 +23,8 @@ from harness_module import session_log as slog
 from model_module import client as mc
 from tests.dbgate import require_db
 from tests.test_sandbox_pool import FakeBoxes
+from tool_module import registry
+from tool_module.envelope import ToolContext
 
 pytestmark = pytest.mark.asyncio
 
@@ -207,13 +209,18 @@ async def test_another_users_project_reads_as_absent(client):
     assert listing.status_code == 404
 
 
-async def test_an_empty_file_is_refused(client):
+async def test_an_empty_file_is_content_like_any_other(client):
+    """A `.gitkeep` is a file. Zero bytes hash and store like any other content."""
     user_id = await _signed(client)
     project_id = await _project(user_id)
 
-    response = await client.post(f"/projects/{project_id}/files", **_upload("empty.txt", b""))
+    response = await client.post(f"/projects/{project_id}/files", **_upload(".gitkeep", b""))
 
-    assert response.status_code == 400
+    assert response.status_code == 201
+    assert response.json()["size"] == 0
+    entry = (await store.read_tree(project_id))[0]
+    assert entry.path == ".gitkeep"
+    assert await store.get_blob(entry.content_hash) == b""
 
 
 # --- browsing wakes nothing -----------------------------------------------------------
@@ -321,3 +328,40 @@ async def test_a_read_claim_that_is_written_through_reports_no_discarded_edits(c
     flushed = await workspace.flush(boxes, session_id, [claim], manifest)
 
     assert flushed.discarded == (), "an upload was reported to the human as a discarded edit"
+
+
+async def test_an_upload_over_a_file_the_session_is_editing_fails_the_stale_edit(client, boxes):
+    """Last write wins in the box, and the edit that lost cannot corrupt what won.
+
+    `edit_file` matches `old_string` exactly against the file as it is now, so a
+    model holding a read from before the upload is refused and has to read again.
+    The bytes it would have written are still in the store either way.
+    """
+    user_id = await _signed(client)
+    project_id = await _project(user_id, "Live")
+    await store.commit_tree(project_id, [store.FileContent(path="a.txt", content=b"materialized\n")])
+    session_id = await _session(user_id, project_id, status="running")
+    assert await runner.sandbox_manager.claim_slot(session_id)
+    await workspace.materialize(boxes, session_id, [workspace.Claim(project_id=project_id, slug="live")])
+    mounted = f"{workspace.MOUNT_ROOT}/live/a.txt"
+    ctx = ToolContext(user_id=user_id, session_id=session_id)
+    await registry.dispatch("read_file", {"path": mounted}, ctx)
+
+    # The human uploads over the file between the model's read and its edit.
+    await client.post(f"/projects/{project_id}/files", **_upload("a.txt", b"from the composer\n"))
+
+    stale = await registry.dispatch(
+        "edit_file", {"path": mounted, "old_string": "materialized", "new_string": "edited"}, ctx
+    )
+
+    assert stale.ok is False
+    assert "old_string does not appear" in stale.content
+    assert boxes.box(session_id).files[mounted] == b"from the composer\n", "a stale edit rewrote the upload"
+
+    await registry.dispatch("read_file", {"path": mounted}, ctx)
+    fresh = await registry.dispatch(
+        "edit_file", {"path": mounted, "old_string": "from the composer", "new_string": "edited"}, ctx
+    )
+
+    assert fresh.ok
+    assert boxes.box(session_id).files[mounted] == b"edited\n"

@@ -565,9 +565,13 @@ and its flush is a no-op, with discarded edits logged.
 exists whether or not anything is awake. It is then written through to every
 running session whose box has a materialized claim covering that path, so a
 session reads it the same turn; every other session gets it at its next
-materialize, and a parked session is left asleep. A write-through that fails is
-logged and nothing more — the store already has the file. `quotas.upload_max_mb`
-is enforced as the upload is read, not after.
+materialize, and a parked session is left asleep. The write-through is a plain
+overwrite: on a path the session is itself editing the last write wins, which is
+safe because the bytes are in the store either way and `edit_file` refuses a
+stale `old_string` rather than writing over what landed. A write-through that
+fails is logged and nothing more — the store already has the file. An empty file
+is content like any other. `quotas.upload_max_mb` is enforced as the upload is
+read, not after.
 
 **No store credentials enter the sandbox.** Bytes flow store → harness → e2b
 API, never sandbox → store.

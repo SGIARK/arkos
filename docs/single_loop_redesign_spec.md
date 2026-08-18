@@ -852,14 +852,36 @@ proceeds when a box frees; a box is never reaped before its flush lands; the
 ### Task 8.7: Upload and browse without a boot
 **Done when:** `POST /projects/{id}/files` (the missing endpoint) writes blob +
 tree row to the STORE; `quotas.upload_max_mb` finally has its reader; an upload
-during a held write lease is written through to the live sandbox, otherwise it
-waits in the store for the next materialize; `GET /projects` and file listings
-read tree rows only — no sandbox awake to browse. This is LG-2's upload half,
+is written through to EVERY live sandbox holding a materialized claim on that
+project (8.6b's rule, stated there first because it is what per-session boxes
+force), and otherwise waits in the store for the next materialize; `GET
+/projects` and file listings read tree rows only — no sandbox awake to browse.
+An empty file is content — `.gitkeep`, a placeholder config — and stores like
+any other: zero bytes have a well-defined hash. This is LG-2's upload half,
 landing where it naturally lives.
 **Touch:** `api.py`, `store.py` | **P1, 1d** | **Blockers:** 8.3 (8.6 for write-through)
 **Test:** upload while cold → listed immediately, present at next materialize;
-upload mid-lease → the running session reads it same turn; oversized → the
-standard error shape; listing a 100-file project boots nothing.
+upload mid-lease → the running session reads it same turn; upload over a path
+the session is editing → its stale `edit_file` is refused and succeeds after a
+re-read; an empty file stores and lists like any other; oversized → the standard
+error shape; listing a 100-file project boots nothing.
+
+**The same-path race is accepted, not arbitrated (owner, 2026-08-18).** The
+write-through is a second writer inside a held write lease, so an upload landing
+on a path the session has edited-but-not-flushed is resolved by timing: last
+write wins in the box. That is deliberate, on three grounds. It is rare — it
+needs an upload to the one path a run is editing, inside the window between that
+edit and its flush. It is recoverable in both directions: the uploaded bytes are
+in the store whatever the box does with them, and model work is redoable. And a
+stale model edit already fails safe, because `edit_file` matches `old_string`
+exactly against the file as it is now — an upload that landed underneath it
+turns the edit into a refusal and a re-read, not a corruption. Arbitration (a
+hash compare per box, a skip, a log) would buy determinism in a case where
+nothing is lost either way, at the cost of a rule every future writer of that
+path has to know. **If it proves needed:** the write-through appends a
+system-sourced user event naming the updated file to every running session that
+claims it, reusing the steering mechanism as-is — the model is told, rather than
+the harness guessing which writer was right.
 
 ### Task 8.8: The memory region, structurally sealed
 **Done when:** `{user}/memory/` exists in the store (`MEMORY.md` + `notes/`);
