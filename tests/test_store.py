@@ -366,3 +366,37 @@ async def test_a_non_supabase_dsn_derives_nothing(monkeypatch):
     )
 
     assert store.project_url() is None
+
+
+async def test_a_missing_object_reported_as_a_400_is_still_a_miss():
+    """Supabase answers a missing object with 400 and a body saying 404."""
+
+    def handler(request):
+        import httpx
+
+        return httpx.Response(
+            400, json={"statusCode": "404", "error": "not_found", "message": "Object not found", "code": "NoSuchKey"}
+        )
+
+    assert await _supabase(handler).get("a" * 64) is None
+
+
+async def test_a_genuine_400_is_still_an_error():
+    def handler(request):
+        import httpx
+
+        return httpx.Response(400, json={"error": "InvalidRequest", "message": "malformed key"})
+
+    with pytest.raises(store.StoreError):
+        await _supabase(handler).get("a" * 64)
+
+
+async def test_a_head_that_is_not_a_clean_200_counts_as_missing():
+    """A redundant upload is cheap; a file believed present and absent is not."""
+
+    def handler(request):
+        import httpx
+
+        return httpx.Response(400)
+
+    assert await _supabase(handler).missing(["a" * 64]) == {"a" * 64}

@@ -187,7 +187,7 @@ class SupabaseBlobs:
         client = self._client_or_new()
         async with self._gate:
             response = await client.get(self._url(content_hash), headers=self._headers)
-        if response.status_code == 404:
+        if _is_absent(response):
             return None
         if response.status_code != 200:
             raise StoreError(f"reading {content_hash[:12]} failed: {response.status_code} {response.text[:200]}")
@@ -202,7 +202,11 @@ class SupabaseBlobs:
         async def absent(content_hash: str) -> str | None:
             async with self._gate:
                 response = await client.head(self._url(content_hash), headers=self._headers)
-            return content_hash if response.status_code == 404 else None
+            # Anything but a clean 200 counts as absent. A HEAD carries no body
+            # to distinguish a miss from an error, and the two mistakes are not
+            # equal: calling a present blob missing costs one redundant upload,
+            # calling a missing blob present costs the file.
+            return None if response.status_code == 200 else content_hash
 
         found = await asyncio.gather(*(absent(h) for h in wanted))
         return {h for h in found if h is not None}
@@ -215,6 +219,21 @@ class SupabaseBlobs:
 
 class StoreError(RuntimeError):
     """Raised when the blob backend refuses a read or a write."""
+
+
+def _is_absent(response: Any) -> bool:
+    """Whether a response means the object is not there.
+
+    Supabase Storage reports a missing object as HTTP 400 carrying a body of
+    `{"statusCode": "404", ... "code": "NoSuchKey"}`, so the transport status
+    alone does not say.
+    """
+    if response.status_code == 404:
+        return True
+    if response.status_code != 400:
+        return False
+    body = (response.text or "").lower()
+    return '"404"' in body or "nosuchkey" in body or "not_found" in body
 
 
 _blobs: Blobs | None = None
@@ -253,6 +272,11 @@ def project_url() -> str | None:
     return None
 
 
+def bucket() -> str:
+    """The bucket blobs live in. STORE_BUCKET overrides the configured name."""
+    return str(os.environ.get("STORE_BUCKET") or _cfg("store.bucket", "") or "")
+
+
 def secret_key() -> str | None:
     """The key the store authenticates with.
 
@@ -271,19 +295,19 @@ def _build() -> Blobs:
     if backend == "supabase":
         url = project_url()
         key = secret_key()
-        bucket = _cfg("store.bucket", "")
+        name = bucket()
         missing = [
-            name
-            for name, value in (
+            label
+            for label, value in (
                 ("SUPABASE_URL (or a Supabase database.url to derive it from)", url),
                 ("SUPABASE_SECRET_KEY", key),
-                ("store.bucket", bucket),
+                ("store.bucket (or STORE_BUCKET)", name),
             )
             if not value
         ]
         if missing:
             raise StoreError(f"store.backend is 'supabase' but {', '.join(missing)} is unset")
-        return SupabaseBlobs(url, key, str(bucket))
+        return SupabaseBlobs(url, key, name)
     raise StoreError(f"unknown store.backend {backend!r}; expected 'filesystem' or 'supabase'")
 
 

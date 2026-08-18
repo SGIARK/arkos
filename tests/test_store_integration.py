@@ -11,10 +11,11 @@ round trip.
 
 from __future__ import annotations
 
-import os
+import contextlib
 import uuid
 
 import pytest
+import pytest_asyncio
 
 from harness_module import store
 
@@ -28,14 +29,18 @@ pytestmark = [
 ]
 
 
-@pytest.fixture
-def backend():
-    made = store.SupabaseBlobs(
-        store.project_url(),
-        store.secret_key(),
-        os.environ.get("STORE_BUCKET") or "arkos",
-    )
+@pytest_asyncio.fixture
+async def backend():
+    """A live backend that removes whatever the test wrote."""
+    made = store.SupabaseBlobs(store.project_url(), store.secret_key(), store.bucket())
+    written: list[str] = []
+    made.written = written
     yield made
+    for content_hash in written:
+        with contextlib.suppress(Exception):
+            client = made._client_or_new()
+            await client.delete(made._url(content_hash), headers=made._headers)
+    await made.close()
 
 
 async def test_a_blob_round_trips_through_the_bucket(backend):
@@ -43,10 +48,10 @@ async def test_a_blob_round_trips_through_the_bucket(backend):
     content_hash = store.sha256(content)
 
     await backend.put(content_hash, content)
+    backend.written.append(content_hash)
 
     assert await backend.get(content_hash) == content
     assert await backend.missing([content_hash]) == set()
-    await backend.close()
 
 
 async def test_uploading_the_same_blob_twice_is_accepted(backend):
@@ -55,9 +60,9 @@ async def test_uploading_the_same_blob_twice_is_accepted(backend):
 
     await backend.put(content_hash, content)
     await backend.put(content_hash, content)
+    backend.written.append(content_hash)
 
     assert await backend.get(content_hash) == content
-    await backend.close()
 
 
 async def test_a_hash_that_was_never_written_is_missing(backend):
@@ -65,4 +70,3 @@ async def test_a_hash_that_was_never_written_is_missing(backend):
 
     assert await backend.get(never) is None
     assert await backend.missing([never]) == {never}
-    await backend.close()

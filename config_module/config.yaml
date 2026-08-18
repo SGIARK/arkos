@@ -40,7 +40,10 @@ store:
   #               SUPABASE_SERVICE_KEY in the environment, and the bucket below.
   # filesystem -- blobs under `root`. Single box only; used by the test suite.
   backend: "supabase"
-  bucket: "${STORE_BUCKET}"
+  # The bucket name, overridable by STORE_BUCKET in the environment. A literal
+  # rather than a ${VAR}: an unset interpolation fails config load for the whole
+  # process, including the parts that never touch the store.
+  bucket: "arkos"
   prefix: "arkos"
   root: ".arkos-store"
 
