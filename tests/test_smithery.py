@@ -13,6 +13,7 @@ import pytest
 import pytest_asyncio
 
 from db import pool
+from tests.dbgate import require_db
 from tool_module import connections as conns
 from tool_module.envelope import ToolContext
 from tool_module.smithery import AuthRequiredError, Smithery, _render, _to_spec
@@ -79,11 +80,7 @@ def _hands(client=None, **kw) -> Smithery:
 @pytest_asyncio.fixture(autouse=True)
 async def _db():
     """Skip the module unless the real schema is reachable."""
-    try:
-        await pool.fetchval("SELECT 1")
-    except Exception as e:  # noqa: BLE001 - any connection failure means skip
-        await pool.close()
-        pytest.skip(f"needs the arkos database (migration 0 applied): {e}")
+    await require_db()
     yield
     # Shared rows have no user to scope them, so they have to be swept.
     await pool.execute("DELETE FROM shared_connections")

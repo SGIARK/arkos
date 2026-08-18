@@ -14,6 +14,7 @@ import pytest_asyncio
 from agent_module.events import ContentEvent, DoneEvent, ToolCallEvent, ToolResultEvent, UserEvent
 from db import pool
 from harness_module import session_log as slog
+from tests.dbgate import require_db
 
 pytestmark = pytest.mark.asyncio
 
@@ -24,11 +25,7 @@ _seeded: list[uuid.UUID] = []
 @pytest_asyncio.fixture(autouse=True)
 async def _db():
     """Skip the module unless the real schema is reachable."""
-    try:
-        await pool.fetchval("SELECT 1")
-    except Exception as e:  # noqa: BLE001 - any connection failure means skip
-        await pool.close()
-        pytest.skip(f"needs the arkos database (migration 0 applied): {e}")
+    await require_db()
     yield
     # Seeded rows go away; a session left `running` is swept by any process on this database.
     await pool.execute("DELETE FROM sessions WHERE user_id = ANY($1::uuid[])", _seeded)

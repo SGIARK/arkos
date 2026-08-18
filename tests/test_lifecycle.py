@@ -15,6 +15,7 @@ from agent_module.events import DoneEvent, ToolCallEvent
 from db import pool
 from harness_module import lifecycle as lc
 from harness_module import session_log as slog
+from tests.dbgate import require_db
 
 pytestmark = pytest.mark.asyncio
 
@@ -24,11 +25,7 @@ _seeded: list[uuid.UUID] = []
 
 @pytest_asyncio.fixture(autouse=True)
 async def _db():
-    try:
-        await pool.fetchval("SELECT 1")
-    except Exception as e:  # noqa: BLE001 - any connection failure means skip
-        await pool.close()
-        pytest.skip(f"needs the arkos database (migration 0 applied): {e}")
+    await require_db()
     yield
     # The sweep is global, so a session left `running` is swept by the next test
     # and by anything else sharing this database.

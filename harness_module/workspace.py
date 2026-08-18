@@ -13,11 +13,14 @@ the only thing it is trusted with, and only as a hint about what it already has.
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import posixpath
 import shlex
+import tarfile
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from harness_module import store
@@ -33,6 +36,7 @@ MOUNT_ROOT = "/home/user/projects"
 MANIFEST_PATH = "/home/user/.arkos/manifest.json"
 
 _STAGING_TAR = "/tmp/arkos-materialize.tar"
+_FLUSH_TAR = "/tmp/arkos-flush.tar"
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +71,8 @@ class SandboxIO(Protocol):
     async def write_file(self, user_id: str, path: str, content: Any) -> None: ...
 
     async def read_file(self, user_id: str, path: str) -> str: ...
+
+    async def read_bytes(self, user_id: str, path: str) -> bytes: ...
 
 
 async def materialize(sandbox: SandboxIO, user_id: str, claims: list[Claim]) -> Materialized:
@@ -125,6 +131,126 @@ async def materialize(sandbox: SandboxIO, user_id: str, claims: list[Claim]) -> 
         len(removed),
     )
     return Materialized(manifest=wanted, transferred=len(payload), bytes_sent=bytes_sent, removed=removed)
+
+
+@dataclass(frozen=True, slots=True)
+class Flushed:
+    """What a flush moved back into the store."""
+
+    committed: int
+    uploaded: int
+    discarded: tuple[str, ...] = ()
+
+
+async def flush(sandbox: SandboxIO, user_id: str, claims: list[Claim], manifest: dict[str, str]) -> Flushed:
+    """
+    Commit what the sandbox changed back to the store.
+
+    One sha256sum sweep says what is there now; the manifest says what was put
+    there. Only the differences have their bytes read back, and every file's
+    row is written from a hash, so an unchanged file costs nothing.
+
+    A read claim commits nothing. Its edits are discarded and named in the
+    return value, because silently keeping or silently dropping them are both
+    worse than saying which.
+    """
+    current = await _sweep(sandbox, user_id, claims)
+    changed = sorted(path for path, digest in current.items() if manifest.get(path) != digest)
+
+    contents: dict[str, bytes] = await _read_out(sandbox, user_id, changed) if changed else {}
+
+    committed = 0
+    uploaded = 0
+    discarded: list[str] = []
+    for claim in claims:
+        under = {p: h for p, h in current.items() if p.startswith(claim.mount + "/")}
+        if claim.mode != "write":
+            discarded.extend(sorted(p for p in under if manifest.get(p) != under[p]))
+            continue
+
+        # Sizes for files whose bytes were never read back come from the tree
+        # they were materialized from.
+        previous = {e.path: e for e in await store.read_tree(claim.project_id, claim.subpath)}
+        now = datetime.now(UTC)
+
+        entries: list[store.TreeEntry] = []
+        for path, digest in sorted(under.items()):
+            relative = posixpath.relpath(path, claim.mount)
+            body = contents.get(path)
+            if body is not None:
+                entries.append(
+                    store.TreeEntry(
+                        path=relative,
+                        content_hash=await store.put_blob(body),
+                        size=len(body),
+                        mtime=now,
+                    )
+                )
+                uploaded += 1
+                continue
+
+            known = previous.get(relative)
+            if known is None or known.content_hash != digest:
+                # Unchanged by the manifest, yet the tree does not agree. Read
+                # it rather than record a size that would be a guess.
+                extra = await _read_out(sandbox, user_id, [path])
+                body = extra.get(path, b"")
+                entries.append(
+                    store.TreeEntry(
+                        path=relative, content_hash=await store.put_blob(body), size=len(body), mtime=now
+                    )
+                )
+                uploaded += 1
+                continue
+
+            entries.append(known)
+
+        await store.commit_entries(claim.project_id, entries, claim.subpath)
+        committed += len(entries)
+
+    if discarded:
+        logger.warning("discarded %d edit(s) under a read claim for user %s", len(discarded), user_id)
+    logger.info("flushed %d file(s) for user %s (%d uploaded)", committed, user_id, uploaded)
+    return Flushed(committed=committed, uploaded=uploaded, discarded=tuple(discarded))
+
+
+async def _sweep(sandbox: SandboxIO, user_id: str, claims: list[Claim]) -> dict[str, str]:
+    """Hash every file under the claimed mounts, in one command."""
+    mounts = " ".join(shlex.quote(c.mount) for c in claims)
+    if not mounts:
+        return {}
+    result = await sandbox.exec(
+        user_id,
+        f"find {mounts} -type f -exec sha256sum {{}} + 2>/dev/null || true",
+    )
+    found: dict[str, str] = {}
+    for line in (result.get("stdout") or "").splitlines():
+        digest, _, path = line.partition("  ")
+        if len(digest) == 64 and path:
+            found[path.strip()] = digest
+    return found
+
+
+async def _read_out(sandbox: SandboxIO, user_id: str, paths: list[str]) -> dict[str, bytes]:
+    """Tar the changed files and read the archive back in one transfer."""
+    quoted = " ".join(shlex.quote(p.lstrip("/")) for p in paths)
+    result = await sandbox.exec(
+        user_id, f"tar cf {shlex.quote(_FLUSH_TAR)} -C / {quoted}"
+    )
+    if result["exit_code"] != 0:
+        raise store.StoreError(f"flush could not archive the changes: {result['stderr'][:200]}")
+
+    archive = await sandbox.read_bytes(user_id, _FLUSH_TAR)
+    await sandbox.exec(user_id, f"rm -f {shlex.quote(_FLUSH_TAR)}")
+
+    out: dict[str, bytes] = {}
+    with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+        for member in tar.getmembers():
+            if member.isfile():
+                extracted = tar.extractfile(member)
+                if extracted is not None:
+                    out["/" + member.name.lstrip("/")] = extracted.read()
+    return out
 
 
 async def _read_manifest(sandbox: SandboxIO, user_id: str) -> dict[str, str]:

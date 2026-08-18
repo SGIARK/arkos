@@ -21,6 +21,7 @@ from db import pool
 from harness_module import api, runner
 from harness_module import session_log as slog
 from harness_module.stream import SessionStream, stream
+from tests.dbgate import require_db
 
 pytestmark = pytest.mark.asyncio
 
@@ -29,11 +30,7 @@ _seeded: list[uuid.UUID] = []
 
 @pytest_asyncio.fixture(autouse=True)
 async def _db(monkeypatch):
-    try:
-        await pool.fetchval("SELECT 1")
-    except Exception as e:  # noqa: BLE001 - any connection failure means skip
-        await pool.close()
-        pytest.skip(f"needs the arkos database (migration 0 applied): {e}")
+    await require_db()
 
     # The loop is out of scope here, so start is stubbed and no turn runs.
     started: list[str] = []

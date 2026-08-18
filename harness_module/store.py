@@ -385,6 +385,35 @@ async def commit_tree(
         await blobs().put(content_hash, content)
 
     now = datetime.now(UTC)
+    return await commit_entries(
+        project_id,
+        [
+            TreeEntry(path=f.path, content_hash=h, size=len(f.content), mtime=f.mtime or now)
+            for f, h in hashed
+        ],
+        subpath,
+    )
+
+
+async def commit_entries(
+    project_id: str,
+    entries: Sequence[TreeEntry],
+    subpath: str = "/",
+) -> list[TreeEntry]:
+    """
+    Replace the tree under `subpath` with entries whose blobs are already stored.
+
+    What a flush uses: only changed files have their bytes uploaded, and every
+    row is written from a hash. The blobs are checked before any row moves, so
+    the tree still cannot come to point at bytes that are not there.
+
+    Raises:
+        StoreError: an entry names a blob the store does not hold.
+    """
+    absent = await missing_blobs({e.content_hash for e in entries})
+    if absent:
+        raise StoreError(f"refusing to commit: {len(absent)} blob(s) are not in the store")
+
     prefix = _relative(subpath)
     async with (await pool.pool()).acquire() as conn, conn.transaction():
         if prefix:
@@ -397,17 +426,17 @@ async def commit_tree(
         else:
             await conn.execute("DELETE FROM project_files WHERE project_id = $1", _uuid(project_id))
 
-        for file, content_hash in hashed:
+        for entry in entries:
             await conn.execute(
                 """
                 INSERT INTO project_files (project_id, path, content_hash, size, mtime)
                 VALUES ($1, $2, $3, $4, $5)
                 """,
                 _uuid(project_id),
-                file.path,
-                content_hash,
-                len(file.content),
-                file.mtime or now,
+                entry.path,
+                entry.content_hash,
+                entry.size,
+                entry.mtime,
             )
 
     return await read_tree(project_id, subpath)

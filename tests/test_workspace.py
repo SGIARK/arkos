@@ -17,6 +17,7 @@ import pytest_asyncio
 
 from db import pool
 from harness_module import store, workspace
+from tests.dbgate import require_db
 
 pytestmark = pytest.mark.asyncio
 
@@ -57,11 +58,7 @@ class FakeSandbox:
 
 @pytest_asyncio.fixture(autouse=True)
 async def _db(tmp_path):
-    try:
-        await pool.fetchval("SELECT 1")
-    except Exception as e:  # noqa: BLE001 - any connection failure means skip
-        await pool.close()
-        pytest.skip(f"needs the arkos database (migrations applied): {e}")
+    await require_db()
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     yield
     store.use_blobs(None)
@@ -289,3 +286,190 @@ async def test_a_claim_knows_where_it_mounts():
     claim = workspace.Claim(project_id="p", slug="taxes")
 
     assert claim.mount == posixpath.join(workspace.MOUNT_ROOT, "taxes")
+
+
+# --- flushing back ------------------------------------------------------------------
+
+
+def _sweeping(sandbox: FakeSandbox) -> FakeSandbox:
+    """Give the fake a real sha256sum sweep and a real tar-out."""
+    import hashlib
+
+    async def exec_(user_id, command, timeout=120):
+        sandbox.commands.append(command)
+        if command.startswith("find "):
+            # shlex.quote leaves an ordinary path unquoted, so accept both forms.
+            mounts = [t.strip("'") for t in command.split() if t.strip("'").startswith("/home/")]
+            lines = [
+                f"{hashlib.sha256(body).hexdigest()}  {path}"
+                for path, body in sorted(sandbox.files.items())
+                if any(path.startswith(mount + "/") for mount in mounts)
+            ]
+            return {"stdout": "\n".join(lines), "stderr": "", "exit_code": 0}
+        if command.startswith("tar cf"):
+            wanted = [t.strip("'") for t in command.split(" -C / ")[1].split()]
+            buffer = io.BytesIO()
+            with tarfile.open(fileobj=buffer, mode="w") as archive:
+                for relative in wanted:
+                    body = sandbox.files.get("/" + relative)
+                    if body is None:
+                        continue
+                    info = tarfile.TarInfo(name=relative)
+                    info.size = len(body)
+                    archive.addfile(info, io.BytesIO(body))
+            sandbox.files["/tmp/arkos-flush.tar"] = buffer.getvalue()
+            return {"stdout": "", "stderr": "", "exit_code": 0}
+        if command.startswith("rm -f "):
+            for token in command[len("rm -f ") :].split():
+                sandbox.files.pop(token.strip("'"), None)
+        if "tar xf" in command:
+            source = next(p for p in sandbox.files if p.endswith("materialize.tar"))
+            with tarfile.open(fileobj=io.BytesIO(sandbox.files[source])) as archive:
+                for member in archive.getmembers():
+                    sandbox.files["/" + member.name] = archive.extractfile(member).read()
+            sandbox.files.pop(source, None)
+        return {"stdout": "", "stderr": "", "exit_code": 0}
+
+    async def read_bytes(user_id, path):
+        return sandbox.files[path]
+
+    sandbox.exec = exec_
+    sandbox.read_bytes = read_bytes
+    return sandbox
+
+
+async def test_a_file_written_in_the_sandbox_reaches_the_store():
+    user_id, project_id = await _project()
+    await store.commit_tree(project_id, [_file("a.txt", "original")])
+    sandbox = _sweeping(FakeSandbox())
+    materialized = await workspace.materialize(sandbox, user_id, [_claim(project_id)])
+
+    sandbox.files[f"{workspace.MOUNT_ROOT}/taxes/a.txt"] = b"edited in the sandbox"
+    sandbox.files[f"{workspace.MOUNT_ROOT}/taxes/new.txt"] = b"brand new"
+    result = await workspace.flush(sandbox, user_id, [_claim(project_id)], materialized.manifest)
+
+    tree = {e.path: e for e in await store.read_tree(project_id)}
+    assert result.uploaded == 2
+    assert await store.get_blob(tree["a.txt"].content_hash) == b"edited in the sandbox"
+    assert await store.get_blob(tree["new.txt"].content_hash) == b"brand new"
+    assert tree["a.txt"].size == len(b"edited in the sandbox")
+
+
+async def test_a_second_session_reads_what_the_first_wrote_byte_identical():
+    """The store is the handover, not the sandbox."""
+    user_id, project_id = await _project()
+    await store.commit_tree(project_id, [_file("notes.md", "v1")])
+    first = _sweeping(FakeSandbox())
+    manifest = (await workspace.materialize(first, user_id, [_claim(project_id)])).manifest
+    first.files[f"{workspace.MOUNT_ROOT}/taxes/notes.md"] = b"v2 written by session one"
+    await workspace.flush(first, user_id, [_claim(project_id)], manifest)
+
+    second = _sweeping(FakeSandbox())
+    await workspace.materialize(second, user_id, [_claim(project_id)])
+
+    assert second.files[f"{workspace.MOUNT_ROOT}/taxes/notes.md"] == b"v2 written by session one"
+
+
+async def test_a_flush_uploads_only_what_changed():
+    user_id, project_id = await _project()
+    await store.commit_tree(project_id, [_file("a.txt", "1"), _file("b.txt", "2"), _file("c.txt", "3")])
+    sandbox = _sweeping(FakeSandbox())
+    manifest = (await workspace.materialize(sandbox, user_id, [_claim(project_id)])).manifest
+
+    sandbox.files[f"{workspace.MOUNT_ROOT}/taxes/b.txt"] = b"changed"
+    result = await workspace.flush(sandbox, user_id, [_claim(project_id)], manifest)
+
+    assert result.uploaded == 1, "an unchanged file was uploaded again"
+    assert result.committed == 3, "the tree must still describe every file"
+
+
+async def test_a_flush_with_no_edits_uploads_nothing():
+    user_id, project_id = await _project()
+    await store.commit_tree(project_id, [_file("a.txt", "1")])
+    sandbox = _sweeping(FakeSandbox())
+    manifest = (await workspace.materialize(sandbox, user_id, [_claim(project_id)])).manifest
+
+    result = await workspace.flush(sandbox, user_id, [_claim(project_id)], manifest)
+
+    assert result.uploaded == 0
+    assert [e.path for e in await store.read_tree(project_id)] == ["a.txt"]
+
+
+async def test_a_file_deleted_in_the_sandbox_leaves_the_tree():
+    user_id, project_id = await _project()
+    await store.commit_tree(project_id, [_file("keep.txt", "1"), _file("delete.txt", "2")])
+    sandbox = _sweeping(FakeSandbox())
+    manifest = (await workspace.materialize(sandbox, user_id, [_claim(project_id)])).manifest
+
+    del sandbox.files[f"{workspace.MOUNT_ROOT}/taxes/delete.txt"]
+    await workspace.flush(sandbox, user_id, [_claim(project_id)], manifest)
+
+    assert [e.path for e in await store.read_tree(project_id)] == ["keep.txt"]
+
+
+async def test_a_read_claim_commits_nothing_and_says_what_it_dropped():
+    user_id, project_id = await _project()
+    await store.commit_tree(project_id, [_file("a.txt", "original")])
+    sandbox = _sweeping(FakeSandbox())
+    claims = [_claim(project_id, mode="read")]
+    manifest = (await workspace.materialize(sandbox, user_id, claims)).manifest
+
+    sandbox.files[f"{workspace.MOUNT_ROOT}/taxes/a.txt"] = b"edited anyway"
+    result = await workspace.flush(sandbox, user_id, claims, manifest)
+
+    tree = await store.read_tree(project_id)
+    assert result.committed == 0
+    assert result.discarded == (f"{workspace.MOUNT_ROOT}/taxes/a.txt",)
+    assert await store.get_blob(tree[0].content_hash) == b"original"
+
+
+async def test_a_process_that_dies_before_the_flush_leaves_the_last_tree_intact():
+    """Nothing is committed until the flush runs, so a crash costs the edits, not the project."""
+    user_id, project_id = await _project()
+    await store.commit_tree(project_id, [_file("a.txt", "committed")])
+    sandbox = _sweeping(FakeSandbox())
+    await workspace.materialize(sandbox, user_id, [_claim(project_id)])
+
+    sandbox.files[f"{workspace.MOUNT_ROOT}/taxes/a.txt"] = b"never flushed"
+    # The process stops here. Nothing calls flush.
+
+    fresh = _sweeping(FakeSandbox())
+    await workspace.materialize(fresh, user_id, [_claim(project_id)])
+
+    assert fresh.files[f"{workspace.MOUNT_ROOT}/taxes/a.txt"] == b"committed"
+
+
+async def test_losing_the_sandbox_entirely_loses_nothing_that_was_flushed():
+    """e2b's own persistence is a warm start, not the record."""
+    user_id, project_id = await _project()
+    await store.commit_tree(project_id, [_file("a.txt", "v1")])
+    sandbox = _sweeping(FakeSandbox())
+    manifest = (await workspace.materialize(sandbox, user_id, [_claim(project_id)])).manifest
+    sandbox.files[f"{workspace.MOUNT_ROOT}/taxes/a.txt"] = b"v2"
+    await workspace.flush(sandbox, user_id, [_claim(project_id)], manifest)
+
+    del sandbox  # the sandbox is destroyed outright
+    replacement = _sweeping(FakeSandbox())
+    await workspace.materialize(replacement, user_id, [_claim(project_id)])
+
+    assert replacement.files[f"{workspace.MOUNT_ROOT}/taxes/a.txt"] == b"v2"
+
+
+async def test_an_archive_that_cannot_be_built_is_raised_not_swallowed():
+    user_id, project_id = await _project()
+    await store.commit_tree(project_id, [_file("a.txt", "1")])
+    sandbox = _sweeping(FakeSandbox())
+    manifest = (await workspace.materialize(sandbox, user_id, [_claim(project_id)])).manifest
+    sandbox.files[f"{workspace.MOUNT_ROOT}/taxes/a.txt"] = b"changed"
+
+    working = sandbox.exec
+
+    async def failing(user_id_, command, timeout=120):
+        if command.startswith("tar cf"):
+            return {"stdout": "", "stderr": "tar: cannot read", "exit_code": 2}
+        return await working(user_id_, command, timeout)
+
+    sandbox.exec = failing
+
+    with pytest.raises(store.StoreError, match="cannot read"):
+        await workspace.flush(sandbox, user_id, [_claim(project_id)], manifest)

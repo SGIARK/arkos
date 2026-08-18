@@ -30,3 +30,4 @@ if not os.environ.get("SUPABASE_JWT_SECRET"):
     os.environ["SUPABASE_JWT_SECRET"] = "test-supabase-secret-at-least-32-chars"
 if not os.environ.get("ARK_SESSION_SECRET"):
     os.environ["ARK_SESSION_SECRET"] = "test-session-secret-at-least-32-chars"
+

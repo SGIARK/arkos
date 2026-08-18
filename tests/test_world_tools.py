@@ -9,6 +9,7 @@ import pytest
 import pytest_asyncio
 
 from db import pool
+from tests.dbgate import require_db
 from tool_module import registry
 from tool_module.envelope import ToolContext
 
@@ -19,11 +20,7 @@ _seeded: list[uuid.UUID] = []
 
 @pytest_asyncio.fixture(autouse=True)
 async def _db():
-    try:
-        await pool.fetchval("SELECT 1")
-    except Exception as e:  # noqa: BLE001 - any connection failure means skip
-        await pool.close()
-        pytest.skip(f"needs the arkos database (migration 0 applied): {e}")
+    await require_db()
     yield
     await pool.execute("DELETE FROM sessions WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM projects WHERE user_id = ANY($1::uuid[])", _seeded)

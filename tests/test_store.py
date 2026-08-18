@@ -12,6 +12,7 @@ import pytest_asyncio
 
 from db import pool
 from harness_module import store
+from tests.dbgate import require_db
 
 pytestmark = pytest.mark.asyncio
 
@@ -20,11 +21,7 @@ _seeded: list[uuid.UUID] = []
 
 @pytest_asyncio.fixture(autouse=True)
 async def _db(tmp_path):
-    try:
-        await pool.fetchval("SELECT 1")
-    except Exception as e:  # noqa: BLE001 - any connection failure means skip
-        await pool.close()
-        pytest.skip(f"needs the arkos database (migrations applied): {e}")
+    await require_db()
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     yield
     store.use_blobs(None)

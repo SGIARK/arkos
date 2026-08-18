@@ -17,6 +17,7 @@ import pytest
 import pytest_asyncio
 
 from db import pool
+from tests.dbgate import require_db
 from tool_module.sandbox import manager as sandbox_manager
 
 pytest.importorskip("e2b_code_interpreter", reason="the e2b SDK is not installed")
@@ -32,11 +33,7 @@ _seeded: list[uuid.UUID] = []
 
 @pytest_asyncio.fixture(autouse=True)
 async def _db():
-    try:
-        await pool.fetchval("SELECT 1")
-    except Exception as e:  # noqa: BLE001 - any connection failure means skip
-        await pool.close()
-        pytest.skip(f"needs the arkos database (migration 0 applied): {e}")
+    await require_db()
     yield
     await pool.execute("DELETE FROM user_sandboxes WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM users WHERE id = ANY($1::uuid[])", _seeded)

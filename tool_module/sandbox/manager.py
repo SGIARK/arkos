@@ -142,6 +142,11 @@ class SandboxManager:
         sandbox = await self.get_or_create(user_id)
         return await asyncio.to_thread(sandbox.files.read, path)
 
+    async def read_bytes(self, user_id: str, path: str) -> bytes:
+        """Read a file as bytes, which a tar transfer out of the sandbox needs."""
+        sandbox = await self.get_or_create(user_id)
+        return await asyncio.to_thread(lambda: sandbox.files.read(path, format="bytes"))
+
     async def write_file(self, user_id: str, path: str, content: str | bytes) -> None:
         """Write a file. Bytes go through unchanged, which is what a tar transfer needs."""
         sandbox = await self.get_or_create(user_id)
