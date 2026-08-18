@@ -152,6 +152,9 @@ CurrentUser = Depends(current_user)
 
 # Bytes per read while an upload is checked against the quota.
 _UPLOAD_CHUNK = 1024 * 1024
+
+# Events per read while a stream catches up on the log.
+_BACKLOG_PAGE = 1000
 JsonBody = Body(...)
 UploadedFile = File(...)
 UploadedPath = Form(default=None)
@@ -517,7 +520,7 @@ async def _event_stream(session_id: str, after_seq: int) -> AsyncIterator[str]:
     try:
         async with stream.subscribe(session_id) as queue:
             sent = after_seq
-            for stored in await slog.get_events(session_id, after_seq=sent, limit=1000):
+            async for stored in _backlog(session_id, sent):
                 sent = stored.seq
                 yield _frame(stored)
 
@@ -531,7 +534,7 @@ async def _event_stream(session_id: str, after_seq: int) -> AsyncIterator[str]:
 
                 if item is LAGGED:
                     # This consumer fell behind its queue; it rejoins from the log.
-                    for stored in await slog.get_events(session_id, after_seq=sent, limit=1000):
+                    async for stored in _backlog(session_id, sent):
                         sent = stored.seq
                         yield _frame(stored)
                     continue
@@ -549,6 +552,24 @@ async def _event_stream(session_id: str, after_seq: int) -> AsyncIterator[str]:
         yield "event: error\ndata: " + json.dumps(
             {"code": "stream_failed", "message": f"{type(e).__name__}: {e}", "retryable": True}
         ) + "\n\n"
+
+
+async def _backlog(session_id: str, after_seq: int) -> AsyncIterator[slog.StoredEvent]:
+    """Yield every event after `after_seq`, a page at a time until the log runs out.
+
+    One page is not the backlog. A reader rejoining a long session with
+    `Last-Event-ID` is exactly the case that exceeds it, and `sent` only moves
+    forward, so anything skipped here cannot be recovered on this connection —
+    the transcript would be whole in the log and full of holes on screen.
+    """
+    cursor = after_seq
+    while True:
+        page = await slog.get_events(session_id, after_seq=cursor, limit=_BACKLOG_PAGE)
+        for stored in page:
+            cursor = stored.seq
+            yield stored
+        if len(page) < _BACKLOG_PAGE:
+            return
 
 
 def _frame(stored: slog.StoredEvent) -> str:

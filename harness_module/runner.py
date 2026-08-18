@@ -509,7 +509,8 @@ async def _ending(
             stream.publish(session_id, closed)
         stored = await slog.append(session_id, DoneEvent(reason=reason))
         stream.publish(session_id, stored)
-        return await lifecycle.transition(session_id, expected, status, reason)
+        # `transition` publishes its own event; this call wants only whether it moved.
+        return await lifecycle.transition(session_id, expected, status, reason) is not None
     except Exception:
         logger.exception("session %s: could not record the %s ending", session_id, reason)
         return False
@@ -1029,7 +1030,7 @@ class _Sink:
         call_id, name, args = self._park
         approval = await approvals.create(self.session.id, call_id, PARK_KINDS[name], _park_prompt(name, args))
         await self._save_cursor()
-        moved = await lifecycle.transition(self.session.id, "running", "awaiting_approval", name)
+        moved = await lifecycle.transition(self.session.id, "running", "awaiting_approval", name) is not None
         if moved:
             logger.info("session %s parked on %s (%s)", self.session.id, name, approval.id)
         return moved

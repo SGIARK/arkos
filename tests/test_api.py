@@ -18,7 +18,7 @@ from httpx import ASGITransport, AsyncClient
 
 from agent_module.events import ContentEvent, DoneEvent, ToolCallEvent, UserEvent
 from db import pool
-from harness_module import api, runner
+from harness_module import api, lifecycle, runner
 from harness_module import session_log as slog
 from harness_module.stream import SessionStream, stream
 from tests.dbgate import require_db
@@ -528,6 +528,73 @@ async def test_a_lagging_subscriber_rejoins_from_the_log_instead_of_losing_event
     await gen.aclose()
 
     assert any(f"id: {last.seq}" in f for f in seen), "the lagging subscriber never caught up"
+
+
+async def test_a_backlog_longer_than_one_page_arrives_whole(monkeypatch):
+    """The reconnect path. One page is not the backlog, and `sent` only moves forward."""
+    session_id = await _new_session()
+    monkeypatch.setattr(api, "_BACKLOG_PAGE", 2)
+    appended = [await slog.append(session_id, ContentEvent(text=f"e{i}")) for i in range(7)]
+
+    gen = api._event_stream(session_id, after_seq=0).__aiter__()
+    frames = [await asyncio.wait_for(gen.__anext__(), timeout=5) for _ in appended]
+    await gen.aclose()
+
+    assert [f"id: {e.seq}" in f for e, f in zip(appended, frames, strict=True)] == [True] * 7
+
+
+async def test_a_lagging_subscriber_catches_up_past_one_page(monkeypatch):
+    """The same hole on the LAGGED re-join, where it is likeliest to be a long log."""
+    session_id = await _new_session()
+    monkeypatch.setattr(api, "_BACKLOG_PAGE", 2)
+    monkeypatch.setattr(api, "stream", SessionStream(queue_size=2))
+
+    gen = api._event_stream(session_id, after_seq=0).__aiter__()
+    await asyncio.sleep(0)  # let it subscribe before anything is published
+
+    for i in range(5):
+        api.stream.publish(session_id, await slog.append(session_id, ContentEvent(text=f"x{i}")))
+    last = await slog.append(session_id, DoneEvent(reason="turn_end"))
+    api.stream.publish(session_id, last)
+
+    seen = []
+    for _ in range(12):
+        seen.append(await asyncio.wait_for(gen.__anext__(), timeout=5))
+        if f"id: {last.seq}" in seen[-1]:
+            break
+    await gen.aclose()
+
+    assert any(f"id: {last.seq}" in f for f in seen), "the lagging subscriber never caught up"
+    assert sum("x" in f for f in seen) == 5, "the re-join dropped the middle of the log"
+
+
+async def test_a_status_change_reaches_the_stream_without_a_reconnect():
+    """The pill moves when the status moves, not when someone reconnects."""
+    session_id = await _new_session()
+
+    gen = api._event_stream(session_id, after_seq=0).__aiter__()
+    await asyncio.sleep(0)  # subscribed
+    moved = await lifecycle.transition(session_id, "idle", "running", "the human sent a message")
+    frame = await asyncio.wait_for(gen.__anext__(), timeout=5)
+    await gen.aclose()
+
+    assert moved is not None
+    assert f"id: {moved.seq}" in frame
+    assert "lifecycle" in frame and "running" in frame
+
+
+async def test_a_published_status_can_be_fetched_by_the_seq_it_announced():
+    """Published after commit: a Last-Event-ID reader can always fetch what it just saw."""
+    session_id = await _new_session()
+    seen: list = []
+    async with api.stream.subscribe(session_id) as queue:
+        moved = await lifecycle.transition(session_id, "idle", "running", "claimed")
+        seen.append(await asyncio.wait_for(queue.get(), timeout=5))
+
+    replay = await slog.get_events(session_id, after_seq=seen[0].seq - 1, limit=10)
+
+    assert moved is not None
+    assert [e.seq for e in replay][0] == seen[0].seq, "the announced seq was not yet readable"
 
 
 async def _new_session() -> str:

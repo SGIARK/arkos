@@ -151,6 +151,14 @@ either, so they are fixed where their consumer arrives and tested against it.
    transaction hands a subscriber a seq that a `Last-Event-ID` reader cannot yet
    fetch — the same class of bug the `append()` advisory lock closes.
 
+**Both landed 2026-08-18, as this card's first commit.** The backlog reads in a
+loop until a page comes back short, in both places (`api._backlog`), and
+`transition()` returns the `StoredEvent` it appended and publishes it after the
+transaction commits. The publish lives in `transition` rather than in each
+caller: the bug was a caller not publishing, and five call sites each
+remembering is the same bug waiting. Callers read the result in boolean context
+as before — a `StoredEvent` is truthy, `None` is the lost race.
+
 **Carded from the Task 4 review, 2026-08-17.** The frontend talks to an API that
 no longer exists: `frontend/seed.jsx:156` calls `/auth/demo-login`, `:201-250`
 call `/tasks` and `/computer/tasks`, and `frontend/components.jsx:217` opens

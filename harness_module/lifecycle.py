@@ -1,8 +1,8 @@
 """The session state machine, and the sole writer of `sessions.status`.
 
 Every move is a conditional UPDATE on the expected status: a caller that loses the race
-gets False back, and each move that lands appends a lifecycle event in the same
-transaction.
+gets None back, and each move that lands appends a lifecycle event in the same
+transaction and publishes it once that transaction has committed.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from typing import Any, Literal
 from agent_module.events import DoneEvent, LifecycleEvent
 from db import pool
 from harness_module import session_log
+from harness_module.stream import stream
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +65,16 @@ async def transition(
     new: Status,
     reason: str,
     mode: Mode | None = None,
-) -> bool:
+) -> session_log.StoredEvent | None:
     """Moves a session from `expected` to `new` atomically, appending a lifecycle event.
+
+    The event is published to the session's subscribers AFTER the transaction
+    commits, and publishing lives here rather than in each caller: a status that
+    moves without saying so is a pill that only updates when someone reconnects,
+    and every caller having to remember the publish is how that happened once
+    already. Publishing inside the transaction would be its own bug — a
+    subscriber would be handed a seq that a `Last-Event-ID` reader cannot fetch
+    yet.
 
     Args:
         session_id: the session to move.
@@ -75,7 +84,10 @@ async def transition(
         mode: set in the same UPDATE when given, so status and mode change together.
 
     Returns:
-        True if this call made the move, False if another writer got there first.
+        The lifecycle event this call appended — truthy, so `if await
+        transition(...)` still reads as "did I make the move" — or None if
+        another writer got there first. It is already published; the return
+        value is for a caller that needs the seq, not for publishing again.
 
     Raises:
         IllegalTransition: the move is not in ALLOWED.
@@ -104,12 +116,17 @@ async def transition(
         )
         if moved is None:
             logger.info("session %s: %s -> %s lost the race (not in %s)", session_id, expected, new, expected)
-            return False
+            return None
         # Same transaction as the UPDATE, so the status and its explanation commit
         # together.
-        await session_log.append_tx(conn, session_id, LifecycleEvent(from_=expected, to=new, reason=reason))
+        stored = await session_log.append_tx(
+            conn, session_id, LifecycleEvent(from_=expected, to=new, reason=reason)
+        )
         await touch_project(conn, session_id)
-    return True
+
+    # Outside the block, so the seq being announced is one the log can already serve.
+    stream.publish(session_id, stored)
+    return stored
 
 
 async def touch_project(conn: Any, session_id: str) -> None:

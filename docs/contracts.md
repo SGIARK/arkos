@@ -27,6 +27,15 @@ Three UI moments, one mechanism: just-opened → read recent events (snapshot);
 watching → events arrive over SSE; reconnected → replay after `Last-Event-ID`,
 then live. Same query, three moments.
 
+**Every appended event is published, and published after its transaction
+commits.** An append that skips the publish is a UI that only updates when
+someone reconnects; a publish before the commit hands a subscriber a seq that a
+`Last-Event-ID` reader cannot fetch yet. Where an append shares a transaction
+with a state change — `lifecycle.transition` is the one — the publish belongs to
+that function, after the block, not to each caller who must remember it. And the
+replay is paged until a read comes back short: one page is not the backlog, and
+a reader rejoining a long session is exactly the case that exceeds it.
+
 ### Event vocabulary (final)
 
 | Event | Why it exists |
