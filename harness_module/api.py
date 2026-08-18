@@ -140,7 +140,13 @@ async def current_user(request: Request) -> str:
 
 
 def _check_origin(request: Request) -> None:
-    """Reject a mutation whose Origin header names another origin."""
+    """Reject a mutation whose Origin header names another origin.
+
+    The message names both sides. `http://127.0.0.1:1121` and
+    `http://localhost:1121` are the same server and different origins, and a
+    bare "not allowed" leaves someone comparing two strings they cannot see.
+    `app.public_url` is public by definition, so saying it costs nothing.
+    """
     origin = request.headers.get("origin")
     if origin is None:
         # Same-origin fetches and non-browser clients send no Origin header.
@@ -148,7 +154,9 @@ def _check_origin(request: Request) -> None:
     # With app.public_url unset, `_origin` is empty and every browser mutation
     # is refused.
     if origin.rstrip("/") != _origin:
-        raise ApiError(403, "bad_origin", "Origin not allowed.")
+        logger.warning("refused a mutation from origin %r; app.public_url is %r", origin, _origin)
+        expected = _origin or "unset — set app.public_url in config.yaml"
+        raise ApiError(403, "bad_origin", f"This request came from {origin}, but this app is served from {expected}.")
 
 
 CurrentUser = Depends(current_user)

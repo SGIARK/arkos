@@ -57,6 +57,23 @@ function Reasoning({ event }) {
   );
 }
 
+/* One reply is many `content` events — that is what streaming is — so a run of
+   them is one message, not one paragraph each. The same goes for `reasoning`.
+   Everything else stands alone and is left alone. */
+function grouped(events) {
+  const out = [];
+  for (const event of events) {
+    const last = out[out.length - 1];
+    const streams = event.kind === "content" || event.kind === "reasoning";
+    if (streams && last && last.kind === event.kind) {
+      out[out.length - 1] = { ...last, text: (last.text || "") + (event.text || "") };
+      continue;
+    }
+    out.push(event);
+  }
+  return out;
+}
+
 function EventRow({ event }) {
   switch (event.kind) {
     case "user":
@@ -106,6 +123,10 @@ function SessionWindow({ sessionId, onBack, onError, onActivity }) {
   const [events, setEvents] = useState([]);
   const [questions, setQuestions] = useState([]);
   const [text, setText] = useState("");
+  // Sent, not yet echoed by the stream. Contracts: commands are optimistic —
+  // apply locally, reconcile on the event. Waiting a round trip to see your own
+  // words is the one latency a chat cannot have.
+  const [pending, setPending] = useState([]);
   const [live, setLive] = useState(false);
   // The frame stream a `status` event announced, if the run is still going.
   const [canvas, setCanvas] = useState(null);
@@ -153,6 +174,13 @@ function SessionWindow({ sessionId, onBack, onError, onActivity }) {
             seen.current.add(event.seq);
             setEvents((current) => current.concat([event]));
             setLive(true);
+            // The real one has arrived; drop the local echo it replaces.
+            if (event.kind === "user" && event.source === "human") {
+              setPending((current) => {
+                const at = current.findIndex((p) => p.text === event.text);
+                return at === -1 ? current : current.filter((_, i) => i !== at);
+              });
+            }
             if (event.kind === "lifecycle") {
               setSession((s) => (s ? { ...s, status: event.to } : s));
               refreshQuestions();
@@ -187,16 +215,23 @@ function SessionWindow({ sessionId, onBack, onError, onActivity }) {
 
   useEffect(() => {
     if (tail.current) tail.current.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [events.length]);
+  }, [events.length, pending.length]);
 
   const suggest = async (e) => {
     e.preventDefault();
     const body = text.trim();
     if (!body) return;
+
+    const mine = { id: `local-${Date.now()}`, text: body };
+    setPending((current) => current.concat([mine]));
     setText("");
     try {
       await api.send(sessionId, body);
     } catch (err) {
+      // It never landed, so take it back rather than leave a ghost that never
+      // reconciles, and give them their words to try again with.
+      setPending((current) => current.filter((p) => p.id !== mine.id));
+      setText(body);
       onError(err);
     }
   };
@@ -249,8 +284,13 @@ function SessionWindow({ sessionId, onBack, onError, onActivity }) {
 
       <div className="window-body">
         <div className="transcript">
-          {events.map((event) => (
+          {grouped(events).map((event) => (
             <EventRow key={event.seq} event={event} />
+          ))}
+          {pending.map((item) => (
+            <div className="ev ev-user pending" key={item.id}>
+              <span>{item.text}</span>
+            </div>
           ))}
           <div ref={tail} />
         </div>
