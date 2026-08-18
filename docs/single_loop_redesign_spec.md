@@ -804,7 +804,10 @@ claim on the session's own project, so existing flows change zero);
 `materialize` mounts exactly the claimed subtrees and nothing else; leases
 derive from write claims (`project:{id}` per claim; `sandbox:{user}` remains for
 the box itself); a read claim materializes leaseless and its flush is a no-op
-with discarded edits logged; `GET /sessions/{id}` returns the claims for Looking
+with discarded edits logged **and disclosed as a `status` event before the
+terminal** — a human who watched the agent edit files in a read-claimed project
+must not see those edits silently evaporate, and `system_events` is read by the
+operator, not by them; `GET /sessions/{id}` returns the claims for Looking
 Glass to render. Mid-session grant additions ("add folder"): carded, not built —
 a claim set fixed at creation is what keeps the lease story race-free.
 **Touch:** `api.py`, `store.py`, `leases.py`, `runner.py` | **P1, 1d** | **Blockers:** 8.4, 8.5
