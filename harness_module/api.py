@@ -185,6 +185,8 @@ async def create_auth_session(authorization: str | None = Header(default=None)) 
         _uuid(user_id, "user"),
         email,
     )
+    await _ensure_home_session(user_id)
+
     out = Response(status_code=204)
     out.set_cookie(
         key=str(_cfg("auth.cookie_name", "ark_session")),
@@ -196,6 +198,51 @@ async def create_auth_session(authorization: str | None = Header(default=None)) 
         path="/",
     )
     return out
+
+
+async def _ensure_home_session(user_id: str) -> str:
+    """Give a user their standing chat, once.
+
+    The app opens this session by default, which is the whole of what makes it
+    home: the row is an ordinary attended session in an ordinary project, free
+    to sit idle forever or run like any other. Created here because first login
+    is the only moment that knows a user is new, and guarded by
+    `home_session_id IS NULL` so a second login never makes a second one.
+    """
+    existing = await pool.fetchval(
+        "SELECT home_session_id FROM users WHERE id = $1", _uuid(user_id, "user")
+    )
+    if existing is not None:
+        return str(existing)
+
+    project_id = await pool.fetchval(
+        "INSERT INTO projects (user_id, title) VALUES ($1, $2) RETURNING id",
+        _uuid(user_id, "user"),
+        "Chat",
+    )
+    session_id = await pool.fetchval(
+        """
+        INSERT INTO sessions (user_id, project_id, mode, status, title)
+        VALUES ($1, $2, 'attended', 'idle', 'Chat')
+        RETURNING id
+        """,
+        _uuid(user_id, "user"),
+        project_id,
+    )
+    # Conditional, so two first logins racing leave one session as home and the
+    # other as an ordinary empty one rather than overwriting each other.
+    claimed = await pool.fetchval(
+        """
+        UPDATE users SET home_session_id = $2
+         WHERE id = $1 AND home_session_id IS NULL
+        RETURNING home_session_id
+        """,
+        _uuid(user_id, "user"),
+        session_id,
+    )
+    if claimed is None:
+        return str(await pool.fetchval("SELECT home_session_id FROM users WHERE id = $1", _uuid(user_id, "user")))
+    return str(claimed)
 
 
 @app.get("/auth/config")
@@ -219,10 +266,22 @@ async def delete_auth_session() -> Response:
 
 @app.get("/auth/me")
 async def auth_me(user_id: str = CurrentUser) -> dict[str, Any]:
-    row = await pool.fetchrow("SELECT id, email FROM users WHERE id = $1", _uuid(user_id, "user"))
+    """Who is calling, and which session the app opens for them.
+
+    `home_session_id` rides along because the page needs it on the first render
+    and there is no other request that would carry it. It is null only for a
+    user whose home session was deleted; the next sign-in makes another.
+    """
+    row = await pool.fetchrow(
+        "SELECT id, email, home_session_id FROM users WHERE id = $1", _uuid(user_id, "user")
+    )
     if row is None:
         raise ApiError(401, "unauthenticated", "That user no longer exists.")
-    return {"user_id": str(row["id"]), "email": row["email"]}
+    return {
+        "user_id": str(row["id"]),
+        "email": row["email"],
+        "home_session_id": str(row["home_session_id"]) if row["home_session_id"] else None,
+    }
 
 
 @app.get("/health")
@@ -296,6 +355,50 @@ async def create_session(body: dict[str, Any] = JsonBody, user_id: str = Current
 
     await runner.start(session_id)
     return {"session_id": session_id, "project_id": str(project_id)}
+
+
+@app.get("/sessions")
+async def list_sessions(status: str | None = None, user_id: str = CurrentUser) -> list[dict[str, Any]]:
+    """The user's sessions across every project, newest activity first.
+
+    `status` narrows it — `?status=running` is what the rail asks for. The
+    per-project list does not compose into this: a rail spanning both tabs is a
+    cross-project view, and asking it project by project is N requests for a
+    sidebar.
+    """
+    if status is not None and status not in lifecycle.ALL_STATUSES:
+        raise ApiError(400, "invalid_request", f"{status!r} is not a session status.")
+
+    rows = await pool.fetch(
+        """
+        SELECT s.id, s.title, s.status, s.mode, s.terminal_reason, s.hops_used,
+               s.project_id, p.title AS project_title,
+               COALESCE(max(e.ts), s.created_at) AS last_event_at
+          FROM sessions s
+          LEFT JOIN projects p ON p.id = s.project_id
+          LEFT JOIN session_events e ON e.session_id = s.id
+         WHERE s.user_id = $1 AND ($2::text IS NULL OR s.status = $2)
+         GROUP BY s.id, p.title
+         ORDER BY last_event_at DESC
+        """,
+        _uuid(user_id, "user"),
+        status,
+    )
+    return [
+        {
+            "session_id": str(r["id"]),
+            "title": r["title"],
+            "status": r["status"],
+            "mode": r["mode"],
+            "terminal_reason": r["terminal_reason"],
+            "hops_used": r["hops_used"],
+            "hops_max": _budgets_for(r["mode"]),
+            "project_id": str(r["project_id"]) if r["project_id"] else None,
+            "project_title": r["project_title"],
+            "last_event_at": r["last_event_at"].isoformat(),
+        }
+        for r in rows
+    ]
 
 
 @app.get("/sessions/{session_id}")
@@ -842,10 +945,21 @@ async def _read_within_quota(file: UploadFile) -> bytes:
 
 
 async def _check_rate_quota(user_id: str) -> None:
-    """Enforce the sliding window on new sessions, before anything is written."""
+    """Enforce the sliding window on new sessions, before anything is written.
+
+    The home session is excluded: it is created by first login rather than
+    asked for, and a quota on what a person does should not be spent by the
+    server greeting them.
+    """
     limit = int(_cfg("quotas.new_sessions_per_hour", 20))
     recent = await pool.fetchval(
-        "SELECT count(*) FROM sessions WHERE user_id = $1 AND created_at > now() - interval '1 hour'",
+        """
+        SELECT count(*) FROM sessions s
+          JOIN users u ON u.id = s.user_id
+         WHERE s.user_id = $1
+           AND s.created_at > now() - interval '1 hour'
+           AND (u.home_session_id IS NULL OR s.id <> u.home_session_id)
+        """,
         _uuid(user_id, "user"),
     )
     if recent >= limit:

@@ -32,6 +32,12 @@ Mode = Literal["attended", "unattended"]
 
 TERMINAL: frozenset[str] = frozenset({"completed", "failed", "cancelled"})
 
+# Every value `sessions.status` may hold, matching migration 0's CHECK. Read by
+# callers that validate a status coming in from outside.
+ALL_STATUSES: frozenset[str] = frozenset(
+    {"pending", "idle", "running", "awaiting_approval", "completed", "failed", "cancelled"}
+)
+
 # Every legal move. Transitions not listed here raise; the triggers for each are
 # in contracts.md.
 ALLOWED: frozenset[tuple[str, str]] = frozenset(

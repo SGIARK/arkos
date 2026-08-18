@@ -4,7 +4,7 @@ Companion to `docs/single_loop_redesign_spec.md` (build plan) and
 `docs/contracts.md` (law: event vocabulary, endpoints, lifecycle).
 Scope: the product surfaces — Looking Glass, Projects, Command Center.
 
-**Status:** Not started | **Author:** John Wallace | **Last updated:** 2026-07-24
+**Status:** LG-1 + LG-1.5/1.6/1.7 DONE (unrendered — first browser pass is the gate before Task 9) · LG-2 after Task 9 | **Author:** John Wallace | **Last updated:** 2026-08-18
 
 ---
 
@@ -31,8 +31,18 @@ five things at once is five projects.
 
 ## Looking Glass: two levels
 
-**Level 1 — project grid (the landing, and the task list).** Rounded project
-bubbles, status dot top-right = lifecycle rollup:
+**Amended 2026-08-18 (owner): the landing is the CHAT, not the grid.** Opening
+the app lands in the user's home session — the buddy, a standing ordinary
+attended session auto-created on first login — because the product's identity
+is a companion with memory, and identity is what greets you at the door.
+Looking Glass (the grid below) is the **"Projects" tab**: the work surface
+where chats/sessions live in their project bubbles, one click away. Level 2 is
+unchanged and shared — the same window component renders the home chat and any
+project session (D5). "The landing" in the paragraph below reads as "the
+Projects tab" from here on.
+
+**Level 1 — project grid (the Projects tab, and the task list).** Rounded
+project bubbles, status dot top-right = lifecycle rollup:
 
 | Color | Meaning |
 |---|---|
@@ -198,6 +208,104 @@ requirement, because SameSite=Lax sends no cookie to a cross-site `EventSource`
 and both SSE streams would 401 on every connect while the tests still passed.
 Add both to this card's done-when: the grid and window read the endpoint table
 in `contracts.md`, and `/app` is served same-origin with the API.
+
+**Status: DONE 2026-08-18**, two commits (backend gaps + contracts rows
+`66a1159`, surface `b5287be`). Sign-in is the real one (supabase-js
+`signInWithPassword` → `/auth/session` → cookie; auth.md closed to its last
+rollout-gate item). The surface is four files (`api.jsx`, `grid.jsx`,
+`window.jsx`, `app.jsx`); `seed.jsx`, `components.jsx`, `views.jsx` deleted
+with the dead model they rendered. **The JSX is unexecuted** — no browser has
+rendered it; first human (or Chrome-driven) pass pending. Carried: the
+supabase-js SRI hash (command in `index.html`).
+
+## Task LG-1.5: The settings panel — resurrect, don't rewrite
+**Why:** the `views.jsx` deletion took a complete `SettingsModal` whose popup
+choreography was already right, and the model's own `auth_required` message
+promises this panel exists ("authorize it from the connections panel in
+Settings") — a live contradiction until this lands.
+**Done when:** `SettingsModal` ported from
+`git show b5287be^:frontend/views.jsx` (component at ~lines 238-360) onto the
+new endpoints — `GET /connections`, `POST /connections/{server}/connect`,
+`DELETE /connections/{server}` — keeping its hard-won behavior intact: popup
+opened BEFORE the await so the user gesture is not lost, poll for popup close,
+refresh on completion. Only the endpoint calls change. Sign-out lives here.
+**Touch:** frontend | **P1, 0.5d** | **Blockers:** LG-1
+**Test:** connect flow completes through the popup against a fake Smithery;
+disconnect removes the row; an unconnected server's setup link opens the panel.
+
+**Status: DONE 2026-08-18.** `frontend/settings.jsx`, ported rather than
+rewritten: the popup opens synchronously inside the click handler, the watcher
+polls until the server says connected or the popup closes, and the blocked-popup
+fallback surfaces the setup url as a link. Only the endpoint calls changed. Two
+things did not come across, both deliberately: the Slack DM section (no endpoint
+exists for it, and inventing one would be building ahead of the backend) and the
+backend-host field (there is one origin now, by construction). Sign-out lives
+here; the entry point moved to the rail's foot in LG-1.6.
+
+## Task LG-1.6: The rail — desk-level peripheral vision
+**Why:** the old app's rail gave a standing view of what needed approval and
+what was running; the LG-1 surface dropped it. This restores it on the new
+endpoints — it is the persistent projection of Command Center (see Design),
+scoped to v1.
+**Done when:** a slim persistent sidebar across grid and window, two sections.
+**"Needs you":** user-scoped `GET /attention` (approvals AND unanswered asks),
+each item navigating to that session's window at the pending question.
+**"Running":** the user's live sessions with project names, served by a new
+`GET /sessions?status=running` (contracts row in the same commit — the nested
+per-project list does not compose for a cross-project view). Refresh on
+navigation and on any open session's stream events; NO polling, and no global
+live feed — that is G27 (needs the hold-back window) and stays deferred:
+slightly stale peripheral vision is acceptable, a polling loop is not. The
+theme toggle and the settings entry point (LG-1.5) live at the rail's foot.
+**Touch:** frontend, `api.py` + contracts (one row) | **P1, 0.5-1d** | **Blockers:** LG-1
+**Test:** an unanswered ask appears in the rail from the grid AND from another
+session's window, and clicking it lands at the question; a running session
+appears while running and leaves on terminal; no network request repeats on a
+timer.
+
+**Status: DONE 2026-08-18.** `frontend/rail.jsx`, both sections, persistent
+across tabs. `GET /sessions?status=running` is the one row added, with its
+contracts entry in the same commit. No timer: the rail reloads on navigation, on
+a tab switch, and when an open session's stream reports a `lifecycle` or `done`
+— which is precisely what its two sections are made of. Everything else the
+stream carries is ignored by it, so a chatty session does not turn the sidebar
+into a polling loop by another name. The global live feed stays G27-deferred.
+
+## Task LG-1.7: Chat-first landing — the buddy at the door
+**Why (owner, 2026-08-18):** the product is a companion with memory; opening
+the app should be walking up to your desk where ARK already is, not opening a
+project tool. This reverses the spec's original "grid is the landing" (amended
+above): the landing is the chat, Looking Glass is the "Projects" tab.
+**Done when:** on sign-in the app opens the user's **home session** window —
+an ordinary attended session auto-created on first login (`users.home_session_id`,
+set once; no special-casing anywhere else: it may sit `idle` forever, per the
+lifecycle). Top-level nav is two tabs, **Chat** (the home window, default) and
+**Projects** (the grid); the rail (LG-1.6) persists across both. The window's
+back link becomes the tab switch. Placeful creation is unchanged: composing in
+the Projects tab creates sessions there; the home chat is where heavy work is
+DISCUSSED and forked from — "fork this to a project" affordances stay future.
+**Touch:** frontend routing, one migration column, `POST /auth/session`
+(create-home-session on first login) | **P1, 0.5d** | **Blockers:** LG-1
+**Test:** first login creates exactly one home session and lands in it; second
+login lands in the same one; the Projects tab shows the grid with the home
+session's project bubble present like any other; sign-out and back preserves
+the home session.
+
+**Status: DONE 2026-08-18.** Migration 0008 adds `users.home_session_id`;
+`POST /auth/session` creates the session on the first-login path only, guarded by
+a conditional UPDATE so two logins racing cannot make two. `GET /auth/me` carries
+the id, because the page needs it on first render and no other request would.
+
+Two consequences worth knowing, both found by the tests rather than by reading.
+The home session's project appears in the grid — which the card asked for, and
+which changed what `GET /projects` returns for a brand-new user from nothing to
+one bubble. And the home session was silently spending the human's
+`new_sessions_per_hour` allowance: **fixed**, the quota now excludes it, because
+a limit on what a person asks for should not be spent by the server greeting
+them.
+
+Not built, and not asked for: any "fork this to a project" affordance. The home
+chat is where heavy work is discussed; moving it stays future.
 
 ## Task LG-2: Projects + Command Center
 **Done when:** `projects`/`project_files` tables; project-per-task default;

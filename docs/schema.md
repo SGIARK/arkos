@@ -16,9 +16,12 @@ best-effort, pruned at 30 days, a failed write is just a lost diagnostic).
 ```sql
 -- identity ------------------------------------------------------------------
 users (
-  id            uuid primary key,        -- = Supabase auth sub
-  email         text,
-  created_at    timestamptz not null default now()
+  id               uuid primary key,     -- = Supabase auth sub
+  email            text,
+  -- The chat the app lands in, made on first login and set once. ON DELETE SET
+  -- NULL: deleting a session must never delete the person whose chat it was.
+  home_session_id  uuid references sessions(id) on delete set null,
+  created_at       timestamptz not null default now()
 )
 
 -- containers ----------------------------------------------------------------

@@ -1,10 +1,16 @@
 /* =========================================================
-   Root: sign in, then the grid or one window.
+   Root: sign in, then the chat you already have.
 
-   Two surfaces and nothing else. The old nav (desk / tasks / watching /
-   approvals / computer / chat) described an architecture that no longer
-   exists — a session is the conversation and the run, so watching one and
-   talking to it are the same window.
+   The landing is the chat, not the grid. The product is a companion with
+   memory, so opening the app is walking up to your desk where ARK already is —
+   the home session, an ordinary attended session the server made on first
+   login. Looking Glass is the Projects tab, one click away, where work lives in
+   its project bubbles.
+
+   Two tabs and a rail. The old nav (desk / tasks / watching / approvals /
+   computer / chat) described an architecture that no longer exists: a session
+   is the conversation and the run, so watching one and talking to it are the
+   same window.
    ========================================================= */
 
 function SignIn({ onSignedIn }) {
@@ -73,9 +79,14 @@ function Problem({ error, onDismiss }) {
 function App() {
   const [user, setUser] = useState(null);
   const [booting, setBooting] = useState(true);
+  const [tab, setTab] = useState("chat");
+  // Only meaningful in the Projects tab; the Chat tab always shows home.
   const [openSession, setOpenSession] = useState(null);
   const [error, setError] = useState(null);
+  const [settings, setSettings] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem("ark-theme") || "light");
+  // Bumped when something happened that the rail's two sections are made of.
+  const [pulse, setPulse] = useState(0);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -101,6 +112,26 @@ function App() {
     setError(e);
   }, []);
 
+  const bump = useCallback(() => setPulse((n) => n + 1), []);
+
+  const home = user && user.home_session_id;
+
+  /* One place decides where a session id lands: home opens the Chat tab,
+     anything else opens it in Projects. */
+  const openSessionAnywhere = useCallback(
+    (sessionId) => {
+      if (home && sessionId === home) {
+        setTab("chat");
+        setOpenSession(null);
+      } else {
+        setTab("projects");
+        setOpenSession(sessionId);
+      }
+      bump();
+    },
+    [home, bump],
+  );
+
   const signOut = async () => {
     try {
       await api.signOut();
@@ -109,35 +140,82 @@ function App() {
     }
     setUser(null);
     setOpenSession(null);
+    setSettings(false);
+    setTab("chat");
   };
 
   if (booting) return <div className="empty boot">…</div>;
   if (!user) return <SignIn onSignedIn={setUser} />;
 
+  const showChat = tab === "chat";
+
   return (
     <div className="app">
       <header className="topbar">
-        <span className="brand" onClick={() => setOpenSession(null)}>
-          ARK
-        </span>
-        <span className="topbar-right">
-          <button className="link" onClick={() => setTheme(theme === "light" ? "dark" : "light")}>
-            {theme === "light" ? "dark" : "light"}
+        <span className="brand">ARK</span>
+        <nav className="tabs">
+          <button
+            className={"tab" + (showChat ? " on" : "")}
+            onClick={() => {
+              setTab("chat");
+              bump();
+            }}
+          >
+            Chat
           </button>
-          <span className="who">{user.email || user.user_id}</span>
-          <button className="link" onClick={signOut}>
-            sign out
+          <button
+            className={"tab" + (!showChat ? " on" : "")}
+            onClick={() => {
+              setTab("projects");
+              setOpenSession(null);
+              bump();
+            }}
+          >
+            Projects
           </button>
-        </span>
+        </nav>
+        <span className="who">{user.email || user.user_id}</span>
       </header>
 
       <Problem error={error} onDismiss={() => setError(null)} />
 
-      {openSession ? (
-        <SessionWindow sessionId={openSession} onBack={() => setOpenSession(null)} onError={onError} />
-      ) : (
-        <Grid onOpenSession={setOpenSession} onError={onError} />
+      {settings && (
+        <SettingsModal user={user} onClose={() => setSettings(false)} onSignOut={signOut} />
       )}
+
+      <div className="body">
+        <Rail
+          refreshKey={pulse}
+          openSession={showChat ? home : openSession}
+          onOpenSession={openSessionAnywhere}
+          onSettings={() => setSettings(true)}
+          theme={theme}
+          onTheme={setTheme}
+          onError={onError}
+        />
+
+        <main className="surface">
+          {showChat ? (
+            home ? (
+              /* No back link: the tabs are how you leave the chat. */
+              <SessionWindow sessionId={home} onError={onError} onActivity={bump} />
+            ) : (
+              <p className="empty">
+                No home session yet. Sign out and back in, and the server will make one.
+              </p>
+            )
+          ) : openSession ? (
+            <SessionWindow
+              sessionId={openSession}
+              onBack={() => setOpenSession(null)}
+              onError={onError}
+              onActivity={bump}
+            />
+          ) : (
+            <Grid onOpenSession={openSessionAnywhere} onError={onError} />
+          )}
+        </main>
+      </div>
     </div>
   );
 }

@@ -170,7 +170,7 @@ function Question({ item, onAnswered, onError }) {
   );
 }
 
-function SessionWindow({ sessionId, onBack, onError }) {
+function SessionWindow({ sessionId, onBack, onError, onActivity }) {
   const [session, setSession] = useState(null);
   const [events, setEvents] = useState([]);
   const [questions, setQuestions] = useState([]);
@@ -217,11 +217,17 @@ function SessionWindow({ sessionId, onBack, onError }) {
             if (event.kind === "lifecycle") {
               setSession((s) => (s ? { ...s, status: event.to } : s));
               refreshQuestions();
+              // A status move is exactly what the rail's two sections are made
+              // of, so it is told then and not on a timer.
+              if (onActivity) onActivity();
             }
             if (event.kind === "budget") {
               setSession((s) => (s ? { ...s, hops_used: event.hops_used, hops_max: event.hops_max } : s));
             }
-            if (event.kind === "done") refreshQuestions();
+            if (event.kind === "done") {
+              refreshQuestions();
+              if (onActivity) onActivity();
+            }
           },
           (failure) => onError(failure),
         );
@@ -234,7 +240,7 @@ function SessionWindow({ sessionId, onBack, onError }) {
       cancelled = true;
       if (source) source.close();
     };
-  }, [sessionId, refreshQuestions, onError]);
+  }, [sessionId, refreshQuestions, onError, onActivity]);
 
   useEffect(() => {
     if (tail.current) tail.current.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -259,9 +265,11 @@ function SessionWindow({ sessionId, onBack, onError }) {
   return (
     <div className="window">
       <div className="window-head">
-        <button className="link" onClick={onBack}>
-          ← grid
-        </button>
+        {onBack && (
+          <button className="link" onClick={onBack}>
+            ← projects
+          </button>
+        )}
         <Dot status={session.status} />
         <h2>{session.title || "untitled session"}</h2>
         <span className="window-meta">

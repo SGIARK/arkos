@@ -299,7 +299,7 @@ chat plumbing. One error shape everywhere: `{code, message, retryable}`.
 |---|---|---|
 | `POST /auth/session` | Supabase JWT as `Authorization: Bearer` | 204 + `Set-Cookie`. Verifies it once, upserts `sub` → `users`. The ONLY endpoint that reads a bearer token |
 | `DELETE /auth/session` | — | 204, cookie cleared |
-| `GET /auth/me` | — | `{user_id, email}` |
+| `GET /auth/me` | — | `{user_id, email, home_session_id}` — the home session is the chat the app lands in; the page needs it on first render and no other request would carry it |
 | `GET /auth/config` | — | `{supabase_url, anon_key}` — what the sign-in view needs to reach Supabase. Public and unauthenticated: it is how a signed-out browser signs in, and the anon key authorizes nothing on its own |
 | `GET /sessions/{id}` | — | `{title, project_id, status, hops_used/max, recent_events[]}` |
 | `GET /sessions/{id}/events` | `Last-Event-ID?` | SSE of events, `id:<seq>` each |
@@ -309,6 +309,7 @@ chat plumbing. One error shape everywhere: `{code, message, retryable}`.
 | `POST /approvals/{id}/respond` | `{answer}` | 202 — appends event, wakes at cursor |
 | `GET /projects` | — | `[{id, title, status_rollup, updated_at}]` |
 | `GET /attention` | `project_id?` | pending approvals/asks (same query, any scope), oldest first, each carrying its session and project |
+| `GET /sessions` | `status?` | `[{session_id, title, status, mode, project_id, project_title, hops_used/max, last_event_at}]` — the user's sessions across every project. The rail asks `?status=running`; the per-project list does not compose into a view that spans tabs |
 | `GET /projects/{id}/sessions` | — | `[{session_id, title, status, mode, hops_used/max, open_questions, last_event_at}]` — how the grid gets from a bubble to a window, most recently active first |
 | `GET /projects/{id}/files` | — | `[{file_id, path, name, size, mtime}]` — tree rows; no sandbox is woken |
 | `POST /projects/{id}/files` | multipart (`file`, optional `path`) | `{file_id, name, path, size}` |
@@ -327,6 +328,14 @@ keeps its `connection_id` and `tools_cache` (D24). The callback firing is the
 proof OAuth completed, so it is the trigger — read-repair alone would strand a
 connection whose popup closed early, since dispatch never re-verifies and
 revalidation skips unconnected rows.
+
+**The home session.** First login creates one ordinary attended session and
+records it as `users.home_session_id`, set once. Nothing else in the system
+special-cases it: it has a project, appears in the grid, moves through the
+lifecycle, and may sit idle forever. What makes it home is that the app opens it
+by default, which is a routing fact rather than a state one. It does not count
+against `quotas.new_sessions_per_hour` — the server greeting someone should not
+spend the allowance for what they ask for themselves.
 
 **Auth on every endpoint above: the session cookie.** httpOnly + Secure +
 SameSite=Lax, set by us after verifying Supabase's JWT once. The browser attaches

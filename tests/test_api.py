@@ -81,6 +81,14 @@ async def _signed_in(client: AsyncClient) -> str:
     return user_id
 
 
+async def _sign_in_as(client: AsyncClient, user_id: str) -> None:
+    """Sign in as a specific user, for the tests about what first login does."""
+    response = await client.post(
+        "/auth/session", headers={"Authorization": f"Bearer {_supabase_token(user_id)}"}
+    )
+    assert response.status_code == 204
+
+
 async def _session_for(user_id: str, **cols) -> str:
     session_id = await pool.fetchval(
         "INSERT INTO sessions (user_id, mode, status, title, goal) VALUES ($1, $2, $3, $4, $5) RETURNING id",
@@ -191,7 +199,10 @@ async def test_auth_me_reports_the_signed_in_user(client):
 
     body = (await client.get("/auth/me")).json()
 
-    assert body == {"user_id": user_id, "email": "a@example.com"}
+    assert body["user_id"] == user_id
+    assert body["email"] == "a@example.com"
+    # The page needs it on the first render and nothing else would carry it.
+    assert body["home_session_id"], "the app has nowhere to land without this"
 
 
 async def test_logout_clears_the_cookie(client):
@@ -250,7 +261,14 @@ async def test_the_new_session_rate_quota_binds_before_anything_is_written(clien
     assert first.status_code == 201
     assert second.status_code == 429
     assert second.json()["retryable"] is True
-    count = await pool.fetchval("SELECT count(*) FROM sessions WHERE user_id = $1", uuid.UUID(user_id))
+    # Excluding home, which first login made and the quota does not count.
+    count = await pool.fetchval(
+        """
+        SELECT count(*) FROM sessions s JOIN users u ON u.id = s.user_id
+         WHERE s.user_id = $1 AND s.id <> u.home_session_id
+        """,
+        uuid.UUID(user_id),
+    )
     assert count == 1, "the refused session left no row"
 
 
@@ -398,7 +416,8 @@ async def test_projects_roll_up_to_one_dot_each(client):
 
     body = (await client.get("/projects")).json()
 
-    assert [p["title"] for p in body] == ["Taxes"]
+    # "Chat" is the home session's project, in the grid like any other (LG-1.7).
+    assert [p["title"] for p in body] == ["Taxes", "Chat"]
     assert body[0]["status_rollup"] == "awaiting_approval", "the most urgent thing in the project wins the dot"
 
 
@@ -512,6 +531,118 @@ async def test_attention_never_crosses_users(client):
     assert (await client.get("/attention")).json() == []
 
 
+# --- the rail's cross-project view --------------------------------------------------
+
+
+async def test_running_sessions_are_listed_across_projects(client):
+    """The per-project list does not compose into a sidebar that spans both tabs."""
+    user_id = await _signed_in(client)
+    live = []
+    for title in ("Taxes", "Garden"):
+        project_id = await pool.fetchval(
+            "INSERT INTO projects (user_id, title) VALUES ($1, $2) RETURNING id", uuid.UUID(user_id), title
+        )
+        live.append(
+            await pool.fetchval(
+                "INSERT INTO sessions (user_id, project_id, mode, status, title) "
+                "VALUES ($1, $2, 'unattended', 'running', $3) RETURNING id",
+                uuid.UUID(user_id),
+                project_id,
+                title + " work",
+            )
+        )
+    await pool.execute(
+        "INSERT INTO sessions (user_id, mode, status) VALUES ($1, 'attended', 'idle')", uuid.UUID(user_id)
+    )
+
+    body = (await client.get("/sessions?status=running")).json()
+
+    assert {s["session_id"] for s in body} == {str(s) for s in live}
+    assert {s["project_title"] for s in body} == {"Taxes", "Garden"}
+    assert all(s["status"] == "running" for s in body)
+
+
+async def test_listing_sessions_without_a_filter_returns_them_all(client):
+    user_id = await _signed_in(client)
+    for status in ("idle", "running", "completed"):
+        await pool.execute(
+            "INSERT INTO sessions (user_id, mode, status) VALUES ($1, 'attended', $2)",
+            uuid.UUID(user_id),
+            status,
+        )
+
+    body = (await client.get("/sessions")).json()
+
+    # Three made here, plus the home session every sign-in leaves behind.
+    assert len(body) == 4
+    assert {s["status"] for s in body} == {"idle", "running", "completed"}
+
+
+async def test_a_status_that_is_not_one_is_refused(client):
+    await _signed_in(client)
+
+    response = await client.get("/sessions?status=banana")
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "invalid_request"
+
+
+async def test_session_listing_never_crosses_users(client):
+    theirs = str(uuid.uuid4())
+    _seeded.append(uuid.UUID(theirs))
+    await pool.execute("INSERT INTO users (id) VALUES ($1)", uuid.UUID(theirs))
+    await _session_for(theirs, status="running")
+    await _signed_in(client)
+
+    assert (await client.get("/sessions?status=running")).json() == []
+
+
+# --- the home session ---------------------------------------------------------------
+
+
+async def test_first_sign_in_creates_exactly_one_home_session(client):
+    user_id = str(uuid.uuid4())
+    _seeded.append(uuid.UUID(user_id))
+
+    await _sign_in_as(client, user_id)
+    me = (await client.get("/auth/me")).json()
+
+    assert me["home_session_id"], "no home session was made"
+    row = await pool.fetchrow(
+        "SELECT status, mode, project_id FROM sessions WHERE id = $1", uuid.UUID(me["home_session_id"])
+    )
+    assert (row["status"], row["mode"]) == ("idle", "attended"), "home is an ordinary session"
+    assert row["project_id"] is not None, "the home session has a project like any other"
+    assert await pool.fetchval("SELECT count(*) FROM sessions WHERE user_id = $1", uuid.UUID(user_id)) == 1
+
+
+async def test_signing_in_again_lands_in_the_same_home_session(client):
+    user_id = str(uuid.uuid4())
+    _seeded.append(uuid.UUID(user_id))
+
+    await _sign_in_as(client, user_id)
+    first = (await client.get("/auth/me")).json()["home_session_id"]
+    await _sign_in_as(client, user_id)
+    second = (await client.get("/auth/me")).json()["home_session_id"]
+
+    assert first == second
+    assert await pool.fetchval("SELECT count(*) FROM sessions WHERE user_id = $1", uuid.UUID(user_id)) == 1
+
+
+async def test_the_home_sessions_project_is_in_the_grid_like_any_other(client):
+    user_id = str(uuid.uuid4())
+    _seeded.append(uuid.UUID(user_id))
+    await _sign_in_as(client, user_id)
+    home = (await client.get("/auth/me")).json()["home_session_id"]
+
+    projects = (await client.get("/projects")).json()
+
+    home_project = await pool.fetchval(
+        "SELECT project_id FROM sessions WHERE id = $1", uuid.UUID(home)
+    )
+    assert str(home_project) in [p["id"] for p in projects]
+
+
 # --- signing in -------------------------------------------------------------------
 
 
@@ -542,7 +673,8 @@ async def test_authz_scoping(client):
     assert (await client.post(f"/sessions/{their_session}/messages", json={"text": "hi"})).status_code == 404
     assert (await client.post(f"/sessions/{their_session}/cancel")).status_code == 404
     assert (await client.get(f"/results/{their_ref}")).status_code == 404
-    assert (await client.get("/projects")).json() == []
+    # Only their own: the home session's project is here, theirs is not.
+    assert [p["title"] for p in (await client.get("/projects")).json()] == ["Chat"]
 
 
 async def test_a_result_is_readable_by_its_owner_and_pages(client):

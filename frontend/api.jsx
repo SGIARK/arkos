@@ -115,11 +115,18 @@ const api = {
   /* --- what is here ----------------------------------------------------- */
 
   projects: () => request("GET", "/projects"),
+  sessions: (status) => request("GET", status ? `/sessions?status=${encodeURIComponent(status)}` : "/sessions"),
   projectSessions: (projectId) => request("GET", `/projects/${projectId}/sessions`),
   session: (sessionId) => request("GET", `/sessions/${sessionId}`),
   files: (projectId) => request("GET", `/projects/${projectId}/files`),
   attention: (projectId) =>
     request("GET", projectId ? `/attention?project_id=${encodeURIComponent(projectId)}` : "/attention"),
+
+  /* --- connections ------------------------------------------------------ */
+
+  connections: () => request("GET", "/connections"),
+  connect: (server) => request("POST", `/connections/${encodeURIComponent(server)}/connect`),
+  disconnect: (server) => request("DELETE", `/connections/${encodeURIComponent(server)}`),
 
   /* --- what a human may do ---------------------------------------------- */
 
