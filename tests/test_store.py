@@ -200,3 +200,101 @@ async def test_an_unchanged_tree_diffs_to_nothing():
     tree = await store.commit_tree(project_id, [_file("a.txt", "1")])
 
     assert not store.diff_tree(tree, tree)
+
+
+# --- the Supabase backend -------------------------------------------------------------
+
+
+def _supabase(handler) -> store.SupabaseBlobs:
+    """A backend wired to a mock transport, so the HTTP contract is tested without a bucket."""
+    import httpx
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return store.SupabaseBlobs("https://ref.supabase.co", "service-key", "files", client=client)
+
+
+async def test_an_upload_addresses_the_blob_by_its_hash_and_authenticates():
+    seen = {}
+
+    def handler(request):
+        import httpx
+
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("authorization")
+        seen["apikey"] = request.headers.get("apikey")
+        seen["body"] = request.content
+        return httpx.Response(200, json={"Key": "ok"})
+
+    content_hash = store.sha256(b"alpha")
+    await _supabase(handler).put(content_hash, b"alpha")
+
+    assert seen["url"] == f"https://ref.supabase.co/storage/v1/object/files/{store.blob_key(content_hash)}"
+    assert seen["auth"] == "Bearer service-key"
+    assert seen["apikey"] == "service-key"
+    assert seen["body"] == b"alpha"
+
+
+async def test_uploading_a_blob_that_is_already_there_succeeds():
+    """Write-once: the name is the hash of the content, so a duplicate is the same blob."""
+
+    def handler(request):
+        import httpx
+
+        return httpx.Response(400, json={"error": "Duplicate", "message": "The resource already exists"})
+
+    await _supabase(handler).put("a" * 64, b"alpha")
+
+
+async def test_an_upload_that_fails_is_raised_not_swallowed():
+    def handler(request):
+        import httpx
+
+        return httpx.Response(500, text="storage is unwell")
+
+    with pytest.raises(store.StoreError):
+        await _supabase(handler).put("a" * 64, b"alpha")
+
+
+async def test_a_download_returns_bytes_and_a_miss_returns_none():
+    def handler(request):
+        import httpx
+
+        return httpx.Response(200, content=b"beta") if "bb" in str(request.url) else httpx.Response(404)
+
+    backend = _supabase(handler)
+
+    assert await backend.get("bb" + "0" * 62) == b"beta"
+    assert await backend.get("cc" + "0" * 62) is None
+
+
+async def test_missing_asks_only_about_the_hashes_it_was_given():
+    asked = []
+
+    def handler(request):
+        import httpx
+
+        asked.append(str(request.url).rsplit("/", 1)[-1])
+        return httpx.Response(404 if str(request.url).endswith("2") else 200)
+
+    present, absent = "a" * 63 + "1", "b" * 63 + "2"
+    missing = await _supabase(handler).missing([present, absent])
+
+    assert missing == {absent}
+    assert sorted(asked) == sorted([present, absent])
+
+
+async def test_selecting_supabase_without_credentials_fails_loudly(monkeypatch):
+    """A store that cannot reach its bucket must say so at startup, not at first write."""
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
+    monkeypatch.setattr(store, "_cfg", lambda key, default: "supabase" if key == "store.backend" else default)
+
+    with pytest.raises(store.StoreError, match="SUPABASE_URL"):
+        store._build()
+
+
+async def test_an_unknown_backend_is_refused(monkeypatch):
+    monkeypatch.setattr(store, "_cfg", lambda key, default: "carrier-pigeon" if key == "store.backend" else default)
+
+    with pytest.raises(store.StoreError, match="carrier-pigeon"):
+        store._build()

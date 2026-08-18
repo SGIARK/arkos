@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -133,15 +134,114 @@ class FilesystemBlobs:
         return await asyncio.to_thread(lambda: {h for h in wanted if not self._path(h).exists()})
 
 
+class SupabaseBlobs:
+    """Blobs in a Supabase Storage bucket, over its REST API.
+
+    Writes are write-once, so an upload of a hash that is already there is a
+    success rather than an overwrite: Supabase reports the duplicate and this
+    treats it as the object already being correct, which it is, because the
+    name is the hash of the content.
+
+    The URL and service key come from the environment rather than config.yaml,
+    for the same reason E2B_API_KEY does: a `${VAR}` in the yaml makes an unset
+    key crash config load for everything, including the parts that do not use it.
+    """
+
+    def __init__(self, url: str, service_key: str, bucket: str, concurrency: int = 8, client: Any = None):
+        self.base = url.rstrip("/") + "/storage/v1/object"
+        self.bucket = bucket
+        self._headers = {"Authorization": f"Bearer {service_key}", "apikey": service_key}
+        self._client = client
+        self._gate = asyncio.Semaphore(concurrency)
+
+    def _client_or_new(self) -> Any:
+        import httpx
+
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=30.0)
+        return self._client
+
+    def _url(self, content_hash: str) -> str:
+        return f"{self.base}/{self.bucket}/{blob_key(content_hash)}"
+
+    async def put(self, content_hash: str, content: bytes) -> None:
+        client = self._client_or_new()
+        async with self._gate:
+            response = await client.post(
+                self._url(content_hash),
+                content=content,
+                headers={**self._headers, "Content-Type": "application/octet-stream"},
+            )
+        if response.status_code in (200, 201):
+            return
+        # The object already exists. Its name is the hash of its content, so it
+        # is the blob we were about to write.
+        if response.status_code in (409, 400) and "duplicate" in response.text.lower():
+            return
+        raise StoreError(f"uploading {content_hash[:12]} failed: {response.status_code} {response.text[:200]}")
+
+    async def get(self, content_hash: str) -> bytes | None:
+        client = self._client_or_new()
+        async with self._gate:
+            response = await client.get(self._url(content_hash), headers=self._headers)
+        if response.status_code == 404:
+            return None
+        if response.status_code != 200:
+            raise StoreError(f"reading {content_hash[:12]} failed: {response.status_code} {response.text[:200]}")
+        return response.content
+
+    async def missing(self, hashes: Iterable[str]) -> set[str]:
+        wanted = sorted(set(hashes))
+        if not wanted:
+            return set()
+        client = self._client_or_new()
+
+        async def absent(content_hash: str) -> str | None:
+            async with self._gate:
+                response = await client.head(self._url(content_hash), headers=self._headers)
+            return content_hash if response.status_code == 404 else None
+
+        found = await asyncio.gather(*(absent(h) for h in wanted))
+        return {h for h in found if h is not None}
+
+    async def close(self) -> None:
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
+
+
+class StoreError(RuntimeError):
+    """Raised when the blob backend refuses a read or a write."""
+
+
 _blobs: Blobs | None = None
 
 
 def blobs() -> Blobs:
-    """Return the process-wide blob backend."""
+    """Return the process-wide blob backend, built from `store.backend`."""
     global _blobs
     if _blobs is None:
-        _blobs = FilesystemBlobs(_cfg("store.root", ".arkos-store"))
+        _blobs = _build()
     return _blobs
+
+
+def _build() -> Blobs:
+    backend = str(_cfg("store.backend", "filesystem")).lower()
+    if backend == "filesystem":
+        return FilesystemBlobs(_cfg("store.root", ".arkos-store"))
+    if backend == "supabase":
+        url = os.environ.get("SUPABASE_URL")
+        key = os.environ.get("SUPABASE_SERVICE_KEY")
+        bucket = _cfg("store.bucket", "")
+        missing = [
+            name
+            for name, value in (("SUPABASE_URL", url), ("SUPABASE_SERVICE_KEY", key), ("store.bucket", bucket))
+            if not value
+        ]
+        if missing:
+            raise StoreError(f"store.backend is 'supabase' but {', '.join(missing)} is unset")
+        return SupabaseBlobs(url, key, str(bucket))
+    raise StoreError(f"unknown store.backend {backend!r}; expected 'filesystem' or 'supabase'")
 
 
 def use_blobs(backend: Blobs | None) -> None:

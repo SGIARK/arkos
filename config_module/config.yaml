@@ -35,10 +35,13 @@ store:
   # Where the agent's files live. Bytes are content-addressed under
   # {prefix}/blobs/{hh}/{sha256}; the tree is rows in project_files. The sandbox
   # disk is a cache of this, not the other way round.
+  #
+  # supabase   -- a Storage bucket, over its REST API. Needs SUPABASE_URL and
+  #               SUPABASE_SERVICE_KEY in the environment, and the bucket below.
+  # filesystem -- blobs under `root`. Single box only; used by the test suite.
+  backend: "supabase"
   bucket: "${STORE_BUCKET}"
   prefix: "arkos"
-  # Blobs are kept on disk under this root. An object-storage backend
-  # implements the same interface; see harness_module/store.py:Blobs.
   root: ".arkos-store"
 
 system_log:
