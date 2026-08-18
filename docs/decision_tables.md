@@ -113,15 +113,21 @@ session. Same termination rule (D15), evaluated against `mode`.
 | `pending` / `idle` / `awaiting_approval` | harness writes `cancelled` directly (no loop to signal) |
 | terminal | no-op |
 
-## 7. Resource leases (sandbox, browser)
+## 7. Resource leases (browser, project) and the sandbox pool
+
+The browser is leased per user and a project is leased per write claim. The
+sandbox is not leased: a box belongs to one session, and what is shared is
+capacity.
 
 | Condition | Action |
 |---|---|
-| first use of the resource in this run | `acquire(resource_key, session_id)` |
+| first use of a leased resource in this run | `acquire(resource_key, session_id)` |
 | already held by another session | stay `running`, emit `status{label:"waiting for {resource}"}`, wall clock paused; NOT a park (no ochre, no /attention row) |
-| task parks on approval | release (a parked task is not acting) |
-| task resumes | re-acquire (state persisted, so files/cookies are still there) |
-| task terminal | release |
+| first use of the sandbox in this run | claim a slot in the user's pool; over `sandbox.max_concurrent_per_user`, wait the same way as a lease |
+| task parks on approval | flush, release every lease, **pause** the box and keep its slot |
+| task resumes | re-acquire the leases, resume the paused box (or rebuild it from the store, which is the record either way) |
+| task terminal | flush, release every lease, kill the box and free its slot |
+| slot expires unrenewed | reclaimed, and the box it names is killed |
 
 ## 8. Append failure
 

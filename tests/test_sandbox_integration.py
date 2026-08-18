@@ -190,6 +190,40 @@ async def test_a_box_with_no_handle_in_this_process_is_still_killed():
     assert _is_dead(sandbox_id), "kill by id did not destroy the box"
 
 
+async def test_a_paused_box_resumes_with_its_files():
+    """Park hibernates rather than kills, so the next turn starts warm."""
+    session_id = await _session()
+    manager = sandbox_manager.manager()
+    try:
+        original = await manager.get_or_create(session_id)
+        await manager.write_file(session_id, "/home/user/scratch.txt", "written before the park")
+
+        await manager.pause(session_id)
+        resumed = await manager.get_or_create(session_id)
+
+        assert resumed.sandbox_id == original.sandbox_id
+        assert await manager.read_file(session_id, "/home/user/scratch.txt") == "written before the park"
+    finally:
+        await _kill(manager, session_id)
+
+
+async def test_a_paused_box_can_still_be_reaped():
+    """Terminal kills whatever state the box is in, so a park cannot strand one."""
+    session_id = await _session()
+    manager = sandbox_manager.manager()
+    sandbox = await manager.get_or_create(session_id)
+    sandbox_id = sandbox.sandbox_id
+    await manager.pause(session_id)
+
+    await manager.reap(session_id)
+
+    slots = await pool.fetchval(
+        "SELECT count(*) FROM session_sandboxes WHERE session_id = $1", uuid.UUID(session_id)
+    )
+    assert slots == 0
+    assert _is_dead(sandbox_id), "a paused box survived its reap"
+
+
 def _is_dead(sandbox_id: str) -> bool:
     """True if nothing answers on that box any more."""
     from e2b_code_interpreter import Sandbox

@@ -35,6 +35,7 @@ class FakeBoxes:
     def __init__(self) -> None:
         self.boxes: dict[str, FakeSandbox] = {}
         self.reaped: list[str] = []
+        self.paused: list[str] = []
         self.calls: list[str] = []
 
     def box(self, session_id: str) -> FakeSandbox:
@@ -66,6 +67,10 @@ class FakeBoxes:
 
     async def read_bytes(self, session_id: str, path: str) -> bytes:
         return await self.box(session_id).read_bytes(session_id, path)
+
+    async def pause(self, session_id: str) -> None:
+        self.paused.append(session_id)
+        await sandbox_manager.renew_slot(session_id)
 
     async def reap(self, session_id: str) -> None:
         self.reaped.append(session_id)
@@ -530,3 +535,46 @@ async def test_the_startup_sweep_reclaims_what_a_dead_process_left(boxes, killed
     assert freed == 2
     assert sorted(killed) == ["sb-finished", "sb-stale"]
     assert await _slots(user_id) == 1
+
+
+async def test_a_park_pauses_the_box_and_keeps_its_slot(boxes, model, patient, monkeypatch):
+    """A parked session is not acting, but it is not over: the box waits with it."""
+    user_id = await _user()
+    project_id = await _project(user_id, "Waiting")
+    await store.commit_tree(project_id, [_file("a.txt", "1")])
+    session_id = await _session(user_id, project_id)
+
+    hops = [
+        [
+            mc.ToolCallDelta(index=0, id="c1", name="run_command", arguments='{"command": "true"}'),
+            mc.Finish(reason="tool_calls"),
+        ],
+        [
+            mc.ToolCallDelta(index=0, id="c2", name="ask", arguments='{"question": "which one?"}'),
+            mc.Finish(reason="tool_calls"),
+        ],
+    ]
+
+    def generate(messages, tools=None, **kw):
+        deltas = hops.pop(0) if hops else [mc.TextDelta(text="done"), mc.Finish(reason="stop")]
+
+        async def gen():
+            for d in deltas:
+                await asyncio.sleep(0)
+                yield d
+
+        return gen()
+
+    monkeypatch.setattr(mc, "generate", generate)
+
+    await _drive(session_id)
+
+    row = await pool.fetchrow("SELECT status FROM sessions WHERE id = $1", uuid.UUID(session_id))
+    assert row["status"] == "awaiting_approval"
+    assert boxes.paused == [session_id]
+    assert boxes.reaped == [], "a parked session lost its computer"
+    assert await _slots(user_id) == 1, "a parked session gave up its slot"
+    held = await pool.fetchval(
+        "SELECT count(*) FROM resource_leases WHERE session_id = $1", uuid.UUID(session_id)
+    )
+    assert held == 0, "a parked session is not acting, so it holds no lease"

@@ -454,14 +454,21 @@ That test, not a list, decides future resources.
 | session log | no (per session) | — | serialized by the appender, a different race |
 
 **The sandbox is capacity, not a lease.** A box belongs to one session and is
-destroyed once that session's flush lands, so there is nothing to serialize:
+destroyed once that session's last flush lands, so there is nothing to serialize:
 overlapping writes are already ordered by the `project:{id}` claims, and a box is
 never compared to another box, only to the store subtrees its session claimed.
 What `sandbox.max_concurrent_per_user` protects is spend, and a session over the
 cap waits exactly as a lease waiter does. The slot is a row in
 `session_sandboxes`, taken before the box boots and dropped when it is reaped, so
-capacity cannot outlive the box that used it. A session's box is reaped ONLY
-after its flush lands.
+capacity cannot outlive the box that used it, and it carries an expiry renewed on
+every call into the box, so a process that dies frees what it held. A session's
+box is reaped ONLY after its flush lands.
+
+**A park hibernates the box; only a terminal kills it.** A parked session gives
+up every lease — it is not acting — but keeps its slot and its box, paused: it is
+not over either, and the work outside the claimed mounts (a download, an install)
+is still there when the human answers. Terminal flushes and kills; an expired
+slot is reclaimed and its box killed with it.
 
 **A lease wait is not a park.** A session waiting on a held lease stays `running`
 and emits `status{label:"waiting for a computer"}`, which is exactly what `status`

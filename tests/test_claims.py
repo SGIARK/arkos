@@ -37,7 +37,11 @@ async def _db(tmp_path, monkeypatch):
     async def reap(session_id):
         await runner.sandbox_manager.release_slot(session_id)
 
+    async def pause(session_id):
+        await runner.sandbox_manager.renew_slot(session_id)
+
     sandbox.reap = reap
+    sandbox.pause = pause
     monkeypatch.setattr(runner.sandbox_manager, "manager", lambda: sandbox)
     api.sandbox = sandbox
     yield

@@ -358,6 +358,24 @@ class SandboxManager:
             {"name": e.name, "path": e.path, "is_dir": is_dir(e), "size": getattr(e, "size", 0)} for e in entries
         ]
 
+    async def pause(self, session_id: str) -> None:
+        """Hibernate the session's box, keeping its slot.
+
+        A parked session is not acting, but it is not over either: the box stops
+        costing compute and its disk survives, so the next turn starts warm. It
+        is killed at terminal, or by the reclaim once the slot expires.
+        """
+        sandbox = self._live.pop(session_id, None)
+        await renew_slot(session_id)
+        if sandbox is None:
+            return
+        try:
+            await asyncio.to_thread(sandbox.pause)
+        except Exception as e:  # noqa: BLE001 - e2b raises its own types
+            logger.warning("could not pause the box of session %s (%s)", session_id, e)
+            return
+        logger.info("paused the box of session %s", session_id)
+
     async def reap(self, session_id: str) -> None:
         """Destroy the session's box and free its slot.
 

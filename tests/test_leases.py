@@ -163,6 +163,9 @@ def sandbox(monkeypatch):
         async def read_file(self, session_id, path):
             return self.files[path]
 
+        async def pause(self, session_id):
+            await sandbox_manager.renew_slot(session_id)
+
         async def reap(self, session_id):
             await sandbox_manager.release_slot(session_id)
 
@@ -256,3 +259,7 @@ async def test_a_park_gives_the_leases_back(sandbox, model, impatient):
         "SELECT count(*) FROM resource_leases WHERE session_id = $1", uuid.UUID(session_id)
     )
     assert held == 0
+    slot = await pool.fetchval(
+        "SELECT count(*) FROM session_sandboxes WHERE session_id = $1", uuid.UUID(session_id)
+    )
+    assert slot == 1, "the box is hibernated on a park, not given up"

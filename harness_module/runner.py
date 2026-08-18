@@ -731,15 +731,30 @@ class _Sink:
                 raise ToolUnavailable("timeout", busy)
             await asyncio.sleep(poll)
 
-    async def _release_leases(self) -> None:
-        """Commit what the sandbox changed, then give up the box and every resource held."""
+    async def _release_leases(self, *, keep_box: bool = False) -> None:
+        """Commit what the sandbox changed, then give up the box and every resource held.
+
+        `keep_box` is the park: the session is not acting, so it holds no lease,
+        but it is not over either, so its box is hibernated rather than
+        destroyed and the work outside the claimed mounts survives the wait.
+        """
         await self._flush_workspace()
-        await self._release_sandbox()
+        if keep_box:
+            await self._pause_sandbox()
+        else:
+            await self._release_sandbox()
         if not self._leases:
             return
         with contextlib.suppress(Exception):
             await leases.release_all(self.session.id)
         self._leases.clear()
+
+    async def _pause_sandbox(self) -> None:
+        """Hibernate the session's box, keeping its slot for the turn that resumes it."""
+        try:
+            await sandbox_manager.manager().pause(self.session.id)
+        except Exception:  # noqa: BLE001 - a box left running is not worth failing a park for
+            logger.exception("session %s: pausing the sandbox failed", self.session.id)
 
     async def _release_sandbox(self) -> None:
         """Destroy the session's box and free its slot in the user's pool.
@@ -990,9 +1005,10 @@ class _Sink:
         """
         if self._park is None:
             return False
-        # A parked session is not acting, so it holds nothing. Released before
-        # the drain, so anything the flush reports is still recorded.
-        await self._release_leases()
+        # A parked session is not acting, so it holds no lease. Released before
+        # the drain, so anything the flush reports is still recorded; the box is
+        # kept, hibernated, because the session resumes into it.
+        await self._release_leases(keep_box=True)
         await self._drain()
         call_id, name, args = self._park
         approval = await approvals.create(self.session.id, call_id, PARK_KINDS[name], _park_prompt(name, args))
