@@ -88,6 +88,20 @@ class SmitheryClient:
             "Accept": "application/json",
         }
 
+    def _namespace_error(self, status: int, text: str) -> str:
+        """Turn Smithery's 404 into something the reader can act on.
+
+        A missing namespace and an expired token are one message on their side,
+        and the difference is the whole diagnosis: the registry answers a valid
+        key, so a 404 here with a working key means the namespace, not the key.
+        """
+        if status == 404 and "not_found" in text:
+            return (
+                f"Smithery has no namespace {self.namespace!r} for this API key. "
+                "Check SMITHERY_NAMESPACE in .env, and that the key belongs to the account that owns it."
+            )
+        return f"{status}: {text[:300]}"
+
     async def upsert(
         self,
         connection_id: str,
@@ -119,7 +133,7 @@ class SmitheryClient:
             if resp.status == 401:
                 raise AuthRequiredError(service=connection_id)
             if resp.status >= 400:
-                raise SmitheryError(f"upsert {resp.status}: {text[:300]}")
+                raise SmitheryError(self._namespace_error(resp.status, text))
             return json.loads(text) if text.strip() else {}
 
     async def delete(self, connection_id: str) -> None:
@@ -143,7 +157,7 @@ class SmitheryClient:
             if resp.status == 401:
                 raise AuthRequiredError(service=connection_id)
             if resp.status >= 400:
-                raise SmitheryError(f"{method} {resp.status}: {text[:300]}")
+                raise SmitheryError(f"{method} {self._namespace_error(resp.status, text)}")
             data = _parse_rpc(text, method)
 
         if "error" in data:
