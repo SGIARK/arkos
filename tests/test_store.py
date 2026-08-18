@@ -298,3 +298,55 @@ async def test_an_unknown_backend_is_refused(monkeypatch):
 
     with pytest.raises(store.StoreError, match="carrier-pigeon"):
         store._build()
+
+
+async def test_the_project_url_is_derived_from_a_direct_dsn(monkeypatch):
+    """The DSN already carries the project ref, so the URL need not be configured twice."""
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.setattr(
+        store,
+        "_cfg",
+        lambda key, default: "postgresql://postgres:pw@db.abcdefg.supabase.co:5432/postgres"
+        if key == "database.url"
+        else default,
+    )
+
+    assert store.project_url() == "https://abcdefg.supabase.co"
+
+
+async def test_the_project_url_is_derived_from_a_pooler_dsn(monkeypatch):
+    """The pooler moves the ref into the username."""
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.setattr(
+        store,
+        "_cfg",
+        lambda key, default: "postgresql://postgres.abcdefg:pw@aws-0-eu-west-2.pooler.supabase.com:6543/postgres"
+        if key == "database.url"
+        else default,
+    )
+
+    assert store.project_url() == "https://abcdefg.supabase.co"
+
+
+async def test_an_explicit_url_wins_over_the_dsn(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://storage.example.com/")
+    monkeypatch.setattr(
+        store,
+        "_cfg",
+        lambda key, default: "postgresql://postgres:pw@db.abcdefg.supabase.co:5432/postgres"
+        if key == "database.url"
+        else default,
+    )
+
+    assert store.project_url() == "https://storage.example.com"
+
+
+async def test_a_non_supabase_dsn_derives_nothing(monkeypatch):
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.setattr(
+        store,
+        "_cfg",
+        lambda key, default: "postgresql://user:pw@localhost:5432/arkos" if key == "database.url" else default,
+    )
+
+    assert store.project_url() is None

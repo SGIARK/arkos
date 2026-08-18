@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from config_module.loader import config
 from db import pool
@@ -225,17 +226,46 @@ def blobs() -> Blobs:
     return _blobs
 
 
+def project_url() -> str | None:
+    """The Supabase project URL, from SUPABASE_URL or derived from the database DSN.
+
+    Both DSN shapes carry the project ref: the direct connection puts it in the
+    host (`db.<ref>.supabase.co`) and the pooler puts it in the username
+    (`postgres.<ref>@aws-0-<region>.pooler.supabase.com`).
+    """
+    explicit = os.environ.get("SUPABASE_URL")
+    if explicit:
+        return explicit.rstrip("/")
+
+    dsn = _cfg("database.url", "") or ""
+    try:
+        parts = urlsplit(dsn)
+    except ValueError:
+        return None
+
+    host = parts.hostname or ""
+    if host.endswith(".supabase.co") and host.startswith("db."):
+        return f"https://{host[len('db.'):]}"
+    if "pooler.supabase.com" in host and "." in (parts.username or ""):
+        return f"https://{parts.username.split('.', 1)[1]}.supabase.co"
+    return None
+
+
 def _build() -> Blobs:
     backend = str(_cfg("store.backend", "filesystem")).lower()
     if backend == "filesystem":
         return FilesystemBlobs(_cfg("store.root", ".arkos-store"))
     if backend == "supabase":
-        url = os.environ.get("SUPABASE_URL")
+        url = project_url()
         key = os.environ.get("SUPABASE_SERVICE_KEY")
         bucket = _cfg("store.bucket", "")
         missing = [
             name
-            for name, value in (("SUPABASE_URL", url), ("SUPABASE_SERVICE_KEY", key), ("store.bucket", bucket))
+            for name, value in (
+                ("SUPABASE_URL (or a Supabase database.url to derive it from)", url),
+                ("SUPABASE_SERVICE_KEY", key),
+                ("store.bucket", bucket),
+            )
             if not value
         ]
         if missing:
