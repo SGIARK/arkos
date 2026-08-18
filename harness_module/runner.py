@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import posixpath
 import time
 import uuid
 from collections.abc import Awaitable, Sequence
@@ -33,11 +34,12 @@ from agent_module.events import (
 from agent_module.loop import Budgets, Dispatch, run_turn
 from config_module.loader import config
 from db import pool
-from harness_module import approvals, hands, leases, lifecycle, system_log
+from harness_module import approvals, hands, leases, lifecycle, system_log, workspace
 from harness_module import session_log as slog
 from harness_module.stream import stream
 from tool_module import registry
 from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, ToolUnavailable
+from tool_module.sandbox import manager as sandbox_manager
 from tool_module.tools.control import PARK_KINDS
 
 logger = logging.getLogger(__name__)
@@ -569,6 +571,8 @@ class _Sink:
         self._park_calls: dict[str, tuple[str, dict[str, Any]]] = {}
         # Resource keys this session holds, so a second call skips the database.
         self._leases: set[str] = set()
+        # The claims materialized into the sandbox, and the tree they came from.
+        self._workspace: tuple[list[workspace.Claim], dict[str, str]] | None = None
         # The ending already on the record; a later abort completes this one.
         self._pending_done: DoneEvent | None = None
         self._last_seq = 0
@@ -613,24 +617,48 @@ class _Sink:
         return self._park is not None
 
     async def _lease(self, resource: str) -> None:
-        """Claim the session's lease on a shared resource, waiting if another session holds it.
+        """Claim what the session needs to use a shared resource, and fill its cache.
 
-        A contended session stays `running` and says so with a status event. It
-        is not a park: no hops burn, because no model call happens.
+        The sandbox is leased for the box itself; each write claim is leased for
+        the project it names, so two sessions touching different projects do not
+        wait on each other. The claimed subtrees are materialized once the
+        leases are held, and nothing unclaimed is put there.
 
         Raises:
-            ToolUnavailable: the wait ran out. The model routes around it.
+            ToolUnavailable: a lease did not free up. The model routes around it.
         """
-        resource_key = leases.key(resource, self.session.user_id)
+        if resource != "sandbox":
+            await self._acquire(leases.key(resource, self.session.user_id), f"the {resource}")
+            return
+        if self._workspace is not None:
+            return
+
+        claims = await workspace.claims_for(self.session.id)
+        await self._acquire(leases.key("sandbox", self.session.user_id), "the sandbox")
+        for claim in claims:
+            if claim.mode == "write":
+                await self._acquire(f"project:{claim.project_id}", claim.slug)
+
+        materialized = await workspace.materialize(sandbox_manager.manager(), self.session.user_id, claims)
+        self._workspace = (claims, materialized.manifest)
+        logger.info(
+            "session %s mounted %d file(s) across %d claim(s)",
+            self.session.id,
+            len(materialized.manifest),
+            len(claims),
+        )
+
+    async def _acquire(self, resource_key: str, label: str) -> None:
+        """Take one lease, waiting and saying so while another session holds it."""
         if resource_key in self._leases:
             return
 
         ttl = float(_cfg("leases.ttl_s", 900))
         poll = float(_cfg("leases.poll_s", 2))
         deadline = time.monotonic() + float(_cfg("leases.wait_timeout_s", 120))
+        waiting_since = time.monotonic()
         announced = False
 
-        waiting_since = time.monotonic()
         while True:
             if await leases.acquire(resource_key, self.session.id, ttl):
                 self._leases.add(resource_key)
@@ -638,35 +666,69 @@ class _Sink:
                     system_log.record(
                         "lease_wait",
                         session_id=self.session.id,
-                        resource=resource,
+                        resource=resource_key,
                         waited_ms=round((time.monotonic() - waiting_since) * 1000),
                     )
                 return
             if not announced:
-                self.emit(StatusEvent(label=f"waiting for the {resource}"))
+                self.emit(StatusEvent(label=f"waiting for {label}"))
                 announced = True
             if time.monotonic() >= deadline:
                 system_log.record(
                     "lease_timeout",
                     level="warn",
                     session_id=self.session.id,
-                    resource=resource,
+                    resource=resource_key,
                     waited_ms=round((time.monotonic() - waiting_since) * 1000),
                 )
                 raise ToolUnavailable(
                     "timeout",
-                    f"The {resource} is in use by another session and did not free up. Try again, "
-                    "or do something else first.",
+                    f"{label} is in use by another session and did not free up. Try again, or do "
+                    "something else first.",
                 )
             await asyncio.sleep(poll)
 
     async def _release_leases(self) -> None:
-        """Give up every resource this session holds."""
+        """Commit what the sandbox changed, then give up every resource held."""
+        await self._flush_workspace()
         if not self._leases:
             return
         with contextlib.suppress(Exception):
             await leases.release_all(self.session.id)
         self._leases.clear()
+
+    async def _flush_workspace(self) -> None:
+        """Write the sandbox's changes back to the store before the lease goes.
+
+        A failure here is loud and the leases are kept: the edits are still on
+        the sandbox disk, and releasing would let another session materialize
+        over them.
+        """
+        if self._workspace is None:
+            return
+        claims, manifest = self._workspace
+        try:
+            flushed = await workspace.flush(sandbox_manager.manager(), self.session.user_id, claims, manifest)
+        except Exception as e:  # noqa: BLE001 - recorded, retried by the reaper
+            logger.exception("session %s: flushing the workspace failed", self.session.id)
+            system_log.record(
+                "flush_failed", level="error", session_id=self.session.id, error=type(e).__name__
+            )
+            raise
+        self._workspace = None
+        system_log.record(
+            "flush",
+            session_id=self.session.id,
+            committed=flushed.committed,
+            uploaded=flushed.uploaded,
+            discarded=len(flushed.discarded),
+        )
+        if flushed.discarded:
+            # The person who watched these edits happen is reading the
+            # transcript, not system_events.
+            names = ", ".join(posixpath.basename(p) for p in flushed.discarded[:5])
+            more = f" and {len(flushed.discarded) - 5} more" if len(flushed.discarded) > 5 else ""
+            self.emit(StatusEvent(label=f"discarded edits to read-only files: {names}{more}"))
 
     def emit(self, event: Event) -> None:
         """Queues one event for the writer. Never blocks."""
@@ -792,6 +854,10 @@ class _Sink:
         self._pending_done = done
         try:
             if not self._done_appended:
+                # Before the drain: the flush may have something to say, and a
+                # status event queued after the writer stops is a status event
+                # nobody sees.
+                await self._release_leases()
                 await self._drain()
                 # The invariant refuses a `done` while a call is open.
                 for closed in await slog.close_dangling(self.session.id):
@@ -801,7 +867,6 @@ class _Sink:
                 self._done_appended = True
 
             await self._save_cursor()
-            await self._release_leases()
             new_status = lifecycle.status_for(done)
             # An unattended run that reaches a terminal hands the session back attended.
             mode = "attended" if new_status in lifecycle.TERMINAL and self.session.mode == "unattended" else None
@@ -867,9 +932,10 @@ class _Sink:
         """
         if self._park is None:
             return False
-        await self._drain()
-        # A parked session is not acting, so it holds nothing.
+        # A parked session is not acting, so it holds nothing. Released before
+        # the drain, so anything the flush reports is still recorded.
         await self._release_leases()
+        await self._drain()
         call_id, name, args = self._park
         approval = await approvals.create(self.session.id, call_id, PARK_KINDS[name], _park_prompt(name, args))
         await self._save_cursor()

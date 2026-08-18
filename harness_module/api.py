@@ -216,6 +216,11 @@ async def create_session(body: dict[str, Any] = JsonBody, user_id: str = Current
 
     A session is created attended, so only the new-session rate quota applies
     here; the unattended concurrency quota is checked on approve.
+
+    `claims` names what the session may see, as `[{project_id, subpath?,
+    mode?}]`. Absent, it gets a write claim on its own project. The set is fixed
+    here for the session's life: deciding it up front is what lets the leases be
+    taken in one go rather than acquired into a deadlock halfway through.
     """
     goal = str(body.get("goal") or "").strip()
     if not goal:
@@ -250,6 +255,7 @@ async def create_session(body: dict[str, Any] = JsonBody, user_id: str = Current
         goal,
     )
     session_id = str(session_id)
+    await _record_claims(session_id, str(project_id), body.get("claims"), user_id)
     async with (await pool.pool()).acquire() as conn:
         await lifecycle.touch_project(conn, session_id)
 
@@ -279,6 +285,8 @@ async def get_session(session_id: str, user_id: str = CurrentUser) -> dict[str, 
         "terminal_reason": row["terminal_reason"],
         "hops_used": row["hops_used"],
         "hops_max": budgets,
+        # What this session may see and write, fixed at creation.
+        "claims": await _claims_of(session_id),
         "recent_events": [_wire(e) for e in events],
     }
 
@@ -652,6 +660,61 @@ async def _answer_by_message(session_id: str, text: str) -> dict[str, Any]:
     await _append(session_id, UserEvent(text=text, source="human"))
     started = await runner.start(session_id, reason="answered")
     return {"accepted": True, "started": started}
+
+
+async def _record_claims(session_id: str, project_id: str, declared: Any, user_id: str) -> None:
+    """Record what this session may touch, fixed for its life.
+
+    Absent, it gets a write claim on its own project, so a caller that knows
+    nothing about claims behaves as it did before they existed.
+    """
+    claims = declared if isinstance(declared, list) and declared else [{"project_id": project_id}]
+    rows = []
+    for claim in claims:
+        if not isinstance(claim, dict):
+            raise ApiError(400, "invalid_request", "Each claim is an object with a project_id.")
+        target = str(claim.get("project_id") or project_id)
+        mode = str(claim.get("mode") or "write")
+        if mode not in ("read", "write"):
+            raise ApiError(400, "invalid_request", f"A claim is read or write, not {mode!r}.")
+        owned = await pool.fetchval(
+            "SELECT id FROM projects WHERE id = $1 AND user_id = $2",
+            _uuid(target, "project"),
+            _uuid(user_id, "user"),
+        )
+        if owned is None:
+            raise ApiError(404, "not_found", "No such project.")
+        rows.append((_uuid(target, "project"), str(claim.get("subpath") or "/"), mode))
+
+    for project, subpath, mode in rows:
+        await pool.execute(
+            """
+            INSERT INTO session_claims (session_id, project_id, subpath, mode)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (session_id, project_id, subpath) DO UPDATE SET mode = EXCLUDED.mode
+            """,
+            _uuid(session_id, "session"),
+            project,
+            subpath,
+            mode,
+        )
+
+
+async def _claims_of(session_id: str) -> list[dict[str, Any]]:
+    """The session's claims, for the window to render."""
+    rows = await pool.fetch(
+        """
+        SELECT c.project_id, c.subpath, c.mode, p.title
+          FROM session_claims c JOIN projects p ON p.id = c.project_id
+         WHERE c.session_id = $1
+         ORDER BY c.project_id, c.subpath
+        """,
+        _uuid(session_id, "session"),
+    )
+    return [
+        {"project_id": str(r["project_id"]), "title": r["title"], "subpath": r["subpath"], "mode": r["mode"]}
+        for r in rows
+    ]
 
 
 async def _check_unattended_quota(user_id: str) -> None:

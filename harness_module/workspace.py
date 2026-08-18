@@ -20,10 +20,12 @@ import logging
 import posixpath
 import shlex
 import tarfile
+import uuid as _uuid_module
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from db import pool
 from harness_module import store
 
 logger = logging.getLogger(__name__)
@@ -69,6 +71,46 @@ class SandboxIO(Protocol):
     async def read_file(self, user_id: str, path: str) -> str: ...
 
     async def read_bytes(self, user_id: str, path: str) -> bytes: ...
+
+
+async def claims_for(session_id: str) -> list[Claim]:
+    """What a session may see, in the order it was declared.
+
+    A session with no declared claims gets a write claim on its own project,
+    which is what every session created before claims existed had in effect.
+    """
+    rows = await pool.fetch(
+        """
+        SELECT c.project_id, c.subpath, c.mode, p.title
+          FROM session_claims c JOIN projects p ON p.id = c.project_id
+         WHERE c.session_id = $1
+         ORDER BY c.project_id, c.subpath
+        """,
+        _uuid(session_id),
+    )
+    if not rows:
+        rows = await pool.fetch(
+            """
+            SELECT s.project_id, '/' AS subpath, 'write' AS mode, p.title
+              FROM sessions s JOIN projects p ON p.id = s.project_id
+             WHERE s.id = $1
+            """,
+            _uuid(session_id),
+        )
+    return [
+        Claim(
+            project_id=str(r["project_id"]),
+            slug=store.slug(r["title"], str(r["project_id"])[:8]),
+            subpath=r["subpath"],
+            mode=r["mode"],
+        )
+        for r in rows
+    ]
+
+
+def lease_keys(claims: list[Claim]) -> list[str]:
+    """The project leases a claim set takes. Read claims take none."""
+    return [f"project:{c.project_id}" for c in claims if c.mode == "write"]
 
 
 async def materialize(sandbox: SandboxIO, user_id: str, claims: list[Claim]) -> Materialized:
@@ -271,3 +313,9 @@ async def _remove(sandbox: SandboxIO, user_id: str, paths: tuple[str, ...]) -> N
     """Delete files the tree no longer has, so a resumed sandbox does not keep them."""
     quoted = " ".join(shlex.quote(p) for p in paths)
     await sandbox.exec(user_id, f"rm -f {quoted}")
+
+
+def _uuid(value: str) -> _uuid_module.UUID:
+    if isinstance(value, _uuid_module.UUID):
+        return value
+    return _uuid_module.UUID(str(value))
