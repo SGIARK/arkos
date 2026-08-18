@@ -4,9 +4,8 @@ Every error response carries `{code, message, retryable}`. The caller is
 identified by the session cookie; no endpoint reads a user id from a header,
 body or query string, the OAuth callback included.
 
-Auth, chat and the MCP connections surface are served here.
-`/approvals/{id}/respond`, `/attention`, file upload and browser frames have no
-route and return 404.
+Auth, chat, files, attention and the MCP connections surface are served here.
+Browser frames have no route until Task 9 rebuilds the browser.
 """
 
 from __future__ import annotations
@@ -15,6 +14,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import posixpath
 import uuid
 from collections.abc import AsyncIterator
@@ -198,6 +198,18 @@ async def create_auth_session(authorization: str | None = Header(default=None)) 
     return out
 
 
+@app.get("/auth/config")
+async def auth_config() -> dict[str, Any]:
+    """What the sign-in view needs to talk to Supabase. Public, and necessarily so.
+
+    The anon key is public by design — it identifies the project, authorizes
+    nothing on its own, and every row it can reach is behind RLS or behind this
+    API. It is served rather than baked into the page because it differs per
+    deployment and the page is a checked-in file.
+    """
+    return {"supabase_url": store.project_url() or "", "anon_key": _anon_key()}
+
+
 @app.delete("/auth/session", status_code=204)
 async def delete_auth_session() -> Response:
     out = Response(status_code=204)
@@ -332,6 +344,90 @@ async def list_projects(user_id: str = CurrentUser) -> list[dict[str, Any]]:
             # Rolled up in the query above, so the project grid costs one round trip.
             "status_rollup": _rollup(r),
             "sessions": r["sessions"],
+        }
+        for r in rows
+    ]
+
+
+@app.get("/projects/{project_id}/sessions")
+async def list_project_sessions(project_id: str, user_id: str = CurrentUser) -> list[dict[str, Any]]:
+    """The project's sessions, most recently active first.
+
+    How the grid gets from a bubble to a window: `GET /projects` rolls a project
+    up to one dot and one count, which is the right shape for the grid and no
+    use at all for opening what it counted.
+    """
+    await _owned_project(project_id, user_id)
+    rows = await pool.fetch(
+        """
+        SELECT s.id, s.title, s.status, s.mode, s.terminal_reason, s.hops_used,
+               s.created_at, s.ended_at,
+               COALESCE(max(e.ts), s.created_at) AS last_event_at,
+               count(a.id) FILTER (WHERE a.answered_at IS NULL) AS open_questions
+          FROM sessions s
+          LEFT JOIN session_events e ON e.session_id = s.id
+          LEFT JOIN approvals a ON a.session_id = s.id
+         WHERE s.project_id = $1
+         GROUP BY s.id
+         ORDER BY last_event_at DESC
+        """,
+        _uuid(project_id, "project"),
+    )
+    return [
+        {
+            "session_id": str(r["id"]),
+            "title": r["title"],
+            "status": r["status"],
+            "mode": r["mode"],
+            "terminal_reason": r["terminal_reason"],
+            "hops_used": r["hops_used"],
+            "hops_max": _budgets_for(r["mode"]),
+            "open_questions": r["open_questions"],
+            "created_at": r["created_at"].isoformat(),
+            "ended_at": r["ended_at"].isoformat() if r["ended_at"] else None,
+            "last_event_at": r["last_event_at"].isoformat(),
+        }
+        for r in rows
+    ]
+
+
+@app.get("/attention")
+async def attention(project_id: str | None = None, user_id: str = CurrentUser) -> list[dict[str, Any]]:
+    """Every question waiting on this human, oldest first.
+
+    One query at any scope: `project_id` narrows it, its absence is the whole
+    account. Approvals and asks are the same row and the same wait — what
+    differs is the answer, so the caller is told `kind` and nothing else
+    branches here.
+    """
+    if project_id is not None:
+        await _owned_project(project_id, user_id)
+
+    rows = await pool.fetch(
+        """
+        SELECT a.id, a.session_id, a.kind, a.prompt, a.created_at, a.tool_call_id,
+               s.title AS session_title, s.project_id, p.title AS project_title
+          FROM approvals a
+          JOIN sessions s ON s.id = a.session_id
+          LEFT JOIN projects p ON p.id = s.project_id
+         WHERE s.user_id = $1
+           AND a.answered_at IS NULL
+           AND ($2::uuid IS NULL OR s.project_id = $2)
+         ORDER BY a.created_at
+        """,
+        _uuid(user_id, "user"),
+        _uuid(project_id, "project") if project_id is not None else None,
+    )
+    return [
+        {
+            "approval_id": str(r["id"]),
+            "session_id": str(r["session_id"]),
+            "session_title": r["session_title"],
+            "project_id": str(r["project_id"]) if r["project_id"] else None,
+            "project_title": r["project_title"],
+            "kind": r["kind"],
+            "prompt": r["prompt"],
+            "created_at": r["created_at"].isoformat(),
         }
         for r in rows
     ]
@@ -850,6 +946,15 @@ async def _check_unattended_quota(user_id: str) -> None:
 
 def _budgets_for(mode: str) -> int:
     return int(_cfg(f"budgets.{mode}.max_hops", 0))
+
+
+def _anon_key() -> str:
+    """The publishable Supabase key, under either of its two names.
+
+    `sb_publishable_...` is the current format; `SUPABASE_ANON_KEY` is the legacy
+    JWT-shaped one. Neither authorizes anything on its own.
+    """
+    return os.environ.get("SUPABASE_PUBLISHABLE_KEY") or os.environ.get("SUPABASE_ANON_KEY") or ""
 
 
 def _rollup(row: Any) -> str:

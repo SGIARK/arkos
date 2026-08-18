@@ -300,6 +300,7 @@ chat plumbing. One error shape everywhere: `{code, message, retryable}`.
 | `POST /auth/session` | Supabase JWT as `Authorization: Bearer` | 204 + `Set-Cookie`. Verifies it once, upserts `sub` → `users`. The ONLY endpoint that reads a bearer token |
 | `DELETE /auth/session` | — | 204, cookie cleared |
 | `GET /auth/me` | — | `{user_id, email}` |
+| `GET /auth/config` | — | `{supabase_url, anon_key}` — what the sign-in view needs to reach Supabase. Public and unauthenticated: it is how a signed-out browser signs in, and the anon key authorizes nothing on its own |
 | `GET /sessions/{id}` | — | `{title, project_id, status, hops_used/max, recent_events[]}` |
 | `GET /sessions/{id}/events` | `Last-Event-ID?` | SSE of events, `id:<seq>` each |
 | `POST /sessions` | `{goal, steps?, project_id?}` | `{session_id, project_id}` (new project unless given; `steps` seed the todo list) |
@@ -307,7 +308,8 @@ chat plumbing. One error shape everywhere: `{code, message, retryable}`.
 | `POST /sessions/{id}/cancel` | — | 202 |
 | `POST /approvals/{id}/respond` | `{answer}` | 202 — appends event, wakes at cursor |
 | `GET /projects` | — | `[{id, title, status_rollup, updated_at}]` |
-| `GET /attention` | `project_id?` | pending approvals/asks (same query, any scope) |
+| `GET /attention` | `project_id?` | pending approvals/asks (same query, any scope), oldest first, each carrying its session and project |
+| `GET /projects/{id}/sessions` | — | `[{session_id, title, status, mode, hops_used/max, open_questions, last_event_at}]` — how the grid gets from a bubble to a window, most recently active first |
 | `GET /projects/{id}/files` | — | `[{file_id, path, name, size, mtime}]` — tree rows; no sandbox is woken |
 | `POST /projects/{id}/files` | multipart (`file`, optional `path`) | `{file_id, name, path, size}` |
 | `GET /results/{ref}` | `offset&limit` | blob slice (ownership-checked) |

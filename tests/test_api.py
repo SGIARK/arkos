@@ -18,7 +18,7 @@ from httpx import ASGITransport, AsyncClient
 
 from agent_module.events import ContentEvent, DoneEvent, ToolCallEvent, UserEvent
 from db import pool
-from harness_module import api, lifecycle, runner
+from harness_module import api, approvals, lifecycle, runner
 from harness_module import session_log as slog
 from harness_module.stream import SessionStream, stream
 from tests.dbgate import require_db
@@ -400,6 +400,127 @@ async def test_projects_roll_up_to_one_dot_each(client):
 
     assert [p["title"] for p in body] == ["Taxes"]
     assert body[0]["status_rollup"] == "awaiting_approval", "the most urgent thing in the project wins the dot"
+
+
+async def test_a_project_lists_the_sessions_the_grid_has_to_open(client):
+    """The rollup is one dot and one count; opening what it counted needs ids."""
+    user_id = await _signed_in(client)
+    project_id = await pool.fetchval(
+        "INSERT INTO projects (user_id, title) VALUES ($1, 'Taxes') RETURNING id", uuid.UUID(user_id)
+    )
+    older = await pool.fetchval(
+        "INSERT INTO sessions (user_id, project_id, mode, status, title) "
+        "VALUES ($1, $2, 'attended', 'completed', 'the old one') RETURNING id",
+        uuid.UUID(user_id),
+        project_id,
+    )
+    newer = await pool.fetchval(
+        "INSERT INTO sessions (user_id, project_id, mode, status, title) "
+        "VALUES ($1, $2, 'unattended', 'running', 'the live one') RETURNING id",
+        uuid.UUID(user_id),
+        project_id,
+    )
+    await slog.append(str(newer), ContentEvent(text="working"))
+
+    body = (await client.get(f"/projects/{project_id}/sessions")).json()
+
+    assert [s["session_id"] for s in body] == [str(newer), str(older)], "most recently active first"
+    assert body[0]["title"] == "the live one"
+    assert body[0]["status"] == "running"
+    assert body[0]["hops_max"] > 0
+
+
+async def test_another_users_project_lists_no_sessions(client):
+    theirs = str(uuid.uuid4())
+    _seeded.append(uuid.UUID(theirs))
+    await pool.execute("INSERT INTO users (id) VALUES ($1)", uuid.UUID(theirs))
+    their_project = await pool.fetchval(
+        "INSERT INTO projects (user_id, title) VALUES ($1, 'Theirs') RETURNING id", uuid.UUID(theirs)
+    )
+    await _signed_in(client)
+
+    assert (await client.get(f"/projects/{their_project}/sessions")).status_code == 404
+
+
+# --- what is waiting on the human -------------------------------------------------
+
+
+async def test_attention_lists_open_questions_oldest_first(client):
+    user_id = await _signed_in(client)
+    project_id = await pool.fetchval(
+        "INSERT INTO projects (user_id, title) VALUES ($1, 'Taxes') RETURNING id", uuid.UUID(user_id)
+    )
+    session_id = await pool.fetchval(
+        "INSERT INTO sessions (user_id, project_id, mode, status, title) "
+        "VALUES ($1, $2, 'unattended', 'awaiting_approval', 'filing') RETURNING id",
+        uuid.UUID(user_id),
+        project_id,
+    )
+    first = await approvals.create(str(session_id), "c1", "ask", "which account?")
+    await approvals.create(str(session_id), "c2", "approval", "send it?")
+
+    body = (await client.get("/attention")).json()
+
+    assert [a["approval_id"] for a in body][0] == first.id, "the longest wait comes first"
+    assert [a["kind"] for a in body] == ["ask", "approval"]
+    assert body[0]["session_title"] == "filing"
+    assert body[0]["project_title"] == "Taxes"
+
+
+async def test_attention_narrows_to_one_project_with_the_same_query(client):
+    user_id = await _signed_in(client)
+    projects = [
+        await pool.fetchval(
+            "INSERT INTO projects (user_id, title) VALUES ($1, $2) RETURNING id", uuid.UUID(user_id), title
+        )
+        for title in ("Taxes", "Garden")
+    ]
+    for project_id, call in zip(projects, ("c1", "c2"), strict=True):
+        session_id = await pool.fetchval(
+            "INSERT INTO sessions (user_id, project_id, mode, status) "
+            "VALUES ($1, $2, 'unattended', 'awaiting_approval') RETURNING id",
+            uuid.UUID(user_id),
+            project_id,
+        )
+        await approvals.create(str(session_id), call, "ask", f"question for {call}")
+
+    everything = (await client.get("/attention")).json()
+    just_one = (await client.get(f"/attention?project_id={projects[0]}")).json()
+
+    assert len(everything) == 2
+    assert [a["project_title"] for a in just_one] == ["Taxes"]
+
+
+async def test_an_answered_question_stops_asking_for_attention(client):
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id, status="awaiting_approval")
+    opened = await approvals.create(session_id, "c1", "ask", "which account?")
+
+    await approvals.answer(opened.id, "the joint one")
+
+    assert (await client.get("/attention")).json() == []
+
+
+async def test_attention_never_crosses_users(client):
+    theirs = str(uuid.uuid4())
+    _seeded.append(uuid.UUID(theirs))
+    await pool.execute("INSERT INTO users (id) VALUES ($1)", uuid.UUID(theirs))
+    their_session = await _session_for(theirs, status="awaiting_approval")
+    await approvals.create(their_session, "c1", "ask", "their private question")
+    await _signed_in(client)
+
+    assert (await client.get("/attention")).json() == []
+
+
+# --- signing in -------------------------------------------------------------------
+
+
+async def test_auth_config_is_readable_signed_out(client):
+    """It is how a signed-out browser signs in, so it cannot require a session."""
+    body = (await client.get("/auth/config")).json()
+
+    assert set(body) == {"supabase_url", "anon_key"}
+    assert isinstance(body["anon_key"], str)
 
 
 # --- ownership ------------------------------------------------------------------
