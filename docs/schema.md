@@ -45,6 +45,26 @@ create unique index on project_files (project_id, path);
 -- No bytes column and no storage_path: a row names a path and the hash of its
 -- content. Two projects holding the same content share one blob.
 
+-- a saved copy of a project's tree; the bytes are already immutable
+project_snapshots (
+  id          uuid primary key default gen_random_uuid(),
+  project_id  uuid not null references projects(id) on delete cascade,
+  label       text,
+  taken_at    timestamptz not null default now()
+)
+create index on project_snapshots (project_id, taken_at desc);
+
+snapshot_files (
+  snapshot_id   uuid not null references project_snapshots(id) on delete cascade,
+  path          text not null,
+  content_hash  text not null,
+  size          bigint not null,
+  mtime         timestamptz not null,
+  primary key (snapshot_id, path)
+)
+-- A snapshot costs rows, not bytes. Any future blob GC must walk these as well
+-- as project_files, or restoring a snapshot stops working.
+
 -- the user's memory: the curated core and the notes appended to it (D8 amended)
 memory_files (
   id            uuid primary key default gen_random_uuid(),

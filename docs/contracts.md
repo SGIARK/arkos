@@ -228,6 +228,8 @@ sandbox:
   slot_ttl_s: 900                   # a slot unrenewed this long is reclaimed, its box killed
 app:
   public_url: "https://..."    # the one origin /app and the API are served from
+store:
+  snapshot_keep: 14            # snapshots kept per project by scripts/snapshot_store.py
 memory:
   prompt_max_chars: 4000       # of MEMORY.md, injected into the system prompt at fold
   core_max_chars: 20000        # update_memory refuses a longer document
@@ -527,6 +529,9 @@ update_memory(user_id, text)         # replaces MEMORY.md whole, under an adviso
 read_memory(user_id) -> str          # the curated core, '' when there is none
 read_notes(user_id) -> [Note{path, text, written_at}]
 search_memory(user_id, query, limit) -> [Hit{path, text, written_at, rank}]
+snapshot_project(project_id, label) -> id   # copies tree rows, never blobs
+restore_snapshot(id) -> [TreeEntry]         # the tree as it stood, deletions included
+list_snapshots(project_id) · prune_snapshots(project_id, keep)
 ```
 
 **Layout is fixed.** `{prefix}/blobs/{hh}/{sha256}` for bytes;
@@ -605,8 +610,20 @@ fails is logged and nothing more — the store already has the file. An empty fi
 is content like any other. `quotas.upload_max_mb` is enforced as the upload is
 read, not after.
 
+**A snapshot is tree rows, and that is only true while blobs are immutable.**
+`snapshot_project` copies a project's rows into `snapshot_files`; `restore_snapshot`
+replaces the tree with them, deletions included — a restore is the tree as it
+stood, not a merge with what came after. It refuses if the store no longer holds
+the blobs, which is the commit rule pointed backwards: no tree may come to point
+at bytes that are not there. Nothing deletes a blob today, and **a blob GC, if
+one is ever written, must walk snapshots as well as trees** or a restore becomes
+a promise the store cannot keep.
+
 **No store credentials enter the sandbox.** Bytes flow store → harness → e2b
-API, never sandbox → store.
+API, never sandbox → store. This is also why the FUSE probe mounted rclone's
+local backend rather than a bucket: what needed answering was whether
+`/dev/fuse` works in the box (it does), and answering it did not require handing
+a box a credential.
 
 ### (computer_module: dissolved)
 

@@ -35,9 +35,9 @@ before Task 7 deletes the fallback machinery.
 
 This document is the why and the build plan.
 
-**Status:** Tasks 0-8, 8.1-8.6b, 8.7 and 8.8 done · **8.9, then the deletion
-commit, then LG-1 → 9 → LG-2 → 12** (sequencing settled 2026-08-18, see the note
-at Tasks 10-11) |
+**Status:** Tasks 0-8 and 8.1-8.9 done · **the deletion commit, then
+LG-1 → 9 → LG-2 → 12** (sequencing settled 2026-08-18, see the note at
+Tasks 10-11) |
 **Author:** John Wallace | **Last updated:** 2026-08-18
 
 **Where things actually stand, for a session picking this up cold:**
@@ -925,17 +925,26 @@ has no memory in its box.
 
 ### Task 8.9: The probe and the hardening pass
 **Done when:** the **FUSE probe** is run and recorded in Implementation Notes
-(open a sandbox, check `/dev/fuse`, attempt an `rclone mount` on a scratch
-bucket) — it decides whether the lazy-mount rung is open on e2b for the day
-eager sync gets slow; a periodic store snapshot exists (`commit_tree` makes
-snapshots cheap: a snapshot is a saved copy of tree rows) with the restore path
-tested once; the revisit triggers are written down: materialize/flush over a few
-seconds on real projects; a project too big for eager sync (the FUSE/self-host
-fork); sandbox-hour cost crossing self-host on owned metal; a customer
-forbidding third-party VMs even ephemerally.
+(open a sandbox, check `/dev/fuse`, attempt an `rclone mount`) — it decides
+whether the lazy-mount rung is open on e2b for the day eager sync gets slow; a
+periodic store snapshot exists (`commit_tree` makes snapshots cheap: a snapshot
+is a saved copy of tree rows) with the restore path tested once; the revisit
+triggers are written down: materialize/flush over a few seconds on real
+projects; a project too big for eager sync (the FUSE/self-host fork);
+sandbox-hour cost crossing self-host on owned metal; a customer forbidding
+third-party VMs even ephemerally.
 **Touch:** Implementation Notes, `store.py`, one script | **P2, 0.5d** | **Blockers:** 8.4
 **Test:** restore a project to a prior snapshot and materialize it; the probe
 result is written down whichever way it lands.
+
+**Landed 2026-08-18.** The probe says FUSE works in the box — `/dev/fuse` is
+there, `fusermount` is installed, `rclone mount` mounts and reads back — so the
+lazy-mount rung is open on e2b and the self-host fork is not forced. Snapshots
+are migration 0007 plus `snapshot_project` / `restore_snapshot` /
+`prune_snapshots` and `scripts/snapshot_store.py`; a restore refuses if the
+store no longer holds the blobs, which is the commit rule pointed backwards. The
+triggers are in Implementation Notes, along with the standing warning that a
+future blob GC must walk snapshots or restores become a lie.
 
 **Explicitly not in 8.1-8.9:** FUSE/lazy materialization; branches and merge
 (same-project parallelism = the second session waits on the lease, v1 forever
@@ -1492,8 +1501,7 @@ ARK prompt that `prompts.py` now owns. All four are gone.
 **2026-08-18 — the store landed (8.1-8.6b). What a fresh session needs to know.**
 
 The agent's files now live in object storage we own, with the tree in Postgres
-and the sandbox disk demoted to a cache (D27). Nine cards done; 8.9 (the FUSE
-probe and snapshots) is the last of them.
+and the sandbox disk demoted to a cache (D27). All ten cards are done.
 
 Memory came back with 8.8, in the store rather than a module of its own:
 `memory_files` keyed by user, four tools, Postgres FTS, and `MEMORY.md` injected
@@ -1651,3 +1659,53 @@ Side effect worth knowing: with a live database reachable from `.env`, the 33
 `tests/test_smithery.py` cases that skip without one now run. The suite went from
 222 passing with 33 skipped to 250 passing with none — so Task 3d had, until
 now, no verified coverage on any machine without a database.
+
+---
+
+**2026-08-18 — Task 8.9(i): the FUSE probe. It works, so the lazy-mount rung is
+open.** One sandbox on the `base` template (`scripts/fuse_probe.py`, re-runnable):
+
+| | |
+|---|---|
+| kernel | Linux 6.1.158, Debian 12 (bookworm) |
+| `/dev/fuse` | present, `crw-rw-rw-` |
+| `fusermount` / `fusermount3` | both installed |
+| rclone | absent, installs from apt |
+| `rclone mount` | **mounted and read back through the mount** |
+| mount table | `/tmp/src on /tmp/mnt type fuse.rclone` |
+| running as | uid 1000, not root |
+
+**Consequence.** The day eager materialize gets too slow — a project too large
+to copy at every lease acquire — mounting the store instead of copying it is an
+option we can take on e2b, without changing vendor or self-hosting the sandbox
+layer. That was the fork this probe existed to close, and it closed the cheap
+way. Nothing changes today: eager sync is faster for the project sizes we have,
+and a mount would put a network dependency inside the box on the read path.
+
+What the probe did NOT measure, on purpose: object-store latency through a FUSE
+mount. It mounts rclone's local backend, because the question was whether
+`/dev/fuse` works in the box and no store credential may enter a sandbox (D28).
+Latency needs a real workload on a real bucket, and belongs to the card that
+actually builds the mount.
+
+**2026-08-18 — Task 8.9(ii): snapshots, and when to revisit any of this.**
+`project_snapshots` + `snapshot_files` (migration 0007) hold a copy of a
+project's tree rows; `store.snapshot_project` / `restore_snapshot` /
+`prune_snapshots` are the calls, and `scripts/snapshot_store.py` is the timer
+job. A snapshot copies rows and no bytes, which is only true because blobs are
+immutable and nothing deletes them — **a blob GC, if one is ever written, has to
+walk snapshots as well as trees, or restoring becomes a lie.**
+
+The triggers that should send someone back to the storage design, written down
+while they are still hypothetical:
+
+- **materialize or flush taking seconds on a real project.** The first sign that
+  eager sync has outgrown itself. The probe above says the answer is available.
+- **A project too big to copy at every lease acquire.** The same trigger from the
+  other side, and the fork between FUSE-on-e2b and self-hosting the sandbox layer.
+- **Sandbox-hours crossing the cost of owned metal.** e2b is rented compute; at
+  some volume it stops being the cheap answer, and the store being ours already
+  is what makes that a migration rather than a rewrite.
+- **A customer who forbids third-party VMs, even ephemeral ones.** Not a
+  performance trigger but a contractual one, and it lands on the same fork.
+
