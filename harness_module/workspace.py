@@ -304,7 +304,14 @@ async def flush(
     for claim in claims:
         under = {p: h for p, h in current.items() if p.startswith(claim.mount + "/")}
         if claim.mode != "write":
-            discarded.extend(sorted(p for p in under if manifest.get(p) != under[p]))
+            # Measured against what the store holds now, not against what was
+            # materialized: a file uploaded mid-run and written through is not an
+            # edit being dropped, and saying it was would be a false alarm.
+            stored = {
+                posixpath.join(claim.mount, e.path): e.content_hash
+                for e in await store.read_tree(claim.project_id, claim.subpath)
+            }
+            discarded.extend(sorted(p for p, digest in under.items() if stored.get(p) != digest))
             continue
 
         # Sizes for files whose bytes were never read back come from the tree
@@ -402,3 +409,48 @@ def _uuid(value: str) -> _uuid_module.UUID:
     if isinstance(value, _uuid_module.UUID):
         return value
     return _uuid_module.UUID(str(value))
+
+
+async def write_through(sandbox: SandboxIO, project_id: str, path: str, content: bytes) -> list[str]:
+    """
+    Put an uploaded file into every live box that has this project materialized.
+
+    A box is written to only if the file falls inside a claim it mounted; every
+    other box needs nothing, because the store has the file and the next
+    materialize brings it in. Parked sessions are left asleep for the same
+    reason. Failures are logged rather than raised: the store already holds the
+    file, so the upload stands either way.
+
+    Returns:
+        The sessions whose box now has the file.
+    """
+    rows = await pool.fetch(
+        """
+        SELECT p.session_id
+          FROM session_sandboxes p
+          JOIN sessions s ON s.id = p.session_id
+         WHERE p.workspace_nonce IS NOT NULL
+           AND p.sandbox_id IS NOT NULL
+           AND p.expires_at > now()
+           AND s.status = 'running'
+           AND s.user_id = (SELECT user_id FROM projects WHERE id = $1)
+        """,
+        _uuid(project_id),
+    )
+
+    written: list[str] = []
+    for row in rows:
+        session_id = str(row["session_id"])
+        for claim in await claims_for(session_id):
+            if claim.project_id != project_id or not store.covers(claim.subpath, path):
+                continue
+            try:
+                await sandbox.write_file(session_id, posixpath.join(claim.mount, path), content)
+            except Exception:  # noqa: BLE001 - the store has the file; the box is a cache
+                logger.exception("could not write %s through to the box of session %s", path, session_id)
+            else:
+                written.append(session_id)
+            break
+    if written:
+        logger.info("wrote %s through to %d live box(es)", path, len(written))
+    return written

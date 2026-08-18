@@ -361,6 +361,67 @@ async def read_tree(project_id: str, subpath: str = "/") -> list[TreeEntry]:
     ]
 
 
+@dataclass(frozen=True, slots=True)
+class StoredFile:
+    """One file as the tree now holds it: its row id and its entry."""
+
+    id: str
+    entry: TreeEntry
+
+
+def safe_path(name: str) -> str:
+    """Normalize an uploaded name to a path inside the project.
+
+    A leading slash reads as project-relative and empty or `.` segments are
+    dropped, but `..` is refused rather than resolved: rewriting a path the
+    caller asked for into a different one is worse than saying no.
+
+    Raises:
+        ValueError: the name climbs out of the project or names nothing.
+    """
+    raw = (name or "").strip().replace("\\", "/")
+    parts = [part for part in raw.split("/") if part not in ("", ".")]
+    if not parts or ".." in parts:
+        raise ValueError(f"{name!r} is not a path inside the project")
+    return "/".join(parts)
+
+
+async def put_file(
+    project_id: str,
+    path: str,
+    content: bytes,
+    *,
+    mtime: datetime | None = None,
+) -> StoredFile:
+    """
+    Put one file in the project's tree, replacing whatever is at that path.
+
+    Blob first, row after, as everywhere else: a crash between the two costs an
+    orphan blob rather than a row pointing at bytes that are not there.
+    """
+    content_hash = await put_blob(content)
+    row = await pool.fetchrow(
+        """
+        INSERT INTO project_files (project_id, path, content_hash, size, mtime)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (project_id, path)
+        DO UPDATE SET content_hash = EXCLUDED.content_hash, size = EXCLUDED.size, mtime = EXCLUDED.mtime
+        RETURNING id, path, content_hash, size, mtime
+        """,
+        _uuid(project_id),
+        path,
+        content_hash,
+        len(content),
+        mtime or datetime.now(UTC),
+    )
+    return StoredFile(
+        id=str(row["id"]),
+        entry=TreeEntry(
+            path=row["path"], content_hash=row["content_hash"], size=row["size"], mtime=row["mtime"]
+        ),
+    )
+
+
 async def commit_tree(
     project_id: str,
     files: Sequence[FileContent],
@@ -473,6 +534,12 @@ def slug(title: str, fallback: str) -> str:
     """A directory name for a project. Mounted names are read by the model as context."""
     cleaned = re.sub(r"[^a-z0-9]+", "-", (title or "").lower()).strip("-")
     return cleaned[:48] or fallback
+
+
+def covers(subpath: str, path: str) -> bool:
+    """Whether a claim on `subpath` includes `path`. Paths are project-relative."""
+    prefix = _relative(subpath)
+    return not prefix or path == prefix or path.startswith(prefix + "/")
 
 
 def _relative(subpath: str) -> str:

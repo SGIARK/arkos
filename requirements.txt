@@ -13,6 +13,7 @@ starlette>=0.40.0         # BackgroundTask, imported directly by api.py. A FastA
                           # dependency, named here because we import it ourselves.
 uvicorn>=0.32.0           # not imported; the Dockerfile CMD runs it
 pydantic>=2.10.6          # imported lazily in tool_module/browser_actions.py
+python-multipart>=0.0.9   # multipart form parsing, for POST /projects/{id}/files
 PyJWT>=2.8.0
 cryptography>=42.0.0      # PyJWT needs it for the ES256 tokens Supabase signs
                           # with. On a Python whose platform tag predates the

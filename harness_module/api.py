@@ -15,13 +15,14 @@ import asyncio
 import contextlib
 import json
 import logging
+import posixpath
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
 import jwt
-from fastapi import Body, Depends, FastAPI, Header, Request, Response
+from fastapi import Body, Depends, FastAPI, File, Form, Header, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
@@ -29,7 +30,7 @@ from starlette.background import BackgroundTask
 from agent_module.events import TodoEvent, UserEvent
 from config_module.loader import config
 from db import pool
-from harness_module import approvals, hands, jwt_utils, lifecycle, runner, system_log
+from harness_module import approvals, hands, jwt_utils, lifecycle, runner, store, system_log, workspace
 from harness_module import session_log as slog
 from harness_module.stream import LAGGED, stream
 from tool_module.sandbox import manager as sandbox_manager
@@ -148,7 +149,12 @@ def _check_origin(request: Request) -> None:
 
 
 CurrentUser = Depends(current_user)
+
+# Bytes per read while an upload is checked against the quota.
+_UPLOAD_CHUNK = 1024 * 1024
 JsonBody = Body(...)
+UploadedFile = File(...)
+UploadedPath = Form(default=None)
 
 
 # --- auth ----------------------------------------------------------------------
@@ -324,6 +330,58 @@ async def list_projects(user_id: str = CurrentUser) -> list[dict[str, Any]]:
         }
         for r in rows
     ]
+
+
+@app.get("/projects/{project_id}/files")
+async def list_project_files(project_id: str, user_id: str = CurrentUser) -> list[dict[str, Any]]:
+    """List a project's files from the tree. No sandbox is woken to answer this."""
+    await _owned_project(project_id, user_id)
+    rows = await pool.fetch(
+        "SELECT id, path, size, mtime FROM project_files WHERE project_id = $1 ORDER BY path",
+        _uuid(project_id, "project"),
+    )
+    return [
+        {
+            "file_id": str(r["id"]),
+            "path": r["path"],
+            "name": posixpath.basename(r["path"]),
+            "size": r["size"],
+            "mtime": r["mtime"].isoformat(),
+        }
+        for r in rows
+    ]
+
+
+@app.post("/projects/{project_id}/files", status_code=201)
+async def upload_project_file(
+    project_id: str,
+    file: UploadFile = UploadedFile,
+    path: str | None = UploadedPath,
+    user_id: str = CurrentUser,
+) -> dict[str, Any]:
+    """Put a file in the project's store, and in any box already holding it.
+
+    The store is where the file lands. A running session with this project
+    materialized is written through, so it reads the upload the same turn; every
+    other session gets it at its next materialize.
+    """
+    await _owned_project(project_id, user_id)
+    try:
+        stored_path = store.safe_path(path or file.filename or "")
+    except ValueError as e:
+        raise ApiError(400, "invalid_request", str(e)) from e
+
+    content = await _read_within_quota(file)
+    stored = await store.put_file(project_id, stored_path, content)
+    await pool.execute("UPDATE projects SET updated_at = now() WHERE id = $1", _uuid(project_id, "project"))
+    await workspace.write_through(sandbox_manager.manager(), project_id, stored_path, content)
+
+    return {
+        "file_id": stored.id,
+        "name": posixpath.basename(stored_path),
+        "path": stored_path,
+        "size": stored.entry.size,
+    }
 
 
 @app.post("/sessions/{session_id}/messages", status_code=202)
@@ -633,6 +691,36 @@ async def _append(session_id: str, event: Any) -> None:
     """Append an event and publish it to live subscribers."""
     stored = await slog.append(session_id, event)
     stream.publish(session_id, stored)
+
+
+async def _owned_project(project_id: str, user_id: str) -> None:
+    """Raise 404 unless the project is this user's. Someone else's reads as absent."""
+    owned = await pool.fetchval(
+        "SELECT id FROM projects WHERE id = $1 AND user_id = $2",
+        _uuid(project_id, "project"),
+        _uuid(user_id, "user"),
+    )
+    if owned is None:
+        raise ApiError(404, "not_found", "No such project.")
+
+
+async def _read_within_quota(file: UploadFile) -> bytes:
+    """Read an upload, refusing it as soon as it passes `quotas.upload_max_mb`.
+
+    Chunked and checked as it goes, so an oversized upload is refused rather
+    than held in memory first.
+    """
+    limit = int(_cfg("quotas.upload_max_mb", 25)) * 1024 * 1024
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await file.read(_UPLOAD_CHUNK):
+        total += len(chunk)
+        if total > limit:
+            raise ApiError(413, "file_too_large", f"{limit // (1024 * 1024)} MB is the limit for one file.")
+        chunks.append(chunk)
+    if not total:
+        raise ApiError(400, "invalid_request", "The file is empty.")
+    return b"".join(chunks)
 
 
 async def _check_rate_quota(user_id: str) -> None:

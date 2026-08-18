@@ -35,7 +35,7 @@ before Task 7 deletes the fallback machinery.
 
 This document is the why and the build plan.
 
-**Status:** Tasks 0-8 and 8.1-8.6b done · **8.7-8.9 are next**, then 9 / LG-1 |
+**Status:** Tasks 0-8, 8.1-8.6b and 8.7 done · **8.8-8.9 are next**, then 9 / LG-1 |
 **Author:** John Wallace | **Last updated:** 2026-08-18
 
 **Where things actually stand, for a session picking this up cold:**
@@ -978,6 +978,32 @@ Task 4 then puts live chat on it. Settle this first or accept the risk knowingly
 were removed on 2026-08-13. The network exposure was NOT closed; it needs host
 root. Status is tracked in that file, not here.
 
+**Re-scoped 2026-08-18 — the database's own posture (owner).** The Supabase move
+made the ark-box database half of this card moot; what remains of the database
+half is posture, and it gains two items:
+
+- **Least-privilege roles, do as part of this card.** The backend currently
+  connects via `DB_URL` as `postgres`, which is superuser-shaped: any harness
+  bug or SQL injection has the whole database. Create a dedicated app role with
+  ONLY the grants the harness needs (DML on its tables, no DDL, no RLS bypass,
+  no role management) and a separate migrations role that owns DDL; `DB_URL`
+  moves to the app role, `db/migrate.py` uses the migrations role. About an
+  hour, and it caps the blast radius of the exact bug class we have already
+  shipped once (browser_routes trusting a client-supplied user id).
+- **RLS: deliberately NOT enabled, and the trigger that changes that.** RLS
+  earns its complexity when an untrusted client holds a database connection.
+  Ours never does: the browser talks only to the harness, the harness scopes
+  every query to the verified user (`test_authz_scoping`), and half our writes
+  are the system's own (runner wake, reaper, sweep, lease expiry), which RLS
+  has no natural voice for. The one place a browser does talk to Postgres
+  directly — the waitlist over PostgREST — already uses RLS
+  (`waitlist_writer`). **Standing trigger:** the day any browser code reaches
+  Supabase directly rather than through the harness (supabase-js Realtime for
+  the grid, signed-URL Storage reads in the canvas), RLS on every touched
+  table is the price of admission that same day, weighed as such and not as a
+  convenience. Until then the defense-in-depth budget is spent on the app role
+  above, which does not fight the pooler or the userless system writes.
+
 ## Task 13: Multi-worker safety (follow-up)
 **Done when:** dispatch claims via conditional update / SKIP LOCKED; semaphore
 per worker; stale leases expire; **connection-cache invalidation crosses
@@ -1404,9 +1430,9 @@ ARK prompt that `prompts.py` now owns. All four are gone.
 **2026-08-18 — the store landed (8.1-8.6b). What a fresh session needs to know.**
 
 The agent's files now live in object storage we own, with the tree in Postgres
-and the sandbox disk demoted to a cache (D27). Seven cards done; 8.7 (upload and
-browse without a boot), 8.8 (the memory region) and 8.9 (the FUSE probe and
-snapshots) remain, and none of them blocks the others.
+and the sandbox disk demoted to a cache (D27). Eight cards done; 8.8 (the memory
+region) and 8.9 (the FUSE probe and snapshots) remain, and neither blocks the
+other.
 
 Where things are: `harness_module/store.py` is blobs and trees and knows nothing
 about e2b; `harness_module/workspace.py` fills and empties the sandbox cache;

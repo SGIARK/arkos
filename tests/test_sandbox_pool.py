@@ -43,9 +43,21 @@ class FakeBoxes:
             self.boxes[session_id] = _sweeping(FakeSandbox())
         return self.boxes[session_id]
 
+    async def _open(self, session_id: str) -> FakeSandbox:
+        """The box, with its handle on the session's slot as the manager records it."""
+        fresh = session_id not in self.boxes
+        box = self.box(session_id)
+        if fresh:
+            await pool.execute(
+                "UPDATE session_sandboxes SET sandbox_id = $2 WHERE session_id = $1",
+                uuid.UUID(session_id),
+                f"fake-{session_id[:8]}",
+            )
+        return box
+
     async def exec(self, session_id: str, command: str, timeout: int = 120) -> dict:
         self.calls.append(command)
-        box = self.box(session_id)
+        box = await self._open(session_id)
         # `write <path> <body>` stands in for whatever shell line the model
         # would use to put a file on the disk.
         if command.startswith("write "):
@@ -60,13 +72,13 @@ class FakeBoxes:
         return await box.exec(session_id, command, timeout)
 
     async def write_file(self, session_id: str, path: str, content) -> None:
-        await self.box(session_id).write_file(session_id, path, content)
+        await (await self._open(session_id)).write_file(session_id, path, content)
 
     async def read_file(self, session_id: str, path: str) -> str:
-        return await self.box(session_id).read_file(session_id, path)
+        return await (await self._open(session_id)).read_file(session_id, path)
 
     async def read_bytes(self, session_id: str, path: str) -> bytes:
-        return await self.box(session_id).read_bytes(session_id, path)
+        return await (await self._open(session_id)).read_bytes(session_id, path)
 
     async def pause(self, session_id: str) -> None:
         self.paused.append(session_id)

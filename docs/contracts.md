@@ -292,7 +292,8 @@ chat plumbing. One error shape everywhere: `{code, message, retryable}`.
 | `POST /approvals/{id}/respond` | `{answer}` | 202 — appends event, wakes at cursor |
 | `GET /projects` | — | `[{id, title, status_rollup, updated_at}]` |
 | `GET /attention` | `project_id?` | pending approvals/asks (same query, any scope) |
-| `POST /projects/{id}/files` | multipart | `{file_id, name, size}` |
+| `GET /projects/{id}/files` | — | `[{file_id, path, name, size, mtime}]` — tree rows; no sandbox is woken |
+| `POST /projects/{id}/files` | multipart (`file`, optional `path`) | `{file_id, name, path, size}` |
 | `GET /results/{ref}` | `offset&limit` | blob slice (ownership-checked) |
 | `GET /sessions/{id}/browser/frames` | — | SSE JPEG side-channel, keyed (user, session), announced by a `status` event, rendered in the canvas panel (not a corner overlay) |
 | `POST /sessions/{id}/approve` | — | 202 — attended → **unattended**; the run begins |
@@ -558,6 +559,15 @@ memory is the most sensitive distillate in the system. Sessions may only
 leases it takes (`project:{id}` for each write claim) and what appears in its
 sandbox. Nothing unclaimed is mounted. A read claim materializes without a lease
 and its flush is a no-op, with discarded edits logged.
+
+**An upload lands in the store, and in the boxes already holding it.**
+`POST /projects/{id}/files` writes the blob and the tree row first, so the file
+exists whether or not anything is awake. It is then written through to every
+running session whose box has a materialized claim covering that path, so a
+session reads it the same turn; every other session gets it at its next
+materialize, and a parked session is left asleep. A write-through that fails is
+logged and nothing more — the store already has the file. `quotas.upload_max_mb`
+is enforced as the upload is read, not after.
 
 **No store credentials enter the sandbox.** Bytes flow store → harness → e2b
 API, never sandbox → store.
