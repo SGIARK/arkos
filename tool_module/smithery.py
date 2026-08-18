@@ -474,8 +474,20 @@ class Smithery:
         return out
 
     def needs_repair(self, row: dict[str, Any]) -> bool:
-        """Return True for a per-user server that is configured but not connected."""
-        return bool(row["requires_auth"]) and row["status"] != CONNECTED
+        """Return True for a connection that was started and did not finish.
+
+        A row that EXISTS and is not connected is an interrupted OAuth flow, and
+        re-asserting it is how the callback that never came back is recovered.
+        A server with no row at all reports `disconnected`, and there is nothing
+        to repair: the user has simply never connected it.
+
+        The difference matters because `connect()` writes its row before it PUTs.
+        Repairing a never-touched server therefore CREATES the pending row it
+        was meant to be fixing — every settings panel open minting connections
+        at Smithery for servers nobody asked for, and paying a round trip each
+        to do it.
+        """
+        return bool(row["requires_auth"]) and row["status"] not in (CONNECTED, "disconnected")
 
     async def close(self) -> None:
         await self.client.close()

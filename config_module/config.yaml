@@ -139,6 +139,10 @@ sandbox:
 # All MCP traffic flows through Smithery Connect: it hosts the OAuth apps, stores
 # credentials write-only, and refreshes tokens.
 smithery:
+  # How long the repair that runs BEHIND GET /connections may take before it is
+  # abandoned. Nobody waits on it — the list is returned first — so this only
+  # stops a hanging vendor from leaving tasks alive for the life of the process.
+  repair_budget_s: 15
   api_key: "${SMITHERY_API_KEY}"
   namespace: "${SMITHERY_NAMESPACE}"     # e.g. "arkos"
   base_url: "https://api.smithery.ai"

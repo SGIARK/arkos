@@ -324,8 +324,13 @@ chat plumbing. One error shape everywhere: `{code, message, retryable}`.
 
 The callback never *blocks* on Smithery: it authenticates by cookie, responds,
 and fires one verification after the response. Verification is idempotent
-`connect()`, run again on any read of `GET /connections`; a row not yet connected
-keeps its `connection_id` and `tools_cache` (D24). The callback firing is the
+`connect()`, run again on any read of `GET /connections` — **behind** the
+response, not before it: the rows are already correct without it, and waiting
+made the settings panel hang for ten seconds on seven servers. A row not yet
+connected keeps its `connection_id` and `tools_cache` (D24). Only a row that
+EXISTS and is unconnected is repaired; a server nobody has connected has no row
+and nothing to repair — repairing it would create the pending row it was meant
+to fix, since `connect()` writes before it PUTs. The callback firing is the
 proof OAuth completed, so it is the trigger — read-repair alone would strand a
 connection whose popup closed early, since dispatch never re-verifies and
 revalidation skips unconnected rows.

@@ -886,18 +886,25 @@ async def list_connections(user_id: str = CurrentUser) -> list[dict[str, Any]]:
     A server that is not connected is re-verified before the list is returned;
     `connect()` is idempotent, so a row left behind by an interrupted OAuth
     flow is repaired on read.
+
+    The repair does not hold the response. Waiting on it cost ten seconds with
+    seven servers configured — one Smithery round trip per unconnected row,
+    serially — and the list was already correct before any of them ran: a row
+    that needs repairing reads "not connected", which is exactly what it says
+    afterwards too, until the human finishes the OAuth they abandoned. So the
+    rows go back now and the repairs run behind them, together and on a budget.
     """
     client = hands.smithery()
     if client is None:
         return []
     rows = await client.connections(user_id)
-    if not any(client.needs_repair(r) for r in rows):
-        return rows
-
-    for row in rows:
-        if client.needs_repair(row):
-            await _verify_once(user_id, row["server"])
-    return await client.connections(user_id)
+    broken = [r["server"] for r in rows if client.needs_repair(r)]
+    if broken:
+        task = asyncio.create_task(_repair_connections(user_id, broken))
+        # Held, or the loop may collect a task nobody is awaiting.
+        _repairs.add(task)
+        task.add_done_callback(_repairs.discard)
+    return rows
 
 
 @app.post("/connections/{server}/connect")
@@ -957,6 +964,25 @@ async def oauth_callback(server: str, request: Request) -> HTMLResponse:
         _POPUP_CLOSE % json.dumps(server),
         background=BackgroundTask(_verify_once, user_id, server),
     )
+
+
+# Repairs in flight behind a `GET /connections`, held so they are not collected.
+_repairs: set[asyncio.Task[None]] = set()
+
+
+async def _repair_connections(user_id: str, servers: list[str]) -> None:
+    """Re-assert interrupted connections, all at once and bounded.
+
+    Nobody is waiting on this, which is the point — but it still gets a deadline,
+    because a vendor that hangs should not leave tasks alive for the life of the
+    process.
+    """
+    budget = float(_cfg("smithery.repair_budget_s", 15))
+    try:
+        async with asyncio.timeout(budget):
+            await asyncio.gather(*(_verify_once(user_id, server) for server in servers))
+    except TimeoutError:
+        logger.warning("repairing %d connection(s) for user %s ran past %.0fs", len(servers), user_id, budget)
 
 
 async def _verify_once(user_id: str, server: str) -> None:
