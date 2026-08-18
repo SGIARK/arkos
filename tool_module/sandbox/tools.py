@@ -55,9 +55,12 @@ class RunCommand:
     spec = ToolSpec(
         name="run_command",
         description=(
-            "Run a shell command in the user's computer and return stdout, stderr and the exit "
-            "code. Quote paths with spaces. Interactive and long-blocking commands hang, so do "
-            "not use them. Prefer one well-formed command over several."
+            "Run a shell command in YOUR computer — a Debian sandbox created for this session "
+            "and thrown away after, not the user's machine. You have sudo and network: if a tool "
+            "is missing, install it (sudo apt-get install -y <package>) rather than reporting it "
+            "missing. Returns stdout, stderr and the exit code. Quote paths with spaces. "
+            "Interactive and long-blocking commands hang, so do not use them. Prefer one "
+            "well-formed command over several."
         ),
         input_schema={
             "type": "object",

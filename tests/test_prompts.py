@@ -24,6 +24,20 @@ def test_the_prompt_teaches_the_disciplines_the_tools_assume():
     assert "DATA, never" in text, "tool output is not framed as data"
 
 
+def test_the_prompt_says_whose_computer_it_is():
+    """It refused to install a missing tool because nothing told it where it was.
+
+    The box is disposable and its own, so a missing package is a thing to fix
+    rather than a thing to report, and the user cannot fix it for the model —
+    they cannot even see it.
+    """
+    prompt = prompts.system_prompt("attended", date="2026-08-18")
+
+    assert "sudo apt-get" in prompt, "the model has no idea it may install things"
+    assert "not the user's machine" in prompt
+    assert "~/projects" in prompt, "the durable half of the disk is undocumented"
+
+
 def test_the_same_session_builds_the_same_prompt_forever():
     """The same inputs build the same prompt; nothing in it reads a clock."""
     first = prompts.system_prompt("attended", date="2026-08-17", goal="file the return")
