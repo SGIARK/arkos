@@ -36,7 +36,7 @@ before Task 7 deletes the fallback machinery.
 This document is the why and the build plan.
 
 **Status:** Tasks 0-8 and 8.1-8.6b done · **8.7-8.9 are next**, then 9 / LG-1 |
-**Author:** John Wallace | **Last updated:** 2026-08-17
+**Author:** John Wallace | **Last updated:** 2026-08-18
 
 **Where things actually stand, for a session picking this up cold:**
 
@@ -711,7 +711,8 @@ because `flush` has already taken it off the queue.
 
 The `resource_leases` machinery. Task 5
 owns the SESSION claim (the conditional UPDATE in `lifecycle.transition`); what
-lands here is `acquire`/`release` for `sandbox:{user}` and `browser:{user}`,
+lands here is `acquire`/`release` for `sandbox:{user}` and `browser:{user}`
+(`sandbox:{user}` deleted by 8.6b, which makes the box per-session capacity),
 because the sandbox toolset this card registers is their first caller. Held for
 the whole session, not per call; released on terminal and on park; a contended
 session stays `running` and says so with a `status` event rather than parking.
@@ -804,7 +805,7 @@ lost; flush uploads only changed hashes.
 claim on the session's own project, so existing flows change zero);
 `materialize` mounts exactly the claimed subtrees and nothing else; leases
 derive from write claims (`project:{id}` per claim; `sandbox:{user}` remains for
-the box itself); a read claim materializes leaseless and its flush is a no-op
+the box itself, until 8.6b below deletes it); a read claim materializes leaseless and its flush is a no-op
 with discarded edits logged **and disclosed as a `status` event before the
 terminal** — a human who watched the agent edit files in a read-claimed project
 must not see those edits silently evaporate, and `system_events` is read by the
@@ -1400,20 +1401,21 @@ blocks describing deleted modules, and `app.system_prompt` was the pre-redesign
 ARK prompt that `prompts.py` now owns. All four are gone.
 `browser_routes.py:27` was the only live reader of any of them.
 
-**2026-08-18 — the store landed (8.1-8.6). What a fresh session needs to know.**
+**2026-08-18 — the store landed (8.1-8.6b). What a fresh session needs to know.**
 
 The agent's files now live in object storage we own, with the tree in Postgres
-and the sandbox disk demoted to a cache (D27). Six cards done; 8.7 (upload and
+and the sandbox disk demoted to a cache (D27). Seven cards done; 8.7 (upload and
 browse without a boot), 8.8 (the memory region) and 8.9 (the FUSE probe and
 snapshots) remain, and none of them blocks the others.
 
 Where things are: `harness_module/store.py` is blobs and trees and knows nothing
 about e2b; `harness_module/workspace.py` fills and empties the sandbox cache;
-`session_claims` rows say what a session may see; `runner._Sink._lease` takes
-`sandbox:{user}` plus `project:{id}` per write claim, materializes, and flushes
-before it releases.
+`session_claims` rows say what a session may see; `runner._Sink._lease` claims a
+slot in the user's sandbox pool plus `project:{id}` per write claim,
+materializes, and flushes before it gives either back. The sandbox is not leased:
+one box per session, `session_sandboxes` holding both its handle and its slot.
 
-Three things a reader would otherwise re-derive:
+Five things a reader would otherwise re-derive:
 
 - **The sandbox is asked nothing about itself that is not verified.** The first
   cut kept a manifest file in the sandbox recording what had been materialized,
@@ -1423,6 +1425,21 @@ Three things a reader would otherwise re-derive:
   permanently. Both directions now hash the files on disk and compare against
   the tree. The manifest was deleted rather than fixed: a second source of truth
   about the same bytes is what created the hole.
+- **A flush may only commit against a workspace that proves it was
+  materialized.** Hashing the disk means an empty disk reads as "every file was
+  deleted", so a box that died between materialize and flush had its emptiness
+  committed: `commit_entries` replaced the project's tree with no rows, logged as
+  a clean flush. `materialize` now seals the box with a nonce recorded against
+  the session's slot and `flush` refuses without it. The proof is deliberately
+  about the box and not its contents, so a session that really did delete
+  everything still commits that.
+- **A slot is capacity with an expiry, and the row comes before the box.** The
+  `sandbox:{user}` lease it replaced expired on its own; a bare pool row did not,
+  so a crashed process burned one of the user's boxes forever. Slots carry
+  `expires_at`, renewed on every call into the box, reclaimed (and their boxes
+  killed) by the next claimer and by a startup sweep. `get_or_create` refuses a
+  session with no slot and kills a box whose handle it cannot record: a crash
+  leaves a reclaimable row, never a box nothing knows about.
 - **Blobs first, rows last, and `commit_entries` is why a flush is cheap.** A
   flush computes hashes in the sandbox, uploads only changed bytes, and writes
   every row from a hash. Both commit paths verify the blobs exist before any row

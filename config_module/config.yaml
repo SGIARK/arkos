@@ -108,7 +108,6 @@ database:
 sandbox:
   template: "base"                         # e2b template
   timeout_seconds: 300                     # seconds a sandbox stays alive while working
-  idle_timeout_seconds: 900                # seconds of idle before it pauses (lifecycle, later)
   max_concurrent_per_user: 5               # boxes one user runs at once; a session over the cap
                                            # waits with a status event until one is reaped. At or
                                            # above quotas.max_unattended_sessions, checked at boot

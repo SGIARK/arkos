@@ -49,8 +49,8 @@ makes free.
 **D27 · Storage is separated from compute.** The agent's files live in object
 storage we own, with the tree in Postgres: `project_files` carries
 `path, content_hash, size, mtime` and no bytes, and blobs are content-addressed
-by sha256. The sandbox disk is a cache, filled at lease acquire and flushed at
-release. e2b's own persistence is demoted to a warm-start optimization, so
+by sha256. The sandbox disk is a cache, filled when the session takes its box and
+flushed before it gives it back. e2b's own persistence is demoted to a warm-start optimization, so
 deleting a paused sandbox loses nothing. A filesystem is bytes plus a tree; both
 halves are ours. Content addressing buys dedup across projects, snapshots that
 cost a row copy, and crash-safe writes, because a blob is written once and never
@@ -229,6 +229,12 @@ per user (browser keeps a profile with logins), so both are held under a lease
 for the whole task, released on park. MCP is stateless and runs free. *Cost:*
 sandbox work is effectively serial per user; browser profiles become sensitive
 at-rest state.
+**Superseded for the sandbox, 2026-08-18 (spec Task 8.6b).** Once D27 made the
+sandbox disk a cache, the box stopped being shared and stopped being stateful:
+one box per session, capped per user by `sandbox.max_concurrent_per_user`, with
+the `project:{id}` claims doing the serializing the lease used to. The browser is
+still leased, and the rule the lease came from — serialize iff shared AND
+stateful — is what removed the sandbox from the list.
 
 
 ---

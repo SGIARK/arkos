@@ -216,10 +216,16 @@ budgets:                       # keyed by sessions.mode — one vocabulary, noth
   per_tool_attempts: 3
 tools:
   result_view_cap_chars: 4000  # over this -> blob + ref
-sandbox:                       # promoted out of the deleted computer_agent: block.
-  template: base               # deleting that block wholesale would break the LIVE
-  timeout_seconds: 300         # sandbox, since Task 8 (which relocates it) is the
-  idle_timeout_seconds: 900    # last deletion. Only computer_agent.llm dies.
+  call_timeout_s: 120          # hard cap on one tool call; must exceed leases.wait_timeout_s
+leases:
+  ttl_s: 900                   # a lease expires if the process holding it dies
+  wait_timeout_s: 90           # a contended call gives up here, inside call_timeout_s
+  poll_s: 2
+sandbox:
+  template: base
+  timeout_seconds: 300              # a box's own idle timeout, per e2b
+  max_concurrent_per_user: 5        # boxes at once; >= quotas.max_unattended_sessions
+  slot_ttl_s: 900                   # a slot unrenewed this long is reclaimed, its box killed
 app:
   public_url: "https://..."    # the one origin /app and the API are served from
 quotas:

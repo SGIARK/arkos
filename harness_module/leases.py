@@ -1,9 +1,11 @@
 """
-Claims on the stateful hands: the sandbox and the browser.
+Claims on what is shared: the browser, and a project a session writes to.
 
 A resource is leased when it is both shared across a user's concurrent sessions
 and carries state between calls. The lease is held for the whole session, so one
-session's half-finished write cannot be interleaved with another's.
+session's half-finished write cannot be interleaved with another's. The sandbox
+is neither: a box belongs to one session and its disk is a cache, so it is capped
+as capacity instead (`tool_module/sandbox/manager.py`).
 
 Leases carry an expiry, so a process that dies holding one does not lock the
 resource until someone intervenes.
@@ -20,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def key(resource: str, user_id: str) -> str:
-    """Build the key a resource is leased under. One sandbox and one browser per user."""
+    """Build the key a per-user resource is leased under. One browser per user."""
     return f"{resource}:{user_id}"
 
 

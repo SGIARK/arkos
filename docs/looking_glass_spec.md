@@ -188,6 +188,8 @@ files) · composer + EventSource wiring.
    become a project file, and what wins on conflict with a mid-run upload?~~
    **Dissolved by D27 (2026-08-18).** The question assumed files live in two
    places. They live in one: the store holds them, and the sandbox disk is a
-   cache filled at lease acquire and flushed at release. A file becomes a
-   project file when the flush commits its tree, and a mid-run upload is written
-   through to the held sandbox rather than racing it. See spec Tasks 8.1-8.9.
+   cache filled when a session takes its box and flushed before it gives it
+   back. A file becomes a project file when the flush commits its tree, and a
+   mid-run upload is written through to every live sandbox holding a
+   materialized claim on that project (Task 8.6b: boxes are per session, so
+   "the held sandbox" is a set) rather than racing them. See spec Tasks 8.1-8.9.
