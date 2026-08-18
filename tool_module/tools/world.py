@@ -199,8 +199,8 @@ class ListFiles:
     spec = ToolSpec(
         name="list_files",
         description=(
-            "List the files the user uploaded to a project. These are copied into the "
-            "sandbox when it starts, so read them there by name rather than through this tool."
+            "List a project's files. They are materialized into the sandbox when it starts, "
+            "so read their contents there by path rather than through this tool."
         ),
         input_schema={
             "type": "object",
@@ -214,10 +214,10 @@ class ListFiles:
         # project_files has no user column, so ownership is checked in the join.
         rows = await pool.fetch(
             """
-            SELECT f.id, f.name, f.size_bytes, f.created_at
+            SELECT f.path, f.size, f.mtime
               FROM project_files f JOIN projects p ON p.id = f.project_id
              WHERE f.project_id = $1 AND p.user_id = $2
-             ORDER BY f.created_at
+             ORDER BY f.path
              LIMIT $3
             """,
             _as_uuid(args["project_id"]),

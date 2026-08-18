@@ -31,6 +31,13 @@ context:
   chars_per_token: 4              # characters per token in the estimate; there is no tokenizer for this model
   turns: 50                       # short-term transcript window; not read yet
 
+store:
+  # Where the agent's files live. Bytes are content-addressed under
+  # {prefix}/blobs/{hh}/{sha256}; the tree is rows in project_files. The sandbox
+  # disk is a cache of this, not the other way round.
+  bucket: "${STORE_BUCKET}"
+  prefix: "arkos"
+
 system_log:
   # The operational log: batched, best-effort, never on a request path.
   flush_interval_s: 5

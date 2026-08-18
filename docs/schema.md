@@ -30,18 +30,32 @@ projects (
   updated_at    timestamptz not null default now()
 )
 
+-- the tree half of the store; the bytes are in object storage (D27)
 project_files (
   id            uuid primary key default gen_random_uuid(),
   project_id    uuid not null references projects(id) on delete cascade,
-  name          text not null,
-  size_bytes    bigint not null,
-  storage_path  text not null,           -- Supabase Storage, one bucket,
-                                         -- {user_id}/{project_id}/{file_id}.
-                                         -- COPIED into the sandbox at lease
-                                         -- acquisition, not live-mounted: e2b has
-                                         -- no network filesystem.
+  path          text not null,           -- relative to the project root
+  content_hash  text,                    -- sha256; the blob is at
+                                         -- {prefix}/blobs/{hh}/{sha256}
+  size          bigint not null,
+  mtime         timestamptz not null default now(),
   created_at    timestamptz not null default now()
 )
+create unique index on project_files (project_id, path);
+-- No bytes column and no storage_path: a row names a path and the hash of its
+-- content. Two projects holding the same content share one blob.
+
+-- what a session may see, and what it locks (D29)
+session_claims (
+  session_id  uuid not null references sessions(id) on delete cascade,
+  project_id  uuid not null references projects(id) on delete cascade,
+  subpath     text not null default '/',
+  mode        text not null check (mode in ('read','write')),
+  primary key (session_id, project_id, subpath)
+)
+create index on session_claims (project_id);
+-- Declared at session creation and fixed for its life. Write claims take
+-- project:{id}; read claims mount without a lease and discard their edits.
 
 -- a task IS a session: one row, one id --------------------------------------
 sessions (

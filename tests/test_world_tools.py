@@ -185,11 +185,11 @@ async def test_another_users_files_are_invisible():
     mine, theirs = await _user(), await _user()
     their_project = await _project(theirs)
     await pool.execute(
-        "INSERT INTO project_files (project_id, name, size_bytes, storage_path) VALUES ($1, $2, $3, $4)",
+        "INSERT INTO project_files (project_id, path, content_hash, size) VALUES ($1, $2, $3, $4)",
         uuid.UUID(their_project),
         "payroll.csv",
+        "0" * 64,
         10,
-        "x/y/z",
     )
 
     result = await _run("list_files", {"project_id": their_project}, mine)
