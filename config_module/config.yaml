@@ -37,6 +37,9 @@ store:
   # disk is a cache of this, not the other way round.
   bucket: "${STORE_BUCKET}"
   prefix: "arkos"
+  # Blobs are kept on disk under this root. An object-storage backend
+  # implements the same interface; see harness_module/store.py:Blobs.
+  root: ".arkos-store"
 
 system_log:
   # The operational log: batched, best-effort, never on a request path.

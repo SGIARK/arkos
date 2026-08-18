@@ -26,3 +26,4 @@
 
 # cursor
 .cursor/*
+.arkos-store/
