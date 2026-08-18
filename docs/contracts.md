@@ -710,10 +710,10 @@ on concurrently running sessions. None of this exists in prod until it does —
 
 | Violation | Breaks | Where |
 |---|---|---|
-| browser frame queue keyed by user only; concurrent tasks clobber each other | (user, task) stream keying | `tool_module/browser_stream.py:39,74` |
-| `/v1/browser/stream` trusts client-supplied user_id, no auth | every-endpoint ownership check | `harness_module/browser_routes.py:31-34` |
-| browser returns bare string; failure and empty are both `""` | tool_result envelope | `tool_module/browser_tool.py:499` |
-| zero step callbacks wired; 3-min silent tool call | progress-as-status-events | `tool_module/browser_tool.py:443-463` |
+| ~~browser frame queue keyed by user only; concurrent tasks clobber each other~~ **resolved by deletion (8.10); Task 9 rebuilds against the contract** | (user, task) stream keying | file deleted |
+| ~~`/v1/browser/stream` trusts client-supplied user_id, no auth~~ **resolved by deletion (8.10); Task 9 rebuilds against the contract** | every-endpoint ownership check | file deleted |
+| ~~browser returns bare string; failure and empty are both `""`~~ **resolved by deletion (8.10); Task 9 rebuilds against the contract** | tool_result envelope | file deleted |
+| ~~zero step callbacks wired; 3-min silent tool call~~ **resolved by deletion (8.10); Task 9 rebuilds against the contract** | progress-as-status-events | file deleted |
 | ~~`run.sh` launches with NO parser flags; `llm.model_name` is `"tgi"`~~ FIXED in Task 0a(i) | one authoritative model: **Qwen3-8B**, `--tool-call-parser qwen25`, `--reasoning-parser qwen3` | `config_module/config.yaml`, `model_module/run.sh` |
 | ~~`logging_module` mandated by CLAUDE.md does not exist; 35 `print()`s in prod~~ RESOLVED 2026-08-13 | two-logs contract above | the 35 were 27 in a misplaced test, 7 in `db/migrate.py` (a CLI, where print is correct) and 1 in a build script. Zero in production paths. `logging_module` itself is still unbuilt (D17) |
 

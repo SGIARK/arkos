@@ -19,12 +19,20 @@ neither do `app.py`, `task_runner.py` or `ArkModelNew.py`. If something tells yo
 to edit one of those, that instruction is stale — check `git log`, do not
 recreate the file.
 
-**There is no HTTP server right now.** Task 4 writes it. `harness_module/` holds
-only `jwt_utils.py` and `browser_routes.py`.
+**The HTTP server is `harness_module/api.py`** (Task 4), run with
+`uvicorn harness_module.api:app`. `harness_module/` is the control plane:
+api · runner · store · workspace · leases · lifecycle · approvals · session_log ·
+system_log · stream · hands · jwt_utils.
+
+**There is no browser code right now.** Task 8.10 deleted the pre-redesign
+`browser_tool.py`, `browser_actions.py`, `browser_stream.py` and
+`browser_routes.py` — they were written against APIs Task 3 removed and were
+reachable from no import path. Task 9 rebuilds against `contracts.md`, not from
+those files; they are in `git log`, not in the tree.
 
 Where the live code is: `agent_module/loop.py` (the one loop),
 `model_module/client.py` (the one model client), `tool_module/`
-(envelope · registry · connections · smithery · tools/ · browser · sandbox),
+(envelope · registry · connections · smithery · tools/ · sandbox),
 `db/pool.py` (asyncpg; the psycopg2 helpers are gone — do not add more).
 
 Coding standards still need the rewrite Task 7 promised. Until then: ruff, type

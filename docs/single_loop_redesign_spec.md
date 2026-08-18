@@ -35,9 +35,8 @@ before Task 7 deletes the fallback machinery.
 
 This document is the why and the build plan.
 
-**Status:** Tasks 0-8 and 8.1-8.9 done · **the deletion commit, then
-LG-1 → 9 → LG-2 → 12** (sequencing settled 2026-08-18, see the note at
-Tasks 10-11) |
+**Status:** Tasks 0-8 and 8.1-8.10 done · **LG-1 → 9 → LG-2 → 12**
+(sequencing settled 2026-08-18, see the note at Tasks 10-11) |
 **Author:** John Wallace | **Last updated:** 2026-08-18
 
 **Where things actually stand, for a session picking this up cold:**
@@ -298,6 +297,21 @@ Estimated before, measured after Tasks 7+8 landed on 2026-08-13.
 | config_module + db | — | — | **515** | loader, migration 0, asyncpg pool |
 | tests | 5,037 | ~2,200 | **3,894** | 14 test files went with their machinery |
 | **Total (py)** | **~14.9k** | **~6.3k** | **8,576** | production 9.9k → **4,682** against a ~4.5k target |
+
+**Measured again after Task 8.10, 2026-08-18.** The 08-13 row above is the
+redesign's own cull; this one is what the 08-17 audit found still standing
+behind no import path, plus what Tasks 4-8.9 added in between.
+
+| | Before 8.10 | **After** | |
+|---|---|---|---|
+| production (py, excl. `landing/` and `frontend/`) | 9,546 | **8,289** | −1,257: the four browser files, `browser_routes`, a superseded config test, `scripts/debug/` |
+| tests | 10,822 | **9,415** | −1,407: the four browser test files, which pinned `register_local_tool` and bare-string returns |
+
+Production is up from 4,682 because Tasks 4 through 8.9 wrote the control plane,
+the store and memory; the ~4.5k target described a repo with no HTTP server, no
+store and no memory in it. What 8.10 removed is dead weight, not function: every
+deleted file was reachable from no import path in the repo, which is why a
+deletions-only commit leaves the suite green.
 
 Where the two big misses are, and why neither is alarming: `harness_module` is
 172 instead of ~1,700 because its four files are not written yet, so that gap is
@@ -978,6 +992,51 @@ if environment reproducibility ever matters, it is declared in project files
 the template — never flushed, because flushing a box's environment would
 promote the cache back into a source of truth.
 
+### Task 8.10: The deletion commit — the old architecture leaves the tree
+**Why:** the 08-17 codebase audit found ~24% of production defended by no
+import path — pre-redesign browser code written against APIs deleted in Task 3,
+plus stale artifacts. It lands BEFORE Task 9, or the browser rewrite happens
+next to a corpse someone will be tempted to salvage from; Task 9 rebuilds
+against contracts, not against these files.
+**Delete, production (~1,115 lines):** `tool_module/browser_tool.py`,
+`tool_module/browser_actions.py`, `tool_module/browser_stream.py` (Task 9
+rebuilds the broker with (user, session) keying per the violations table),
+`harness_module/browser_routes.py` (unmounted, by its own docstring's
+admission), `config_module/test_config_loader.py` (superseded, never collected,
+would fail if it were).
+**Delete, tests (~1,407 lines):** `tests/test_browser_tool.py`,
+`test_browser_actions.py`, `test_browser_routes.py`, `test_browser_stream.py` —
+they pin `register_local_tool` and bare-string returns, both forbidden by
+contracts, so Task 9's tests are rewrites regardless.
+**Delete, artifacts:** `base_module/` and `state_module/` (nothing but
+`__pycache__` of deleted source), stale `.pyc` for
+`ArkModelNew`/`tool_call`/`test_state_module`, `scripts/debug/` (both files
+hardcode a dev machine path).
+**Dependencies:** drop `browser-use` and `playwright` from requirements (they
+return with Task 9 if it still wants them). `e2b-code-interpreter` STAYS — the
+08-17 audit line calling it droppable predates 8a making the sandbox live.
+Settle `psycopg2-binary` per its one remaining consumer (`db/migrate.py`) and
+fix its requirements comment, which still names the sandbox manager.
+**Docs in the same commit:** the four browser rows in contracts' violations
+table annotated "resolved by deletion; Task 9 rebuilds against the contract";
+the spec's deletion inventory gains a measured after-row.
+**Done when:** the deletions above are gone;
+`grep -r "register_local_tool\|BrowserStreamBroker"` returns nothing outside
+docs; suite green; ruff clean; production LOC recorded.
+**Touch:** deletions only, no behavior | **P1, 0.5d** | **Blockers:** 8.9
+**Test:** the suite passing after a deletions-only commit IS the test, plus the
+grep gate above as a CI-runnable check.
+
+**Landed 2026-08-18.** Production 9,546 → 8,289 lines, tests 10,822 → 9,415;
+the measured rows are in the deletion inventory above. The grep gate returns
+nothing outside docs. Two notes for whoever reads this next. `psycopg2-binary`
+**stays** — `db/migrate.py` is a sync CLI a person runs, and porting it to
+asyncpg would buy one fewer requirements line and nothing else; the comment the
+card said still named the sandbox manager already named `db/migrate.py`, so
+there was nothing to fix there. And `pydantic`'s entry was justified by
+`browser_actions.py`, which is now gone — it stays as a FastAPI dependency that
+`landing/` also imports directly, with the comment corrected to say so.
+
 ## Task 9: Browser tool on a leash
 **Done when:** per contracts.md browser section — step callback wired to
 `status` events; frame stream keyed (user, session) + cookie-authed + announced by
@@ -1010,7 +1069,7 @@ while leaving the tool unreachable. Registration is now part of done.
 (Looking Glass v1; Projects + Command Center.)
 
 **Sequencing settled 2026-08-18 (owner): LG-1 runs BEFORE Task 9.** After 8.8,
-8.9 and the audit deletion commit, the order is **LG-1 → Task 9 → LG-2 → Task
+8.9 and 8.10 (the deletion commit), the order is **LG-1 → Task 9 → LG-2 → Task
 12**. Two reasons on the record. First, visibility: everything built since Task
 4 — the streaming turn, the hop meter, unattended runs, the ochre approval dot,
 claims, mid-run uploads, cross-session memory — is currently observable only
