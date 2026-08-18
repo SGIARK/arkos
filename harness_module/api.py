@@ -19,12 +19,14 @@ import posixpath
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import jwt
 from fastapi import Body, Depends, FastAPI, File, Form, Header, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
 from agent_module.events import TodoEvent, UserEvent
@@ -878,3 +880,22 @@ def _uuid(value: Any, what: str) -> uuid.UUID:
         return uuid.UUID(str(value))
     except (ValueError, AttributeError, TypeError) as e:
         raise ApiError(404, "not_found", f"No such {what}.") from e
+
+
+# --- the app itself --------------------------------------------------------------
+
+# Mounted last, so no API route can be shadowed by a file with the same name.
+#
+# Same origin as the API, and that is a requirement rather than a convenience:
+# the session cookie is SameSite=Lax, which a cross-site `EventSource` does not
+# carry, so a frontend served from anywhere else gets 401 on every stream connect
+# while the tests — which call `_event_stream` directly — stay green.
+_FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
+
+if _FRONTEND.is_dir():
+    # `html=True` serves index.html at /app and for any path the build does not
+    # have a file for, which is what a client-routed page needs.
+    app.mount("/app", StaticFiles(directory=_FRONTEND, html=True), name="app")
+else:  # pragma: no cover - only a broken checkout or a partial image
+    logger.error("no frontend/ directory at %s; /app will 404", _FRONTEND)
+

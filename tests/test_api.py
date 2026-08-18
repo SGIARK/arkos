@@ -597,6 +597,33 @@ async def test_a_published_status_can_be_fetched_by_the_seq_it_announced():
     assert [e.seq for e in replay][0] == seen[0].seq, "the announced seq was not yet readable"
 
 
+# --- the app is served from the API's own origin ---------------------------------
+
+
+async def test_the_app_is_served_at_app(client):
+    """SameSite=Lax carries no cookie cross-site, so the shell must share the origin."""
+    page = await client.get("/app/")
+
+    assert page.status_code == 200
+    assert "text/html" in page.headers["content-type"]
+    assert "<div id=\"root\">" in page.text
+
+
+async def test_the_apps_assets_are_served_beside_it(client):
+    styles = await client.get("/app/styles.css")
+
+    assert styles.status_code == 200
+    assert "text/css" in styles.headers["content-type"]
+
+
+async def test_the_shell_loads_without_a_session(client):
+    """The page has to render in order to sign anyone in; the cookie gates the API, not the shell."""
+    page = await client.get("/app/")
+
+    assert page.status_code == 200
+    assert (await client.get("/projects")).status_code == 401
+
+
 async def _new_session() -> str:
     user_id = uuid.uuid4()
     await pool.execute("INSERT INTO users (id) VALUES ($1)", user_id)
