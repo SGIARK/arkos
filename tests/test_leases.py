@@ -1,4 +1,7 @@
-"""Claims on the sandbox and the browser: one session at a time, and given up when it stops.
+"""Claims on the browser and on projects: one session at a time, and given up when it stops.
+
+The sandbox is not among them — a box belongs to one session, so it is capacity
+rather than a lease (see test_sandbox_pool.py).
 
 Runs against a real Postgres with migration 0 applied.
 """
@@ -17,6 +20,7 @@ from harness_module import leases, runner
 from harness_module import session_log as slog
 from model_module import client as mc
 from tests.dbgate import require_db
+from tool_module.sandbox import manager as sandbox_manager
 from tool_module.sandbox import tools as sandbox_tools
 
 pytestmark = pytest.mark.asyncio
@@ -55,7 +59,7 @@ async def _session(mode: str = "unattended", status: str = "running") -> str:
 
 
 def _key() -> str:
-    return leases.key("sandbox", str(uuid.uuid4()))
+    return leases.key("browser", str(uuid.uuid4()))
 
 
 async def test_one_session_holds_a_resource_at_a_time():
@@ -107,14 +111,14 @@ async def test_one_session_cannot_release_anothers_lease():
 
 async def test_release_all_frees_every_resource_a_session_holds():
     session_id = await _session()
-    user_id = str(uuid.uuid4())
-    sandbox, browser = leases.key("sandbox", user_id), leases.key("browser", user_id)
-    await leases.acquire(sandbox, session_id, 60)
+    browser = leases.key("browser", str(uuid.uuid4()))
+    project = f"project:{uuid.uuid4()}"
     await leases.acquire(browser, session_id, 60)
+    await leases.acquire(project, session_id, 60)
 
     assert await leases.release_all(session_id) == 2
-    assert await leases.holder(sandbox) is None
     assert await leases.holder(browser) is None
+    assert await leases.holder(project) is None
 
 
 async def test_a_lease_is_dropped_with_its_session():
@@ -148,9 +152,12 @@ def sandbox(monkeypatch):
         def __init__(self):
             self.commands = []
 
-        async def exec(self, user_id, command, timeout=120):
+        async def exec(self, session_id, command, timeout=120):
             self.commands.append(command)
             return {"stdout": "ok", "stderr": "", "exit_code": 0}
+
+        async def reap(self, session_id):
+            await sandbox_manager.release_slot(session_id)
 
     fake = Fake()
     monkeypatch.setattr(sandbox_tools.sandbox_manager, "manager", lambda: fake)
@@ -199,45 +206,35 @@ async def _drive(session_id: str) -> None:
         await asyncio.wait_for(asyncio.shield(task), timeout=45)
 
 
-async def test_a_sandbox_call_takes_the_lease_and_gives_it_back_at_the_end(sandbox, model, impatient):
+async def test_a_session_leaves_no_lease_behind(sandbox, model, impatient):
     session_id = await _session(mode="attended", status="idle")
-    user_id = str(await pool.fetchval("SELECT user_id FROM sessions WHERE id = $1", uuid.UUID(session_id)))
     await slog.append(session_id, UserEvent(text="go"))
     model(_call("run_command", '{"command": "ls"}'), _text("done"))
 
     await _drive(session_id)
 
     assert sandbox.commands == ["ls"]
-    assert await leases.holder(leases.key("sandbox", user_id)) is None, "the lease outlived the run"
+    held = await pool.fetchval(
+        "SELECT count(*) FROM resource_leases WHERE session_id = $1", uuid.UUID(session_id)
+    )
+    assert held == 0, "a lease outlived the run"
 
 
-async def test_a_contended_sandbox_says_so_and_the_model_routes_around_it(sandbox, model, impatient):
+async def test_the_sandbox_is_never_leased(sandbox, model, impatient):
+    """A box belongs to one session, so there is nothing to serialize."""
     session_id = await _session(mode="attended", status="idle")
-    user_id = str(await pool.fetchval("SELECT user_id FROM sessions WHERE id = $1", uuid.UUID(session_id)))
-    holder_session = await _session()
-    await leases.acquire(leases.key("sandbox", user_id), holder_session, 60)
-
     await slog.append(session_id, UserEvent(text="go"))
-    model(_call("run_command", '{"command": "ls"}'), _text("gave up"))
+    model(_call("run_command", '{"command": "ls"}'), _text("done"))
+
     await _drive(session_id)
 
-    events = [e.event for e in await slog.get_events(session_id)]
-    statuses = [e.label for e in events if e.kind == "status"]
-    results = [e for e in events if e.kind == "tool_result"]
-
-    assert statuses == ["waiting for the sandbox"]
-    assert sandbox.commands == [], "the tool ran while another session held the sandbox"
-    assert results[0].error_kind == "timeout"
-    assert not results[0].ok
-    # Contention is not a park: the run kept going and ended its turn normally.
-    row = await pool.fetchrow("SELECT status FROM sessions WHERE id = $1", uuid.UUID(session_id))
-    assert row["status"] == "idle"
+    keys = [r["resource_key"] for r in await pool.fetch("SELECT resource_key FROM resource_leases")]
+    assert not [k for k in keys if k.startswith("sandbox:")]
 
 
-async def test_a_park_gives_the_lease_back(sandbox, model, impatient):
+async def test_a_park_gives_the_leases_back(sandbox, model, impatient):
     """A parked session is not acting, so it holds nothing."""
     session_id = await _session(mode="attended", status="idle")
-    user_id = str(await pool.fetchval("SELECT user_id FROM sessions WHERE id = $1", uuid.UUID(session_id)))
     await slog.append(session_id, UserEvent(text="go"))
     model(
         _call("run_command", '{"command": "ls"}'),
@@ -248,4 +245,7 @@ async def test_a_park_gives_the_lease_back(sandbox, model, impatient):
 
     row = await pool.fetchrow("SELECT status FROM sessions WHERE id = $1", uuid.UUID(session_id))
     assert row["status"] == "awaiting_approval"
-    assert await leases.holder(leases.key("sandbox", user_id)) is None
+    held = await pool.fetchval(
+        "SELECT count(*) FROM resource_leases WHERE session_id = $1", uuid.UUID(session_id)
+    )
+    assert held == 0

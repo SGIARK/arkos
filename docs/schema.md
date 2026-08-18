@@ -145,17 +145,20 @@ create unique index on approvals (session_id, tool_call_id) where answered_at is
 
 -- stateful hands ------------------------------------------------------------
 resource_leases (
-  resource_key text primary key,          -- 'sandbox:{user}' | 'browser:{user}'
+  resource_key text primary key,          -- 'browser:{user}' | 'project:{id}'
   session_id   uuid not null references sessions(id) on delete cascade,
   acquired_at  timestamptz not null default now(),
   expires_at   timestamptz not null
 )
 
-user_sandboxes (
-  user_id      uuid primary key references users(id),
-  sandbox_id   text,                      -- e2b handle; cattle, may be respawned
+-- The box follows the session, and the row is also its slot in the user's
+-- pool: the row count per user is what sandbox.max_concurrent_per_user caps.
+session_sandboxes (
+  session_id   uuid primary key references sessions(id) on delete cascade,
+  user_id      uuid not null references users(id) on delete cascade,
+  sandbox_id   text,                      -- e2b handle; null between slot and boot
   created_at   timestamptz not null default now(),
-  last_used_at timestamptz
+  last_used_at timestamptz not null default now()
 )
 
 user_connections (

@@ -21,6 +21,7 @@ from harness_module import session_log as slog
 from model_module import client as mc
 from tests.dbgate import require_db
 from tests.test_workspace import FakeSandbox, _sweeping
+from tool_module.sandbox import manager as sandbox_manager
 
 pytestmark = pytest.mark.asyncio
 
@@ -32,6 +33,11 @@ async def _db(tmp_path, monkeypatch):
     await require_db()
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     sandbox = _sweeping(FakeSandbox())
+
+    async def reap(session_id):
+        await runner.sandbox_manager.release_slot(session_id)
+
+    sandbox.reap = reap
     monkeypatch.setattr(runner.sandbox_manager, "manager", lambda: sandbox)
     api.sandbox = sandbox
     yield
@@ -321,18 +327,19 @@ async def test_a_read_claim_takes_no_project_lease():
     assert workspace.lease_keys(claims) == ["project:p2"]
 
 
-async def test_two_users_with_disjoint_claims_do_not_wait_on_each_other():
+async def test_two_sessions_with_disjoint_claims_do_not_wait_on_each_other():
     """The unit of conflict is the path set, so unrelated work runs at once."""
-    first_user, second_user = await _user(), await _user()
-    first_project = await _project(first_user, "One")
-    second_project = await _project(second_user, "Two")
-    first = await _session(first_user, first_project, status="running")
-    second = await _session(second_user, second_project, status="running")
+    user_id = await _user()
+    first_project = await _project(user_id, "One")
+    second_project = await _project(user_id, "Two")
+    first = await _session(user_id, first_project, status="running")
+    second = await _session(user_id, second_project, status="running")
 
     assert await leases.acquire(f"project:{first_project}", first, 60)
     assert await leases.acquire(f"project:{second_project}", second, 60)
-    assert await leases.acquire(leases.key("sandbox", first_user), first, 60)
-    assert await leases.acquire(leases.key("sandbox", second_user), second, 60)
+    # The box is not among what they share, so neither waits for the other's.
+    assert await sandbox_manager.claim_slot(first)
+    assert await sandbox_manager.claim_slot(second)
 
 
 async def test_a_second_session_claiming_the_same_project_waits_and_says_so(model, monkeypatch):

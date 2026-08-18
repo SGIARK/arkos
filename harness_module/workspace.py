@@ -2,9 +2,9 @@
 Filling and emptying the sandbox's cache of the store.
 
 The sandbox disk holds a copy of the claimed subtrees, nothing more (D27).
-`materialize` puts them there when the lease is taken; `flush` reads back what
-changed and commits it. Between the two the sandbox is free to be destroyed:
-whatever survives there is a warm start, not the record.
+`materialize` puts them there when the session takes its box; `flush` reads back
+what changed and commits it. Between the two the sandbox is free to be
+destroyed: whatever survives there is a warm start, not the record.
 
 Bytes move store -> harness -> sandbox and back. The sandbox is never given a
 credential and never reaches the store itself (D28), and it is asked nothing
@@ -62,15 +62,15 @@ class Materialized:
 
 
 class SandboxIO(Protocol):
-    """The part of the sandbox this module uses."""
+    """The part of the sandbox this module uses. Keyed by session: the box is the session's."""
 
-    async def exec(self, user_id: str, command: str, timeout: int = ...) -> dict[str, Any]: ...
+    async def exec(self, session_id: str, command: str, timeout: int = ...) -> dict[str, Any]: ...
 
-    async def write_file(self, user_id: str, path: str, content: Any) -> None: ...
+    async def write_file(self, session_id: str, path: str, content: Any) -> None: ...
 
-    async def read_file(self, user_id: str, path: str) -> str: ...
+    async def read_file(self, session_id: str, path: str) -> str: ...
 
-    async def read_bytes(self, user_id: str, path: str) -> bytes: ...
+    async def read_bytes(self, session_id: str, path: str) -> bytes: ...
 
 
 async def claims_for(session_id: str) -> list[Claim]:
@@ -113,7 +113,7 @@ def lease_keys(claims: list[Claim]) -> list[str]:
     return [f"project:{c.project_id}" for c in claims if c.mode == "write"]
 
 
-async def materialize(sandbox: SandboxIO, user_id: str, claims: list[Claim]) -> Materialized:
+async def materialize(sandbox: SandboxIO, session_id: str, claims: list[Claim]) -> Materialized:
     """
     Put the claimed subtrees in the sandbox, transferring only what is missing.
 
@@ -133,7 +133,7 @@ async def materialize(sandbox: SandboxIO, user_id: str, claims: list[Claim]) -> 
     # What is actually on disk, by hash. The sandbox's own record of what it
     # holds is not consulted: it is stale the moment a flush commits, and a
     # file it forgot about is exactly the file a deletion needs removed.
-    on_disk = await _sweep(sandbox, user_id, claims)
+    on_disk = await _sweep(sandbox, session_id, claims)
     stale = [path for path, digest in wanted.items() if on_disk.get(path) != digest]
     removed = tuple(sorted(set(on_disk) - set(wanted)))
 
@@ -149,15 +149,15 @@ async def materialize(sandbox: SandboxIO, user_id: str, claims: list[Claim]) -> 
         payload.append((path.lstrip("/"), blob))
 
     if removed:
-        await _remove(sandbox, user_id, removed)
+        await _remove(sandbox, session_id, removed)
 
     bytes_sent = 0
     if payload:
         archive = store.build_tar(payload)
         bytes_sent = len(archive)
-        await sandbox.write_file(user_id, _STAGING_TAR, archive)
+        await sandbox.write_file(session_id, _STAGING_TAR, archive)
         result = await sandbox.exec(
-            user_id,
+            session_id,
             f"mkdir -p {shlex.quote(MOUNT_ROOT)} && tar xf {shlex.quote(_STAGING_TAR)} -C / "
             f"&& rm -f {shlex.quote(_STAGING_TAR)}",
         )
@@ -165,9 +165,9 @@ async def materialize(sandbox: SandboxIO, user_id: str, claims: list[Claim]) -> 
             raise store.StoreError(f"materialize failed to extract: {result['stderr'][:200]}")
 
     logger.info(
-        "materialized %d file(s) for user %s (%d transferred, %d removed)",
+        "materialized %d file(s) for session %s (%d transferred, %d removed)",
         len(wanted),
-        user_id,
+        session_id,
         len(payload),
         len(removed),
     )
@@ -185,7 +185,7 @@ class Flushed:
 
 async def flush(
     sandbox: SandboxIO,
-    user_id: str,
+    session_id: str,
     claims: list[Claim],
     manifest: dict[str, str] | None = None,
 ) -> Flushed:
@@ -205,7 +205,7 @@ async def flush(
     return value, because silently keeping or silently dropping them are both
     worse than saying which.
     """
-    current = await _sweep(sandbox, user_id, claims)
+    current = await _sweep(sandbox, session_id, claims)
     if manifest is None:
         manifest = {}
         for claim in claims:
@@ -213,7 +213,7 @@ async def flush(
                 manifest[posixpath.join(claim.mount, entry.path)] = entry.content_hash
     changed = sorted(path for path, digest in current.items() if manifest.get(path) != digest)
 
-    contents: dict[str, bytes] = await _read_out(sandbox, user_id, changed) if changed else {}
+    contents: dict[str, bytes] = await _read_out(sandbox, session_id, changed) if changed else {}
 
     committed = 0
     uploaded = 0
@@ -249,7 +249,7 @@ async def flush(
             if known is None or known.content_hash != digest:
                 # Unchanged by the manifest, yet the tree does not agree. Read
                 # it rather than record a size that would be a guess.
-                extra = await _read_out(sandbox, user_id, [path])
+                extra = await _read_out(sandbox, session_id, [path])
                 body = extra.get(path, b"")
                 entries.append(
                     store.TreeEntry(
@@ -265,18 +265,18 @@ async def flush(
         committed += len(entries)
 
     if discarded:
-        logger.warning("discarded %d edit(s) under a read claim for user %s", len(discarded), user_id)
-    logger.info("flushed %d file(s) for user %s (%d uploaded)", committed, user_id, uploaded)
+        logger.warning("discarded %d edit(s) under a read claim in session %s", len(discarded), session_id)
+    logger.info("flushed %d file(s) for session %s (%d uploaded)", committed, session_id, uploaded)
     return Flushed(committed=committed, uploaded=uploaded, discarded=tuple(discarded))
 
 
-async def _sweep(sandbox: SandboxIO, user_id: str, claims: list[Claim]) -> dict[str, str]:
+async def _sweep(sandbox: SandboxIO, session_id: str, claims: list[Claim]) -> dict[str, str]:
     """Hash every file under the claimed mounts, in one command."""
     mounts = " ".join(shlex.quote(c.mount) for c in claims)
     if not mounts:
         return {}
     result = await sandbox.exec(
-        user_id,
+        session_id,
         f"find {mounts} -type f -exec sha256sum {{}} + 2>/dev/null || true",
     )
     found: dict[str, str] = {}
@@ -287,17 +287,17 @@ async def _sweep(sandbox: SandboxIO, user_id: str, claims: list[Claim]) -> dict[
     return found
 
 
-async def _read_out(sandbox: SandboxIO, user_id: str, paths: list[str]) -> dict[str, bytes]:
+async def _read_out(sandbox: SandboxIO, session_id: str, paths: list[str]) -> dict[str, bytes]:
     """Tar the changed files and read the archive back in one transfer."""
     quoted = " ".join(shlex.quote(p.lstrip("/")) for p in paths)
     result = await sandbox.exec(
-        user_id, f"tar cf {shlex.quote(_FLUSH_TAR)} -C / {quoted}"
+        session_id, f"tar cf {shlex.quote(_FLUSH_TAR)} -C / {quoted}"
     )
     if result["exit_code"] != 0:
         raise store.StoreError(f"flush could not archive the changes: {result['stderr'][:200]}")
 
-    archive = await sandbox.read_bytes(user_id, _FLUSH_TAR)
-    await sandbox.exec(user_id, f"rm -f {shlex.quote(_FLUSH_TAR)}")
+    archive = await sandbox.read_bytes(session_id, _FLUSH_TAR)
+    await sandbox.exec(session_id, f"rm -f {shlex.quote(_FLUSH_TAR)}")
 
     out: dict[str, bytes] = {}
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
@@ -309,10 +309,10 @@ async def _read_out(sandbox: SandboxIO, user_id: str, paths: list[str]) -> dict[
     return out
 
 
-async def _remove(sandbox: SandboxIO, user_id: str, paths: tuple[str, ...]) -> None:
+async def _remove(sandbox: SandboxIO, session_id: str, paths: tuple[str, ...]) -> None:
     """Delete files the tree no longer has, so a resumed sandbox does not keep them."""
     quoted = " ".join(shlex.quote(p) for p in paths)
-    await sandbox.exec(user_id, f"rm -f {quoted}")
+    await sandbox.exec(session_id, f"rm -f {quoted}")
 
 
 def _uuid(value: str) -> _uuid_module.UUID:

@@ -13,7 +13,7 @@ import logging
 import posixpath
 import time
 import uuid
-from collections.abc import Awaitable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -571,6 +571,8 @@ class _Sink:
         self._park_calls: dict[str, tuple[str, dict[str, Any]]] = {}
         # Resource keys this session holds, so a second call skips the database.
         self._leases: set[str] = set()
+        # Whether this session holds a slot in its user's sandbox pool.
+        self._sandbox_slot = False
         # The claims materialized into the sandbox, and the tree they came from.
         self._workspace: tuple[list[workspace.Claim], dict[str, str]] | None = None
         # The ending already on the record; a later abort completes this one.
@@ -619,13 +621,15 @@ class _Sink:
     async def _lease(self, resource: str) -> None:
         """Claim what the session needs to use a shared resource, and fill its cache.
 
-        The sandbox is leased for the box itself; each write claim is leased for
-        the project it names, so two sessions touching different projects do not
-        wait on each other. The claimed subtrees are materialized once the
-        leases are held, and nothing unclaimed is put there.
+        The sandbox is this session's own box, so it is capacity rather than a
+        lease: the wait is for a free slot in the user's pool. Each write claim
+        leases the project it names, so two sessions touching different projects
+        do not wait on each other. The claimed subtrees are materialized once
+        the box and the leases are held, and nothing unclaimed is put there.
 
         Raises:
-            ToolUnavailable: a lease did not free up. The model routes around it.
+            ToolUnavailable: a box or a lease did not free up. The model routes
+                around it.
         """
         if resource != "sandbox":
             await self._acquire(leases.key(resource, self.session.user_id), f"the {resource}")
@@ -634,12 +638,12 @@ class _Sink:
             return
 
         claims = await workspace.claims_for(self.session.id)
-        await self._acquire(leases.key("sandbox", self.session.user_id), "the sandbox")
+        await self._claim_sandbox()
         for claim in claims:
             if claim.mode == "write":
                 await self._acquire(f"project:{claim.project_id}", claim.slug)
 
-        materialized = await workspace.materialize(sandbox_manager.manager(), self.session.user_id, claims)
+        materialized = await workspace.materialize(sandbox_manager.manager(), self.session.id, claims)
         self._workspace = (claims, materialized.manifest)
         logger.info(
             "session %s mounted %d file(s) across %d claim(s)",
@@ -648,25 +652,67 @@ class _Sink:
             len(claims),
         )
 
+    async def _claim_sandbox(self) -> None:
+        """Take a slot in the user's sandbox pool, waiting and saying so while it is full."""
+        if self._sandbox_slot:
+            return
+        await self._wait_for(
+            lambda: sandbox_manager.claim_slot(self.session.id),
+            resource="sandbox_pool",
+            label="a computer",
+            busy=(
+                f"This account is already running {sandbox_manager.max_per_user()} computer(s) in other "
+                "sessions and none freed up. Try again, or do something else first."
+            ),
+        )
+        self._sandbox_slot = True
+
     async def _acquire(self, resource_key: str, label: str) -> None:
         """Take one lease, waiting and saying so while another session holds it."""
         if resource_key in self._leases:
             return
 
         ttl = float(_cfg("leases.ttl_s", 900))
+        await self._wait_for(
+            lambda: leases.acquire(resource_key, self.session.id, ttl),
+            resource=resource_key,
+            label=label,
+            busy=(
+                f"{label} is in use by another session and did not free up. Try again, or do "
+                "something else first."
+            ),
+        )
+        self._leases.add(resource_key)
+
+    async def _wait_for(
+        self,
+        take: Callable[[], Awaitable[bool]],
+        *,
+        resource: str,
+        label: str,
+        busy: str,
+    ) -> None:
+        """Retry `take` until it succeeds, saying once in the transcript that it is waiting.
+
+        A wait is not a park: the session stays `running` and the wall clock is
+        the only thing spent.
+
+        Raises:
+            ToolUnavailable: nothing freed up before the timeout. The model
+                routes around it.
+        """
         poll = float(_cfg("leases.poll_s", 2))
         deadline = time.monotonic() + float(_cfg("leases.wait_timeout_s", 120))
         waiting_since = time.monotonic()
         announced = False
 
         while True:
-            if await leases.acquire(resource_key, self.session.id, ttl):
-                self._leases.add(resource_key)
+            if await take():
                 if announced:
                     system_log.record(
                         "lease_wait",
                         session_id=self.session.id,
-                        resource=resource_key,
+                        resource=resource,
                         waited_ms=round((time.monotonic() - waiting_since) * 1000),
                     )
                 return
@@ -678,37 +724,49 @@ class _Sink:
                     "lease_timeout",
                     level="warn",
                     session_id=self.session.id,
-                    resource=resource_key,
+                    resource=resource,
                     waited_ms=round((time.monotonic() - waiting_since) * 1000),
                 )
-                raise ToolUnavailable(
-                    "timeout",
-                    f"{label} is in use by another session and did not free up. Try again, or do "
-                    "something else first.",
-                )
+                raise ToolUnavailable("timeout", busy)
             await asyncio.sleep(poll)
 
     async def _release_leases(self) -> None:
-        """Commit what the sandbox changed, then give up every resource held."""
+        """Commit what the sandbox changed, then give up the box and every resource held."""
         await self._flush_workspace()
+        await self._release_sandbox()
         if not self._leases:
             return
         with contextlib.suppress(Exception):
             await leases.release_all(self.session.id)
         self._leases.clear()
 
-    async def _flush_workspace(self) -> None:
-        """Write the sandbox's changes back to the store before the lease goes.
+    async def _release_sandbox(self) -> None:
+        """Destroy the session's box and free its slot in the user's pool.
 
-        A failure here is loud and the leases are kept: the edits are still on
-        the sandbox disk, and releasing would let another session materialize
-        over them.
+        Reached only after `_flush_workspace` returns, and that raises when the
+        commit did not land, so the cache is never destroyed while it holds the
+        only copy of an edit.
+        """
+        if not self._sandbox_slot:
+            return
+        try:
+            await sandbox_manager.manager().reap(self.session.id)
+        except Exception:  # noqa: BLE001 - a box outliving its run is not worth failing a terminal for
+            logger.exception("session %s: reaping the sandbox failed", self.session.id)
+        self._sandbox_slot = False
+
+    async def _flush_workspace(self) -> None:
+        """Write the sandbox's changes back to the store before the box goes.
+
+        A failure here is loud and nothing is given up: the edits are still on
+        the sandbox disk, and reaping the box or releasing the project leases
+        would lose them or let another session materialize over them.
         """
         if self._workspace is None:
             return
         claims, manifest = self._workspace
         try:
-            flushed = await workspace.flush(sandbox_manager.manager(), self.session.user_id, claims, manifest)
+            flushed = await workspace.flush(sandbox_manager.manager(), self.session.id, claims, manifest)
         except Exception as e:  # noqa: BLE001 - recorded, retried by the reaper
             logger.exception("session %s: flushing the workspace failed", self.session.id)
             system_log.record(

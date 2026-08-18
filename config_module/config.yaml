@@ -53,8 +53,8 @@ system_log:
   retain_days: 30         # pruned at startup
 
 leases:
-  # The sandbox and browser are shared per user and keep state between calls, so
-  # one session holds them for its whole run.
+  # The browser is shared per user and keeps state between calls, so one session
+  # holds it for its whole run; a write claim holds its project the same way.
   ttl_s: 900              # a lease expires if the process holding it dies
   wait_timeout_s: 120     # how long a contended call waits before giving up
   poll_s: 2               # how often the waiter retries
@@ -102,12 +102,14 @@ database:
   pool_max_size: 10
 
 
-# Per-user e2b sandbox (files + shell). The E2B SDK reads E2B_API_KEY from the
+# Per-session e2b sandbox (files + shell). The E2B SDK reads E2B_API_KEY from the
 # environment directly, so the key is not referenced here.
 sandbox:
   template: "base"                         # e2b template
   timeout_seconds: 300                     # seconds a sandbox stays alive while working
   idle_timeout_seconds: 900                # seconds of idle before it pauses (lifecycle, later)
+  max_concurrent_per_user: 3               # boxes one user runs at once; a session over the
+                                           # cap waits with a status event until one is reaped
 
 # All MCP traffic flows through Smithery Connect: it hosts the OAuth apps, stores
 # credentials write-only, and refreshes tokens.

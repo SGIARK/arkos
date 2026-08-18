@@ -64,7 +64,8 @@ upcast, rows are never rewritten.
 |---|---|
 | `task_events`, `computer_task_events`, `conversation_context` | merge → **`session_events`** `{seq, session_id, kind, version, payload, ts}` — append-only, per-session monotonic `seq` (DB-assigned) |
 | `tasks` → **`sessions`** | one id (a task IS a session); `mode` (attended\|unattended), `status` incl. `idle`, `terminal_reason`, `cursor_seq`, lease cols. Full DDL: `schema.md` |
-| `task_approvals` → **`approvals`**, `user_sandboxes` | kept, renamed to match `schema.md` |
+| `task_approvals` → **`approvals`** | kept, renamed to match `schema.md` |
+| `user_sandboxes` → **`session_sandboxes`** | rekeyed by session: the box follows the session, and the row is also its slot in the user's pool |
 | `users` | rebuilt, zero rows (Task 0c clears every user). Columns per `schema.md`, not today's table |
 | `computer_tasks` | dropped with the rest of the old chain |
 | `repeat_tasks` | out of scope (watching scrapped) |
@@ -446,13 +447,24 @@ That test, not a list, decides future resources.
 
 | Resource | Shared? | Stateful? | Model |
 |---|---|---|---|
-| sandbox (`sandbox:{user}`) | yes | yes (filesystem) | **leased** |
+| sandbox | no (one box per session) | no (the disk is a cache, D27) | **capped**, not leased: `sandbox.max_concurrent_per_user` |
+| project subtree (`project:{id}`) | yes | yes (the tree it writes) | **leased**, one per write claim |
 | browser (`browser:{user}`) | yes | yes (profile, cookies, logins) | **leased** |
 | MCP via Smithery | yes | no (stateless per call) | no lease, runs free |
 | session log | no (per session) | — | serialized by the appender, a different race |
 
+**The sandbox is capacity, not a lease.** A box belongs to one session and is
+destroyed once that session's flush lands, so there is nothing to serialize:
+overlapping writes are already ordered by the `project:{id}` claims, and a box is
+never compared to another box, only to the store subtrees its session claimed.
+What `sandbox.max_concurrent_per_user` protects is spend, and a session over the
+cap waits exactly as a lease waiter does. The slot is a row in
+`session_sandboxes`, taken before the box boots and dropped when it is reaped, so
+capacity cannot outlive the box that used it. A session's box is reaped ONLY
+after its flush lands.
+
 **A lease wait is not a park.** A session waiting on a held lease stays `running`
-and emits `status{label:"waiting for the sandbox"}`, which is exactly what `status`
+and emits `status{label:"waiting for a computer"}`, which is exactly what `status`
 exists for. There is no `waiting` status and there must not be one: borrowing
 `awaiting_approval` would turn the project dot ochre and put a phantom row in
 `/attention`. No hops burn, because no model call happens. The wall clock excludes
@@ -468,10 +480,10 @@ session is not acting), re-acquired on resume. Contended, a session parks as
 "waiting for {resource}" and wakes when free; a lease-wait timeout parks rather
 than fails.
 
-**State persists, runtime is cattle.** The e2b filesystem and the browser profile
+**State persists, runtime is cattle.** The store and the browser profile
 directory are durable; the running instance is not. Lazily booted on first use,
-torn down when idle, respawned against the persisted state on the next lease.
-"Persistent browser" means the logins survive, not that a browser stays warm.
+torn down at the end of the session, rebuilt from the store next time. "Persistent
+browser" means the logins survive, not that a browser stays warm.
 
 ### store — the agent's filesystem
 
@@ -500,11 +512,12 @@ previous tree intact and whole: an orphan blob costs storage, a tree row
 pointing at a blob that is not there costs a file. Commits are idempotent, so a
 retry after a partial upload is safe.
 
-**The cache fills and empties on the lease.** Acquiring the sandbox lease
-materializes the session's claimed subtrees; release, park and terminal flush
-them back. A flush that fails is loud in `system_events`, retried on the
-reaper's backoff, and **the sandbox is not killed until the flush lands**. e2b
-`pause` is a warm-keep, so deleting a paused sandbox loses nothing.
+**The cache fills when the session takes its box and empties before it gives it
+back.** Taking a box materializes the session's claimed subtrees; release, park
+and terminal flush them back and then reap the box. A flush that fails is loud in
+`system_events`, retried on the reaper's backoff, and **the sandbox is not killed
+until the flush lands** — the reap is downstream of the commit, so the cache is
+never destroyed while it holds the only copy of an edit.
 
 **Memory never mounts.** `{user}/memory/` is excluded structurally, not by a
 filter: project subtrees are the only mountable thing, and the mount path has no

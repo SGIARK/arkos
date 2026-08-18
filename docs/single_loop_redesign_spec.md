@@ -35,7 +35,7 @@ before Task 7 deletes the fallback machinery.
 
 This document is the why and the build plan.
 
-**Status:** Tasks 0-8 and 8.1-8.6 done · **8.7-8.9 are next**, then 9 / LG-1 |
+**Status:** Tasks 0-8 and 8.1-8.6b done · **8.7-8.9 are next**, then 9 / LG-1 |
 **Author:** John Wallace | **Last updated:** 2026-08-17
 
 **Where things actually stand, for a session picking this up cold:**
@@ -816,6 +816,37 @@ a claim set fixed at creation is what keeps the lease story race-free.
 discarded and logged; two sessions with disjoint claims run with zero
 contention; a second session claiming A waits on `project:{A}` with a `status`
 event, no hops burned; nothing unclaimed appears in the sandbox.
+
+### Task 8.6b: Per-session sandboxes — the box follows the session, capped
+**Why now, not gated on the demo (owner, 2026-08-18):** post-D27,
+`sandbox:{user}` is a capacity cap wearing a lease's clothes — its correctness
+role died when the per-user filesystem it protected became a disposable cache,
+and overlapping writes are already serialized by the `project:{id}` claims. It
+is built NOW, before 8.7, because 8.7's write-through and Task 9's browser
+pattern would otherwise encode the one-box-per-user singleton and turn a
+rekeying into a rework. `quotas.max_unattended_sessions: 5` already promises a
+per-user concurrency the singleton cannot deliver. This is NOT the rejected
+"per-project computers" item (persistent per-project state fragmentation);
+it is per-SESSION cattle boxes over one store.
+**Done when:** `SandboxManager` is keyed by session, not user; `user_sandboxes`
+becomes a pool table (`session_id, user_id, sandbox_id, last_used_at`); the
+`sandbox:{user}` lease is DELETED, replaced by a capacity cap
+`sandbox.max_concurrent_per_user` (default 3) enforced with the same
+wait-and-`status` loop as lease contention ("waiting for a computer"); a
+session's box is reaped on terminal ONLY after its flush lands; project leases
+and materialize/flush are untouched (they already work per-claim-set).
+Write-through's rule for 8.7 is stated here so 8.7 builds against plural boxes:
+an upload writes through to EVERY live sandbox holding a materialized claim on
+that project. Warm reuse of a released box by the next session is optional and
+deferrable; correctness never depends on it.
+**Touch:** `tool_module/sandbox/manager.py`, migration, `leases.py` call site,
+`config.yaml` | **P1, 1d** | **Blockers:** 8.6
+**Test:** two same-user sessions with disjoint claims run shell commands
+concurrently and both flush correctly, byte-identical to their own stores (see
+the Divergence note below: boxes never reconcile with each other, only with
+the store); a third session over the cap waits with a `status` event and
+proceeds when a box frees; a box is never reaped before its flush lands; the
+`sandbox:{user}` key appears nowhere in the tree.
 
 ### Task 8.7: Upload and browse without a boot
 **Done when:** `POST /projects/{id}/files` (the missing endpoint) writes blob +

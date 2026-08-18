@@ -1,5 +1,5 @@
 """
-The sandbox toolset: a shell and a filesystem in the user's persistent sandbox.
+The sandbox toolset: a shell and a filesystem in the session's sandbox.
 
 Tool descriptions carry the discipline the model is expected to follow —
 read before edit, unique `old_string`, search before reading whole files.
@@ -14,7 +14,7 @@ import logging
 import shlex
 from typing import Any
 
-from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, fail, ok
+from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, ToolUnavailable, fail, ok
 from tool_module.sandbox import manager as sandbox_manager
 
 logger = logging.getLogger(__name__)
@@ -27,11 +27,16 @@ _MAX_MATCHES = 100
 
 
 async def _sandbox(ctx: ToolContext):
-    """Return the sandbox manager, holding the session's lease on it.
+    """Return the sandbox manager, holding the session's slot in the user's pool.
 
-    The sandbox is shared across a user's sessions and keeps a filesystem
-    between calls, so one session holds it for the whole run.
+    The box belongs to this session alone, so a call waits only when the user is
+    already running as many boxes at once as the cap allows.
+
+    Raises:
+        ToolUnavailable: the call has no session, so there is no box to key.
     """
+    if ctx.session_id is None:
+        raise ToolUnavailable("invalid_args", "The computer is only available inside a session.", retryable=False)
     if ctx.lease is not None:
         await ctx.lease("sandbox")
     return sandbox_manager.manager()
@@ -62,7 +67,7 @@ class RunCommand:
     )
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
-        result = await (await _sandbox(ctx)).exec(ctx.user_id, args["command"])
+        result = await (await _sandbox(ctx)).exec(ctx.session_id, args["command"])
         body = result["stdout"]
         if result["stderr"]:
             body += f"\n[stderr]\n{result['stderr']}"
@@ -92,7 +97,7 @@ class ReadFile:
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
         path = args["path"]
-        content = await (await _sandbox(ctx)).read_file(ctx.user_id, path)
+        content = await (await _sandbox(ctx)).read_file(ctx.session_id, path)
         _read_paths(ctx).add(path)
 
         if not args.get("offset") and not args.get("limit"):
@@ -121,7 +126,7 @@ class WriteFile:
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
         path, content = args["path"], args["content"]
-        await (await _sandbox(ctx)).write_file(ctx.user_id, path, content)
+        await (await _sandbox(ctx)).write_file(ctx.session_id, path, content)
         # The file's current contents are now known, so an edit may follow.
         _read_paths(ctx).add(path)
         return ok(f"Wrote {path} ({len(content)} chars).")
@@ -155,7 +160,7 @@ class EditFile:
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
         path, old, new = args["path"], args["old_string"], args["new_string"]
         sandbox = await _sandbox(ctx)
-        content = await sandbox.read_file(ctx.user_id, path)
+        content = await sandbox.read_file(ctx.session_id, path)
 
         matches = content.count(old)
         if matches == 0:
@@ -168,7 +173,7 @@ class EditFile:
             )
 
         replaced = content.replace(old, new) if args.get("replace_all") else content.replace(old, new, 1)
-        await sandbox.write_file(ctx.user_id, path, replaced)
+        await sandbox.write_file(ctx.session_id, path, replaced)
         return ok(f"Edited {path} ({matches if args.get('replace_all') else 1} replacement(s)).")
 
 
@@ -181,7 +186,7 @@ class ListDir:
     )
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
-        entries = await (await _sandbox(ctx)).list_dir(ctx.user_id, args.get("path") or HOME)
+        entries = await (await _sandbox(ctx)).list_dir(ctx.session_id, args.get("path") or HOME)
         if not entries:
             return ok("(empty)")
         return ok("\n".join(f"{'d' if e['is_dir'] else '-'} {e['name']} ({e['size']}b)" for e in entries))
@@ -207,7 +212,7 @@ class Grep:
         command = (
             f"grep -rnI {shlex.quote(args['pattern'])} {shlex.quote(path)} 2>/dev/null | head -{_MAX_MATCHES}"
         )
-        result = await (await _sandbox(ctx)).exec(ctx.user_id, command)
+        result = await (await _sandbox(ctx)).exec(ctx.session_id, command)
         return ok(result["stdout"].strip() or "(no matches)")
 
 
@@ -229,7 +234,7 @@ class Glob:
             f"find {shlex.quote(path)} -type f -name {shlex.quote(args['pattern'])} "
             f"2>/dev/null | head -{_MAX_MATCHES}"
         )
-        result = await (await _sandbox(ctx)).exec(ctx.user_id, command)
+        result = await (await _sandbox(ctx)).exec(ctx.session_id, command)
         return ok(result["stdout"].strip() or "(no files)")
 
 
