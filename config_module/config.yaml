@@ -110,6 +110,8 @@ sandbox:
   idle_timeout_seconds: 900                # seconds of idle before it pauses (lifecycle, later)
   max_concurrent_per_user: 3               # boxes one user runs at once; a session over the
                                            # cap waits with a status event until one is reaped
+  slot_ttl_s: 900                          # a slot expires unless a call into its box renews it,
+                                           # so a process that dies frees its capacity
 
 # All MCP traffic flows through Smithery Connect: it hosts the OAuth apps, stores
 # credentials write-only, and refreshes tokens.

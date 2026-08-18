@@ -7,6 +7,11 @@ holds a cache of the store (D27), so nothing is lost with it. `session_sandboxes
 is the handle table and the pool at once — a row is a slot, and a user may hold
 `sandbox.max_concurrent_per_user` of them.
 
+The row is written before the box exists and updated with its handle after
+(D24): a process that dies mid-boot leaves a reclaimable slot, never a box
+nothing knows about. Slots carry `expires_at`, renewed on every call into the
+box, so a dead process frees its capacity the way the lease it replaced did.
+
 The SDK is imported inside `_create` and `_connect`, so the process starts and
 the manifest builds without e2b installed.
 """
@@ -24,7 +29,16 @@ from db import pool
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 300
-_DEFAULT_MAX_PER_USER = 3
+_DEFAULT_MAX_PER_USER = 5
+_DEFAULT_SLOT_TTL = 900
+
+# Sessions that can no longer be using a box, so their slots are reclaimable
+# whatever their expiry says.
+_TERMINAL = ("completed", "failed", "cancelled")
+
+
+class SandboxUnavailable(RuntimeError):
+    """Raised when a box is asked for outside the pool that caps it."""
 
 
 def _timeout() -> int:
@@ -34,6 +48,11 @@ def _timeout() -> int:
 def max_per_user() -> int:
     """How many boxes one user may run at once."""
     return int(config.get("sandbox.max_concurrent_per_user") or _DEFAULT_MAX_PER_USER)
+
+
+def slot_ttl() -> float:
+    """Seconds a slot survives without being renewed."""
+    return float(config.get("sandbox.slot_ttl_s") or _DEFAULT_SLOT_TTL)
 
 
 def _template() -> str | None:
@@ -52,16 +71,17 @@ async def claim_slot(session_id: str) -> bool:
     """
     Take this session's slot in its user's sandbox pool.
 
-    The row is written before the box boots and dropped when it is reaped, so a
-    slot is held for exactly as long as a box can exist. A session that already
-    holds one keeps it: the count excludes the caller, so a repeat call renews
-    rather than competes with itself.
+    Expired slots and slots of sessions that are over are reclaimed first, so a
+    process that died holding capacity does not hold it forever. A session that
+    already holds a slot keeps it: the count excludes the caller, so a repeat
+    call renews rather than competes with itself.
 
     Returns:
         False if the user is at `sandbox.max_concurrent_per_user`. The caller
         waits and asks again.
     """
     sid = _uuid(session_id)
+    reclaimed: list[tuple[str, str]] = []
     async with (await pool.pool()).acquire() as conn, conn.transaction():
         user_id = await conn.fetchval("SELECT user_id FROM sessions WHERE id = $1", sid)
         if user_id is None:
@@ -70,46 +90,123 @@ async def claim_slot(session_id: str) -> bool:
         # Serializes this count-then-insert against another session of the same
         # user doing the same thing; released when the transaction ends.
         await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1), 0)", str(user_id))
+        rows = await conn.fetch(
+            """
+            DELETE FROM session_sandboxes p
+             USING sessions s
+             WHERE p.session_id = s.id
+               AND p.user_id = $1
+               AND p.session_id <> $2
+               AND (p.expires_at < now() OR s.status = ANY($3::text[]))
+            RETURNING p.session_id, p.sandbox_id
+            """,
+            user_id,
+            sid,
+            list(_TERMINAL),
+        )
+        reclaimed = [(str(r["session_id"]), r["sandbox_id"]) for r in rows if r["sandbox_id"]]
+
         held = await conn.fetchval(
             "SELECT count(*) FROM session_sandboxes WHERE user_id = $1 AND session_id <> $2",
             user_id,
             sid,
         )
-        if held >= max_per_user():
-            return False
+        granted = held < max_per_user()
+        if granted:
+            await conn.execute(
+                """
+                INSERT INTO session_sandboxes (session_id, user_id, expires_at)
+                VALUES ($1, $2, now() + make_interval(secs => $3))
+                ON CONFLICT (session_id)
+                DO UPDATE SET last_used_at = now(), expires_at = EXCLUDED.expires_at
+                """,
+                sid,
+                user_id,
+                slot_ttl(),
+            )
 
-        await conn.execute(
-            """
-            INSERT INTO session_sandboxes (session_id, user_id)
-            VALUES ($1, $2)
-            ON CONFLICT (session_id) DO UPDATE SET last_used_at = now()
-            """,
-            sid,
-            user_id,
-        )
-        return True
+    # Outside the transaction: the row is already free, and a kill that fails
+    # must not roll back the reclaim.
+    for reaped_session, sandbox_id in reclaimed:
+        logger.warning("reclaimed the slot of session %s; killing sandbox %s", reaped_session, sandbox_id)
+        await _kill(sandbox_id)
+    return granted
+
+
+async def sweep_slots() -> int:
+    """Reclaim every expired or finished slot in the pool, killing the boxes they name.
+
+    Run at startup: a process that died holding slots is exactly what this is
+    for, and nothing else notices them until their user next asks for a box.
+
+    Returns:
+        How many slots were freed.
+    """
+    rows = await pool.fetch(
+        """
+        DELETE FROM session_sandboxes p
+         USING sessions s
+         WHERE p.session_id = s.id
+           AND (p.expires_at < now() OR s.status = ANY($1::text[]))
+        RETURNING p.session_id, p.sandbox_id
+        """,
+        list(_TERMINAL),
+    )
+    for row in rows:
+        if row["sandbox_id"]:
+            await _kill(row["sandbox_id"])
+    if rows:
+        logger.warning("startup sweep reclaimed %d sandbox slot(s)", len(rows))
+    return len(rows)
+
+
+async def renew_slot(session_id: str) -> bool:
+    """Push the slot's expiry out. Returns False if the session no longer holds one."""
+    result = await pool.execute(
+        """
+        UPDATE session_sandboxes
+           SET last_used_at = now(), expires_at = now() + make_interval(secs => $2)
+         WHERE session_id = $1
+        """,
+        _uuid(session_id),
+        slot_ttl(),
+    )
+    return result.endswith(" 1")
+
+
+async def _kill(sandbox_id: str) -> None:
+    """Destroy a box by id, best effort. An orphan bills until its own idle timeout."""
+    from e2b_code_interpreter import Sandbox
+
+    try:
+        await asyncio.to_thread(Sandbox.kill, sandbox_id)
+    except Exception as e:  # noqa: BLE001 - e2b raises its own types
+        logger.warning("could not kill sandbox %s (%s); it bills until its idle timeout", sandbox_id, e)
 
 
 async def _stored_id(session_id: str) -> str | None:
     return await pool.fetchval("SELECT sandbox_id FROM session_sandboxes WHERE session_id = $1", _uuid(session_id))
 
 
-async def _remember(session_id: str, sandbox_id: str) -> None:
-    """Record the handle against the session's slot, taking one if it has none."""
-    await pool.execute(
+async def _record_box(session_id: str, sandbox_id: str) -> None:
+    """Write the handle into the slot the session already holds.
+
+    Raises:
+        SandboxUnavailable: the slot is gone, so this box would run unrecorded.
+            The caller kills it rather than leaving it billing.
+    """
+    result = await pool.execute(
         """
-        INSERT INTO session_sandboxes (session_id, user_id, sandbox_id, last_used_at)
-        SELECT s.id, s.user_id, $2, now() FROM sessions s WHERE s.id = $1
-        ON CONFLICT (session_id)
-        DO UPDATE SET sandbox_id = EXCLUDED.sandbox_id, last_used_at = now()
+        UPDATE session_sandboxes
+           SET sandbox_id = $2, last_used_at = now(), expires_at = now() + make_interval(secs => $3)
+         WHERE session_id = $1
         """,
         _uuid(session_id),
         sandbox_id,
+        slot_ttl(),
     )
-
-
-async def _touch(session_id: str) -> None:
-    await pool.execute("UPDATE session_sandboxes SET last_used_at = now() WHERE session_id = $1", _uuid(session_id))
+    if not result.endswith(" 1"):
+        raise SandboxUnavailable(f"session {session_id} lost its sandbox slot while its box was booting")
 
 
 async def release_slot(session_id: str) -> str | None:
@@ -133,8 +230,21 @@ class SandboxManager:
         return lock
 
     async def get_or_create(self, session_id: str) -> Any:
-        """Return the session's sandbox: the cached handle, the stored one resumed, or a new one."""
+        """Return the session's sandbox: the cached handle, the stored one resumed, or a new one.
+
+        Every path renews the slot, so a box in use does not expire under its own
+        session.
+
+        Raises:
+            SandboxUnavailable: the session holds no slot. A box is never booted
+                outside the pool that caps it.
+        """
         async with self._lock(session_id):
+            if not await renew_slot(session_id):
+                raise SandboxUnavailable(
+                    f"session {session_id} holds no sandbox slot; claim_slot comes first"
+                )
+
             cached = self._live.get(session_id)
             if cached is not None:
                 try:
@@ -151,9 +261,13 @@ class SandboxManager:
                 if resumed is not None:
                     return resumed
 
-            sandbox = await asyncio.to_thread(self._create)
+            sandbox = await asyncio.to_thread(self._create, session_id)
+            try:
+                await _record_box(session_id, sandbox.sandbox_id)
+            except Exception:
+                await asyncio.to_thread(sandbox.kill)
+                raise
             self._live[session_id] = sandbox
-            await _remember(session_id, sandbox.sandbox_id)
             logger.info("created sandbox %s for session %s", sandbox.sandbox_id, session_id)
             return sandbox
 
@@ -173,7 +287,6 @@ class SandboxManager:
             logger.warning("resumed sandbox %s is not usable (%s)", sandbox_id, e)
             return None
         self._live[session_id] = sandbox
-        await _touch(session_id)
         logger.info("resumed sandbox %s for session %s", sandbox_id, session_id)
         return sandbox
 
@@ -187,14 +300,19 @@ class SandboxManager:
             logger.warning("could not connect to sandbox %s (%s)", sandbox_id, e)
             return None
 
-    def _create(self) -> Any:
-        """Create a sandbox. No environment is passed: credentials stay out of it."""
+    def _create(self, session_id: str) -> Any:
+        """Create a sandbox. No environment is passed: credentials stay out of it.
+
+        The session id rides along as e2b metadata, so a box whose handle never
+        reached the database can still be identified by an operator.
+        """
         from e2b_code_interpreter import Sandbox
 
         template = _template()
+        metadata = {"session_id": session_id}
         if template:
-            return Sandbox.create(template=template, timeout=_timeout())
-        return Sandbox.create(timeout=_timeout())
+            return Sandbox.create(template=template, timeout=_timeout(), metadata=metadata)
+        return Sandbox.create(timeout=_timeout(), metadata=metadata)
 
     async def exec(self, session_id: str, command: str, timeout: int = 120) -> dict[str, Any]:
         """Run a shell command. Returns stdout, stderr and exit_code, including on a non-zero exit."""
@@ -254,22 +372,19 @@ class SandboxManager:
         if sandbox is None and not sandbox_id:
             return
 
-        try:
-            if sandbox is not None:
+        if sandbox is not None:
+            try:
                 await asyncio.to_thread(sandbox.kill)
-            else:
-                # No handle in this process: the SDK kills by id without a connect.
-                from e2b_code_interpreter import Sandbox
-
-                await asyncio.to_thread(Sandbox.kill, sandbox_id)
-        except Exception as e:  # noqa: BLE001 - e2b raises its own types
-            logger.warning(
-                "could not kill sandbox %s for session %s (%s); it bills until its idle timeout",
-                sandbox_id,
-                session_id,
-                e,
-            )
-            return
+            except Exception as e:  # noqa: BLE001 - e2b raises its own types
+                logger.warning(
+                    "could not kill sandbox %s for session %s (%s); it bills until its idle timeout",
+                    sandbox_id,
+                    session_id,
+                    e,
+                )
+                return
+        else:
+            await _kill(sandbox_id)
         logger.info("reaped sandbox %s for session %s", sandbox_id, session_id)
 
 

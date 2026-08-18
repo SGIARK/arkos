@@ -22,22 +22,28 @@ class FakeSandbox:
     def __init__(self, files: dict[str, str] | None = None):
         self.files = dict(files or {})
         self.commands: list[str] = []
+        # What the tools keyed the box by; the box belongs to the session.
+        self.keys: list[str] = []
         self.exit_code = 0
         self.stderr = ""
 
-    async def exec(self, user_id: str, command: str, timeout: int = 120) -> dict[str, Any]:
+    async def exec(self, session_id: str, command: str, timeout: int = 120) -> dict[str, Any]:
+        self.keys.append(session_id)
         self.commands.append(command)
         return {"stdout": "ran: " + command, "stderr": self.stderr, "exit_code": self.exit_code}
 
-    async def read_file(self, user_id: str, path: str) -> str:
+    async def read_file(self, session_id: str, path: str) -> str:
+        self.keys.append(session_id)
         if path not in self.files:
             raise FileNotFoundError(path)
         return self.files[path]
 
-    async def write_file(self, user_id: str, path: str, content: str) -> None:
+    async def write_file(self, session_id: str, path: str, content: str) -> None:
+        self.keys.append(session_id)
         self.files[path] = content
 
-    async def list_dir(self, user_id: str, path: str = "/home/user") -> list[dict[str, Any]]:
+    async def list_dir(self, session_id: str, path: str = "/home/user") -> list[dict[str, Any]]:
+        self.keys.append(session_id)
         return [{"name": "notes.txt", "path": f"{path}/notes.txt", "is_dir": False, "size": 12}]
 
 
@@ -84,6 +90,25 @@ async def test_the_sandbox_does_not_boot_until_a_sandbox_tool_is_called(monkeypa
     await _run("finish_task", {"summary": "nothing to do"}, _ctx())
 
     assert booted == []
+
+
+async def test_the_tools_key_the_box_by_session_not_by_user(sandbox):
+    """One user runs several boxes at once, so a user id names no box."""
+    ctx = _ctx()
+
+    await _run("run_command", {"command": "ls"}, ctx)
+    await _run("read_file", {"path": "/home/user/a.txt"}, ctx)
+    await _run("list_dir", {}, ctx)
+
+    assert sandbox.keys == ["s1", "s1", "s1"]
+    assert ctx.user_id not in sandbox.keys
+
+
+async def test_a_call_with_no_session_gets_no_box():
+    result = await _run("run_command", {"command": "ls"}, ToolContext(user_id="u1"))
+
+    assert not result.ok
+    assert not result.retryable
 
 
 # --- the shell -------------------------------------------------------------------
@@ -201,7 +226,7 @@ async def test_a_search_with_no_hits_says_so(sandbox):
 
 
 async def test_no_credentials_are_passed_into_the_sandbox(monkeypatch):
-    """The sandbox gets a template and a timeout. Nothing else."""
+    """The sandbox gets a template, a timeout, and the session it belongs to. Nothing else."""
     created: dict[str, Any] = {}
 
     class FakeE2B:
@@ -213,7 +238,8 @@ async def test_no_credentials_are_passed_into_the_sandbox(monkeypatch):
     monkeypatch.setitem(sys.modules, "e2b_code_interpreter", SimpleNamespace(Sandbox=FakeE2B))
     sandbox_manager.reset()
 
-    sandbox_manager.SandboxManager()._create()
+    sandbox_manager.SandboxManager()._create("s1")
 
-    assert set(created) <= {"template", "timeout"}
+    assert set(created) <= {"template", "timeout", "metadata"}
+    assert created.get("metadata") == {"session_id": "s1"}
     assert not any("key" in k.lower() or "env" in k.lower() or "token" in k.lower() for k in created)

@@ -46,12 +46,15 @@ async def _session() -> str:
     user_id = uuid.uuid4()
     await pool.execute("INSERT INTO users (id) VALUES ($1)", user_id)
     _seeded.append(user_id)
-    return str(
+    session_id = str(
         await pool.fetchval(
             "INSERT INTO sessions (user_id, mode, status) VALUES ($1, 'attended', 'running') RETURNING id",
             user_id,
         )
     )
+    # A box is only booted against a slot.
+    assert await sandbox_manager.claim_slot(session_id)
+    return session_id
 
 
 async def _kill(manager: sandbox_manager.SandboxManager, session_id: str) -> None:
@@ -137,15 +140,16 @@ async def test_two_sessions_of_one_user_get_two_boxes():
     user_id = uuid.uuid4()
     await pool.execute("INSERT INTO users (id) VALUES ($1)", user_id)
     _seeded.append(user_id)
-    sessions = [
-        str(
+    sessions = []
+    for _ in range(2):
+        session_id = str(
             await pool.fetchval(
                 "INSERT INTO sessions (user_id, mode, status) VALUES ($1, 'attended', 'running') RETURNING id",
                 user_id,
             )
         )
-        for _ in range(2)
-    ]
+        assert await sandbox_manager.claim_slot(session_id)
+        sessions.append(session_id)
     manager = sandbox_manager.manager()
     try:
         first = await manager.get_or_create(sessions[0])
@@ -160,11 +164,38 @@ async def test_two_sessions_of_one_user_get_two_boxes():
 async def test_a_reaped_sandbox_is_gone_and_its_slot_is_free():
     session_id = await _session()
     manager = sandbox_manager.manager()
-    assert await sandbox_manager.claim_slot(session_id)
-    await manager.get_or_create(session_id)
+    sandbox = await manager.get_or_create(session_id)
+    sandbox_id = sandbox.sandbox_id
 
     await manager.reap(session_id)
 
-    assert await pool.fetchval(
+    slots = await pool.fetchval(
         "SELECT count(*) FROM session_sandboxes WHERE session_id = $1", uuid.UUID(session_id)
-    ) == 0
+    )
+    assert slots == 0
+    assert _is_dead(sandbox_id), "the slot was freed but the box is still running"
+
+
+async def test_a_box_with_no_handle_in_this_process_is_still_killed():
+    """The restarted-process path: the id in the row is all there is to kill by."""
+    session_id = await _session()
+    manager = sandbox_manager.manager()
+    sandbox = await manager.get_or_create(session_id)
+    sandbox_id = sandbox.sandbox_id
+    # Forget the handle, as a restarted process would.
+    manager._live.pop(session_id, None)
+
+    await manager.reap(session_id)
+
+    assert _is_dead(sandbox_id), "kill by id did not destroy the box"
+
+
+def _is_dead(sandbox_id: str) -> bool:
+    """True if nothing answers on that box any more."""
+    from e2b_code_interpreter import Sandbox
+
+    try:
+        Sandbox.connect(sandbox_id).commands.run("true", timeout=10)
+    except Exception:  # noqa: BLE001 - any failure to reach it is the answer
+        return True
+    return False

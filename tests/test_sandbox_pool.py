@@ -419,3 +419,114 @@ async def test_a_box_that_dies_mid_run_takes_neither_the_tree_nor_the_slot(boxes
     assert await store.get_blob(tree[0].content_hash) == b"committed"
     assert boxes.reaped == [], "the box was reaped though its flush never landed"
     assert await _slots(user_id) == 1
+
+
+# --- the slot lifecycle ---------------------------------------------------------------
+
+
+@pytest.fixture
+def killed(monkeypatch) -> list[str]:
+    """Records the boxes a reclaim would have killed, so no SDK is involved."""
+    ids: list[str] = []
+
+    async def kill(sandbox_id: str) -> None:
+        ids.append(sandbox_id)
+
+    monkeypatch.setattr(sandbox_manager, "_kill", kill)
+    return ids
+
+
+async def _slot_row(session_id: str, sandbox_id: str, ttl_s: int) -> None:
+    await pool.execute(
+        """
+        INSERT INTO session_sandboxes (session_id, user_id, sandbox_id, expires_at)
+        SELECT s.id, s.user_id, $2, now() + make_interval(secs => $3) FROM sessions s WHERE s.id = $1
+        """,
+        uuid.UUID(session_id),
+        sandbox_id,
+        ttl_s,
+    )
+
+
+async def test_a_box_is_never_booted_without_a_slot(boxes):
+    """The row is written before the box, so a box outside the pool cannot exist."""
+    user_id = await _user()
+    session_id = await _session(user_id)
+
+    with pytest.raises(sandbox_manager.SandboxUnavailable):
+        await sandbox_manager.SandboxManager().get_or_create(session_id)
+
+
+async def test_an_expired_slot_is_reclaimed_by_the_next_claimer(boxes, killed, monkeypatch):
+    """A process that died holding capacity does not hold it forever."""
+    monkeypatch.setattr(sandbox_manager, "max_per_user", lambda: 1)
+    user_id = await _user()
+    dead = await _session(user_id, status="running")
+    await _slot_row(dead, "sb-dead", -60)
+    waiter = await _session(user_id)
+
+    assert await sandbox_manager.claim_slot(waiter)
+
+    assert killed == ["sb-dead"], "the box of the reclaimed slot was left billing"
+    assert await _slots(user_id) == 1
+
+
+async def test_a_finished_sessions_slot_is_reclaimed(boxes, killed, monkeypatch):
+    monkeypatch.setattr(sandbox_manager, "max_per_user", lambda: 1)
+    user_id = await _user()
+    over = await _session(user_id, status="running")
+    await _slot_row(over, "sb-over", 900)
+    await pool.execute("UPDATE sessions SET status = 'completed' WHERE id = $1", uuid.UUID(over))
+    waiter = await _session(user_id)
+
+    assert await sandbox_manager.claim_slot(waiter)
+    assert killed == ["sb-over"]
+
+
+async def test_a_live_slot_is_not_reclaimed(boxes, killed, monkeypatch):
+    monkeypatch.setattr(sandbox_manager, "max_per_user", lambda: 1)
+    user_id = await _user()
+    working = await _session(user_id, status="running")
+    await _slot_row(working, "sb-live", 900)
+    waiter = await _session(user_id)
+
+    assert not await sandbox_manager.claim_slot(waiter), "a working session lost its box"
+    assert killed == []
+    assert await _slots(user_id) == 1
+
+
+async def test_a_call_into_the_box_renews_the_slot(boxes):
+    user_id = await _user()
+    session_id = await _session(user_id, status="running")
+    await _slot_row(session_id, "sb-1", 5)
+
+    assert await sandbox_manager.renew_slot(session_id)
+
+    remaining = await pool.fetchval(
+        "SELECT expires_at - now() FROM session_sandboxes WHERE session_id = $1", uuid.UUID(session_id)
+    )
+    assert remaining.total_seconds() > 60, "the slot was not pushed out"
+
+
+async def test_renewing_a_slot_that_is_gone_says_so(boxes):
+    user_id = await _user()
+    session_id = await _session(user_id)
+
+    assert not await sandbox_manager.renew_slot(session_id)
+
+
+async def test_the_startup_sweep_reclaims_what_a_dead_process_left(boxes, killed):
+    user_id = await _user()
+    stale = await _session(user_id, status="running")
+    finished = await _session(user_id, status="running")
+    live = await _session(user_id, status="running")
+    await _slot_row(stale, "sb-stale", -60)
+    await _slot_row(finished, "sb-finished", 900)
+    await _slot_row(live, "sb-live", 900)
+    await pool.execute("UPDATE sessions SET status = 'failed' WHERE id = $1", uuid.UUID(finished))
+
+    freed = await sandbox_manager.sweep_slots()
+
+    assert freed == 2
+    assert sorted(killed) == ["sb-finished", "sb-stale"]
+    assert await _slots(user_id) == 1

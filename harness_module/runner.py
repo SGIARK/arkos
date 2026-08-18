@@ -571,7 +571,8 @@ class _Sink:
         self._park_calls: dict[str, tuple[str, dict[str, Any]]] = {}
         # Resource keys this session holds, so a second call skips the database.
         self._leases: set[str] = set()
-        # Whether this session holds a slot in its user's sandbox pool.
+        # Set once this turn has a slot in the user's sandbox pool, so a second
+        # tool call skips the database. The row is what releasing consults.
         self._sandbox_slot = False
         # The claims materialized into the sandbox, and the tree they came from.
         self._workspace: tuple[list[workspace.Claim], dict[str, str]] | None = None
@@ -745,10 +746,9 @@ class _Sink:
 
         Reached only after `_flush_workspace` returns, and that raises when the
         commit did not land, so the cache is never destroyed while it holds the
-        only copy of an edit.
+        only copy of an edit. The row is the authority, not this object: a turn
+        that inherited a slot from a predecessor gives it back too.
         """
-        if not self._sandbox_slot:
-            return
         try:
             await sandbox_manager.manager().reap(self.session.id)
         except Exception:  # noqa: BLE001 - a box outliving its run is not worth failing a terminal for

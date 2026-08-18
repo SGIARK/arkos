@@ -32,6 +32,7 @@ from db import pool
 from harness_module import approvals, hands, jwt_utils, lifecycle, runner, system_log
 from harness_module import session_log as slog
 from harness_module.stream import LAGGED, stream
+from tool_module.sandbox import manager as sandbox_manager
 from tool_module.smithery import AuthRequiredError, SmitheryError
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # still says running.
     with contextlib.suppress(Exception):
         await lifecycle.sweep_interrupted()
+    # Slots held by a process that died: reclaimed here rather than at whatever
+    # hour their expiry happens to pass.
+    with contextlib.suppress(Exception):
+        await sandbox_manager.sweep_slots()
     await hands.start()
     await system_log.start()
     try:
