@@ -4,7 +4,8 @@ Companion to `docs/contracts.md` (which states the invariants the system relies
 on) and the redesign spec. Scope: identity, authorization, trust boundaries.
 **Gate:** `/app` does not go public until everything in "Rollout gate" is done.
 
-**Status:** Not started | **Author:** John Wallace | **Last updated:** 2026-08-01
+**Status:** Built, except the rollout gate's last item | **Author:** John Wallace |
+**Last updated:** 2026-08-18
 
 ---
 
@@ -25,7 +26,11 @@ Already in the stack (same Supabase project). It owns signup, login, password
 reset, and OAuth-social login if we ever want it.
 
 - **Frontend:** logs in with `supabase-js`; posts that JWT ONCE to
-  `/auth/session`; thereafter holds nothing — the cookie does the work.
+  `/auth/session`; thereafter holds nothing — the cookie does the work. **Built
+  in LG-1** (`frontend/api.jsx`): `signInWithPassword`, the token used once and
+  never stored, `persistSession: false` so no second copy lives in localStorage,
+  and `GET /auth/config` serving the project URL and publishable key because
+  both differ per deployment while the page is a checked-in file.
 - **Backend:** `jwt_utils.py` stops minting tokens and instead VERIFIES
   Supabase's JWT. Settled 2026-08-18 by checking the live project: it signs
   with an **ES256 key published at `/auth/v1/.well-known/jwks.json`**, so
@@ -56,10 +61,12 @@ frontend is same-origin, so that constraint is gone.
 POST/PATCH/DELETE. Non-browser clients (CLI, mobile) would need bearer
 alongside — a small addition when one appears, not a redesign.
 
-**Work:** pin CORS to the real origin + `allow_credentials=True`; read the token
-from a cookie in `jwt_utils`; set on login, clear on logout; origin-check
-mutations; delete localStorage token handling and `authHeaders()` from the
-frontend. `POST /auth/stream-token` is never built.
+**Work (all done, 2026-08-18).** ~~pin CORS to the real origin +
+`allow_credentials=True`~~ (Task 4); ~~read the token from a cookie in
+`jwt_utils`~~; ~~set on login, clear on logout~~; ~~origin-check mutations~~;
+~~delete localStorage token handling and `authHeaders()` from the frontend~~ —
+closed by LG-1, which deleted `seed.jsx` with them and signs in through
+supabase-js instead. `POST /auth/stream-token` was never built, as intended.
 
 # Authorization invariants (what contracts.md relies on)
 
@@ -110,13 +117,17 @@ web content via `browser_task`, and MCP tool results. Stance:
 
 # Rollout gate (all boxes before /app is public)
 
-1. Supabase Auth wired; demo-login + ARK_DEMO_MODE deleted from the codebase.
-2. CORS pinned + credentials allowed; session cookie set on login; origin check on mutations.
-3. Ownership checks on every resource above; `test_authz_scoping` green.
-4. Quotas enforced.
-5. Redaction in the appender.
-6. Off-box verification: app port unreachable except via Caddy; landing's
-   `steps/` hardening still in place.
+Everything on this list is built except the last, so the gate now gates one
+thing: public exposure.
+
+1. ~~Supabase Auth wired; demo-login + ARK_DEMO_MODE deleted from the codebase.~~ Done — issuance is Supabase's, verification is `jwt_utils`, and LG-1 is the client.
+2. ~~CORS pinned + credentials allowed; session cookie set on login; origin check on mutations.~~ Done in Task 4; `/app` is served same-origin so SameSite=Lax carries the cookie to `EventSource`.
+3. ~~Ownership checks on every resource above; `test_authz_scoping` green.~~ Done.
+4. ~~Quotas enforced.~~ Done.
+5. ~~Redaction in the appender.~~ Done.
+6. **Off-box verification: app port unreachable except via Caddy; landing's
+   `steps/` hardening still in place.** The remaining item, and it is not a code
+   change — it is checked from outside the box or it is not checked.
 
 # Conformance
 
@@ -133,8 +144,11 @@ web content via `browser_task`, and MCP tool results. Stance:
 
 # Open questions
 
-1. Email+password vs magic-link-only at launch? (GoTrue does both; magic link
-   is less code and no password-reset surface.)
+1. ~~Email+password vs magic-link-only at launch?~~ **Settled 2026-08-18
+   (owner): email+password at v1, and no reset flow initially** — accounts are
+   made and reset from the Supabase dashboard until there are real users to
+   self-serve. Magic link stays available as one more GoTrue call whenever it
+   earns its place; nothing in LG-1's sign-in view forecloses it.
 2. Do we need refresh-token handling in the frontend beyond what supabase-js
    does automatically? (Likely no — verify token expiry UX under a long
    Looking Glass session.)

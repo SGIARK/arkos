@@ -159,6 +159,35 @@ caller: the bug was a caller not publishing, and five call sites each
 remembering is the same bug waiting. Callers read the result in boolean context
 as before — a `StoredEvent` is truthy, `None` is the lost race.
 
+**The surface landed 2026-08-18, as this card's second commit.** `frontend/` is
+four files now: `api.jsx` (sign-in, the endpoint table, one EventSource per open
+session), `grid.jsx` (project bubbles with rollup dots, and what is waiting on
+you at whatever scope is open), `window.jsx` (one session live — the full event
+vocabulary, the composer, and the question answered where it was asked), and
+`app.jsx` (sign in, then the grid or one window). `seed.jsx`, `components.jsx`
+and `views.jsx` are deleted with the model they described; the old nav (desk /
+tasks / watching / approvals / computer / chat) is gone, because a session is
+the conversation and the run, so watching one and talking to it are one window.
+
+Sign-in is real, not a placeholder: supabase-js `signInWithPassword`, the token
+posted once to `/auth/session` and never stored (`persistSession: false`), the
+cookie thereafter, and `DELETE /auth/session` on the way out. `auth.md`'s open
+question 1 is settled with it — email+password at v1, no reset flow until there
+are users to self-serve — and its rollout gate now has one unchecked item.
+
+Three endpoints were added under this card because the surface could not be
+built without them, each with its contracts row: `GET /projects/{id}/sessions`
+(the grid could reach a project and never a session), `GET /attention` (specced
+since Task 4, never routed), and `GET /auth/config` (the URL and publishable key
+differ per deployment while the page is a checked-in file).
+
+**Not verified in a browser.** The machine this was written on has no node and
+could not fetch a CDN, so the JSX is unexecuted: delimiters balance and every
+cross-file global resolves, and that is the whole of what was checked. The
+supabase-js tag is also the one script on the page without an SRI hash, for the
+same reason — the command to compute it is in `index.html`. Both want a human
+with a browser before `/app` goes anywhere.
+
 **Carded from the Task 4 review, 2026-08-17.** The frontend talks to an API that
 no longer exists: `frontend/seed.jsx:156` calls `/auth/demo-login`, `:201-250`
 call `/tasks` and `/computer/tasks`, and `frontend/components.jsx:217` opens
