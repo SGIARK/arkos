@@ -10,6 +10,9 @@ rows in one transaction. A crash between the two leaves the previous tree intact
 and whole: an orphan blob costs storage, a row pointing at a blob that is not
 there costs a file.
 
+The user's memory region lives here too, in a table of its own that the mount
+path never reads. A session may only append a note to it.
+
 Nothing here knows about the sandbox, e2b or tools. The store is the harness's
 (D28) and bytes reach a sandbox by being handed to it, never by it reaching in.
 """
@@ -512,6 +515,170 @@ def diff_tree(before: Sequence[TreeEntry], after: Sequence[TreeEntry]) -> TreeDi
         changed=frozenset(p for p in old.keys() & new.keys() if old[p] != new[p]),
         removed=frozenset(old.keys() - new.keys()),
     )
+
+
+# --- memory -----------------------------------------------------------------------
+#
+# The user's own region, `{user}/memory/` in the layout, kept in `memory_files`
+# rather than in the project tree: memory is keyed by user, a project tree is
+# keyed by project. Whether it may ever be mounted is D30 and open; today it is
+# reached only through the calls below, and no claim can name it.
+#
+# The write discipline is the transcript's. A session appends a note and never
+# rewrites one; the curated core is replaced whole, under a lock, so two
+# sessions curating at once cannot interleave into nonsense.
+
+
+# The curated core, and the directory one appended note lands in. Both are
+# relative to the user's region.
+MEMORY_CORE = "MEMORY.md"
+NOTES_DIR = "notes"
+
+# The advisory lock's namespace, so a memory lock cannot collide with any other
+# advisory lock this database grows later.
+_MEMORY_LOCK = 8808
+
+# One statement for both writers: a note that has never been written before, and
+# a core that is written over every time it is curated.
+_MEMORY_UPSERT = """
+    INSERT INTO memory_files (user_id, path, content_hash, size, mtime, body)
+    VALUES ($1, $2, $3, $4, $5, $6)
+    ON CONFLICT (user_id, path) DO UPDATE
+        SET content_hash = EXCLUDED.content_hash,
+            size = EXCLUDED.size,
+            mtime = EXCLUDED.mtime,
+            body = EXCLUDED.body
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class Note:
+    """One note a session appended: where it lives, what it says, when it landed."""
+
+    path: str
+    text: str
+    written_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class Hit:
+    """One search result, and how well it matched."""
+
+    path: str
+    text: str
+    written_at: datetime
+    rank: float
+
+    @property
+    def is_core(self) -> bool:
+        return self.path == MEMORY_CORE
+
+
+async def append_note(user_id: str, text: str) -> str:
+    """
+    Add one note to the user's memory. This is how a session records a fact.
+
+    Each note is a file of its own, named for the moment it landed and a random
+    suffix. Two sessions appending at once cannot collide or overwrite: nothing
+    on this path reads a file in order to write it back, so no lock is needed.
+
+    Returns:
+        The note's path inside the region.
+    """
+    now = datetime.now(UTC)
+    path = f"{NOTES_DIR}/{now.strftime('%Y%m%dT%H%M%S%f')}-{uuid.uuid4().hex[:8]}.md"
+    content = text.encode()
+    await pool.execute(
+        _MEMORY_UPSERT, _uuid(user_id), path, await put_blob(content), len(content), now, text
+    )
+    return path
+
+
+async def update_memory(user_id: str, text: str) -> None:
+    """
+    Replace the curated core with `text`, one writer at a time.
+
+    The core is the one memory file that is rewritten rather than appended, so
+    it is the one with a gate: the write takes a transaction-scoped advisory
+    lock on the user, and a second curation waits for the first to finish. One
+    upsert would be atomic without it; the lock is here because curation grows
+    into read-then-write — the background compactor reading the notes before it
+    replaces the core — and that is the version a gate has to already exist for.
+    It is released with the transaction, including one that dies.
+
+    Whoever calls this is the compactor. For now that is the model, reading the
+    core and the notes and rewriting the core; the background job that will do
+    it unattended is a later card and needs no other entry point than this.
+    """
+    # Blobs first, rows last, as everywhere in the store — and it keeps the lock
+    # off an upload to another service.
+    content = text.encode()
+    content_hash = await put_blob(content)
+
+    async with (await pool.pool()).acquire() as conn, conn.transaction():
+        await conn.execute("SELECT pg_advisory_xact_lock($1, hashtext($2))", _MEMORY_LOCK, str(user_id))
+        await conn.execute(
+            _MEMORY_UPSERT,
+            _uuid(user_id),
+            MEMORY_CORE,
+            content_hash,
+            len(content),
+            datetime.now(UTC),
+            text,
+        )
+
+
+async def read_memory(user_id: str) -> str:
+    """The curated core, or '' when nothing has written one yet."""
+    body = await pool.fetchval(
+        "SELECT body FROM memory_files WHERE user_id = $1 AND path = $2",
+        _uuid(user_id),
+        MEMORY_CORE,
+    )
+    return body or ""
+
+
+async def read_notes(user_id: str) -> list[Note]:
+    """Every note the user has, oldest first — the name carries the order."""
+    rows = await pool.fetch(
+        """
+        SELECT path, body, mtime
+          FROM memory_files
+         WHERE user_id = $1 AND path LIKE $2
+         ORDER BY path
+        """,
+        _uuid(user_id),
+        f"{NOTES_DIR}/%",
+    )
+    return [Note(path=r["path"], text=r["body"], written_at=r["mtime"]) for r in rows]
+
+
+async def search_memory(user_id: str, query: str, limit: int = 10) -> list[Hit]:
+    """
+    Full-text search over one user's memory, core and notes alike.
+
+    `websearch_to_tsquery` because the query is written by the model in the
+    shape a person would type: bare words, quoted phrases, `or`. A query that
+    parses to nothing matches nothing rather than everything.
+    """
+    rows = await pool.fetch(
+        """
+        SELECT path, body, mtime, ts_rank(tsv, q) AS rank
+          FROM memory_files, websearch_to_tsquery('english', $2) AS q
+         WHERE user_id = $1 AND tsv @@ q
+         ORDER BY rank DESC, mtime DESC
+         LIMIT $3
+        """,
+        _uuid(user_id),
+        query,
+        max(1, limit),
+    )
+    return [
+        Hit(path=r["path"], text=r["body"], written_at=r["mtime"], rank=float(r["rank"])) for r in rows
+    ]
+
+
+# --- moving bytes -----------------------------------------------------------------
 
 
 def build_tar(files: Sequence[tuple[str, bytes]]) -> bytes:

@@ -80,6 +80,20 @@ a design for re-acquisition, and a session that guessed its claims wrongly has
 to be restarted rather than widened.
 
 
+**D30 · Whether memory is ever readable inside the box is OPEN.** Memory does
+not mount today: no claim can name the region and nothing in `materialize`
+reads it. That is a posture, not a ruling. The case for keeping it out is that
+the sandbox executes model-authored code and the memory core is the most
+distilled thing we hold about a user; the case against is that the agent owns
+its computer and its memory both, and a claimable read-only mount would put
+memory under the same uniform claims rule as everything else — declared,
+visible in Looking Glass, writes still gated. Settled when there is a real
+reason to read memory from inside a box; until then the default stands. Nothing
+is written to foreclose either answer, and the mount answer costs one additive
+migration (a region column on `session_claims`). *Cost:* the question stays
+open, so anyone reaching for memory inside the box has to come back here first.
+
+
 ---
 
 ## agent_module — the loop
@@ -244,6 +258,13 @@ stateful — is what removed the sandbox from the list.
 **D8 · Long-term memory removed.** Explicit writes made mem0's auto-extraction
 dead weight; the transcript is memory within a session. *Cost:* no
 personalization until it returns; standing rules come back first.
+
+**Amended 2026-08-18 (Task 8.8).** The explicit-write half is built, in the
+store rather than a module of its own: `save_memory`, `search_memory`,
+`read_memory` and `update_memory` over `memory_files`, searched with Postgres
+FTS, with `MEMORY.md` injected into the system prompt at fold. What D8 deleted
+stays deleted — no auto-extraction, no embeddings, no retrieval on the hot path.
+The model decides what to keep and when to look.
 
 
 ---

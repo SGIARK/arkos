@@ -45,6 +45,24 @@ create unique index on project_files (project_id, path);
 -- No bytes column and no storage_path: a row names a path and the hash of its
 -- content. Two projects holding the same content share one blob.
 
+-- the user's memory: the curated core and the notes appended to it (D8 amended)
+memory_files (
+  id            uuid primary key default gen_random_uuid(),
+  user_id       uuid not null references users(id) on delete cascade,
+  path          text not null,           -- 'MEMORY.md' | 'notes/<stamp>-<rand>.md'
+  content_hash  text not null,           -- sha256; the blob holds the bytes
+  size          bigint not null,
+  body          text not null,           -- the same text, where the FTS query runs
+  tsv           tsvector generated always as (to_tsvector('english', body)) stored,
+  mtime         timestamptz not null default now(),
+  created_at    timestamptz not null default now()
+)
+create unique index on memory_files (user_id, path);
+create index on memory_files using gin (tsv);
+-- Keyed by user, not by project: memory is not a project tree. A note is written
+-- once; the core is replaced whole under an advisory lock. Whether this may ever
+-- be mounted into a sandbox is D30, open — no claim can name it today.
+
 -- what a session may see, and what it locks (D29)
 session_claims (
   session_id  uuid not null references sessions(id) on delete cascade,

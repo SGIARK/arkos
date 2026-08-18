@@ -34,7 +34,7 @@ from agent_module.events import (
 from agent_module.loop import Budgets, Dispatch, run_turn
 from config_module.loader import config
 from db import pool
-from harness_module import approvals, hands, leases, lifecycle, system_log, workspace
+from harness_module import approvals, hands, leases, lifecycle, store, system_log, workspace
 from harness_module import session_log as slog
 from harness_module.stream import stream
 from tool_module import registry
@@ -139,11 +139,12 @@ async def fold(session: Session) -> Folded:
     paired assistant and tool messages, `reasoning` is dropped, and the remaining kinds are
     UI-only.
 
-    The output is a function of (log, config, mode): no clock is read, and the date in the
-    system prompt comes from `sessions.created_at`.
+    The output is a function of (log, config, mode, memory): no clock is read, and the
+    date in the system prompt comes from `sessions.created_at`.
     """
     events = await _all_events(session.id)
-    messages, hops_used = _assemble(session, events, frozenset())
+    memory = _capped_memory(await store.read_memory(session.user_id))
+    messages, hops_used = _assemble(session, events, frozenset(), memory)
 
     # Rung 0 measures the view; rung 1 clears the oldest results holding a blob ref
     # until it fits. A result with no ref stays, since nothing can read it back.
@@ -156,7 +157,7 @@ async def fold(session: Session) -> Folded:
     cleared: list[str] = []
     for ref in _clearable_refs(events):
         cleared.append(ref)
-        messages, hops_used = _assemble(session, events, frozenset(cleared))
+        messages, hops_used = _assemble(session, events, frozenset(cleared), memory)
         if _estimate_tokens(messages) <= ceiling:
             break
 
@@ -176,6 +177,19 @@ async def fold(session: Session) -> Folded:
     return Folded(messages, hops_used, ViewTransformEvent(rung=1, dropped_refs=cleared))
 
 
+def _capped_memory(core: str) -> str:
+    """Cut the memory document to what the system prompt will carry.
+
+    The tail is not lost, it is just not free: `read_memory` returns the whole
+    document, and the marker is there so the model knows to ask rather than
+    curate from a copy that stops mid-sentence.
+    """
+    limit = int(_cfg("memory.prompt_max_chars", 4000))
+    if limit <= 0 or len(core) <= limit:
+        return core
+    return core[:limit].rstrip() + "\n\n[...truncated. Call read_memory for the whole document.]"
+
+
 def _clearable_refs(events: list[slog.StoredEvent]) -> list[str]:
     """Returns every stored result's ref, oldest first."""
     return [
@@ -189,6 +203,7 @@ def _assemble(
     session: Session,
     events: list[slog.StoredEvent],
     cleared: frozenset[str],
+    memory: str = "",
 ) -> tuple[list[dict[str, Any]], int]:
     """Builds the message list from events, with `cleared` refs reduced to a pointer.
 
@@ -203,6 +218,7 @@ def _assemble(
                 session.mode,
                 date=session.created_at.date().isoformat(),
                 goal=session.goal,
+                memory=memory,
             ),
         }
     ]

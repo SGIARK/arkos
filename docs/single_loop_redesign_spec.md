@@ -35,7 +35,9 @@ before Task 7 deletes the fallback machinery.
 
 This document is the why and the build plan.
 
-**Status:** Tasks 0-8, 8.1-8.6b and 8.7 done · **8.8-8.9 are next**, then 9 / LG-1 |
+**Status:** Tasks 0-8, 8.1-8.6b, 8.7 and 8.8 done · **8.9, then the deletion
+commit, then LG-1 → 9 → LG-2 → 12** (sequencing settled 2026-08-18, see the note
+at Tasks 10-11) |
 **Author:** John Wallace | **Last updated:** 2026-08-18
 
 **Where things actually stand, for a session picking this up cold:**
@@ -883,20 +885,43 @@ system-sourced user event naming the updated file to every running session that
 claims it, reusing the steering mechanism as-is — the model is told, rather than
 the harness guessing which writer was right.
 
-### Task 8.8: The memory region, structurally sealed
-**Done when:** `{user}/memory/` exists in the store (`MEMORY.md` + `notes/`);
-`materialize` structurally excludes it — not a filter, a different code path:
-project subtrees are the only mountable things, because the sandbox runs
-model-authored code and memory is the most sensitive distillate in the system;
-`store.py` gains the append gate `append_note(user_id, text)` (one file per
-note, so concurrent appends cannot collide); `MEMORY.md` is compactor-owned —
-sessions append notes, only the (future) compaction job rewrites the curated
-core. NOT here: memory tools in the manifest, search, the compactor — those are
-the memory reimplementation card, which now has its floor.
-**Touch:** `store.py`, `contracts.md` memory section | **P2, 0.5d** | **Blockers:** 8.3
-**Test:** a session with every claim still has no `memory/` in its sandbox; two
-concurrent `append_note` calls land as separate files; nothing in the repo
-writes `MEMORY.md`.
+### Task 8.8: Memory — the agent remembers between sessions
+**Un-paused and extended 2026-08-18 (owner).** The pause held while the read
+side was in question; the write side never was, and the rest followed it. What
+was settled and stayed settled: every memory write goes through the append gate
+(`append_note`, one file per note, so concurrent sessions cannot collide) and
+`MEMORY.md` is replaced whole rather than edited in place. What changed is that
+the model is the compactor for v1 — it curates the core through `update_memory`,
+under the advisory lock the future background job will hold.
+
+**Done when:** `memory_files` exists, keyed by user (migration 0005), with the
+text in the row and a Postgres FTS index over it (0006); `store.py` has the
+region — `append_note`, `update_memory` (advisory-locked), `read_memory`,
+`read_notes`, `search_memory`; four tools ship in the manifest —
+`save_memory` · `search_memory` · `read_memory` · `update_memory`, the last
+refusing until `read_memory` has run that turn, because the prompt's copy is
+capped and a whole-document rewrite from it would drop the tail; `fold` injects
+`MEMORY.md` into the system prompt capped at `memory.prompt_max_chars`, with a
+marker naming `read_memory` for the rest; the prompt says what belongs in memory
+(stable preferences, decisions and their reasons, who people are, where things
+live) and what does not (this session's narration, anything re-readable from the
+files, credentials).
+
+**Explicitly NOT here:** vectors or embeddings of any kind; auto-extraction;
+retrieval on the hot path (the model searches when it decides to); the
+background compaction job; pinned standing rules as a first-class thing; any
+mount — **D30 stays open**, memory does not mount, and nothing in the schema
+forecloses the read-only-claim answer.
+**Touch:** `store.py`, migrations 0005-0006, `tool_module/tools/memory.py`,
+`prompts.py`, `runner.fold`, `config.yaml`, `contracts.md`, `decisions.md`
+| **P2, 1d** | **Blockers:** 8.3
+**Test:** two concurrent `append_note` calls land as separate files; two
+`update_memory` calls at once serialize and neither writes half a document;
+search finds a note and the core and never another user's; `update_memory` is
+refused before `read_memory` and accepted after; **a fact saved in session A
+surfaces in session B both ways — `search_memory` finds the note, and the
+curated core is in B's system prompt**; a session claiming every project still
+has no memory in its box.
 
 ### Task 8.9: The probe and the hardening pass
 **Done when:** the **FUSE probe** is run and recorded in Implementation Notes
@@ -974,6 +999,21 @@ while leaving the tool unreachable. Registration is now part of done.
 
 ## Tasks 10-11: moved to `docs/looking_glass_spec.md`
 (Looking Glass v1; Projects + Command Center.)
+
+**Sequencing settled 2026-08-18 (owner): LG-1 runs BEFORE Task 9.** After 8.8,
+8.9 and the audit deletion commit, the order is **LG-1 → Task 9 → LG-2 → Task
+12**. Two reasons on the record. First, visibility: everything built since Task
+4 — the streaming turn, the hop meter, unattended runs, the ochre approval dot,
+claims, mid-run uploads, cross-session memory — is currently observable only
+through curl; LG-1 is the card that makes two weeks of system visible, and it
+has been fully unblocked (Tasks 2, 4, 6 done) for days. Second, reachability:
+Task 9's deliverable is substantially visual — its frame stream renders in the
+Looking Glass canvas and its progress is `status` events in the session window —
+so building the browser before the window means developing a live video pane
+over curl and finding the rendering problems later anyway. LG-1 is Task 9's
+consumer; it goes first. LG-1's first commit is the two carded stream bugs
+(SSE backlog paging, lifecycle publish-after-commit). Task 12 stays last:
+build tooling and polish, not function.
 
 ## Task 12: Frontend modernization
 **Done when:** Vite build (production React, no runtime Babel, sub-1s paint);
@@ -1452,9 +1492,15 @@ ARK prompt that `prompts.py` now owns. All four are gone.
 **2026-08-18 — the store landed (8.1-8.6b). What a fresh session needs to know.**
 
 The agent's files now live in object storage we own, with the tree in Postgres
-and the sandbox disk demoted to a cache (D27). Eight cards done; 8.8 (the memory
-region) and 8.9 (the FUSE probe and snapshots) remain, and neither blocks the
-other.
+and the sandbox disk demoted to a cache (D27). Nine cards done; 8.9 (the FUSE
+probe and snapshots) is the last of them.
+
+Memory came back with 8.8, in the store rather than a module of its own:
+`memory_files` keyed by user, four tools, Postgres FTS, and `MEMORY.md` injected
+into the system prompt at fold. mem0 stays deleted, and so does everything
+automatic about it — no extraction, no embeddings, no per-turn retrieval. Whether
+memory may ever be read from inside a sandbox is D30 and open; it does not mount
+today.
 
 Where things are: `harness_module/store.py` is blobs and trees and knows nothing
 about e2b; `harness_module/workspace.py` fills and empties the sandbox cache;

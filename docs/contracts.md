@@ -228,6 +228,11 @@ sandbox:
   slot_ttl_s: 900                   # a slot unrenewed this long is reclaimed, its box killed
 app:
   public_url: "https://..."    # the one origin /app and the API are served from
+memory:
+  prompt_max_chars: 4000       # of MEMORY.md, injected into the system prompt at fold
+  core_max_chars: 20000        # update_memory refuses a longer document
+  note_max_chars: 2000         # save_memory refuses a longer note
+  search_limit: 10             # default hits per search_memory call
 quotas:
   max_unattended_sessions: 5   # per user; only UNATTENDED runs count — an idle
                                # or attended conversation consumes no worker
@@ -416,6 +421,7 @@ manifest(user_id) -> list[ToolSpec]
 # every hand; lazy provisioning makes an unused tool free.
 #   control : finish_task · request_approval · ask · todo_write · read_result
 #   world   : list_projects · get_project · list_sessions · get_session · list_files
+#   memory  : save_memory · search_memory · read_memory · update_memory
 #   sandbox : run_command · read_file · write_file · edit_file · list_dir · grep · glob
 #   browser : browser_task
 #   MCP     : whatever the user connected, exposed as mcp_{name}
@@ -516,7 +522,11 @@ get_blob(sha256) -> bytes
 read_tree(project_id) -> [TreeEntry{path, content_hash, size, mtime}]
 commit_tree(project_id, entries)     # blobs FIRST, rows LAST, in one transaction
 diff_tree(a, b) -> paths that differ by hash
-append_note(user_id, text) -> path   # one file per note
+append_note(user_id, text) -> path   # one file per note; never rewritten
+update_memory(user_id, text)         # replaces MEMORY.md whole, under an advisory lock
+read_memory(user_id) -> str          # the curated core, '' when there is none
+read_notes(user_id) -> [Note{path, text, written_at}]
+search_memory(user_id, query, limit) -> [Hit{path, text, written_at, rank}]
 ```
 
 **Layout is fixed.** `{prefix}/blobs/{hh}/{sha256}` for bytes;
@@ -548,11 +558,33 @@ replaced, emptied or materialized for another session commits nothing. Without
 it an empty sweep is indistinguishable from a delete-all, and a box that died
 mid-run replaces the project's tree with no rows at all.
 
-**Memory never mounts.** `{user}/memory/` is excluded structurally, not by a
-filter: project subtrees are the only mountable thing, and the mount path has no
-branch that can reach memory. The sandbox executes model-authored code, and
-memory is the most sensitive distillate in the system. Sessions may only
-`append_note`; `MEMORY.md` is rewritten by the compaction job alone.
+**Memory is the user's, and it is written the way the transcript is.** It lives
+in `memory_files`, keyed by user, not in any project tree: `MEMORY.md` is the
+curated core and `notes/<stamp>-<rand>.md` is one appended note. A note is
+written once and never edited, so concurrent sessions cannot collide. The core
+is the one file that is replaced whole, and it is replaced under a
+transaction-scoped advisory lock on the user — the gate a read-then-write
+compactor will need, held from the first version so it never has to be retrofitted.
+The bytes go to a blob as everywhere else; the row also carries the text, because
+`search_memory` is a Postgres full-text query and the words have to be where the
+query runs. Search is FTS and nothing more: no vectors, no embeddings, no
+extraction, no per-turn retrieval.
+
+**Memory does not mount, and whether it ever should is D30 — open.** Today no
+claim can name the region and nothing in `materialize` reads it. That is the
+default posture, not a proof: the alternative on the table is a claimable
+read-only mount, which would put memory under the same uniform claims rule as
+everything else, and settling D30 that way costs one additive migration rather
+than a rebuild. Nothing in the schema or the code is written to foreclose it.
+
+**The core is carried into every turn; the notes are searched on demand.** Fold
+injects `MEMORY.md` into the system prompt, capped at `memory.prompt_max_chars`
+with a marker naming `read_memory` for the rest. The four tools —
+`save_memory`, `search_memory`, `read_memory`, `update_memory` — are the model's
+only writers, and `update_memory` refuses until `read_memory` has run in that
+turn, because a whole-document rewrite from the capped copy would silently drop
+its tail. The model is the compactor in v1; the background job that will curate
+unattended is later, and needs no entry point the model does not already use.
 
 **Claims are the unit of conflict** (D29). A session declares
 `(project_id, subpath, mode)` at creation. The set is the sole source of which
@@ -585,22 +617,21 @@ unified task path. Backend module map is now role-per-module: `harness_module`
 (control plane) · `agent_module` (brain) · `model_module` (model) ·
 `tool_module` (all hands).
 
-### memory_module — REMOVED for now; reimplementation TBD
+### memory_module — deleted; memory returned as part of the store (8.8)
 
-Long-term memory is cut from the redesign scope. mem0 is dropped entirely
-(its embedder service, extraction LLM calls, config, and deps go with it).
-Short-term context is fully covered by `session_log` (the transcript IS the
-memory within a session). No memory tools ship in v1 manifests.
+mem0 is gone for good, with its embedder service, extraction LLM calls, config
+and deps. What came back, in `harness_module/store.py` rather than a module of
+its own, is the half that was ever worth having: explicit writes over a schema
+we own, FTS before vectors, and nothing on the hot path. The contract is the
+memory section of the store above.
 
-What this deletes: `retrieve_long_memory` auto-injection (embed+search per turn),
-background `add_memory` extraction, the mem0 `memories` collection, `memory_module`
-itself save for whatever thin glue `session_log` absorbs.
+What stays deleted: `retrieve_long_memory` auto-injection (embed + search every
+turn), background `add_memory` extraction, the mem0 `memories` collection, and
+`memory_module` itself. The model decides what to remember and when to look, the
+same way it decides to read a file.
 
-When reimplemented (TBD, own spec), the direction already workshopped: tools over
-a schema we own (`save_memory` / `search_memory` / `pinned` standing rules;
-explicit writes, no hot-path retrieval; FTS before vectors). Nothing in the
-contracts above depends on memory existing — the seam is just two more ToolSpecs
-in the manifest when it returns.
+Still not built: the background compaction job (the model curates for now), and
+pinned standing rules as a first-class thing rather than lines in `MEMORY.md`.
 
 ---
 

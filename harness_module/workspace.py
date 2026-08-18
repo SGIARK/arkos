@@ -12,6 +12,11 @@ about its own contents that is not verified: both directions hash the files on
 disk and compare against the tree, so a stale or tampered record cannot decide
 what is transferred, kept or deleted.
 
+Claimed project subtrees are the only thing this module mounts. The user's
+memory region is a different table in the store and nothing here reads it, so
+memory does not reach a box today. Whether it ever should is D30, open: this is
+the default posture, not a rule the code is built around.
+
 A flush may only commit against a workspace that proves it was materialized.
 `materialize` leaves a sentinel in the box and records its nonce against the
 session's slot; `flush` reads both and aborts unless they agree. The proof is

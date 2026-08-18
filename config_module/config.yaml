@@ -47,6 +47,15 @@ store:
   prefix: "arkos"
   root: ".arkos-store"
 
+memory:
+  # What the agent carries between sessions: MEMORY.md (the curated core) and
+  # the notes it appends, in `memory_files`. Read by the memory tools, and the
+  # core is injected into the system prompt at fold time.
+  prompt_max_chars: 4000          # of the core, in the system prompt; the rest needs read_memory
+  core_max_chars: 20000           # update_memory refuses a document longer than this
+  note_max_chars: 2000            # save_memory refuses a note longer than this
+  search_limit: 10                # default hits per search_memory call
+
 system_log:
   # The operational log: batched, best-effort, never on a request path.
   flush_interval_s: 5
