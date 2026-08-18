@@ -35,7 +35,7 @@ before Task 7 deletes the fallback machinery.
 
 This document is the why and the build plan.
 
-**Status:** Tasks 0-8 done · **Tasks 8.1-8.9 (the store) are next**, then 9 / LG-1 |
+**Status:** Tasks 0-8 and 8.1-8.6 done · **8.7-8.9 are next**, then 9 / LG-1 |
 **Author:** John Wallace | **Last updated:** 2026-08-17
 
 **Where things actually stand, for a session picking this up cold:**
@@ -44,7 +44,8 @@ This document is the why and the build plan.
 |---|---|
 | Database | Supabase `sbtbbytesjobdpmqojlr`, migration 0 applied, 12 tables |
 | Model | hosted OpenAI, `gpt-4.1-mini` — `run_turn` verified end to end against it |
-| Suite | 424 passing, plus 4 `integration` tests that boot a real e2b sandbox and are deselected by default (`pytest -m integration` runs them) |
+| Suite | 509 collected. `integration`-marked tests (real e2b sandbox, real Supabase Storage) are deselected by default; `pytest -m integration` runs them |
+| Store | Supabase Storage, private bucket `arkos`, created 2026-08-18. Project URL derives from `DB_URL`; `SUPABASE_SECRET_KEY` must be an `sb_secret_` key |
 | HTTP server | `harness_module/api.py`, `uvicorn harness_module.api:app`. Needs `SUPABASE_JWT_SECRET` and `ARK_SESSION_SECRET` |
 | Blocking decisions | none — endpoints, budgets, port, approval default, callback trigger all settled 2026-08-16/17 |
 
@@ -868,6 +869,27 @@ project creates the session there with its claim, and a busy project (write
 lease held) is disclosed in the composer before creation, offering queue-behind
 or open-the-running-session.
 
+**Divergence note (owner, 2026-08-18) — boxes never reconcile; the store is the
+only rendezvous.** With per-session sandboxes (8.6b), two same-user boxes
+diverge completely and that is meaningless, not a conflict: a box is never
+compared to another box, only to the store subtrees its session claimed, and
+its flush touches only those rows and blobs. Every path to the store is
+serialized by a lease, so the store is ordered and boxes are spokes, never
+peers. The case this matters for is the placeful UI above: once users can pick
+an EXISTING project folder, two sessions can select the same one — and there
+the `project:{id}` write lease is what pauses one for the other. The second
+session queues behind the first (materialize cannot begin until the holder's
+flush lands at release, so the second always starts from the first's result,
+never reconciles with it), and the composer discloses the queue before
+creation. Same project, both writing simultaneously: impossible by
+construction. What legitimately diverges and is DISCARDED: everything outside
+the claimed subtrees — /tmp, pip installs, shell config. That state was already
+declared ephemeral by D27 (the singleton loses it on any sandbox death today);
+if environment reproducibility ever matters, it is declared in project files
+(requirements.txt, a setup script) and re-derived at materialize, or baked into
+the template — never flushed, because flushing a box's environment would
+promote the cache back into a source of truth.
+
 ## Task 9: Browser tool on a leash
 **Done when:** per contracts.md browser section — step callback wired to
 `status` events; frame stream keyed (user, session) + cookie-authed + announced by
@@ -1346,6 +1368,48 @@ a code change. Unattended refuses and logs, rather than guessing yes.
 blocks describing deleted modules, and `app.system_prompt` was the pre-redesign
 ARK prompt that `prompts.py` now owns. All four are gone.
 `browser_routes.py:27` was the only live reader of any of them.
+
+**2026-08-18 — the store landed (8.1-8.6). What a fresh session needs to know.**
+
+The agent's files now live in object storage we own, with the tree in Postgres
+and the sandbox disk demoted to a cache (D27). Six cards done; 8.7 (upload and
+browse without a boot), 8.8 (the memory region) and 8.9 (the FUSE probe and
+snapshots) remain, and none of them blocks the others.
+
+Where things are: `harness_module/store.py` is blobs and trees and knows nothing
+about e2b; `harness_module/workspace.py` fills and empties the sandbox cache;
+`session_claims` rows say what a session may see; `runner._Sink._lease` takes
+`sandbox:{user}` plus `project:{id}` per write claim, materializes, and flushes
+before it releases.
+
+Three things a reader would otherwise re-derive:
+
+- **The sandbox is asked nothing about itself that is not verified.** The first
+  cut kept a manifest file in the sandbox recording what had been materialized,
+  and used it to decide what to delete. That record is stale the moment a flush
+  commits, so a file another session deleted was never removed from a warm
+  sandbox and the next flush put it back in the tree — a deletion undone
+  permanently. Both directions now hash the files on disk and compare against
+  the tree. The manifest was deleted rather than fixed: a second source of truth
+  about the same bytes is what created the hole.
+- **Blobs first, rows last, and `commit_entries` is why a flush is cheap.** A
+  flush computes hashes in the sandbox, uploads only changed bytes, and writes
+  every row from a hash. Both commit paths verify the blobs exist before any row
+  moves, so the tree cannot come to point at bytes that are not there.
+- **Supabase reports a missing object as HTTP 400** with a body saying 404. A
+  mock built on the assumption of a clean 404 passed while every read of an
+  absent blob raised. Live tests against the real bucket found it; the same
+  pattern found the e2b column mismatch in Task 8a. For a vendor boundary, a
+  fake tests the assumption, not the vendor.
+
+Setup facts worth carrying: the store needs an `sb_secret_` key, not the
+publishable one and not the legacy `service_role` JWT. `SUPABASE_URL` is derived
+from `DB_URL` and need not be set. `.env` still carries `ARK_JWT_SECRET`, which
+Task 4 replaced — the server will not start until `ARK_SESSION_SECRET` is set
+(`SUPABASE_JWT_SECRET` is now optional, since tokens verify against the
+project's published ES256 key). On a Python whose platform tag predates the
+published wheels, `cryptography` must be installed with `--only-binary=:all:`
+or pip tries to build it from Rust source.
 
 **2026-08-17 — Task 4 reviewed, and the transcript was the weak half.** Twelve
 findings, worked in three batches; the rest carded onto Tasks 5, 9 and LG-1
