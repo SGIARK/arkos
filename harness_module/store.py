@@ -143,15 +143,17 @@ class SupabaseBlobs:
     treats it as the object already being correct, which it is, because the
     name is the hash of the content.
 
-    The URL and service key come from the environment rather than config.yaml,
+    The URL and secret key come from the environment rather than config.yaml,
     for the same reason E2B_API_KEY does: a `${VAR}` in the yaml makes an unset
     key crash config load for everything, including the parts that do not use it.
     """
 
-    def __init__(self, url: str, service_key: str, bucket: str, concurrency: int = 8, client: Any = None):
+    def __init__(self, url: str, secret_key: str, bucket: str, concurrency: int = 8, client: Any = None):
         self.base = url.rstrip("/") + "/storage/v1/object"
         self.bucket = bucket
-        self._headers = {"Authorization": f"Bearer {service_key}", "apikey": service_key}
+        # Both headers, which suits either key format: the current secret keys
+        # (sb_secret_...) and the legacy service_role JWT.
+        self._headers = {"Authorization": f"Bearer {secret_key}", "apikey": secret_key}
         self._client = client
         self._gate = asyncio.Semaphore(concurrency)
 
@@ -251,19 +253,30 @@ def project_url() -> str | None:
     return None
 
 
+def secret_key() -> str | None:
+    """The key the store authenticates with.
+
+    `SUPABASE_SECRET_KEY` holds a secret API key (`sb_secret_...`), which is
+    revocable and rotatable on its own. `SUPABASE_SERVICE_KEY` is read as a
+    fallback for installations still on the legacy service_role JWT, which can
+    only be rotated by invalidating every key in the project at once.
+    """
+    return os.environ.get("SUPABASE_SECRET_KEY") or os.environ.get("SUPABASE_SERVICE_KEY")
+
+
 def _build() -> Blobs:
     backend = str(_cfg("store.backend", "filesystem")).lower()
     if backend == "filesystem":
         return FilesystemBlobs(_cfg("store.root", ".arkos-store"))
     if backend == "supabase":
         url = project_url()
-        key = os.environ.get("SUPABASE_SERVICE_KEY")
+        key = secret_key()
         bucket = _cfg("store.bucket", "")
         missing = [
             name
             for name, value in (
                 ("SUPABASE_URL (or a Supabase database.url to derive it from)", url),
-                ("SUPABASE_SERVICE_KEY", key),
+                ("SUPABASE_SECRET_KEY", key),
                 ("store.bucket", bucket),
             )
             if not value

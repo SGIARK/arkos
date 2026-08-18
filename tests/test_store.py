@@ -286,11 +286,27 @@ async def test_missing_asks_only_about_the_hashes_it_was_given():
 async def test_selecting_supabase_without_credentials_fails_loudly(monkeypatch):
     """A store that cannot reach its bucket must say so at startup, not at first write."""
     monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SECRET_KEY", raising=False)
     monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
     monkeypatch.setattr(store, "_cfg", lambda key, default: "supabase" if key == "store.backend" else default)
 
     with pytest.raises(store.StoreError, match="SUPABASE_URL"):
         store._build()
+
+
+async def test_a_secret_api_key_is_preferred_over_the_legacy_service_role(monkeypatch):
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "sb_secret_current")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "eyJlegacy")
+
+    assert store.secret_key() == "sb_secret_current"
+
+
+async def test_the_legacy_service_role_key_still_works(monkeypatch):
+    """An installation that has not migrated yet keeps running."""
+    monkeypatch.delenv("SUPABASE_SECRET_KEY", raising=False)
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "eyJlegacy")
+
+    assert store.secret_key() == "eyJlegacy"
 
 
 async def test_an_unknown_backend_is_refused(monkeypatch):

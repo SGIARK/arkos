@@ -1,7 +1,8 @@
 """The blob backend against a real Supabase Storage bucket.
 
-Marked `integration`: it needs SUPABASE_URL, SUPABASE_SERVICE_KEY and a private
-bucket named by STORE_BUCKET. Run with `pytest -m integration`.
+Marked `integration`: it needs SUPABASE_SECRET_KEY and a private bucket named by
+STORE_BUCKET; the project URL is derived from DB_URL. Run with
+`pytest -m integration`.
 
 The mock-transport tests in test_store.py pin the HTTP contract. What only this
 can show is that the bucket exists, the key is accepted, and a blob survives a
@@ -21,8 +22,8 @@ pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.integration,
     pytest.mark.skipif(
-        not (os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_SERVICE_KEY")),
-        reason="SUPABASE_URL and SUPABASE_SERVICE_KEY are not set",
+        not (store.project_url() and store.secret_key()),
+        reason="the Supabase project URL or secret key is not configured",
     ),
 ]
 
@@ -30,8 +31,8 @@ pytestmark = [
 @pytest.fixture
 def backend():
     made = store.SupabaseBlobs(
-        os.environ["SUPABASE_URL"],
-        os.environ["SUPABASE_SERVICE_KEY"],
+        store.project_url(),
+        store.secret_key(),
         os.environ.get("STORE_BUCKET") or "arkos",
     )
     yield made
