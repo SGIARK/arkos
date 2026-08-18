@@ -477,8 +477,13 @@ exists for. There is no `waiting` status and there must not be one: borrowing
 `/attention`. No hops burn, because no model call happens. The wall clock excludes
 lease-wait time, using the same active-segment accounting park already needs. On
 lease-wait timeout the tool returns
-`ResultEnvelope{ok:false, error_kind:timeout, retryable:true}` and the model routes
-around it, per "errors are model input, not control flow".
+`ResultEnvelope{ok:false, error_kind:timeout, retryable:true}` saying the call
+**never ran and is safe to retry later**, and the model routes around it, per
+"errors are model input, not control flow". That wording is only true if the wait
+gives up before the call around it is cut off, so `leases.wait_timeout_s` must
+leave margin inside `tools.call_timeout_s`; startup refuses a config where it does
+not, along with a `sandbox.max_concurrent_per_user` below
+`quotas.max_unattended_sessions`.
 
 A lease is held for the **whole session, not per tool call** — per-call leasing
 lets session B interleave session A's half-finished write, which is the exact

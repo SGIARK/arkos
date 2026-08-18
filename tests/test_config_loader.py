@@ -161,3 +161,40 @@ class TestConfigLoaderReload:
         first = loader.load()
         reloaded = loader.reload()
         assert first is not reloaded
+
+
+class TestCoherence:
+    """Settings that are each valid and wrong together, caught at startup."""
+
+    def _loader(self, tmp_path, **overrides) -> ConfigLoader:
+        data = {
+            "leases": {"wait_timeout_s": 90},
+            "tools": {"call_timeout_s": 120},
+            "sandbox": {"max_concurrent_per_user": 5},
+            "quotas": {"max_unattended_sessions": 5},
+        }
+        for dotted, value in overrides.items():
+            section, key = dotted.split("__")
+            data[section][key] = value
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump(data))
+        return ConfigLoader(str(config_file))
+
+    def test_coherent_settings_pass(self, tmp_path):
+        self._loader(tmp_path).assert_coherent()
+
+    def test_a_wait_that_outlives_its_call_is_refused(self, tmp_path):
+        with pytest.raises(RuntimeError, match="never ran"):
+            self._loader(tmp_path, leases__wait_timeout_s=120).assert_coherent()
+
+    def test_a_wait_with_too_little_margin_is_refused(self, tmp_path):
+        with pytest.raises(RuntimeError, match="wait_timeout_s"):
+            self._loader(tmp_path, leases__wait_timeout_s=115).assert_coherent()
+
+    def test_a_cap_below_the_session_quota_is_refused(self, tmp_path):
+        with pytest.raises(RuntimeError, match="could never get a computer"):
+            self._loader(tmp_path, sandbox__max_concurrent_per_user=3).assert_coherent()
+
+    def test_the_shipped_config_is_coherent(self):
+        """The defaults are the ones that ship, so they are the ones that must agree."""
+        ConfigLoader().assert_coherent()

@@ -91,6 +91,41 @@ class ConfigLoader:
         self._config = None
         return self.load()
 
+    def assert_coherent(self) -> None:
+        """Raise RuntimeError on settings that are each valid and wrong together.
+
+        Run at startup, because the failures they cause are invisible at the
+        point of the mistake: a wait that outlives the call it is inside times
+        out as the wrong thing, and a cap below the session quota starves
+        sessions the quota promised.
+        """
+        problems = []
+
+        waiting = float(self.get("leases.wait_timeout_s") or 0)
+        call = float(self.get("tools.call_timeout_s") or 0)
+        if waiting + _WAIT_MARGIN_S > call:
+            problems.append(
+                f"leases.wait_timeout_s ({waiting}) leaves less than {_WAIT_MARGIN_S}s of "
+                f"tools.call_timeout_s ({call}): a contended call would be cut off as a tool "
+                "timeout instead of reporting that it never ran"
+            )
+
+        boxes = int(self.get("sandbox.max_concurrent_per_user") or 0)
+        sessions = int(self.get("quotas.max_unattended_sessions") or 0)
+        if boxes < sessions:
+            problems.append(
+                f"sandbox.max_concurrent_per_user ({boxes}) is below "
+                f"quotas.max_unattended_sessions ({sessions}): {sessions - boxes} session(s) the "
+                "quota permits could never get a computer"
+            )
+
+        if problems:
+            raise RuntimeError("incoherent configuration: " + "; ".join(problems))
+
+
+# Seconds a contended call must have left after its wait gives up, so the tool
+# returns its own answer rather than being cut off mid-report.
+_WAIT_MARGIN_S = 10
 
 project_root = Path(__file__).parent.parent
 env_path = project_root / ".env"

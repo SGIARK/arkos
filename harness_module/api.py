@@ -71,6 +71,7 @@ def _error(status: int, code: str, message: str, retryable: bool = False) -> JSO
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start and stop the process-wide resources."""
     jwt_utils.assert_secure_secrets()
+    config.assert_coherent()
     if not _cfg("app.public_url", ""):
         logger.warning("app.public_url is unset: mutations are not origin-checked and OAuth has no return url")
 

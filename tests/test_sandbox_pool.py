@@ -285,6 +285,8 @@ async def test_a_session_over_the_cap_waits_and_says_so(boxes, model, impatient,
     assert _statuses(events) == ["waiting for a computer"]
     assert results[0].error_kind == "timeout"
     assert not results[0].ok
+    # What the model is told: nothing happened, so retrying is free.
+    assert "never ran" in results[0].content
     # Waiting is not parking: the turn ended normally.
     assert (await pool.fetchrow("SELECT status FROM sessions WHERE id = $1", uuid.UUID(waiter)))["status"] == "idle"
 

@@ -56,7 +56,8 @@ leases:
   # The browser is shared per user and keeps state between calls, so one session
   # holds it for its whole run; a write claim holds its project the same way.
   ttl_s: 900              # a lease expires if the process holding it dies
-  wait_timeout_s: 120     # how long a contended call waits before giving up
+  wait_timeout_s: 90      # how long a contended call waits before giving up; must leave room
+                          # inside tools.call_timeout_s for the tool to report that it never ran
   poll_s: 2               # how often the waiter retries
 
 quotas:
@@ -108,8 +109,9 @@ sandbox:
   template: "base"                         # e2b template
   timeout_seconds: 300                     # seconds a sandbox stays alive while working
   idle_timeout_seconds: 900                # seconds of idle before it pauses (lifecycle, later)
-  max_concurrent_per_user: 3               # boxes one user runs at once; a session over the
-                                           # cap waits with a status event until one is reaped
+  max_concurrent_per_user: 5               # boxes one user runs at once; a session over the cap
+                                           # waits with a status event until one is reaped. At or
+                                           # above quotas.max_unattended_sessions, checked at boot
   slot_ttl_s: 900                          # a slot expires unless a call into its box renews it,
                                            # so a process that dies frees its capacity
 

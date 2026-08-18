@@ -662,8 +662,8 @@ class _Sink:
             resource="sandbox_pool",
             label="a computer",
             busy=(
-                f"This account is already running {sandbox_manager.max_per_user()} computer(s) in other "
-                "sessions and none freed up. Try again, or do something else first."
+                f"No computer was free: this account already runs {sandbox_manager.max_per_user()} at "
+                "once. The call never ran, so it is safe to retry later, or do something else first."
             ),
         )
         self._sandbox_slot = True
@@ -679,8 +679,8 @@ class _Sink:
             resource=resource_key,
             label=label,
             busy=(
-                f"{label} is in use by another session and did not free up. Try again, or do "
-                "something else first."
+                f"{label} is held by another session and did not free up. The call never ran, so it "
+                "is safe to retry later, or do something else first."
             ),
         )
         self._leases.add(resource_key)
