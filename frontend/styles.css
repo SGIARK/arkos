@@ -7,36 +7,61 @@
    one.
    ========================================================= */
 
+/* The palette is the one this product had before the LG-1 rewrite, restored:
+   warm paper rather than cool white, one restrained forest accent, status
+   colours desaturated to share its lightness. The class names below are new;
+   these values are not. */
+
 :root {
-  --bg: #fbfaf8;
-  --surface: #ffffff;
-  --line: #e4e0d8;
-  --ink: #1b1a18;
-  --ink-soft: #6c6863;
-  --ink-faint: #9a958e;
-  --accent: #2f6f4e;
-  --run: #2f6f4e;
-  --wait: #b5761f;
-  --stop: #a33a2c;
-  --done: #9a958e;
-  --idle: #c3bdb3;
-  --r: 10px;
-  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --ink:        #1c1b18;
+  --ink-soft:   #54524b;
+  --ink-mute:   #97948a;
+  --ink-faint:  #97948a;
+  --bg:         #f7f6f1;
+  --surface:    #fdfcf9;
+  --surface-2:  #f1efe8;
+  --line:       #e6e3da;
+  --line-soft:  #efece4;
+
+  /* One restrained accent, and the statuses beside it. */
+  --accent:      oklch(0.55 0.075 150);
+  --accent-soft: oklch(0.55 0.075 150 / 0.12);
+  --accent-line: oklch(0.55 0.075 150 / 0.35);
+  --run:  oklch(0.58 0.08 150);
+  --wait: oklch(0.66 0.085 75);
+  --stop: oklch(0.58 0.10 28);
+  --done: #97948a;
+  --idle: #c4c1b6;
+
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --r: 7px;
+  --shadow: 0 1px 2px rgba(28,27,24,.03), 0 12px 32px -20px rgba(28,27,24,.18);
+  --shadow-lift: 0 1px 2px rgba(28,27,24,.04), 0 26px 60px -28px rgba(28,27,24,.30);
+  --ease: cubic-bezier(.4,0,.2,1);
 }
 
 :root[data-theme="dark"] {
-  --bg: #16151a;
-  --surface: #1e1d23;
-  --line: #302e37;
-  --ink: #ece9e4;
-  --ink-soft: #a6a19a;
-  --ink-faint: #736e67;
-  --accent: #6fbf92;
-  --run: #6fbf92;
-  --wait: #e0a44f;
-  --stop: #e0705c;
-  --done: #736e67;
-  --idle: #45424c;
+  --ink:        #ecebe6;
+  --ink-soft:   #b6b3aa;
+  --ink-mute:   #797668;
+  --ink-faint:  #797668;
+  --bg:         #121210;
+  --surface:    #1a1815;
+  --surface-2:  #201f1b;
+  --line:       #2a2823;
+  --line-soft:  #221f1b;
+
+  --accent:      oklch(0.74 0.105 150);
+  --accent-soft: oklch(0.74 0.105 150 / 0.16);
+  --accent-line: oklch(0.74 0.105 150 / 0.40);
+  --run:  oklch(0.74 0.105 150);
+  --wait: oklch(0.78 0.10 78);
+  --stop: oklch(0.70 0.12 28);
+  --done: #797668;
+  --idle: #46443d;
+
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 16px 40px -24px rgba(0,0,0,.7);
+  --shadow-lift: 0 1px 2px rgba(0,0,0,.5), 0 30px 70px -30px rgba(0,0,0,.85);
 }
 
 * { box-sizing: border-box; }
@@ -62,7 +87,8 @@ button {
   padding: 7px 13px;
   cursor: pointer;
 }
-button:hover { border-color: var(--ink-faint); }
+button { transition: border-color 140ms var(--ease), background 140ms var(--ease); }
+button:hover { border-color: var(--accent-line); background: var(--surface-2); }
 button:disabled { opacity: 0.45; cursor: default; }
 button.ghost { background: transparent; }
 button.link {
@@ -84,7 +110,8 @@ input {
   padding: 8px 11px;
   width: 100%;
 }
-input:focus { outline: none; border-color: var(--accent); }
+input { transition: border-color 140ms var(--ease), box-shadow 140ms var(--ease); }
+input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
 pre {
   margin: 6px 0 0;
@@ -107,7 +134,8 @@ pre {
 
 .tabs { display: flex; gap: 4px; flex: 1; margin-left: 22px; }
 .tab { border: none; background: none; color: var(--ink-faint); padding: 6px 10px; }
-.tab.on { color: var(--ink); border-bottom: 2px solid var(--accent); border-radius: 0; }
+.tab { transition: color 140ms var(--ease); }
+.tab.on { color: var(--ink); border-bottom: 2px solid var(--accent); border-radius: 0; background: none; }
 
 .rail {
   width: 216px;
@@ -132,7 +160,8 @@ pre {
   padding: 6px 8px;
   border-radius: var(--r);
 }
-.rail-item:hover { background: var(--surface); }
+.rail-item { transition: background 140ms var(--ease); }
+.rail-item:hover { background: var(--surface-2); }
 .rail-item.here { background: var(--surface); border: 1px solid var(--line); }
 .rail-item .dot { grid-area: dot; margin-top: 6px; }
 .rail-text {
@@ -188,6 +217,13 @@ pre {
 
 .bubble {
   text-align: left;
+  transition: border-color 160ms var(--ease), box-shadow 160ms var(--ease), transform 160ms var(--ease);
+}
+.bubble:hover {
+  box-shadow: var(--shadow);
+  transform: translateY(-1px);
+}
+.bubble {
   padding: 14px;
   display: flex;
   flex-direction: column;
@@ -248,6 +284,7 @@ pre {
 .window-meta { display: flex; align-items: center; gap: 10px; }
 
 .question {
+  box-shadow: var(--shadow);
   border: 1px solid var(--wait);
   border-radius: var(--r);
   padding: 13px;
@@ -262,7 +299,7 @@ pre {
 .ev { max-width: 100%; }
 .ev-user {
   align-self: flex-end;
-  background: var(--surface);
+  background: var(--surface-2);
   border: 1px solid var(--line);
   border-radius: var(--r);
   padding: 8px 12px;
@@ -320,6 +357,7 @@ pre {
 }
 .modal {
   background: var(--bg);
+  box-shadow: var(--shadow-lift);
   border: 1px solid var(--line);
   border-radius: var(--r);
   width: 100%;
