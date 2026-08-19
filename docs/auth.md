@@ -90,7 +90,16 @@ web content via `browser_task`, and MCP tool results. Stance:
 - The model may be manipulated by any of them; the mitigation is NOT trusting
   the model's judgment but the tool boundary: write-effect tools carry
   `requires_approval` where consequential, budgets bound the blast radius, and
-  the manifest bounds capability. A hijacked session can waste its budget; it
+  the manifest bounds capability. **The gate cannot ask** — it runs inside tool
+  dispatch, and asking means parking the turn — so BOTH modes are sent to
+  `request_approval`, which parks the session and writes the row the desk, the
+  rail and the window render. An attended human answers in the window; an
+  unattended one answers whenever they next look, and the run resumes at its
+  cursor. Neither mode answers on the human's behalf:
+  `approvals.attended_auto_approve` defaults OFF as of 2026-08-18 (while it was
+  on, every gated call was a silent yes and not one approval row was ever
+  written), and refusing outright — which unattended did — told the model the
+  human declined, so it went looking for another route to the same effect. A hijacked session can waste its budget; it
   cannot exceed its manifest.
 - No secrets in event payloads: tool args are redacted against a denylist
   (tokens, passwords, connection strings) BEFORE `append()` — the log is

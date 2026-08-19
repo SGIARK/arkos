@@ -101,9 +101,18 @@ quotas:
   upload_max_mb: 25               # per file, POST /projects/{id}/files
 
 approvals:
-  # Whether an attended session approves tool calls without prompting.
-  # Unattended sessions refuse the calls this would have approved.
-  attended_auto_approve: true
+  # Whether an attended session approves gated tool calls WITHOUT asking.
+  #
+  # Commented out deliberately (owner, 2026-08-18). While it was on, every
+  # requires_approval call was a silent yes — a calendar invite went to a third
+  # party on the strength of one chat message — and not one approval row was
+  # ever written, so the desk, the rail and the approvals view were all wired to
+  # an empty table. Off, BOTH modes are told to ask with request_approval, which
+  # parks the session and puts a card in front of the human — the unattended one
+  # waits as long as it takes, which is what unattended parking is for.
+  #
+  # Uncomment only to get the old unattended-style behaviour back.
+  # attended_auto_approve: true
 
 llm:
   # OpenAI-compatible endpoint; client.py is an AsyncOpenAI against base_url.

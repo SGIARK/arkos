@@ -619,13 +619,35 @@ class _Sink:
     async def _approve(self, name: str, args: dict[str, Any]) -> bool:
         """Answers a `requires_approval` tool.
 
-        Attended sessions approve automatically while `approvals.attended_auto_approve`
-        is set; unattended sessions refuse.
+        This gate cannot ask anyone: it runs inside tool dispatch, and asking
+        means ending the turn and waking on the answer. So it says which of the
+        two things it means, rather than returning a bare False that the caller
+        renders as "the human declined" — a sentence nobody has any grounds for
+        when nobody was asked.
+
+        Neither mode answers for the human. Both are sent to `request_approval`,
+        which parks the session and writes the row the desk, the rail and the
+        window all render: an attended human answers in the window, an
+        unattended one answers whenever they next look and the run resumes at
+        its cursor. Parking for hours is what unattended parking is for.
+
+        Refusing instead — which is what unattended did — tells the model the
+        human declined, and it goes looking for another route to the same
+        effect. Nobody declined. Nobody was asked.
+
+        `approvals.attended_auto_approve` remains as an escape hatch and now
+        defaults OFF: it turned every gated call into a silent yes, which is why
+        an approval row had never once been written.
         """
-        if self.session.mode == "attended" and bool(_cfg("approvals.attended_auto_approve", True)):
+        if self.session.mode == "attended" and bool(_cfg("approvals.attended_auto_approve", False)):
             return True
-        logger.warning("session %s: %s needs approval and nothing can ask for it yet", self.session.id, name)
-        return False
+        raise ToolUnavailable(
+            "invalid_args",
+            f"{name} needs the human's approval, and this gate cannot ask them. "
+            f"Call request_approval describing exactly what you intend to do and why; "
+            f"the session parks until they answer, and you may call {name} once they agree.",
+            retryable=False,
+        )
 
     def drop_park(self) -> None:
         """Discards a pending park. The question is never written."""

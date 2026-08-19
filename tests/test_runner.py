@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -25,7 +26,7 @@ from harness_module import session_log as slog
 from harness_module.stream import stream
 from model_module import client as mc
 from tests.dbgate import require_db
-from tool_module.envelope import ToolSpec, fail, ok
+from tool_module.envelope import ToolSpec, ToolUnavailable, fail, ok
 
 pytestmark = pytest.mark.asyncio
 
@@ -539,6 +540,51 @@ async def test_a_plain_wake_leaves_the_mode_alone(monkeypatch):
 # --- how an unattended run may and may not end ---------------------------------
 
 
+async def test_an_attended_gate_sends_the_model_to_ask_rather_than_answering_for_the_human():
+    """It used to answer yes on the human's behalf, silently.
+
+    Every requires_approval call was auto-approved while nobody was asked, which
+    is why the approvals table was empty and every surface built on it showed
+    "all caught up". The gate cannot ask from inside tool dispatch, so it says
+    so and names the tool that can.
+    """
+    session = _fake_session(mode="attended")
+
+    with pytest.raises(ToolUnavailable) as raised:
+        await session._approve("mcp_GoogleCalendar_CreateEvent", {"summary": "deep work"})
+
+    assert "request_approval" in raised.value.message
+    assert raised.value.retryable is False
+
+
+async def test_the_escape_hatch_still_works_when_it_is_asked_for(monkeypatch):
+    on = lambda key, default: True if key == "approvals.attended_auto_approve" else default  # noqa: E731
+    monkeypatch.setattr(runner, "_cfg", on)
+    session = _fake_session(mode="attended")
+
+    assert await session._approve("mcp_GoogleCalendar_CreateEvent", {}) is True
+
+
+async def test_an_unattended_gate_asks_too_rather_than_refusing():
+    """It used to return False, which the caller renders as "the human declined"
+    — so the model went looking for another route to the same effect. Nobody
+    declined; nobody was asked. Parking for hours is what unattended parking is
+    for."""
+    session = _fake_session(mode="unattended")
+
+    with pytest.raises(ToolUnavailable) as raised:
+        await session._approve("mcp_GoogleCalendar_CreateEvent", {})
+
+    assert "request_approval" in raised.value.message
+
+
+def _fake_session(mode: str):
+    """A sink with just enough session on it for the approval gate."""
+    sink = runner._Sink.__new__(runner._Sink)
+    sink.session = SimpleNamespace(id="3f1d4a02-0000-4000-8000-0000000000aa", mode=mode)
+    return sink
+
+
 async def test_a_tools_status_reaches_the_stream(model, tools, monkeypatch):
     """The `emit_status` channel, end to end for the first time.
 
@@ -703,12 +749,12 @@ async def test_a_killed_run_resumes_without_repeating_its_side_effect(model, too
 def tiny_window(monkeypatch):
     """A window small enough that a few results overflow it.
 
-    The ceiling sits above the ~1106-token system prompt, which rung 1 cannot clear.
+    The ceiling sits above the ~1313-token system prompt, which rung 1 cannot clear.
     """
 
     def cfg(key, default):
         return {
-            "llm.context_window": 2180,
+            "llm.context_window": 2440,
             "llm.max_tokens": 400,
             "context.recovery_threshold": 0.8,
             "context.chars_per_token": 4,
