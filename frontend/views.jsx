@@ -160,6 +160,81 @@ function ApprovalsView({ onError, pulse }) {
 
 /* ---------- COMPUTER ---------- */
 
+/* Flat paths into a tree. The store keeps `arkos/.git/objects/pack/…` as one
+   string per file, which is the right shape for a tree and the wrong shape for
+   a list: a clone turns the panel into 182 rows of somebody else's repository. */
+function asTree(files) {
+  const root = { dirs: new Map(), files: [] };
+  for (const file of files) {
+    const parts = file.path.split("/");
+    let node = root;
+    for (const dir of parts.slice(0, -1)) {
+      if (!node.dirs.has(dir)) node.dirs.set(dir, { dirs: new Map(), files: [] });
+      node = node.dirs.get(dir);
+    }
+    node.files.push({ ...file, name: parts[parts.length - 1] });
+  }
+  return root;
+}
+
+function countFiles(node) {
+  let n = node.files.length;
+  for (const child of node.dirs.values()) n += countFiles(child);
+  return n;
+}
+
+function Branch({ node, path, depth, open, onToggle, onRead, selected }) {
+  const indent = (d) => ({ paddingLeft: 18 + d * 13 });
+  const dirs = [...node.dirs.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const files = [...node.files].sort((a, b) => a.name.localeCompare(b.name));
+
+  return (
+    <React.Fragment>
+      {dirs.map(([name, child]) => {
+        const full = path ? path + "/" + name : name;
+        const isOpen = open.has(full);
+        return (
+          <React.Fragment key={full}>
+            <div className="cv-entry dir" style={indent(depth)} onClick={() => onToggle(full)}>
+              <span className="nm">
+                <span className="g">{isOpen ? "▾" : "▸"}</span>
+                {name}
+              </span>
+              <span className="sz">{countFiles(child)}</span>
+            </div>
+            {isOpen && (
+              <Branch
+                node={child}
+                path={full}
+                depth={depth + 1}
+                open={open}
+                onToggle={onToggle}
+                onRead={onRead}
+                selected={selected}
+              />
+            )}
+          </React.Fragment>
+        );
+      })}
+      {files.map((file) => (
+        <div
+          className={"cv-entry" + (selected === file.path ? " sel" : "")}
+          key={file.file_id}
+          style={indent(depth)}
+          onClick={() => onRead(file)}
+          title={file.path}
+        >
+          <span className="nm">
+            <span className="g">·</span>
+            {file.name}
+          </span>
+          <span className="sz">{fileSize(file.size)}</span>
+        </div>
+      ))}
+    </React.Fragment>
+  );
+}
+
 /* The filesystem, read from the store rather than from a booted box. The files
    a session works on live here whether or not anything is awake (D27), so this
    view wakes nothing — and what it shows is exactly what the next materialize
@@ -169,6 +244,17 @@ function ComputerView({ onError }) {
   const [projectId, setProjectId] = useState("");
   const [files, setFiles] = useState(null);
   const [open, setOpen] = useState(null);
+  // Directories start closed: a clone is hundreds of files and none of them is
+  // what you came to look at.
+  const [expanded, setExpanded] = useState(() => new Set());
+
+  const toggle = (path) =>
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
 
   useEffect(() => {
     api
@@ -184,6 +270,7 @@ function ComputerView({ onError }) {
     if (!projectId) return;
     setFiles(null);
     setOpen(null);
+    setExpanded(new Set());
     api.files(projectId).then(setFiles).catch(onError);
   }, [projectId, onError]);
 
@@ -216,19 +303,17 @@ function ComputerView({ onError }) {
           <div className="cv-entries">
             {files === null && <div className="cv-entry loading">reading…</div>}
             {files !== null && !files.length && <div className="cv-entry loading">no files in this project</div>}
-            {(files || []).map((f) => (
-              <div
-                className={"cv-entry" + (open && open.path === f.path ? " sel" : "")}
-                key={f.file_id}
-                onClick={() => read(f)}
-              >
-                <span className="nm">
-                  <span className="g">·</span>
-                  {f.path}
-                </span>
-                <span className="sz">{fileSize(f.size)}</span>
-              </div>
-            ))}
+            {files !== null && files.length > 0 && (
+              <Branch
+                node={asTree(files)}
+                path=""
+                depth={0}
+                open={expanded}
+                onToggle={toggle}
+                onRead={read}
+                selected={open ? open.path : null}
+              />
+            )}
           </div>
         </div>
 
