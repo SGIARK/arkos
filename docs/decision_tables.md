@@ -71,7 +71,7 @@ appends a `user` event and wakes at the cursor — it never back-fills a
 | session created, human present | attended | turn-taking; ends its turn → `idle` |
 | human approves the plan / says go | **unattended** | `finish_task` now required; budgets + wall-clock apply; runs without you |
 | `done{...}` on an unattended run | attended | terminal status per the lifecycle table; `mode` flips back in the SAME update |
-| human sends a message while unattended | unattended (unchanged) | steering: appends as a user event, read at the next hop |
+| human sends a message while unattended | unattended (unchanged) | steering: appends as a user event and reaches the stream immediately, but is NOT read by the turn already running — `run_turn` holds the message list the fold built, and nothing re-reads the log between hops. It lands when the next turn folds (gap, carded LG-1.8) |
 
 "A human is the continuation" is a fact about the current mode, not a kind of
 session. Same termination rule (D15), evaluated against `mode`.
@@ -84,6 +84,7 @@ session. Same termination rule (D15), evaluated against `mode`.
 | error, retryable | < 3 | append, continue (the model decides whether to retry) |
 | error, retryable | = 3 | append as permanent failure, continue (model must route around it) |
 | `auth_required` | — | append with the setup URL in content, continue |
+| needs approval, none given | — | `invalid_args` naming `request_approval`; the gate cannot park from inside dispatch, so the model asks and the session parks on THAT call. Never "declined": nobody was asked |
 | `interrupted` | — | never returned by a tool; only synthesized on wake |
 
 ## 4. Model call failed

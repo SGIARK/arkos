@@ -304,7 +304,7 @@ chat plumbing. One error shape everywhere: `{code, message, retryable}`.
 | `GET /sessions/{id}` | — | `{title, project_id, status, hops_used/max, recent_events[]}` |
 | `GET /sessions/{id}/events` | `Last-Event-ID?` | SSE of events, `id:<seq>` each |
 | `POST /sessions` | `{goal, steps?, project_id?}` | `{session_id, project_id}` (new project unless given; `steps` seed the todo list) |
-| `POST /sessions/{id}/messages` | `{text}` | 202 — appended as user event, read next hop |
+| `POST /sessions/{id}/messages` | `{text}` | 202 — appended as a user event. Read when the NEXT turn folds, which for a session already running means after its current turn ends: `run_turn` holds the message list the fold built and nothing re-reads the log between hops (gap, carded LG-1.8) |
 | `POST /sessions/{id}/cancel` | — | 202 |
 | `POST /approvals/{id}/respond` | `{answer}` | 202 — appends event, wakes at cursor |
 | `GET /projects` | — | `[{id, title, status_rollup, updated_at}]` |
@@ -342,6 +342,15 @@ lifecycle, and may sit idle forever. What makes it home is that the app opens it
 by default, which is a routing fact rather than a state one. It does not count
 against `quotas.new_sessions_per_hour` — the server greeting someone should not
 spend the allowance for what they ask for themselves.
+
+**The approval gate asks; it never answers.** `requires_approval` is checked in
+`envelope.execute`, which runs inside tool dispatch and cannot park a turn — so
+it refuses with a message naming `request_approval`, and the model asks properly.
+That parks the session, writes the approvals row, and the desk, the rail and the
+window all render it; the answer wakes the run at its cursor. This holds in both
+modes: an attended human answers in the window, an unattended one answers
+whenever they next look. `approvals.attended_auto_approve` (default OFF) is the
+escape hatch, and turning it on means every gated call is a silent yes.
 
 **Auth on every endpoint above: the session cookie.** httpOnly + Secure +
 SameSite=Lax, set by us after verifying Supabase's JWT once. The browser attaches
@@ -778,9 +787,11 @@ Settled 2026-08-16: **`mcp_*` tools require approval by default.** A remote
 server does not tell us whether a tool mutates. That unknown already resolves
 conservatively for concurrency (`readonly=False`, so writes never batch), and it
 now resolves the same way for consent, rather than being conservative about
-latency and permissive about consequences. Attended runs hardly notice; an
-unattended one is fifteen hops of unsupervised Gmail, Slack, GitHub and Linear
-otherwise, which is the tool class this whole approval surface exists for. Waive
+latency and permissive about consequences. Since 2026-08-18 an attended run notices too: the gate no longer
+answers yes on the human's behalf, so a gated call sends the model to
+`request_approval`, which parks and asks. An unattended run is fifteen hops of
+unsupervised Gmail, Slack, GitHub and Linear otherwise, which is the tool class
+this whole approval surface exists for. Waive
 per server with `mcp_servers.<label>.auto_approve` — `true`, or a list of tool
 names. Loosening a default is a config edit; tightening one after unattended
 runs have been sending mail is an incident.

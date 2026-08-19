@@ -74,7 +74,9 @@ component; the only difference is whether the model is currently driving itself
 - **Observe:** subscribe to any session's event stream, rendered live.
 - **Suggest:** type into any session, exactly like chat. Appended as a user
   event, injected at the next hop; the model decides what to do with it.
-  A suggestion, never a direct action.
+  A suggestion, never a direct action. **Not built for a turn already running
+  (LG-1.8):** the message is appended and streamed, but the running turn never
+  sees it — it lands when the next turn folds.
 - **In-window pause:** `needs_input` renders inline in the window and is
   answered there — not in a separate approval tray.
 - **Deferred (two-way):** human tool takeover, cursor/screen control. Deferring
@@ -306,6 +308,27 @@ them.
 
 Not built, and not asked for: any "fork this to a project" affordance. The home
 chat is where heavy work is discussed; moving it stays future.
+
+## Task LG-1.8: Steering reaches the turn it was typed into
+**Why (found in use, 2026-08-18):** a message sent while a browser_task was
+running — "clone it onto your computer" — appeared in the transcript, was never
+seen by the model, and the run finished answering the previous question. The
+promise is in three documents (contracts' endpoint table, the decision tables,
+the Suggest bullet above) and in none of the code: `runner.fold` builds the
+message list once, `run_turn` mutates it in place across hops, and nothing
+re-reads the log while a turn is in flight.
+**Done when:** between hops, the loop reads events appended since the last one
+it saw and appends any `user` events to `messages` — the same place and shape as
+the finish nudge, honouring the fold's existing rule that a user message landing
+mid-tool-call waits for the results to close. A message arriving after the last
+hop but before `done` is carried by the next turn rather than dropped.
+**NOT this card:** interruption. Steering waits for the current hop; stopping a
+run mid-step is `POST /cancel` and stays that way (owner, 2026-08-18).
+**Touch:** `agent_module/loop.py`, `harness_module/runner.py` | **P1, 0.5d** | **Blockers:** none
+**Test:** a message posted while a turn is running appears in the model's
+messages on the following hop, after the open tool call's result and before the
+next completion; two messages arrive in order; one posted after the last hop is
+read by the next turn.
 
 ## Task LG-2: Projects + Command Center
 **Done when:** `projects`/`project_files` tables; project-per-task default;
