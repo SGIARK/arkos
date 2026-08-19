@@ -35,7 +35,7 @@ before Task 7 deletes the fallback machinery.
 
 This document is the why and the build plan.
 
-**Status:** Tasks 0-8 and 8.1-8.10 done · **LG-1 → 9 → LG-2 → 12**
+**Status:** Tasks 0-8, 8.1-8.10, 9, LG-1 (+1.5-1.8) and LG-2 done · **11.5 → 12**
 (sequencing settled 2026-08-18, see the note at Tasks 10-11) |
 **Author:** John Wallace | **Last updated:** 2026-08-18
 
@@ -1171,6 +1171,86 @@ over curl and finding the rendering problems later anyway. LG-1 is Task 9's
 consumer; it goes first. LG-1's first commit is the two carded stream bugs
 (SSE backlog paging, lifecycle publish-after-commit). Task 12 stays last:
 build tooling and polish, not function.
+
+## Task 11.5: The tool budget — the session chooses what it can reach
+**Why (found in use, 2026-08-19):** connecting a few MCP servers put 164 tool
+schemas in the request and OpenAI refused it — `array too long. Expected an
+array with maximum length 128` — so every turn died at `bad_request` before a
+token was generated, with no diagnosis anywhere near the connection that caused
+it. Nothing in the harness counts tools. contracts has described the answer
+since the first law commit ("MCP tools are the ONLY ones deferred when the
+schema budget is tight") and `load_tools` exists nowhere.
+
+Three costs, not one: the provider's hard cap, the tokens every schema spends on
+every hop (decisive on a 40,960-window self-hosted model, where 164 schemas are
+most of the budget), and selection accuracy — with 38 Slack tools loaded, a
+small model asked to open a GitHub issue reached for `mcp_GoogleCalendar_WhoAmI`.
+
+**Done when:** a session reaches only the servers it has been given. Ours are
+always loaded and never counted against the human's budget; the meter reads
+`enabled / (llm.max_tools - ours)`, so it moves on its own if we add a local
+tool. **The default is ours alone** — a connected server is not a reachable one
+until it is toggled into a session, which is what makes an accidental 400
+impossible rather than unlikely. The system prompt is rebuilt per turn from the
+toggles and names both what is enabled and what is connected but off, so the
+model says "Slack is not enabled in this session" instead of improvising. The
+cap is enforced in `registry.manifest` regardless of what any toggle says: a
+stale set, or a server that grows its tool list overnight, must not be able to
+produce a request the API will reject — which is exactly how 164 appeared
+without anyone changing anything.
+
+**Amended on review (owner, 2026-08-19), two changes before build:**
+
+1. **The prompt is generated from the manifest actually shipped that turn,
+   never from the toggles.** The card's own backstop scenario otherwise
+   reintroduces the prompt-doesn't-match-manifest bug through the emergency
+   exit: a server grows its tool list overnight, the toggles still say
+   "enabled", the manifest truncates to stay under budget — and a prompt built
+   from toggles now promises tools the manifest quietly dropped. And the
+   backstop's drop rule is SPECIFIED, not implied: whole servers only (never a
+   subset of one server's tools), most-recently-enabled first, surfaced as a
+   `status` event in the session and a `system_events` record, so a benched
+   server is a visible fact rather than a mystery.
+2. **The affordance is named:** a per-session tools control in the session
+   window, beside where claims render — they are siblings; a server toggle is a
+   claim in the D29 sense (same default of nothing-until-granted, same
+   visibility rule: the human can always see the session's reach). It shows the
+   meter and per-server toggles; an over-budget toggle is refused with the
+   numbers in the panel, not only at the API; and the model's "X is not enabled
+   in this session" line points at the panel, so the buddy's first
+   "check my Slack" is one click from working rather than a dead end.
+
+Also: `ours < llm.max_tools` joins `assert_coherent`.
+
+**Residue from the stopped first build (2026-08-19):** the initial
+implementation was halted and reverted (its code sits in `git stash@{0}`), but
+migration `0009_session_tools.sql` had already been APPLIED to the dev
+database: an empty `session_tools` table exists and `schema_migrations` has its
+row. Nothing reads it while the code is reverted. When this card builds for
+real, either reuse that migration number/table or clean up first —
+`DROP TABLE session_tools; DELETE FROM schema_migrations WHERE name =
+'0009_session_tools.sql';` — destructive DDL, owner's call, do not leave a
+second tools table beside it.
+
+**Not seeded (owner, 2026-08-19):** existing sessions lose their MCP tools when
+this lands and re-enable them by hand. The new rule is true everywhere
+immediately rather than true for new sessions and grandfathered elsewhere.
+Note this includes every HOME session (LG-1.7): each user's landing chat wakes
+up MCP-less until they toggle servers back in.
+**NOT this card:** `load_tools` self-service. The prompt naming disabled servers
+leaves that door open without designing for it now. (When it comes, the model
+asking to enable a server is naturally an `ask` through the attention
+machinery — a prompt change, not a mechanism.)
+**Touch:** migration, `registry.manifest`, `api.py` + contracts, `prompts.py`,
+`config.yaml`, frontend | **P1, 1d** | **Blockers:** none
+**Test:** a session with nothing enabled gets exactly our tools; enabling a
+server adds only its tools; the manifest never exceeds the budget even when the
+toggles say it should; the prompt names enabled and disabled servers and changes
+between turns when a toggle does — and is generated from the shipped manifest,
+pinned by a test where a server grows past budget overnight, gets benched
+wholly, and that turn's prompt names it unavailable while the human sees why; a
+toggle that would exceed the budget is refused with the numbers in the message
+and in the panel.
 
 ## Task 12: Frontend modernization
 **Done when:** Vite build (production React, no runtime Babel, sub-1s paint);
