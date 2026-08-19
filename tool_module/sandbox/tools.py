@@ -42,6 +42,28 @@ async def _sandbox(ctx: ToolContext):
     return sandbox_manager.manager()
 
 
+def _shell_path(path: str) -> str:
+    """Quote a path for the shell, keeping `~` meaningful.
+
+    Quoting is what keeps a readonly tool readonly: the pattern and path are
+    written by the model and interpolated into a shell line, so unquoted they
+    could word-split or execute — and the loop batches readonly tools in
+    parallel on the promise that they do not mutate anything.
+
+    But `~` IS a shell feature, and quoting is the instruction not to apply
+    shell features. Both cannot be true, and the tilde used to survive into
+    grep as a literal directory name. So a leading `~` becomes `"$HOME"`,
+    expanded by the box's own shell against whatever home that image has, and
+    everything the model wrote stays quoted. Nothing here assumes /home/user:
+    a different template changes the answer without changing this line.
+    """
+    if path == "~":
+        return '"$HOME"'
+    if path.startswith("~/"):
+        return '"$HOME"/' + shlex.quote(path[2:])
+    return shlex.quote(path)
+
+
 def _read_paths(ctx: ToolContext) -> set[str]:
     """Paths read during this turn. `edit_file` requires the file to be among them."""
     return ctx.scratch.setdefault("sandbox_read_paths", set())
@@ -212,11 +234,26 @@ class Grep:
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
         path = args.get("path") or "."
+        # grep's own exit codes carry the difference the caller needs: 0 found
+        # something, 1 found nothing, 2 could not read what it was pointed at.
+        # `2>/dev/null` on its own turned all three into "(no matches)", so a
+        # mistyped path read as a completed search — and the model reasoned from
+        # it. stderr is kept out of the body but the code is not thrown away.
         command = (
-            f"grep -rnI {shlex.quote(args['pattern'])} {shlex.quote(path)} 2>/dev/null | head -{_MAX_MATCHES}"
+            f"grep -rnI {shlex.quote(args['pattern'])} {_shell_path(path)} 2>/dev/null | head -{_MAX_MATCHES}; "
+            f"exit ${{PIPESTATUS[0]}}"
         )
         result = await (await _sandbox(ctx)).exec(ctx.session_id, command)
-        return ok(result["stdout"].strip() or "(no matches)")
+        found = (result.get("stdout") or "").strip()
+        if found:
+            return ok(found)
+        if result.get("exit_code") == 1:
+            return ok(f"(no matches for {args['pattern']!r} under {path})")
+        return fail(
+            "invalid_args",
+            f"grep could not read {path!r}. Check the path exists — list_dir it, and remember that "
+            f"~ is your own home in the sandbox.",
+        )
 
 
 class Glob:
@@ -233,12 +270,24 @@ class Glob:
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
         path = args.get("path") or "."
+        # `find` exits non-zero when it cannot read the tree it was given, which
+        # is the same false negative grep had: no output is not the same answer
+        # as no such directory.
         command = (
-            f"find {shlex.quote(path)} -type f -name {shlex.quote(args['pattern'])} "
-            f"2>/dev/null | head -{_MAX_MATCHES}"
+            f"find {_shell_path(path)} -type f -name {shlex.quote(args['pattern'])} "
+            f"2>/dev/null | head -{_MAX_MATCHES}; exit ${{PIPESTATUS[0]}}"
         )
         result = await (await _sandbox(ctx)).exec(ctx.session_id, command)
-        return ok(result["stdout"].strip() or "(no files)")
+        found = (result.get("stdout") or "").strip()
+        if found:
+            return ok(found)
+        if result.get("exit_code") == 0:
+            return ok(f"(nothing named {args['pattern']!r} under {path})")
+        return fail(
+            "invalid_args",
+            f"find could not read {path!r}. Check the path exists — list_dir it, and remember that "
+            f"~ is your own home in the sandbox.",
+        )
 
 
 TOOLS = [RunCommand(), ReadFile(), WriteFile(), EditFile(), ListDir(), Grep(), Glob()]

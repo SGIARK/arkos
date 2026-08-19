@@ -26,11 +26,14 @@ class FakeSandbox:
         self.keys: list[str] = []
         self.exit_code = 0
         self.stderr = ""
+        # None means "echo the command", which is what most tests assert on.
+        self.stdout: str | None = None
 
     async def exec(self, session_id: str, command: str, timeout: int = 120) -> dict[str, Any]:
         self.keys.append(session_id)
         self.commands.append(command)
-        return {"stdout": "ran: " + command, "stderr": self.stderr, "exit_code": self.exit_code}
+        out = "ran: " + command if self.stdout is None else self.stdout
+        return {"stdout": out, "stderr": self.stderr, "exit_code": self.exit_code}
 
     async def read_file(self, session_id: str, path: str) -> str:
         self.keys.append(session_id)
@@ -216,10 +219,65 @@ async def test_grep_and_glob_quote_what_they_are_given(sandbox):
 
 
 async def test_a_search_with_no_hits_says_so(sandbox):
-    sandbox_result = await _run("grep", {"pattern": "nothing"}, _ctx())
+    sandbox.stdout = ""
+    sandbox.exit_code = 1  # grep: read everything, matched nothing
 
-    assert sandbox_result.ok
-    assert sandbox_result.content
+    result = await _run("grep", {"pattern": "nothing"}, _ctx())
+
+    assert result.ok
+    assert "no matches" in result.content
+
+
+async def test_a_path_that_cannot_be_read_is_not_reported_as_no_matches(sandbox):
+    """The false negative that cost a real diagnosis.
+
+    `2>/dev/null` hid grep's "No such file or directory" and the empty stdout
+    rendered as "(no matches)", so a mistyped path read as a completed search —
+    and the model concluded the thing it was looking for was not in the code.
+    """
+    sandbox.stdout = ""
+    sandbox.exit_code = 2  # grep: could not read what it was pointed at
+
+    result = await _run("grep", {"pattern": "timeout", "path": "/nope"}, _ctx())
+
+    assert result.ok is False
+    assert "/nope" in result.content
+
+
+async def test_a_glob_over_a_missing_directory_is_not_an_empty_tree(sandbox):
+    sandbox.stdout = ""
+    sandbox.exit_code = 1  # find: could not read the tree
+
+    result = await _run("glob", {"pattern": "*.py", "path": "/nope"}, _ctx())
+
+    assert result.ok is False
+    assert "/nope" in result.content
+
+
+async def test_a_home_relative_path_is_expanded_by_the_box_not_by_us(sandbox):
+    """`~` is a shell feature and quoting says "no shell features here", so the
+    tilde used to reach grep as a literal directory name. It is handed to the
+    box's own $HOME instead — nothing here assumes /home/user."""
+    await _run("grep", {"pattern": "timeout", "path": "~/projects/chat/arkos"}, _ctx())
+
+    command = sandbox.commands[-1]
+    assert '"$HOME"/projects/chat/arkos' in command
+    assert "/home/user" not in command, "the home directory is the box's to decide"
+
+
+async def test_the_rest_of_a_home_path_is_still_quoted(sandbox):
+    """Expanding the tilde must not open the door quoting was holding shut."""
+    await _run("grep", {"pattern": "x", "path": "~/notes; rm -rf /"}, _ctx())
+
+    command = sandbox.commands[-1]
+    assert "'notes; rm -rf /'" in command
+    assert command.count("; rm -rf /") == 1, "the path escaped its quotes"
+
+
+async def test_a_bare_tilde_is_the_whole_path(sandbox):
+    await _run("glob", {"pattern": "*.md", "path": "~"}, _ctx())
+
+    assert '"$HOME"' in sandbox.commands[-1]
 
 
 # --- the sandbox itself ------------------------------------------------------------
