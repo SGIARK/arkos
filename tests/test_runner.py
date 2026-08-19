@@ -540,6 +540,143 @@ async def test_a_plain_wake_leaves_the_mode_alone(monkeypatch):
 # --- how an unattended run may and may not end ---------------------------------
 
 
+# --- steering: a message typed while the turn is running ----------------------------
+
+
+async def test_a_message_sent_mid_turn_reaches_the_next_hop(model, tools, monkeypatch):
+    """The gap this card closed.
+
+    A message typed during a run was appended, streamed and watched — and never
+    read, because the turn holds the list the fold built. It arrived after the
+    run was over, answering the question before it.
+    """
+    session_id = await _session()
+
+    def bind(ctx, **kw):
+        async def dispatch(name, args):
+            # The human types while the tool is running.
+            await slog.append(session_id, UserEvent(text="clone it onto your computer", source="human"))
+            return ok("browsed")
+
+        return dispatch
+
+    monkeypatch.setattr(runner.registry, "bind", bind)
+    model.arm(
+        [mc.ToolCallDelta(index=0, id="c1", name="grep", arguments="{}"), mc.Finish(reason="tool_calls")],
+        [mc.TextDelta(text="cloning it now"), mc.Finish(reason="stop")],
+    )
+
+    await runner.start(session_id)
+    task = runner._running.get(session_id)
+    if task is not None:
+        await asyncio.wait_for(asyncio.shield(task), timeout=45)
+
+    second_hop = model.messages_seen[1]
+    assert [m["content"] for m in second_hop if m["role"] == "user"][-1] == "clone it onto your computer"
+
+    # After the result of the call that was open when it was typed, which is the
+    # order the fold applies on replay and the order the API requires.
+    roles = [m["role"] for m in second_hop]
+    assert roles[-2:] == ["tool", "user"]
+
+
+async def test_two_messages_arrive_in_the_order_they_were_typed(model, tools, monkeypatch):
+    session_id = await _session()
+
+    def bind(ctx, **kw):
+        async def dispatch(name, args):
+            await slog.append(session_id, UserEvent(text="first", source="human"))
+            await slog.append(session_id, UserEvent(text="second", source="human"))
+            return ok("done")
+
+        return dispatch
+
+    monkeypatch.setattr(runner.registry, "bind", bind)
+    model.arm(
+        [mc.ToolCallDelta(index=0, id="c1", name="grep", arguments="{}"), mc.Finish(reason="tool_calls")],
+        [mc.TextDelta(text="ok"), mc.Finish(reason="stop")],
+    )
+
+    await runner.start(session_id)
+    task = runner._running.get(session_id)
+    if task is not None:
+        await asyncio.wait_for(asyncio.shield(task), timeout=45)
+
+    said = [m["content"] for m in model.messages_seen[1] if m["role"] == "user"]
+    assert said[-2:] == ["first", "second"]
+
+
+async def test_the_same_message_is_not_delivered_twice(model, tools, monkeypatch):
+    """The cursor advances past everything read, so a three-hop run does not
+    repeat what it was told on the first."""
+    session_id = await _session()
+    posted = {"done": False}
+
+    def bind(ctx, **kw):
+        async def dispatch(name, args):
+            if not posted["done"]:
+                posted["done"] = True
+                await slog.append(session_id, UserEvent(text="only once", source="human"))
+            return ok("done")
+
+        return dispatch
+
+    monkeypatch.setattr(runner.registry, "bind", bind)
+    model.arm(
+        [mc.ToolCallDelta(index=0, id="c1", name="grep", arguments="{}"), mc.Finish(reason="tool_calls")],
+        [mc.ToolCallDelta(index=0, id="c2", name="grep", arguments="{}"), mc.Finish(reason="tool_calls")],
+        [mc.TextDelta(text="done"), mc.Finish(reason="stop")],
+    )
+
+    await runner.start(session_id)
+    task = runner._running.get(session_id)
+    if task is not None:
+        await asyncio.wait_for(asyncio.shield(task), timeout=45)
+
+    third_hop = model.messages_seen[2]
+    assert [m["content"] for m in third_hop if m["role"] == "user"].count("only once") == 1
+
+
+async def test_a_message_after_the_last_hop_is_carried_by_the_next_turn():
+    """Nothing is dropped: it is in the log, and the next fold reads it."""
+    session_id = await _session()
+    await slog.append(session_id, UserEvent(text="are you there", source="human"))
+    await slog.append(session_id, ContentEvent(text="the run answered something else"))
+    await slog.append(session_id, DoneEvent(reason="turn_end"))
+    await slog.append(session_id, UserEvent(text="typed after the run ended", source="human"))
+
+    folded = await runner.fold(await runner.load(session_id))
+
+    assert [m["content"] for m in folded.messages if m["role"] == "user"][-1] == "typed after the run ended"
+    assert folded.last_seq > 0, "steering has nowhere to read from"
+
+
+async def test_the_loop_does_not_re_read_its_own_nudge(model, tools, monkeypatch):
+    """The nudge is a user event with source=system; the loop wrote it and must
+    not be handed it back as something the human said."""
+    session_id = await _session()
+
+    def bind(ctx, **kw):
+        async def dispatch(name, args):
+            await slog.append(session_id, UserEvent(text="a nudge, not a person", source="system"))
+            return ok("done")
+
+        return dispatch
+
+    monkeypatch.setattr(runner.registry, "bind", bind)
+    model.arm(
+        [mc.ToolCallDelta(index=0, id="c1", name="grep", arguments="{}"), mc.Finish(reason="tool_calls")],
+        [mc.TextDelta(text="ok"), mc.Finish(reason="stop")],
+    )
+
+    await runner.start(session_id)
+    task = runner._running.get(session_id)
+    if task is not None:
+        await asyncio.wait_for(asyncio.shield(task), timeout=45)
+
+    assert "a nudge, not a person" not in [m["content"] for m in model.messages_seen[1]]
+
+
 async def test_an_attended_gate_sends_the_model_to_ask_rather_than_answering_for_the_human():
     """It used to answer yes on the human's behalf, silently.
 

@@ -109,6 +109,9 @@ class Folded:
     messages: list[dict[str, Any]]
     hops_used: int
     transform: ViewTransformEvent | None = None
+    # The last event this view contains. Steering reads from here, so a message
+    # that landed between the fold and the first hop is carried, not skipped.
+    last_seq: int = 0
 
 
 def _cleared_text(ref: str) -> str:
@@ -145,6 +148,7 @@ async def fold(session: Session) -> Folded:
     events = await _all_events(session.id)
     memory = _capped_memory(await store.read_memory(session.user_id))
     messages, hops_used = _assemble(session, events, frozenset(), memory)
+    last_seq = events[-1].seq if events else 0
 
     # Rung 0 measures the view; rung 1 clears the oldest results holding a blob ref
     # until it fits. A result with no ref stays, since nothing can read it back.
@@ -152,7 +156,7 @@ async def fold(session: Session) -> Folded:
     threshold = float(_cfg("context.recovery_threshold", 0.8))
     ceiling = int(budget * threshold)
     if ceiling <= 0 or _estimate_tokens(messages) <= ceiling:
-        return Folded(messages, hops_used)
+        return Folded(messages, hops_used, last_seq=last_seq)
 
     cleared: list[str] = []
     for ref in _clearable_refs(events):
@@ -163,7 +167,7 @@ async def fold(session: Session) -> Folded:
 
     if not cleared:
         logger.warning("session %s: the view is over budget and nothing holds a ref to clear", session.id)
-        return Folded(messages, hops_used)
+        return Folded(messages, hops_used, last_seq=last_seq)
 
     if _estimate_tokens(messages) > ceiling:
         # Rung 1 clears results and nothing else, so a view dominated by the system
@@ -174,7 +178,7 @@ async def fold(session: Session) -> Folded:
             session.id,
         )
     logger.info("session %s: cleared %d result(s) from the view", session.id, len(cleared))
-    return Folded(messages, hops_used, ViewTransformEvent(rung=1, dropped_refs=cleared))
+    return Folded(messages, hops_used, ViewTransformEvent(rung=1, dropped_refs=cleared), last_seq=last_seq)
 
 
 def _capped_memory(core: str) -> str:
@@ -188,6 +192,47 @@ def _capped_memory(core: str) -> str:
     if limit <= 0 or len(core) <= limit:
         return core
     return core[:limit].rstrip() + "\n\n[...truncated. Call read_memory for the whole document.]"
+
+
+def _steering(session_id: str, after_seq: int) -> Callable[[], Awaitable[list[str]]]:
+    """Hand the loop whatever the human has said since the last hop.
+
+    A message posted while a turn is running is appended and streamed by the
+    endpoint — it appears in the transcript immediately — but the turn holds the
+    message list the fold built and has no way to see the log. Without this it
+    is invisible until the run is over, which is how "clone it onto your
+    computer" got watched, logged, and never read.
+
+    Reading from the fold's last seq and advancing past everything seen means a
+    message that landed between the fold and the first hop is carried too, and
+    nothing is delivered twice. Only what a human typed: the loop already knows
+    about its own events, and the nudge it injects is its own business.
+
+    This is delivery, never interruption. The message waits for the current hop
+    to finish; stopping a run mid-step is `POST /cancel` (owner, 2026-08-18).
+    """
+    cursor = after_seq
+
+    async def steer() -> list[str]:
+        nonlocal cursor
+        try:
+            fresh = await slog.get_events(session_id, after_seq=cursor, limit=100)
+        except Exception:
+            # A read that fails costs this hop's steering, never the run.
+            logger.exception("session %s: could not read steering messages", session_id)
+            return []
+
+        said: list[str] = []
+        for stored in fresh:
+            cursor = max(cursor, stored.seq)
+            event = stored.event
+            if isinstance(event, UserEvent) and event.source == "human":
+                said.append(event.text)
+        if said:
+            logger.info("session %s: carrying %d steering message(s) into the run", session_id, len(said))
+        return said
+
+    return steer
 
 
 def _clearable_refs(events: list[slog.StoredEvent]) -> list[str]:
@@ -440,6 +485,7 @@ async def _drive(session_id: str) -> None:
             hops_used=hops_used,
             options=_model_options(),
             store_blob=sink.store_blob,
+            steer=_steering(session_id, folded.last_seq),
         ):
             if isinstance(event, DoneEvent) and sink.parked:
                 # The run ended in the same hop that raised a question. The

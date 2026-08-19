@@ -78,6 +78,8 @@ class Budgets:
 
 Dispatch = Callable[[str, dict[str, Any]], Awaitable[ResultEnvelope]]
 StoreBlob = Callable[[str], Awaitable[str]]
+# What the human has said since this was last called. Empty is the common answer.
+Steer = Callable[[], Awaitable[list[str]]]
 
 
 @dataclass(slots=True)
@@ -113,6 +115,7 @@ async def run_turn(
     hops_used: int = 0,
     options: dict[str, Any] | None = None,
     store_blob: StoreBlob | None = None,
+    steer: Steer | None = None,
 ) -> AsyncIterator[Event]:
     """Run one turn to its end, yielding events as they happen.
 
@@ -127,6 +130,10 @@ async def run_turn(
         hops_used: hops already spent, counted from the log across a resume.
         options: per-call model params from config.
         store_blob: stores the full text of an oversized result and returns its ref.
+        steer: returns anything the human has said since it was last asked. Called
+            once per hop, because the turn owns `messages` and cannot see the log:
+            the loop is the brain and the log is the harness's. Without it a
+            message typed during a run is invisible until the run is over.
 
     Yields:
         Events from the vocabulary, ending with exactly one `done`.
@@ -157,6 +164,19 @@ async def run_turn(
         if charged:
             hops_used += 1
             yield BudgetEvent(hops_used=hops_used, hops_max=budgets.max_hops)
+
+        # Anything said since the last hop, injected here and nowhere else: at the
+        # top of a hop every tool result from the previous one is already in
+        # `messages`, so a message typed mid-call lands after the result that was
+        # open when it was typed — which is the ordering the fold applies on
+        # replay, and the ordering the model API requires.
+        #
+        # Not appended as an event: the human's message is already in the log,
+        # put there by the endpoint that accepted it. This only carries it into
+        # the turn already in flight.
+        if steer is not None:
+            for said in await steer():
+                messages.append({"role": "user", "content": said})
 
         hop = _Hop()
         try:

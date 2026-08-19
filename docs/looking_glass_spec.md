@@ -74,9 +74,8 @@ component; the only difference is whether the model is currently driving itself
 - **Observe:** subscribe to any session's event stream, rendered live.
 - **Suggest:** type into any session, exactly like chat. Appended as a user
   event, injected at the next hop; the model decides what to do with it.
-  A suggestion, never a direct action. **Not built for a turn already running
-  (LG-1.8):** the message is appended and streamed, but the running turn never
-  sees it — it lands when the next turn folds.
+  A suggestion, never a direct action. Carried into a turn already running at
+  the top of its next hop (LG-1.8).
 - **In-window pause:** `needs_input` renders inline in the window and is
   answered there — not in a separate approval tray.
 - **Deferred (two-way):** human tool takeover, cursor/screen control. Deferring
@@ -329,6 +328,16 @@ run mid-step is `POST /cancel` and stays that way (owner, 2026-08-18).
 messages on the following hop, after the open tool call's result and before the
 next completion; two messages arrive in order; one posted after the last hop is
 read by the next turn.
+
+**Status: DONE 2026-08-18.** `run_turn` takes a `steer` callback and calls it
+once per hop; `runner._steering` closes over the fold's `last_seq`, reads
+forward, and hands back only what a human typed — the loop keeps no knowledge of
+the log, which is the harness's. Reading from the fold's cursor rather than the
+turn's start means a message that landed between the fold and the first hop is
+carried too, and advancing past everything read means nothing arrives twice.
+Six tests, including the one that has been missing since `f65039b`: the promise
+entered contracts in the first law commit and no version of `loop.py` had ever
+read the log.
 
 ## Task LG-2: Projects + Command Center
 **Done when:** `projects`/`project_files` tables; project-per-task default;

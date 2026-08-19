@@ -304,7 +304,7 @@ chat plumbing. One error shape everywhere: `{code, message, retryable}`.
 | `GET /sessions/{id}` | — | `{title, project_id, status, hops_used/max, recent_events[]}` |
 | `GET /sessions/{id}/events` | `Last-Event-ID?` | SSE of events, `id:<seq>` each |
 | `POST /sessions` | `{goal, steps?, project_id?}` | `{session_id, project_id}` (new project unless given; `steps` seed the todo list) |
-| `POST /sessions/{id}/messages` | `{text}` | 202 — appended as a user event. Read when the NEXT turn folds, which for a session already running means after its current turn ends: `run_turn` holds the message list the fold built and nothing re-reads the log between hops (gap, carded LG-1.8) |
+| `POST /sessions/{id}/messages` | `{text}` | 202 — appended as a user event and read at the next hop, including by a turn already running (LG-1.8). Delivery, never interruption: it waits for the current hop to finish, and stopping a run mid-step is `POST /cancel` |
 | `POST /sessions/{id}/cancel` | — | 202 |
 | `POST /approvals/{id}/respond` | `{answer}` | 202 — appends event, wakes at cursor |
 | `GET /projects` | — | `[{id, title, status_rollup, updated_at}]` |
@@ -342,6 +342,14 @@ lifecycle, and may sit idle forever. What makes it home is that the app opens it
 by default, which is a routing fact rather than a state one. It does not count
 against `quotas.new_sessions_per_hour` — the server greeting someone should not
 spend the allowance for what they ask for themselves.
+
+**Steering reaches the turn it was typed into.** The loop is handed a callback
+once per hop that returns whatever the human has said since it was last asked,
+and appends it to the message list as a `user` turn. It is read at the TOP of a
+hop, so a message typed mid-tool-call lands after the result that was open when
+it was typed — the same ordering the fold applies on replay, and the one the
+model API requires. The loop never reads the log itself: it is the brain, and
+the log is the harness's.
 
 **The approval gate asks; it never answers.** `requires_approval` is checked in
 `envelope.execute`, which runs inside tool dispatch and cannot park a turn — so

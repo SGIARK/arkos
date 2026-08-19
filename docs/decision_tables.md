@@ -71,7 +71,7 @@ appends a `user` event and wakes at the cursor — it never back-fills a
 | session created, human present | attended | turn-taking; ends its turn → `idle` |
 | human approves the plan / says go | **unattended** | `finish_task` now required; budgets + wall-clock apply; runs without you |
 | `done{...}` on an unattended run | attended | terminal status per the lifecycle table; `mode` flips back in the SAME update |
-| human sends a message while unattended | unattended (unchanged) | steering: appends as a user event and reaches the stream immediately, but is NOT read by the turn already running — `run_turn` holds the message list the fold built, and nothing re-reads the log between hops. It lands when the next turn folds (gap, carded LG-1.8) |
+| human sends a message while unattended | unattended (unchanged) | steering: appends as a user event, reaches the stream immediately, and is carried into the running turn at the top of the next hop (LG-1.8). Never mid-hop: the current tool call finishes first |
 
 "A human is the continuation" is a fact about the current mode, not a kind of
 session. Same termination rule (D15), evaluated against `mode`.
