@@ -1078,6 +1078,53 @@ machine has no browser and could not install one. Run it before trusting a
 browser run in production. Custom actions (the old `browser_actions`) were not
 rebuilt: nothing in the card asked for them.
 
+**CORRECTION, 2026-08-18 (owner) — the rebuild dropped the browser's actual
+architecture, and the fix is carded here.** "Rebuilt against contracts, not
+against the deleted files" was followed literally, and contracts never said
+WHERE the browser runs — so the rebuild constructs `Agent(...)` with no browser
+at all, which would launch a local Chromium on the uvicorn host. The real
+architecture was in the deleted file: **the browser runs in the Browserless
+container (docker-compose, untouched throughout), and the app reaches it ONLY
+over CDP.** Five changes, approved:
+
+1. Port from `git show 31194a7^:tool_module/browser_tool.py`: CDP connection
+   (`cdp_url` + `is_local=False`) with `_augment_cdp_url`'s stealth params
+   intact. URL from `browser.cdp_url` in the `browser:` block, defaulted from
+   `${BROWSERLESS_URL}`. **Unset = loud refusal** (clear envelope,
+   `retryable=False`), never a local launch — a browser beside the harness's
+   credentials is a different architecture, not a degraded mode.
+2. Port the CDP `Page.startScreencast` frame capture verbatim, replacing the
+   guessed accessors.
+3. Step streaming stays as built (one `status{label}` per inner step,
+   "step N/M · action · goal", capped; full record behind the result `ref`; no
+   per-step tool_call/reasoning events) — `browser_task` is `ctx.emit_status`'s
+   FIRST real consumer, so the channel test (a tool's emit_status arrives over
+   SSE) lands here.
+4. **Feed the existing canvas; do not rebuild it.** `lookingglass.jsx` already
+   has the full right panel (`.ctx-panel`: TODO readout, files/browser tabs
+   with activity dot, `BrowserCanvas`). The contract is wire-shape: the
+   `status` event carries the stream URL (that is what lights the dot — from
+   the EVENT stream, not the tool result, so `Last-Event-ID` replay
+   reconstructs panel state), and the frames endpoint serves SSE events named
+   `frame` with `{"jpeg": "<base64>"}`. A shape disagreement is fixed in the
+   backend, not the panel.
+5. Contracts' browser section gains the missing sentence (browser runs in the
+   Browserless container; reached only over CDP via `browser.cdp_url`; unset
+   is a refusal, not a fallback) — the gap that caused this. CLAUDE.md gains
+   the lesson, second occurrence (SettingsModal was the first): deleted code is
+   still documentation; rebuilds read the deleted file in git history for
+   wiring facts contracts does not carry.
+
+**Correction tests:** unset `browser.cdp_url` → refusal envelope, no Chromium
+spawned; emit_status channel test; frames endpoint rejects a foreign cookie;
+end-to-end with the container up: ordered step events, `frame` events in the
+canvas's shape, real envelope with pageable `ref`, graceful-stop at deadline.
+**Acceptance, human-visible:** during a run — live step lines under the tool
+row, the browser tab's dot lights without stealing focus, the expanded panel
+shows the live browser while steps tick, reload mid-run reconstructs the lit
+dot from replay; after — canvas back to empty, result card with `ref`,
+`read_result` pages the step history.
+
 **Folded in 2026-08-16 — registration was missing from the done-when.** Every
 other item above leashes a browser the model cannot currently reach:
 `register_browser_tool()` (`browser_tool.py:365-389`) calls

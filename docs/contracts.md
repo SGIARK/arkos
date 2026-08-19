@@ -470,6 +470,10 @@ vault+proxy — creds never in brain or sandbox); `tool_module/browser/`
 (e2b manager + sandbox toolset, moved from computer_module; lazy provision on
 first sandbox-tool call).
 
+**The browser runs in the Browserless container (docker-compose); the app
+reaches it ONLY over CDP via `browser.cdp_url`; the tool never launches a local
+browser, and an unset URL is a loud refusal, not a fallback.**
+
 Browser contract, precisely: progress = ordinary `status{label}` events in the
 session stream (wired via browser_use's `register_new_step_callback`); video
 frames are NOT events — they stay an ephemeral side-channel, keyed by

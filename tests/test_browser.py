@@ -97,8 +97,13 @@ def _ctx(**kw):
 
 
 def _with_agent(monkeypatch, **agent_kw):
-    """Substitute the vendor with a fake, at the one seam built for it."""
+    """Substitute the vendor with a fake, at the one seam built for it.
+
+    The container url is faked too: every path below the guard assumes one, and
+    the guard itself has its own test above.
+    """
     made = {}
+    monkeypatch.setattr(browser_tool, "cdp_url", lambda: "ws://browserless:3000", raising=False)
 
     def factory():
         def build(run):
@@ -120,6 +125,61 @@ async def test_browser_task_is_in_the_manifest():
 
     assert "browser_task" in specs
     assert specs["browser_task"].readonly is False, "it acts on the web as the signed-in user"
+
+
+# --- where the browser is -----------------------------------------------------------
+
+
+async def test_no_cdp_url_is_a_loud_refusal_and_launches_nothing(monkeypatch):
+    """A browser beside the harness's credentials is a different architecture.
+
+    So an unset url refuses rather than falling back to a local Chromium: the
+    process holding the user's cookies and the store's secret key does not get
+    to run pages the model picked.
+    """
+    made = _with_agent(monkeypatch)
+    monkeypatch.setattr(browser_tool, "cdp_url", lambda: "")
+
+    result = await registry.dispatch("browser_task", {"task": "go and look"}, _ctx())
+
+    assert result.ok is False
+    assert result.retryable is False, "there is nothing the model can retry about a missing container"
+    assert "browser.cdp_url" in result.content and "BROWSERLESS_URL" in result.content
+    assert "agent" not in made, "a browser was built without a container to build it against"
+
+
+async def test_the_container_url_carries_the_stealth_parameter():
+    """Ported from the deleted implementation: Browserless reads it off the query
+    string, and losing it is the difference between pages loading and bot walls."""
+    assert browser_tool._augment_cdp_url("ws://browserless:3000") == "ws://browserless:3000?stealth=true"
+    assert browser_tool._augment_cdp_url("ws://b:3000?token=x&stealth=true").endswith("stealth=true")
+
+
+async def test_stealth_can_be_turned_off_by_the_environment(monkeypatch):
+    monkeypatch.setenv("BROWSER_USE_STEALTH", "0")
+
+    assert browser_tool._augment_cdp_url("ws://browserless:3000") == "ws://browserless:3000"
+
+
+async def test_the_url_falls_back_to_the_environment(monkeypatch):
+    """config.yaml keeps it literal, because an unset ${VAR} there fails config load
+    for the whole app rather than for one tool."""
+    monkeypatch.setattr(browser_tool, "_cfg", lambda key, default: "" if key == "browser.cdp_url" else default)
+    monkeypatch.setenv("BROWSERLESS_URL", "ws://browserless:3000")
+
+    assert browser_tool.cdp_url() == "ws://browserless:3000"
+
+
+async def test_a_kwarg_the_vendor_hides_behind_kwargs_is_still_passed():
+    """cdp_url is absent from some versions' signatures and swallowed by **kwargs
+    in others; dropping it would silently launch a local browser."""
+
+    def browser_without_it(is_local=False):
+        return None
+
+    kept = browser_tool._accepted(browser_without_it, {"cdp_url": "ws://x", "is_local": False}, keep={"cdp_url"})
+
+    assert kept["cdp_url"] == "ws://x"
 
 
 # --- progress is events, never silence ----------------------------------------------

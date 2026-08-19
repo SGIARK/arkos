@@ -24,11 +24,19 @@ recreate the file.
 api · runner · store · workspace · leases · lifecycle · approvals · session_log ·
 system_log · stream · hands · jwt_utils.
 
-**There is no browser code right now.** Task 8.10 deleted the pre-redesign
-`browser_tool.py`, `browser_actions.py`, `browser_stream.py` and
-`browser_routes.py` — they were written against APIs Task 3 removed and were
-reachable from no import path. Task 9 rebuilds against `contracts.md`, not from
-those files; they are in `git log`, not in the tree.
+**Deleted code is still documentation.** When rebuilding something 8.10 removed,
+read the deleted implementation in git history for operational facts contracts
+does not carry — connection URLs, protocol choices, hard-won workarounds.
+Contracts states the invariants; the old code knows the wiring. (Task 9 was
+rebuilt "against contracts, not those files" and silently lost the Browserless
+CDP connection, because no document said where the browser runs.)
+
+**The browser is `tool_module/browser/`** (Task 9), and it runs in the
+browserless container from `docker-compose.yml` — reached only over CDP at
+`browser.cdp_url`, defaulting from `BROWSERLESS_URL`. It never launches a
+browser in the harness process. The pre-redesign `browser_tool.py`,
+`browser_actions.py`, `browser_stream.py` and `browser_routes.py` are deleted
+(8.10); they are in `git log` and are still worth reading for wiring.
 
 Where the live code is: `agent_module/loop.py` (the one loop),
 `model_module/client.py` (the one model client), `tool_module/`

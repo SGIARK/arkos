@@ -26,8 +26,10 @@ import asyncio
 import inspect
 import json
 import logging
+import os
 import time
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from config_module.loader import config
 from tool_module.browser.stream import broker
@@ -74,6 +76,20 @@ class BrowserTask:
         if ctx.session_id is None:
             raise ToolUnavailable("invalid_args", "The browser is only available inside a session.", retryable=False)
 
+        where = cdp_url()
+        if not where:
+            # Loud, and not retryable: there is nothing the model can do about a
+            # container that is not running, and quietly launching a browser in
+            # this process instead would put a page-executing Chromium beside
+            # the harness's credentials.
+            return fail(
+                "upstream_error",
+                "The browser container is not reachable: browser.cdp_url is unset (it defaults from "
+                "BROWSERLESS_URL). Start the browserless service from docker-compose and set it. "
+                "This tool never launches a browser on the harness host.",
+                retryable=False,
+            )
+
         # The browser is shared per user and keeps its profile between calls, so
         # it is leased rather than capped (contracts' resource table).
         if ctx.lease is not None:
@@ -86,7 +102,7 @@ class BrowserTask:
 
         budget = float(_cfg("browser.wall_clock_s", 300))
         backstop = float(_cfg("browser.hard_timeout_s", budget + 30))
-        run = _Run(task=task, start_url=args.get("start_url"), ctx=ctx, budget=budget)
+        run = _Run(task=task, start_url=args.get("start_url"), ctx=ctx, budget=budget, url=where)
 
         try:
             async with asyncio.timeout(backstop):
@@ -104,6 +120,7 @@ class BrowserTask:
             logger.exception("browser run failed in session %s", ctx.session_id)
             return fail("upstream_error", f"The browser run failed: {type(e).__name__}: {e}", retryable=True)
         finally:
+            await run.close()
             if ctx.emit_status is not None:
                 ctx.emit_status("the browser is done")
 
@@ -113,11 +130,13 @@ class BrowserTask:
 class _Run:
     """One browser run, and the leash held on it."""
 
-    def __init__(self, task: str, start_url: str | None, ctx: ToolContext, budget: float):
+    def __init__(self, task: str, start_url: str | None, ctx: ToolContext, budget: float, url: str = ""):
         self.task = task
         self.start_url = start_url
         self.ctx = ctx
         self.budget = budget
+        self.cdp_url = url
+        self.browser: Any = None
         self.started = time.monotonic()
         self.out_of_time = False
         self.steps = 0
@@ -167,6 +186,17 @@ class _Run:
         if frame:
             broker.publish(user_id, session_id, frame)
 
+    async def close(self) -> None:
+        """Give the container's session back. A leaked session holds a slot in the pool."""
+        if self.browser is None:
+            return
+        try:
+            closing = self.browser.close()
+            if inspect.isawaitable(closing):
+                await closing
+        except Exception:  # noqa: BLE001 - the run is over; a failed close is a log line
+            logger.exception("could not close the browser session for %s", self.ctx.session_id)
+
     def partial(self) -> Any:
         """Whatever the agent recorded before the backstop fired."""
         return getattr(self._agent, "history", None)
@@ -187,29 +217,57 @@ def _agent_factory() -> Any:
     return _build_browser_use_agent
 
 
+def cdp_url() -> str:
+    """Where the browser is. It is a container, and it is never this process.
+
+    The browser executes pages the model chose, and this process holds the
+    user's session cookies, the store's secret key and the model's context. A
+    browser launched beside them is a different architecture with a different
+    blast radius, not a degraded mode — so an unset URL refuses rather than
+    falling back to a local Chromium.
+    """
+    return str(_cfg("browser.cdp_url", "") or os.environ.get("BROWSERLESS_URL", "")).strip()
+
+
+def _augment_cdp_url(url: str) -> str:
+    """Append `stealth=true` to the CDP URL unless stealth is disabled.
+
+    Ported verbatim from the implementation 8.10 deleted: Browserless reads it
+    off the query string, and losing it is the difference between pages loading
+    and pages serving a bot wall.
+    """
+    if os.environ.get("BROWSER_USE_STEALTH", "1") == "0":
+        return url
+    parts = urlparse(url)
+    query = dict(parse_qsl(parts.query))
+    if query.get("stealth") == "true":
+        return url
+    query["stealth"] = "true"
+    return urlunparse(parts._replace(query=urlencode(query)))
+
+
 def _build_browser_use_agent(run: _Run) -> Any:
-    """Construct `browser_use`'s Agent for this run, dropping nothing in silence."""
-    from browser_use import Agent  # noqa: PLC0415 - lazy on purpose; see the module docstring
+    """Construct `browser_use`'s Agent against the Browserless container."""
+    from browser_use import Agent, Browser, ChatOpenAI  # noqa: PLC0415 - lazy; see the module docstring
+
+    wiring = {"cdp_url": _augment_cdp_url(run.cdp_url), "is_local": False}
+    browser = Browser(**_accepted(Browser, wiring, keep={"cdp_url"}))
+    run.browser = browser
 
     wanted: dict[str, Any] = {
         "task": run.task if not run.start_url else f"{run.task}\n\nStart at: {run.start_url}",
-        "llm": _llm(),
+        "llm": ChatOpenAI(
+            model=str(_cfg("browser.model", _cfg("llm.model_name", "gpt-4.1-mini"))),
+            base_url=str(_cfg("llm.base_url", "")) or None,
+            api_key=str(_cfg("llm.api_key", "")) or None,
+        ),
+        "browser": browser,
         "register_new_step_callback": run.on_step,
     }
-    return Agent(**_accepted(Agent, wanted))
+    return Agent(**_accepted(Agent, wanted, keep={"task", "llm", "browser"}))
 
 
-def _llm() -> Any:
-    """The model the browser specialist thinks with, from our own llm config."""
-    from browser_use.llm import ChatOpenAI  # noqa: PLC0415 - lazy, as above
-
-    return ChatOpenAI(
-        model=str(_cfg("browser.model", _cfg("llm.model_name", "gpt-4.1-mini"))),
-        base_url=str(_cfg("llm.base_url", "")) or None,
-    )
-
-
-def _accepted(target: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+def _accepted(target: Any, kwargs: dict[str, Any], keep: set[str] | None = None) -> dict[str, Any]:
     """Keep the kwargs this version of the vendor accepts, and say what was dropped.
 
     A version bump that renames `register_new_step_callback` would otherwise
@@ -223,7 +281,11 @@ def _accepted(target: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
     if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
         return kwargs
 
-    kept = {k: v for k, v in kwargs.items() if k in parameters}
+    # `keep` names what the call cannot be made without. `cdp_url` in particular
+    # is swallowed by **kwargs on some versions and absent from the signature on
+    # others, and dropping it would silently launch a local browser.
+    required = keep or set()
+    kept = {k: v for k, v in kwargs.items() if k in parameters or k in required}
     dropped = sorted(set(kwargs) - set(kept))
     if dropped:
         logger.warning(

@@ -53,6 +53,18 @@ store:
 browser:
   # The rented specialist (browser_task). One section, so a knob is never in two
   # places: the model it thinks with defaults to the session model above.
+  #
+  # WHERE THE BROWSER IS. It runs in the browserless container from
+  # docker-compose and is reached only over CDP. The tool never launches a
+  # browser in the harness process — that would put a Chromium executing
+  # model-chosen pages beside the user's cookies and the store's secret key —
+  # so an unset url is a refusal, not a fallback.
+  # Left literal and empty rather than "${BROWSERLESS_URL}": an unset ${VAR} in
+  # this file raises at config LOAD, so a machine with no browser container
+  # would fail to start the whole app instead of failing one tool. Set this, or
+  # set BROWSERLESS_URL in the environment — the tool reads this first and falls
+  # back to the variable. Same reasoning as the Supabase and e2b keys.
+  cdp_url: ""
   headless: true
   max_steps: 25                   # the vendor's own cap on how many steps it plans
   wall_clock_s: 240               # at this point it is ASKED to stop, keeping partial results
