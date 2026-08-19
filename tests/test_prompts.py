@@ -35,7 +35,13 @@ def test_the_prompt_says_whose_computer_it_is():
 
     assert "sudo apt-get" in prompt, "the model has no idea it may install things"
     assert "not the user's machine" in prompt
-    assert "~/projects" in prompt, "the durable half of the disk is undocumented"
+    assert "~/projects/<project>/ is the ONLY durable path" in prompt
+
+    # The first version of this section said "everything OUTSIDE ~/projects is
+    # scratch", and the model read it exactly as written: it cloned a repo to
+    # ~/projects/arkos, a sibling of the mount, where flush never looks and the
+    # reaper takes it with the box. Only the claimed directories are swept.
+    assert "including any new directory you create under" in prompt.lower()
 
 
 def test_the_same_session_builds_the_same_prompt_forever():

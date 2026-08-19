@@ -703,12 +703,12 @@ async def test_a_killed_run_resumes_without_repeating_its_side_effect(model, too
 def tiny_window(monkeypatch):
     """A window small enough that a few results overflow it.
 
-    The ceiling sits above the ~1035-token system prompt, which rung 1 cannot clear.
+    The ceiling sits above the ~1106-token system prompt, which rung 1 cannot clear.
     """
 
     def cfg(key, default):
         return {
-            "llm.context_window": 2090,
+            "llm.context_window": 2180,
             "llm.max_tokens": 400,
             "context.recovery_threshold": 0.8,
             "context.chars_per_token": 4,

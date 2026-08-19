@@ -343,6 +343,15 @@ Not built: project memory as a third canvas (D8 — a tab for a feature that is
 not in the product), and the human tool takeover the card defers by design.
 Still unrendered: no browser has run any of this.
 
+**Deferred (owner, 2026-08-18): the computer view stays per-project.** It lists
+the STORE — `GET /projects/{id}/files` — so its dropdown offers projects and
+nothing else, and anything the box holds outside a claimed mount is invisible to
+it. That is the whole durable filesystem, so it is the right default. Letting it
+walk the sandbox disk itself is a later card: it needs HTTP over the box
+(`list_dir` and `read_file` exist as model tools, not as endpoints), and it
+would show a filesystem that dies with the session beside one that does not,
+which wants a deliberate design rather than a second dropdown entry.
+
 ### Build decomposition (tracking tasks)
 Backend: per-session SSE stream · session snapshot · steer/pause-cancel/read_result
 endpoints · projects overview + project-per-task · project files/upload.
