@@ -1069,6 +1069,26 @@ someone is actually watching. `browser_task` is in the manifest, which is the
 half the old one never had. Config collapsed to one `browser:` section, with a
 coherence check that the backstop sits outside the graceful stop.
 
+**Corrected 2026-08-18 — the architecture was lost and is restored.** The first
+rebuild passed no browser to `browser_use`, which means it would have launched
+Chromium inside the harness process, beside the user's cookies and the store's
+secret key. The browser runs in the **browserless container** and is reached
+only over CDP at `browser.cdp_url` (defaulting from `BROWSERLESS_URL`); an unset
+url is a loud, non-retryable refusal rather than a local launch. `stealth=true`
+on the CDP url is carried through, and frames come from `Page.startScreencast`
+again — keyed `(user, session)` this time, which is the one thing the old
+implementation got wrong. Inner steps now stream as `status{label}` events
+("step 3/25 · click_element · open the pricing page", capped), with the full
+step record in the result's ref blob for `read_result` to page; no per-step
+tool_call or reasoning events, so the inner loop stays behind the one
+`browser_task` boundary. `ctx.emit_status` had no consumer and no test until
+this card; it has both now.
+
+`browser.cdp_url` is a literal empty string in config.yaml rather than
+`"${BROWSERLESS_URL}"`: an unset `${VAR}` there raises at config LOAD, so a
+machine without the container would fail to start the whole app instead of
+failing one tool. The tool reads the config key first and the variable second.
+
 **What is NOT proven:** the vendor calls. 16 tests fake `browser_use` to prove
 the leash, and a mock encodes what we believe the API is, so believing it twice
 proves nothing. `tests/test_browser_integration.py` is the one that asks the

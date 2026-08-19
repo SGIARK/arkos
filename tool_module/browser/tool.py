@@ -23,6 +23,7 @@ starts, the manifest builds and every other tool works without them installed.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import json
 import logging
@@ -111,7 +112,7 @@ class BrowserTask:
             # The graceful stop was ignored. Whatever the run recorded before
             # the backstop fired is still worth reporting.
             logger.warning("browser run in session %s ignored its stop and hit the backstop", ctx.session_id)
-            return await _envelope(run.partial(), ctx, stopped="hard")
+            return await _envelope(run.partial(), ctx, stopped="hard", steps=run.history_lines)
         except ImportError as e:
             raise ToolUnavailable(
                 "upstream_error", f"The browser is not installed on this host: {e}", retryable=False
@@ -124,7 +125,9 @@ class BrowserTask:
             if ctx.emit_status is not None:
                 ctx.emit_status("the browser is done")
 
-        return await _envelope(history, ctx, stopped="deadline" if run.out_of_time else None)
+        return await _envelope(
+            history, ctx, stopped="deadline" if run.out_of_time else None, steps=run.history_lines
+        )
 
 
 class _Run:
@@ -140,23 +143,35 @@ class _Run:
         self.started = time.monotonic()
         self.out_of_time = False
         self.steps = 0
-        self._last_frame = 0.0
+        self.max_steps = int(_cfg("browser.max_steps", 25))
+        # Every step as it happened, for the ref blob the label truncates.
+        self.history_lines: list[dict[str, Any]] = []
         self._agent: Any = None
 
     def elapsed(self) -> float:
         return time.monotonic() - self.started
 
     async def on_step(self, *a: Any, **kw: Any) -> None:
-        """Report a step, send a frame if anyone is watching, and enforce the budget.
+        """Report a step and enforce the budget.
+
+        One `status` event per inner step, which is what makes a three-minute
+        browser call legible instead of a frozen row. The label is capped and
+        the full record goes to the result's ref blob, so `read_result` pages
+        what the label had to cut.
+
+        No per-step tool_call or reasoning events: the inner loop stays behind
+        the one `browser_task` boundary, and a transcript that interleaved its
+        thinking with the outer loop's would be a different contract.
 
         Asked, not killed: an agent told to stop finishes its step and returns
         the history it has, which is a partial answer. A cancelled coroutine
         returns nothing at all.
         """
         self.steps += 1
+        record = _step_record(self.steps, self.max_steps, a, kw)
+        self.history_lines.append(record)
         if self.ctx.emit_status is not None:
-            self.ctx.emit_status(f"browsing · step {self.steps}")
-        await self.show()
+            self.ctx.emit_status(_step_label(record))
         if self.elapsed() >= self.budget and not self.out_of_time:
             self.out_of_time = True
             logger.info("browser run in session %s reached its budget; asking it to stop", self.ctx.session_id)
@@ -165,26 +180,6 @@ class _Run:
                 result = stop()
                 if inspect.isawaitable(result):
                     await result
-
-    async def show(self) -> None:
-        """Push one frame, if anyone is watching and it is time for another.
-
-        Nothing is captured for an audience that is not there: a run nobody
-        opened pays nothing for video. A vendor that will not give us a
-        screenshot costs the pane, not the run.
-        """
-        user_id, session_id = self.ctx.user_id, self.ctx.session_id
-        if session_id is None or not broker.watching(user_id, session_id):
-            return
-        interval = float(_cfg("browser.frame_interval_s", 1.0))
-        now = time.monotonic()
-        if now - self._last_frame < interval:
-            return
-        self._last_frame = now
-
-        frame = await _screenshot(self._agent)
-        if frame:
-            broker.publish(user_id, session_id, frame)
 
     async def close(self) -> None:
         """Give the container's session back. A leaked session holds a slot in the pool."""
@@ -204,8 +199,19 @@ class _Run:
     async def execute(self) -> Any:
         agent_factory = _agent_factory()
         self._agent = agent_factory(self)
-        result = self._agent.run(max_steps=int(_cfg("browser.max_steps", 25)))
-        return await result if inspect.isawaitable(result) else result
+
+        # Frames flow while the run runs, and stop with it. Nobody watching
+        # costs nothing: the broker drops what no subscriber holds.
+        self._screencast = asyncio.create_task(
+            run_screencast(self._agent, self.ctx.user_id, str(self.ctx.session_id))
+        )
+        try:
+            result = self._agent.run(max_steps=self.max_steps)
+            return await result if inspect.isawaitable(result) else result
+        finally:
+            self._screencast.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._screencast
 
 
 def _agent_factory() -> Any:
@@ -296,7 +302,9 @@ def _accepted(target: Any, kwargs: dict[str, Any], keep: set[str] | None = None)
     return kept
 
 
-async def _envelope(history: Any, ctx: ToolContext, stopped: str | None = None) -> ResultEnvelope:
+async def _envelope(
+    history: Any, ctx: ToolContext, stopped: str | None = None, steps: list[dict[str, Any]] | None = None
+) -> ResultEnvelope:
     """Build the tool result from the run's own history.
 
     `ok` is the run's verdict, not ours, and a failure says what went wrong. The
@@ -318,6 +326,8 @@ async def _envelope(history: Any, ctx: ToolContext, stopped: str | None = None) 
         "errors": errors,
         "steps": len(_call(history, "model_actions") or []),
         "stopped": stopped,
+        # What the status labels had to cut, in full and in order.
+        "step_history": steps or [],
     }
     ref = None
     if ctx.store_blob is not None:
@@ -339,45 +349,123 @@ async def _envelope(history: Any, ctx: ToolContext, stopped: str | None = None) 
     return ok(body, ref=ref)
 
 
-async def _screenshot(agent: Any) -> str | None:
-    """A base64 JPEG of what the browser is looking at, or None.
-
-    The vendor has moved this between objects across versions, so the accessors
-    are tried in order and a miss is reported once at WARNING rather than
-    raising: losing the picture must never lose the run. Same reasoning as the
-    dropped-kwarg warning above — silence is the thing being outlawed, not
-    breakage.
-    """
-    global _screenshot_warned
-    for owner_name, method_name in (
-        ("browser_session", "take_screenshot"),
-        ("browser_context", "take_screenshot"),
-        ("browser", "take_screenshot"),
-    ):
-        owner = getattr(agent, owner_name, None)
-        method = getattr(owner, method_name, None) if owner is not None else None
-        if not callable(method):
-            continue
+async def _wait_for_target(agent: Any, timeout_s: float = 10.0) -> bool:
+    """Wait until browser_use has focused a real Chromium target to screencast."""
+    for _ in range(int(timeout_s / 0.1)):
         try:
-            shot = method()
-            if inspect.isawaitable(shot):
-                shot = await shot
-        except Exception:  # noqa: BLE001 - a failed picture is not a failed run
-            logger.debug("browser screenshot via %s.%s raised", owner_name, method_name, exc_info=True)
-            return None
-        return shot if isinstance(shot, str) else None
+            if agent.browser_session.agent_focus_target_id:
+                return True
+        except AttributeError:
+            return False
+        await asyncio.sleep(0.1)
+    return False
 
-    if not _screenshot_warned:
-        _screenshot_warned = True
-        logger.warning(
-            "this browser_use version exposes no take_screenshot we know of; "
-            "the frame pane will stay empty while runs still work"
+
+async def run_screencast(agent: Any, user_id: str, session_id: str) -> None:
+    """Stream CDP screencast frames from the focused page to the broker.
+
+    Ported from the implementation 8.10 deleted, with the key changed: frames go
+    to (user, session) rather than to the user alone, so two of one user's
+    sessions browsing at once no longer clobber each other's picture.
+
+    Any failure logs and exits: losing the video must never lose the run.
+    """
+    if not await _wait_for_target(agent):
+        logger.info("no agent target within timeout; skipping the screencast")
+        return
+
+    try:
+        session = agent.browser_session
+        cdp_session = await session.get_or_create_cdp_session(target_id=None, focus=False)
+    except Exception:  # noqa: BLE001 - a run without video is still a run
+        logger.exception("could not acquire a CDP session for the screencast")
+        return
+
+    target_session_id = cdp_session.session_id
+
+    def _on_frame(event: dict[str, Any], frame_session: Any = None) -> None:
+        # Only our target: the shared cdp_client fires for every one of them.
+        if frame_session is not None and frame_session != target_session_id:
+            return
+        data = event.get("data")
+        if data:
+            broker.publish(user_id, session_id, data)
+        acked = event.get("sessionId")
+        if acked is not None:
+            asyncio.create_task(_ack(cdp_session, acked))
+
+    try:
+        session.cdp_client.register.Page.screencastFrame(_on_frame)
+        await cdp_session.cdp_client.send.Page.startScreencast(
+            params={"format": "jpeg", "quality": 60, "maxWidth": 1024, "maxHeight": 768, "everyNthFrame": 1},
+            session_id=target_session_id,
         )
-    return None
+    except Exception:  # noqa: BLE001 - as above
+        logger.exception("could not start the screencast")
+        return
+
+    try:
+        # Alive until the run's finally block cancels it.
+        while True:
+            await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+        with contextlib.suppress(Exception):
+            await cdp_session.cdp_client.send.Page.stopScreencast(params={}, session_id=target_session_id)
+        raise
 
 
-# Warned once per process: a version mismatch is one fact, not one per step.
-_screenshot_warned = False
+async def _ack(cdp_session: Any, frame_session_id: int) -> None:
+    """Acknowledge a frame, or the browser stops sending them."""
+    with contextlib.suppress(Exception):
+        await cdp_session.cdp_client.send.Page.screencastFrameAck(
+            params={"sessionId": frame_session_id},
+            session_id=cdp_session.session_id,
+        )
+
+
+# How much of one step fits on a status line before it stops being glanceable.
+_LABEL_CHARS = 110
+
+
+def _step_record(n: int, of: int, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
+    """What the inner loop just did, read out of whatever the vendor handed us.
+
+    browser_use has passed the step callback different shapes across versions,
+    so this reads defensively and settles for the step number when it finds
+    nothing else — a numbered line still says the run is alive.
+    """
+    payload: dict[str, Any] = {"step": n, "of": of}
+    state = kwargs.get("state") or (args[0] if args else None)
+    output = kwargs.get("model_output") or (args[1] if len(args) > 1 else None)
+
+    url = getattr(state, "url", None)
+    if isinstance(url, str) and url:
+        payload["url"] = url
+
+    goal = getattr(getattr(output, "current_state", output), "next_goal", None)
+    if isinstance(goal, str) and goal.strip():
+        payload["goal"] = goal.strip()
+
+    actions = getattr(output, "action", None)
+    if isinstance(actions, list) and actions:
+        named = [type(a).__name__ for a in actions if a is not None]
+        chosen = next((n for n in named if n and n != "ActionModel"), None)
+        if chosen:
+            payload["action"] = chosen
+    return payload
+
+
+def _step_label(record: dict[str, Any]) -> str:
+    """One line: where it is in its budget, what it is doing, what it wants."""
+    parts = [f"step {record['step']}/{record['of']}"]
+    if record.get("action"):
+        parts.append(str(record["action"]))
+    if record.get("goal"):
+        parts.append(str(record["goal"]))
+    elif record.get("url"):
+        parts.append(str(record["url"]))
+    label = " · ".join(parts)
+    return label if len(label) <= _LABEL_CHARS else label[: _LABEL_CHARS - 1] + "…"
 
 
 def _call(history: Any, name: str) -> Any:

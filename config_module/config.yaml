@@ -70,7 +70,8 @@ browser:
   wall_clock_s: 240               # at this point it is ASKED to stop, keeping partial results
   hard_timeout_s: 300             # the wait_for backstop, for a run that ignores being asked.
                                   # Must exceed wall_clock_s or the ask never gets its chance.
-  frame_interval_s: 1.0           # seconds between frames pushed to a watching UI
+  # No frame interval: frames come from the browser's own CDP screencast at
+  # everyNthFrame=1, and the broker drops what no subscriber is holding.
 
 memory:
   # What the agent carries between sessions: MEMORY.md (the curated core) and

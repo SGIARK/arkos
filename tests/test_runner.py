@@ -11,10 +11,18 @@ import uuid
 import pytest
 import pytest_asyncio
 
-from agent_module.events import ContentEvent, DoneEvent, ToolCallEvent, ToolResultEvent, UserEvent
+from agent_module.events import (
+    ContentEvent,
+    DoneEvent,
+    StatusEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+    UserEvent,
+)
 from db import pool
 from harness_module import runner
 from harness_module import session_log as slog
+from harness_module.stream import stream
 from model_module import client as mc
 from tests.dbgate import require_db
 from tool_module.envelope import ToolSpec, fail, ok
@@ -529,6 +537,54 @@ async def test_a_plain_wake_leaves_the_mode_alone(monkeypatch):
 
 
 # --- how an unattended run may and may not end ---------------------------------
+
+
+async def test_a_tools_status_reaches_the_stream(model, tools, monkeypatch):
+    """The `emit_status` channel, end to end for the first time.
+
+    `browser_task` is its first real consumer — a three-minute browser call has
+    to say what it is doing — and until this test nothing proved the channel
+    reached a subscriber at all: it was wired in the sink and called by nobody.
+    """
+    session_id = await _session()
+    said: list[str] = []
+
+    def bind(ctx, **kw):
+        async def dispatch(name, args):
+            # What a long-running tool does while it works.
+            ctx.emit_status("using the browser…", f"/sessions/{session_id}/browser/frames")
+            ctx.emit_status("step 1/25 · go_to_url · open the pricing page")
+            said.append(name)
+            return ok("done")
+
+        return dispatch
+
+    monkeypatch.setattr(runner.registry, "bind", bind)
+    model.arm(
+        [mc.ToolCallDelta(index=0, id="c1", name="grep", arguments="{}"), mc.Finish(reason="tool_calls")],
+        [mc.TextDelta(text="found it"), mc.Finish(reason="stop")],
+    )
+
+    seen: list = []
+    async with stream.subscribe(session_id) as queue:
+        await runner.start(session_id)
+        task = runner._running.get(session_id)
+        if task is not None:
+            await asyncio.wait_for(asyncio.shield(task), timeout=45)
+        while not queue.empty():
+            seen.append(queue.get_nowait())
+
+    statuses = [e for e in seen if isinstance(e.event, StatusEvent)]
+    assert [s.event.label for s in statuses] == [
+        "using the browser…",
+        "step 1/25 · go_to_url · open the pricing page",
+    ], "a tool's progress never reached a subscriber"
+    # The url rides on the event, so a Last-Event-ID replay rebuilds the panel.
+    assert statuses[0].event.url == f"/sessions/{session_id}/browser/frames"
+    assert statuses[1].event.url is None
+
+    logged = [e.event for e in await slog.get_events(session_id, after_seq=0, limit=100)]
+    assert [e.label for e in logged if isinstance(e, StatusEvent)] == [s.event.label for s in statuses]
 
 
 @pytest.fixture

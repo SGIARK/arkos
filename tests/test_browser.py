@@ -10,6 +10,7 @@ one that talks to the real library.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 
 import pytest
@@ -194,11 +195,8 @@ async def test_every_step_reports_progress_to_the_session(monkeypatch):
     assert result.ok
     labels = [label for label, _ in statuses]
     assert labels[0] == "using the browser…"
-    assert [label for label in labels if label.startswith("browsing · step")] == [
-        "browsing · step 1",
-        "browsing · step 2",
-        "browsing · step 3",
-    ]
+    steps = [label for label in labels if label.startswith("step ")]
+    assert steps == ["step 1/25", "step 2/25", "step 3/25"], "the inner loop is not being read out"
     assert labels[-1] == "the browser is done"
 
 
@@ -380,24 +378,134 @@ async def test_a_slow_watcher_sees_the_newest_frame_not_a_backlog():
     assert held == ["frame-4", "frame-5"], "video is only worth watching live"
 
 
-async def test_nothing_is_captured_when_nobody_is_watching(monkeypatch):
-    """A run nobody opened pays nothing for video."""
-    made = _with_agent(monkeypatch, screenshot="ZmFrZS1qcGVn")
-    monkeypatch.setattr(browser_tool, "broker", FrameBroker())
+class _FakeCdpSession:
+    """The half of browser_use's CDP session the screencast touches."""
 
-    await registry.dispatch("browser_task", {"task": "go"}, _ctx())
-
-    assert made["agent"].browser_session is not None, "the fake could have produced frames"
+    def __init__(self, owner):
+        self.session_id = "target-1"
+        self.cdp_client = _FakeCdpClient(owner)
 
 
-async def test_a_watcher_gets_the_picture(monkeypatch):
+class _FakeCdpClient:
+    def __init__(self, owner):
+        self.owner = owner
+        self.register = _FakeRegister(owner)
+        self.send = _FakeSend(owner)
+
+
+class _FakeRegister:
+    def __init__(self, owner):
+        self.owner = owner
+
+    def Page(self):  # pragma: no cover - attribute access only
+        raise NotImplementedError
+
+    @property
+    def screencastFrame(self):
+        raise NotImplementedError
+
+
+class _FakeSend:
+    def __init__(self, owner):
+        self.owner = owner
+
+    async def Page(self):  # pragma: no cover
+        raise NotImplementedError
+
+
+class _FakeCdpAgent:
+    """An agent whose CDP surface records what the screencast asked it to do."""
+
+    def __init__(self):
+        self.started = False
+        self.stopped = False
+        self._handler = None
+        self.browser_session = self
+
+    # what _wait_for_target reads
+    agent_focus_target_id = "target-1"
+
+    async def get_or_create_cdp_session(self, target_id=None, focus=False):
+        return _Cdp(self)
+
+    @property
+    def cdp_client(self):
+        return _Cdp(self).cdp_client
+
+    def emit(self, event, frame_session="target-1"):
+        if self._handler:
+            self._handler(event, frame_session)
+
+
+class _Cdp:
+    def __init__(self, agent):
+        self.agent = agent
+        self.session_id = "target-1"
+        self.cdp_client = self
+
+    @property
+    def register(self):
+        return self
+
+    @property
+    def send(self):
+        return self
+
+    @property
+    def Page(self):
+        return self
+
+    def screencastFrame(self, handler):
+        self.agent._handler = handler
+
+    async def startScreencast(self, params=None, session_id=None):
+        self.agent.started = True
+
+    async def stopScreencast(self, params=None, session_id=None):
+        self.agent.stopped = True
+
+    async def screencastFrameAck(self, params=None, session_id=None):
+        return None
+
+
+async def test_the_screencast_puts_frames_on_the_broker(monkeypatch):
+    """The CDP path, not a screenshot poll: browser_use hands us frames and we
+    forward them keyed by (user, session)."""
     frames = FrameBroker()
     monkeypatch.setattr(browser_tool, "broker", frames)
-    monkeypatch.setattr(browser_tool, "_cfg", lambda key, default: 0 if key == "browser.frame_interval_s" else default)
-    _with_agent(monkeypatch, steps=2, screenshot="ZmFrZS1qcGVn")
     session_id = "3f1d4a02-0000-4000-8000-0000000000cc"
+    agent = _FakeCdpAgent()
 
     async with frames.subscribe(USER, session_id) as queue:
-        await registry.dispatch("browser_task", {"task": "watch me"}, _ctx(session_id=session_id))
+        cast = asyncio.create_task(browser_tool.run_screencast(agent, USER, session_id))
+        await asyncio.sleep(0)
+        # What Chromium sends on Page.screencastFrame.
+        agent.emit({"data": "ZmFrZS1qcGVn", "sessionId": 7})
+        await asyncio.sleep(0)
 
         assert queue.get_nowait() == "ZmFrZS1qcGVn"
+        assert agent.started, "the screencast was never asked for"
+
+        cast.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await cast
+    assert agent.stopped, "the screencast outlived the run"
+
+
+async def test_a_frame_for_another_target_is_ignored():
+    """The cdp_client fires for every target the browser has open."""
+    frames = FrameBroker()
+    agent = _FakeCdpAgent()
+    session_id = "3f1d4a02-0000-4000-8000-0000000000dd"
+
+    async with frames.subscribe(USER, session_id) as queue:
+        with_broker = asyncio.create_task(browser_tool.run_screencast(agent, USER, session_id))
+        await asyncio.sleep(0)
+        agent.emit({"data": "someone-elses-page"}, frame_session="a-different-target")
+        await asyncio.sleep(0)
+
+        assert queue.empty()
+
+        with_broker.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await with_broker
