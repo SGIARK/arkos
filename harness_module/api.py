@@ -388,13 +388,7 @@ async def list_sessions(status: str | None = None, user_id: str = CurrentUser) -
     )
     return [
         {
-            "session_id": str(r["id"]),
-            "title": r["title"],
-            "status": r["status"],
-            "mode": r["mode"],
-            "terminal_reason": r["terminal_reason"],
-            "hops_used": r["hops_used"],
-            "hops_max": _budgets_for(r["mode"]),
+            **_session_core(r),
             "project_id": str(r["project_id"]) if r["project_id"] else None,
             "project_title": r["project_title"],
             "last_event_at": r["last_event_at"].isoformat(),
@@ -407,18 +401,10 @@ async def list_sessions(status: str | None = None, user_id: str = CurrentUser) -
 async def get_session(session_id: str, user_id: str = CurrentUser) -> dict[str, Any]:
     """Return the session and the tail of its transcript, for a just-opened view."""
     row = await _owned_session(session_id, user_id)
-    budgets = _budgets_for(row["mode"])
     events = await slog.recent_events(session_id, limit=int(_cfg("harness.snapshot_events", 200)))
     return {
-        "session_id": str(row["id"]),
-        "title": row["title"],
+        **_session_core(row),
         "project_id": str(row["project_id"]) if row["project_id"] else None,
-        "status": row["status"],
-        # The UI reads mode to decide whether to offer the approve control.
-        "mode": row["mode"],
-        "terminal_reason": row["terminal_reason"],
-        "hops_used": row["hops_used"],
-        "hops_max": budgets,
         # What this session may see and write, fixed at creation.
         "claims": await _claims_of(session_id),
         "recent_events": [_wire(e) for e in events],
@@ -562,13 +548,7 @@ async def list_project_sessions(project_id: str, user_id: str = CurrentUser) -> 
     )
     return [
         {
-            "session_id": str(r["id"]),
-            "title": r["title"],
-            "status": r["status"],
-            "mode": r["mode"],
-            "terminal_reason": r["terminal_reason"],
-            "hops_used": r["hops_used"],
-            "hops_max": _budgets_for(r["mode"]),
+            **_session_core(r),
             "open_questions": r["open_questions"],
             "created_at": r["created_at"].isoformat(),
             "ended_at": r["ended_at"].isoformat() if r["ended_at"] else None,
@@ -719,7 +699,7 @@ async def upload_project_file(
 
     content = await _read_within_quota(file)
     stored = await store.put_file(project_id, stored_path, content)
-    await pool.execute("UPDATE projects SET updated_at = now() WHERE id = $1", _uuid(project_id, "project"))
+    await _touch_project(project_id)
     await workspace.write_through(sandbox_manager.manager(), project_id, stored_path, content)
 
     return {
@@ -764,7 +744,7 @@ async def create_project_folder(
 
     sentinel = store.dir_sentinel(folder)
     await store.put_file(project_id, sentinel, b"")
-    await pool.execute("UPDATE projects SET updated_at = now() WHERE id = $1", _uuid(project_id, "project"))
+    await _touch_project(project_id)
     await workspace.write_through(sandbox_manager.manager(), project_id, sentinel, b"")
     return {"path": folder, "sentinel": sentinel}
 
@@ -800,7 +780,7 @@ async def move_project_file(
     if not moves:
         return {"from": src, "to": dst, "moved": [], "stale_sessions": []}
 
-    await pool.execute("UPDATE projects SET updated_at = now() WHERE id = $1", _uuid(project_id, "project"))
+    await _touch_project(project_id)
     _, stale = await workspace.move_through(sandbox_manager.manager(), project_id, moves)
     if stale:
         system_log.record(
@@ -1343,6 +1323,38 @@ def _no_box(session_id: str) -> ApiError:
 
 
 # --- helpers -------------------------------------------------------------------
+
+
+async def _touch_project(project_id: str) -> None:
+    """Mark a project as changed. Written inline at three call sites before.
+
+    Separate from `lifecycle.touch_project`, which takes a connection and a
+    SESSION id because it runs inside the transaction that moves a session. This
+    one is for the file routes, which have a project id and no transaction to
+    join.
+    """
+    await pool.execute("UPDATE projects SET updated_at = now() WHERE id = $1", _uuid(project_id, "project"))
+
+
+def _session_core(row: Any) -> dict[str, Any]:
+    """The fields every session projection carries, shaped once.
+
+    Three endpoints return a session and each built these seven by hand, so a
+    field added to one drifted from the others silently. What differs BETWEEN
+    the projections — a project title here, an open-question count there, the
+    transcript tail in the snapshot — stays at the call site, because that is
+    the part that is genuinely different.
+    """
+    return {
+        "session_id": str(row["id"]),
+        "title": row["title"],
+        "status": row["status"],
+        # The UI reads mode to decide whether to offer the approve control.
+        "mode": row["mode"],
+        "terminal_reason": row["terminal_reason"],
+        "hops_used": row["hops_used"],
+        "hops_max": _budgets_for(row["mode"]),
+    }
 
 
 async def _new_project(user_id: str, title: str) -> Any:

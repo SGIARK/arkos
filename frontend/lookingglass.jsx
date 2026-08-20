@@ -865,9 +865,3 @@ function BrowserCanvas({ url, label }) {
   );
 }
 
-function fileSize(n) {
-  if (n === null || n === undefined) return "";
-  if (n < 1024) return n + " b";
-  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " kb";
-  return (n / 1024 / 1024).toFixed(1) + " mb";
-}

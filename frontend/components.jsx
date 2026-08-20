@@ -9,8 +9,12 @@
    ========================================================= */
 
 /* The status dot. `live` pings, because a running thing should look running. */
+/* One dot, one prop API. `kind` names a tone directly ("work"), `status` names
+   a lifecycle state and is translated. Both are kept because both are real
+   questions — "show me the attention colour" and "show me what this session is
+   doing" — but only one of them may be passed. */
 function Dot({ kind, status, title }) {
-  const tone = kind || toneFor(status);
+  const tone = kind !== undefined ? kind : toneFor(status);
   return <span className={"dot" + (tone ? " " + tone : "")} title={title || statusLabel(status)} />;
 }
 
@@ -502,5 +506,171 @@ function AskBlock({ item, onAnswered, onError }) {
         </form>
       )}
     </div>
+  );
+}
+
+/* =========================================================
+   shared primitives
+
+   These live here because components.jsx loads FIRST. `fileSize` was
+   defined in lookingglass.jsx and called from views.jsx, which loads before
+   it — working only because every call happens at render time, after all
+   five scripts have evaluated. One top-level use would have thrown. The file
+   tree is the same story in the other direction: defined in views.jsx,
+   rendered by lookingglass.jsx.
+   ========================================================= */
+
+function PageHead({ title, accent, lede }) {
+  return (
+    <div className="head">
+      <h1>
+        {title}
+        {accent && <span className="accent">{accent}</span>}
+        <span className="caret" />
+      </h1>
+      {lede && <div className="lede">{lede}</div>}
+    </div>
+  );
+}
+
+function fileSize(n) {
+  if (n === null || n === undefined) return "";
+  if (n < 1024) return n + " b";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " kb";
+  return (n / 1024 / 1024).toFixed(1) + " mb";
+}
+
+/* Flat paths into a tree. The store keeps `arkos/.git/objects/pack/…` as one
+   string per file, which is the right shape for a tree and the wrong shape for
+   a list: a clone turns the panel into 182 rows of somebody else's repository. */
+/* The zero-byte file that makes an empty folder durable. It is a real row, so
+   it rides materialize and flush like anything else — which is why an empty
+   folder survives a session at all — and it is never shown. */
+const SENTINEL = ".keep";
+
+function isSentinel(path) {
+  return path === SENTINEL || path.endsWith("/" + SENTINEL);
+}
+
+function asTree(files) {
+  const root = { dirs: new Map(), files: [] };
+  const descend = (parts) => {
+    let node = root;
+    for (const dir of parts) {
+      if (!node.dirs.has(dir)) node.dirs.set(dir, { dirs: new Map(), files: [] });
+      node = node.dirs.get(dir);
+    }
+    return node;
+  };
+  for (const file of files) {
+    const parts = file.path.split("/");
+    // Descending is the whole point of the sentinel; listing it is not.
+    const node = descend(parts.slice(0, -1));
+    if (!isSentinel(file.path)) node.files.push({ ...file, name: parts[parts.length - 1] });
+  }
+  return root;
+}
+
+/* The directory a path sits in; "" is the project root. */
+function dirOf(path) {
+  return path && path.includes("/") ? path.split("/").slice(0, -1).join("/") : "";
+}
+
+function countFiles(node) {
+  let n = node.files.length;
+  for (const child of node.dirs.values()) n += countFiles(child);
+  return n;
+}
+
+function Branch({ node, path, depth, open, onToggle, onRead, selected, dropTarget, onTarget, onLift, lifted }) {
+  const indent = (d) => ({ paddingLeft: 18 + d * 13 });
+  const dirs = [...node.dirs.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const files = [...node.files].sort((a, b) => a.name.localeCompare(b.name));
+
+  return (
+    <React.Fragment>
+      {dirs.map(([name, child]) => {
+        const full = path ? path + "/" + name : name;
+        const isOpen = open.has(full);
+        return (
+          <React.Fragment key={full}>
+            <div
+              className={"cv-entry dir" + (dropTarget === full ? " drop" : "") + (lifted === full ? " lifted" : "")}
+              style={indent(depth)}
+              onClick={() => onToggle(full)}
+              draggable
+              onDragStart={(e) => {
+                e.stopPropagation();
+                e.dataTransfer.effectAllowed = "move";
+                // Firefox starts no drag without payload; the path is the payload.
+                e.dataTransfer.setData("text/plain", full);
+                onLift(full);
+              }}
+              onDragEnd={() => onLift(null)}
+              onDragOver={(e) => {
+                e.preventDefault();
+                onTarget(full);
+              }}
+            >
+              <span className="nm">
+                <span className="g">{isOpen ? "▾" : "▸"}</span>
+                {name}
+              </span>
+              <span className="sz">{countFiles(child)}</span>
+            </div>
+            {isOpen && (
+              <Branch
+                node={child}
+                path={full}
+                depth={depth + 1}
+                open={open}
+                onToggle={onToggle}
+                onRead={onRead}
+                selected={selected}
+                dropTarget={dropTarget}
+                onTarget={onTarget}
+                onLift={onLift}
+                lifted={lifted}
+              />
+            )}
+          </React.Fragment>
+        );
+      })}
+      {files.map((file, i) => (
+        <div
+          className={
+            "cv-entry" +
+            (selected === file.path ? " sel" : "") +
+            /* The bar sits under the LAST file of the directory a drop would
+               land in, so it reads as "into this folder" rather than "onto
+               this file" — dropping on a file means the folder holding it. */
+            (dropTarget === path && i === files.length - 1 ? " drop" : "") +
+            (lifted === file.path ? " lifted" : "")
+          }
+          key={file.file_id}
+          style={indent(depth)}
+          onClick={() => onRead(file)}
+          draggable
+          onDragStart={(e) => {
+            e.stopPropagation();
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", file.path);
+            onLift(file.path);
+          }}
+          onDragEnd={() => onLift(null)}
+          onDragOver={(e) => {
+            e.preventDefault();
+            onTarget(path);
+          }}
+          title={file.path}
+        >
+          <span className="nm">
+            <span className="g">·</span>
+            {file.name}
+          </span>
+          <span className="sz">{fileSize(file.size)}</span>
+        </div>
+      ))}
+    </React.Fragment>
   );
 }
