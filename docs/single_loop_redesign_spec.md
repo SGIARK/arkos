@@ -38,6 +38,10 @@ This document is the why and the build plan.
 **Status:** Tasks 0-8, 8.1-8.10, 9, LG-1 (+1.5-1.8) and LG-2 done ·
 Tasks **11.4, 11.5, 11.6 DONE 2026-08-20** (session window + tools popover +
 surface endpoints; backend MCP wiring; clock + tool-result timestamps) ·
+**11.8 item 4 (the files view) DONE 2026-08-20**, ahead of its card, and past
+what it asked for: folders that are durable when named, drag-to-rearrange, and
+the two endpoints under them (`POST /projects/{id}/folders`,
+`POST /projects/{id}/files/move` — both now contract rows) ·
 next **11.8 → 12**, with **11.7 unsequenced** (P1, the approval gate parks on
 the gated call — a Task 6 defect, no blockers, take it early; 11.8 added
 2026-08-20: the desk IA from the refreshed `new-frontend/` export — five
@@ -50,7 +54,7 @@ views, project create/rename, chat bar removed) |
 |---|---|
 | Database | Supabase `sbtbbytesjobdpmqojlr`, migration 0 applied, 12 tables |
 | Model | hosted OpenAI, `gpt-4.1-mini` — `run_turn` verified end to end against it |
-| Suite | 509 collected. `integration`-marked tests (real e2b sandbox, real Supabase Storage) are deselected by default; `pytest -m integration` runs them |
+| Suite | 509 collected, plus 7 unrun cases added to `tests/test_api.py` on 2026-08-20 (folders and moves) — written on a machine with no pytest and never executed, so treat the count and their colour as unverified until someone runs them. `integration`-marked tests (real e2b sandbox, real Supabase Storage) are deselected by default; `pytest -m integration` runs them |
 | Store | Supabase Storage, private bucket `arkos`, created 2026-08-18. Project URL derives from `DB_URL`; `SUPABASE_SECRET_KEY` must be an `sb_secret_` key |
 | HTTP server | `harness_module/api.py`, `uvicorn harness_module.api:app`. Needs `SUPABASE_JWT_SECRET` and `ARK_SESSION_SECRET` |
 | Blocking decisions | none — endpoints, budgets, port, approval default, callback trigger all settled 2026-08-16/17 |
@@ -1439,13 +1443,12 @@ substrate. | **P1, 1-1.5d, no blockers** — a Task 6 defect, take it early.
 deliberately or renamed (they exist only as a side effect of `POST /sessions`
 and `PATCH`/`POST /projects` exist nowhere); and the design's desk, approvals,
 files, and chat surfaces are unbuilt.
-**Done when:** The shell matches the 2026-08-20 export under `new-frontend/`
-(ground truth), with one owner deviation (2026-08-20): **the ambient bottom
-chat bar is REMOVED** — the export still shows an `ark>` bar on non-project
-views; it does not ship, and talking to ark happens in the chat view and in
-session windows. Broken down:
+**Done when:** The shell matches the SECOND 2026-08-20 export under
+`new-frontend/` (ground truth — it omits chat entirely, no chat view and no
+ambient bar, and carries rename inline, so the two deviations this card
+briefly named are now the design itself). Broken down:
 
-1. **Shell:** vertical rail nav — desk · approvals · files · projects · chat —
+1. **Shell:** vertical rail nav — desk · approvals · files · projects —
    active-view rule and color, pending pill in the top bar, dark toggle at the
    rail's foot.
 2. **Desk is the landing:** three columns from existing endpoints — waiting on
@@ -1456,29 +1459,62 @@ session windows. Broken down:
 3. **Approvals view:** the same attention rows at user scope, resolvable
    there — one row, wherever you see it (LG-2's three-scope law, no new
    endpoint).
-4. **Files view:** cross-project store browser — project dropdown, +file /
-   +folder, drag-drop with drop-target highlight, reader with line numbers,
-   edit/save/revert on text files writing through the existing upload path.
+4. **Files view — DONE 2026-08-20, ahead of this card.** Cross-project store
+   browser: project dropdown, +file / +folder, drag-drop with the drop-target
+   underline, reader with line numbers, edit/save/revert on text files through
+   the existing upload path. Two things went past what this item asked for,
+   and both are contract rows now, not implementation details:
+   - **Rearranging.** Rows are draggable; a drop is a move when it was lifted
+     from the tree and an upload when it came from the desktop.
+     `POST /projects/{id}/files/move` moves a file or a whole subtree in one
+     transaction — rows only, never blobs — and corrects every live box in the
+     same request, because flush commits what is on disk and a box left on the
+     old path would undo the move at the end of its turn.
+   - **An empty folder is durable when it is named.** `POST /projects/{id}/folders`
+     writes a zero-byte `.keep`, because the sandbox round trip carries files
+     and only files: a directory kept as a row of its own dies at the first
+     flush. Nothing about the tree lives in the browser.
+   **Left open, and pinned here rather than lost:** a move that lands in the
+   store and fails in a box leaves that session stale until it flushes, when
+   the old path wins. The user is told (`stale_sessions`, plus an `error` in
+   `system_events`); nothing repairs it. Closing it needs the project lease
+   held across the move, or flush verifying against the tree it materialized.
+   Unsequenced — it belongs with 11.7's parking work or later.
+   **Measure:** the design's `max-width` values are held as ratios of its 1320
+   content width (approvals 47%, chat 57.5%, lede 29%), and `.view` carries no
+   cap at all. That is a deliberate departure: the design caps every view at
+   1320px with no auto margin, which on a monitor wider than its canvas pins
+   the whole page to the left. Anything this card adds should follow the same
+   rule — the ratio is the design, the pixel was the canvas.
 5. **Projects index:** card grid (dot, name, when, dir, file count, state),
    the corner plus button AND the dashed new-project card, both opening the
    modal — name; "a new directory" (start empty) vs "an existing directory"
    (store dirs dropdown); slug preview — `POST /projects` (contracts row in
    the same commit), landing in the fresh project's session view with its
    empty states (transcript, TODO, canvas all have designed empty text).
-6. **Rename:** `PATCH /projects/{id}` (contracts row). The export has NO
-   rename affordance — minimal one ships (click the project name in the
-   session header to edit) until the design says otherwise.
-7. **Chat view:** the standing home-session conversation (LG-1.7's session,
-   this view replaces the old landing).
+6. **Rename:** `PATCH /projects/{id}` (contracts row), driven by the designed
+   affordance — double-click the project name on the index card or in the
+   session header (plus the hover "rename" button on cards); Enter or blur
+   commits, Escape cancels.
+7. **Chat is omitted by design.** No chat view, no ambient bar. The home
+   session (LG-1.7: `users.home_session_id`, its quota exemption) keeps
+   existing in the backend untouched, but has NO surface in this IA — the
+   buddy is unreachable from the UI until a future card decides its return
+   or its retirement. Noted here so the orphan is a recorded fact, not a
+   surprise.
 
 **Touch point:** frontend (all views), `api.py` + contracts
-(`POST /projects`, `PATCH /projects/{id}`), design export at `new-frontend/`.
+(`POST /projects`, `PATCH /projects/{id}`; item 4's
+`POST /projects/{id}/folders` and `POST /projects/{id}/files/move` are in),
+`store.move_path` and `workspace.move_through`, design export at
+`new-frontend/`.
 **Acceptance test:** Create a project from the modal both ways and land in
-its empty session view; rename it and see the name change in grid, desk, and
-header; resolve an attention row on the desk and watch it leave desk,
+its empty session view; double-click its name in the grid AND in the session
+header, rename, and see the change everywhere it renders (grid, desk,
+header); resolve an attention row on the desk and watch it leave desk,
 approvals view, and the session window; drop a file in the files view, read
-it back with line numbers, edit and save a text file; no ambient chat bar
-renders on any view; nav marks the active view.
+it back with line numbers, edit and save a text file; no chat nav item and no
+ambient bar renders anywhere; nav marks the active view.
 **Not this card:** the tools popover and its endpoints (11.4), manifest
 enforcement (11.5), any approval-flow mechanics (11.7 — this card renders
 attention rows, it does not change how they park or resolve).

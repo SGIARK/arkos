@@ -322,6 +322,8 @@ chat plumbing. One error shape everywhere: `{code, message, retryable}`.
 | `GET /projects/{id}/files` | — | `[{file_id, path, name, size, mtime}]` — tree rows; no sandbox is woken |
 | `GET /projects/{id}/files/{file_id}` | — | `{path, size, mtime, text, binary}` — one file's contents from the store, no sandbox woken. `binary: true` with `text: null` when it is not UTF-8: a reader that renders a PNG as characters is worse than one that says it cannot |
 | `POST /projects/{id}/files` | multipart (`file`, optional `path`) | `{file_id, name, path, size}` |
+| `POST /projects/{id}/folders` | `{path}` | `{path, sentinel}` — a folder is durable when it is NAMED, not when it is filled. The tree is flat paths and a directory is not a row, so what lands is a zero-byte `.keep` inside it: materialize, `_sweep` and flush carry files and only files, so a directory kept as a row of its own would be deleted by the first flush that ran. `409 already_exists` when anything is at that path already |
+| `POST /projects/{id}/files/move` | `{from, to}` | `{from, to, moved:[{from, to}], stale_sessions}` — one file or a whole subtree, in one transaction. **Blobs never move**: they are content-addressed and immutable, so a rename is a row edit and nothing is re-uploaded. Every live box holding a covering claim is corrected in the SAME request, and that is load-bearing rather than polite — flush commits what is on disk, so a box left on the old path would put it back and delete the new one when the turn ended, undoing the move without saying so. A box that refuses comes back in `stale_sessions` and as an `error` in `system_events`, never swallowed. `404` when nothing is at `from`; `409 move_refused` for an occupied destination or a folder moved into itself |
 | `GET /results/{ref}` | `offset&limit` | blob slice (ownership-checked) |
 | `GET /sessions/{id}/browser/frames` | — | SSE JPEG side-channel (`event: frame`, `{jpeg}` base64), keyed (user, session), ownership-checked, announced by a `status` event, rendered in the canvas panel (not a corner overlay). Nothing is captured while nobody is subscribed |
 | `POST /sessions/{id}/approve` | — | 202 — attended → **unattended**; the run begins |
@@ -631,6 +633,7 @@ never the sandbox's (D28).
 put_blob(content) -> sha256          # content-addressed, immutable, write-once
 get_blob(sha256) -> bytes
 read_tree(project_id) -> [TreeEntry{path, content_hash, size, mtime}]
+move_path(project_id, src, dst) -> [(from, to)]   # one file or a subtree; rows only, never blobs
 commit_tree(project_id, entries)     # blobs FIRST, rows LAST, in one transaction
 diff_tree(a, b) -> paths that differ by hash
 append_note(user_id, text) -> path   # one file per note; never rewritten
