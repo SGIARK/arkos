@@ -252,7 +252,7 @@ main:has(.lg-view) { overflow: hidden; }
 }
 .head h1 .accent { color: var(--accent); }
 .head .lede {
-  color: var(--ink-mute); font-size: 12.5px; max-width: 380px;
+  color: var(--ink-mute); font-size: 12.5px; max-width: 29%;   /* 380 of the design's 1320 */
   text-align: right; line-height: 1.6;
 }
 .caret {
@@ -285,18 +285,10 @@ main:has(.lg-view) { overflow: hidden; }
 }
 .stack { display: flex; flex-direction: column; gap: 12px; }
 
-/* The same cards the desk stacks in its zones, laid out the same way when they
-   have the whole page instead of a third of it: desk-width columns, auto-filled
-   because the number of pending questions is not three. The column gap is the
-   zone's own padding, so the two pages read as one surface. */
-.stack.zoned {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
-  align-items: start;
-  gap: 12px 34px;
-}
-/* Nothing to tile: the message says so across the page, not in one column. */
-.stack.zoned > .empty { grid-column: 1 / -1; }
+/* Approvals, at the width the design draws it. A question and its plan read as
+   one column at a measure you can scan; the page being wide is not a reason to
+   stretch a card across it. */
+.stack.appr { max-width: 47%; }   /* 620 of the design's 1320 */
 
 /* ----- card ----- */
 .card {
@@ -464,7 +456,7 @@ kbd {
 /* =========================================================
    chat view
    ========================================================= */
-.chat-wrap { display: flex; flex-direction: column; gap: 22px; max-width: 760px; }
+.chat-wrap { display: flex; flex-direction: column; gap: 22px; max-width: 57.5%; }   /* 760 of the design's 1320 */
 .msg { display: flex; flex-direction: column; gap: 5px; }
 .msg .who { font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-mute); }
 .msg .bubble { font-size: 13px; line-height: 1.65; color: var(--ink-soft); white-space: pre-wrap; text-wrap: pretty; }

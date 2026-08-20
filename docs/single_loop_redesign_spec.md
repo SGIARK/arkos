@@ -35,9 +35,13 @@ before Task 7 deletes the fallback machinery.
 
 This document is the why and the build plan.
 
-**Status:** Tasks 0-8, 8.1-8.10, 9, LG-1 (+1.5-1.8), LG-2, 11.4, 11.5 and 11.6
-done · **11.7 → 12** (11.7: the approval gate parks on the gated call — a Task 6
-defect that makes every gated MCP call loop forever; no blockers, take it early) |
+**Status:** Tasks 0-8, 8.1-8.10, 9, LG-1 (+1.5-1.8) and LG-2 done ·
+Tasks **11.4, 11.5, 11.6 DONE 2026-08-20** (session window + tools popover +
+surface endpoints; backend MCP wiring; clock + tool-result timestamps) ·
+next **11.8 → 12**, with **11.7 unsequenced** (P1, the approval gate parks on
+the gated call — a Task 6 defect, no blockers, take it early; 11.8 added
+2026-08-20: the desk IA from the refreshed `new-frontend/` export — five
+views, project create/rename, chat bar removed) |
 **Author:** John Wallace | **Last updated:** 2026-08-20
 
 **Where things actually stand, for a session picking this up cold:**
@@ -1186,9 +1190,13 @@ endpoints; 11.5 is the backend that makes the numbers true.** This card runs
 first; the popover renders real recorded state before 11.5 gives that state
 teeth.
 
-**The design is ground truth (owner, 2026-08-19)** — `new_frontend/`, a
-checked-in copy of the Claude Design project below; if they ever disagree, the
-checked-in copy is what was approved. Where the design and the current
+**The design is ground truth (owner, 2026-08-19)** — the export checked in
+under `new-frontend/`; if it and the live Claude Design project ever disagree,
+the checked-in copy is what was approved. **Refreshed 2026-08-20:** an earlier
+stale export briefly sat in the repo and was deleted; the current copy is the
+2026-08-20 export, which grew past this card — the full IA (desk landing, five
+views, project creation) is Task 11.8; THIS card remains the session window,
+its tools popover, and the endpoint families below. Where the design and the current
 `frontend/` disagree, the design wins and `frontend/` is amended to match, not
 the other way around. Beyond the popover it carries surface-wide changes, all
 in scope here: spacing fixed throughout; the "looking glass" nav item renamed
@@ -1264,6 +1272,11 @@ fires no request; at a short viewport the header and footer stay pinned and
 only the list scrolls; the rail indicator spans the label; the fs endpoints
 return only the caller's session's box and 404 on a parked one; contracts
 rows exist for every endpoint added.
+
+**Status: DONE 2026-08-20** (built in the coding session; spot-checked here:
+`GET`/`PUT /sessions/{id}/tools` and `GET /sessions/{id}/fs` + `/fs/file`
+live in `api.py`, migration re-issued as `0010_session_tools.sql`, tools
+panel in `frontend/lookingglass.jsx`).
 
 ## Task 11.5: The tool budget — the session chooses what it can reach
 **Why (found in use, 2026-08-19):** connecting a few MCP servers put 164 tool
@@ -1359,6 +1372,10 @@ wholly, and that turn's prompt names it unavailable while the human sees why.
 (The panel-side refusal of an over-budget toggle is 11.4's test; this card's
 half is that the API refuses it too, with the numbers in the message.)
 
+**Status: DONE 2026-08-20** (built in the coding session; spot-checked here:
+`connected_services`/`Reach` in `prompts.py` generate the prompt from the
+shipped manifest, and the runner builds the manifest before the fold).
+
 ## Task 11.6
 **Title:** Give the agent a clock and timestamped tool results
 **Problem:** The model cannot see the current time or when a tool result was
@@ -1381,30 +1398,7 @@ Manually: resume a days-old session and ask "how long since my last message?"
 `subscriptions/listen`). Open question to settle first: what may wake an idle
 session. | **P2, 0.5d, no blockers** — pairs with 11.5's prompt work.
 
-**Status: DONE 2026-08-20.** `prompts.clock()` formats every instant one way
-(minute resolution, UTC); `_FRESHNESS` carries the clock, the session's start
-date and the snapshot rule; `runner._stamped()` prefixes each rendered result
-with `[fetched <when>]` from `stored.ts`.
-
-**`now` is an ARGUMENT of the fold, not a clock it reads** — the same move 11.5
-made for `reach`. A fold that read `datetime.now()` internally would have made
-`test_event_replay_deterministic` flake at a minute boundary, and the fold's
-determinism is a conformance test, so the invariant is restated as "same log AND
-same inputs" and the two determinism tests pin the instant. Contracts amended in
-the same commit.
-
-**The stamp is absolute, never an age.** An age is more readable and would have
-been the obvious choice; it also rewrites every tool message on every fold,
-changing the provider's cached prefix each hop. The model has the current time
-in its prompt and can subtract.
-
-**One thing the card did not predict:** the freshness block costs ~177 tokens on
-EVERY hop (the prompt went ~1313 → ~1484), and `tiny_window` in
-`tests/test_runner.py` was tuned to the old size — its ceiling has to sit above
-the system prompt, since rung 1 clears results and nothing else, so a ceiling
-below the prompt is a view that can never come under budget. Retuned 2440 →
-2800, and the fixture now says out loud that it is prompt-size-coupled so the
-next person who grows the prompt knows why it broke.
+**Status: DONE 2026-08-20** (built in the coding session).
 
 ## Task 11.7
 **Title:** Park the turn on the gated call itself
@@ -1438,6 +1432,57 @@ observe exactly one PR.
 **Not this card:** session-scoped standing grants ("this session may send
 Slack without asking") — Future Work; this card's grant machinery is their
 substrate. | **P1, 1-1.5d, no blockers** — a Task 6 defect, take it early.
+
+## Task 11.8
+**Title:** Build the desk IA: five views, project create and rename
+**Problem:** The app lands in a bare chat window; projects cannot be created
+deliberately or renamed (they exist only as a side effect of `POST /sessions`
+and `PATCH`/`POST /projects` exist nowhere); and the design's desk, approvals,
+files, and chat surfaces are unbuilt.
+**Done when:** The shell matches the 2026-08-20 export under `new-frontend/`
+(ground truth), with one owner deviation (2026-08-20): **the ambient bottom
+chat bar is REMOVED** — the export still shows an `ark>` bar on non-project
+views; it does not ship, and talking to ark happens in the chat view and in
+session windows. Broken down:
+
+1. **Shell:** vertical rail nav — desk · approvals · files · projects · chat —
+   active-view rule and color, pending pill in the top bar, dark toggle at the
+   rail's foot.
+2. **Desk is the landing:** three columns from existing endpoints — waiting on
+   you (attention cards with plan steps, tool chips, inline approve/decline;
+   user-scope `GET /attention`), running (live sessions with hop meter;
+   `GET /sessions?status=running`), projects (recent, status dot;
+   `GET /projects`).
+3. **Approvals view:** the same attention rows at user scope, resolvable
+   there — one row, wherever you see it (LG-2's three-scope law, no new
+   endpoint).
+4. **Files view:** cross-project store browser — project dropdown, +file /
+   +folder, drag-drop with drop-target highlight, reader with line numbers,
+   edit/save/revert on text files writing through the existing upload path.
+5. **Projects index:** card grid (dot, name, when, dir, file count, state),
+   the corner plus button AND the dashed new-project card, both opening the
+   modal — name; "a new directory" (start empty) vs "an existing directory"
+   (store dirs dropdown); slug preview — `POST /projects` (contracts row in
+   the same commit), landing in the fresh project's session view with its
+   empty states (transcript, TODO, canvas all have designed empty text).
+6. **Rename:** `PATCH /projects/{id}` (contracts row). The export has NO
+   rename affordance — minimal one ships (click the project name in the
+   session header to edit) until the design says otherwise.
+7. **Chat view:** the standing home-session conversation (LG-1.7's session,
+   this view replaces the old landing).
+
+**Touch point:** frontend (all views), `api.py` + contracts
+(`POST /projects`, `PATCH /projects/{id}`), design export at `new-frontend/`.
+**Acceptance test:** Create a project from the modal both ways and land in
+its empty session view; rename it and see the name change in grid, desk, and
+header; resolve an attention row on the desk and watch it leave desk,
+approvals view, and the session window; drop a file in the files view, read
+it back with line numbers, edit and save a text file; no ambient chat bar
+renders on any view; nav marks the active view.
+**Not this card:** the tools popover and its endpoints (11.4), manifest
+enforcement (11.5), any approval-flow mechanics (11.7 — this card renders
+attention rows, it does not change how they park or resolve).
+| **P1, 2-3d** | **Blockers:** none (11.4 is done; same shell).
 
 ## Task 12: Frontend modernization
 **Done when:** Vite build (production React, no runtime Babel, sub-1s paint);

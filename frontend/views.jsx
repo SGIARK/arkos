@@ -142,7 +142,7 @@ function ApprovalsView({ onError, pulse }) {
         title="approvals"
         lede="questions a run stopped to ask. answering here is answering in its window — one row, wherever you see it."
       />
-      <div className="stack zoned">
+      <div className="stack appr">
         {waiting === null && <Empty>reading…</Empty>}
         {waiting !== null && waiting.length === 0 && <Empty glyph="✓">all caught up — nothing waiting on you</Empty>}
         {(waiting || []).map((a) => (
