@@ -21,8 +21,8 @@ function PageHead({ title, accent, lede }) {
 
 /* ---------- DESK ---------- */
 
-function DeskView({ onError, pulse, onOpenSession }) {
-  const [waiting, setWaiting] = useState([]);
+function DeskView({ onError, waiting: pending, onOpenSession }) {
+  const waiting = pending || [];
   const [running, setRunning] = useState([]);
   const [projects, setProjects] = useState([]);
 
@@ -30,9 +30,8 @@ function DeskView({ onError, pulse, onOpenSession }) {
     let dead = false;
     (async () => {
       try {
-        const [a, r, p] = await Promise.all([api.attention(), api.sessions("running"), api.projects()]);
+        const [r, p] = await Promise.all([api.sessions("running"), api.projects()]);
         if (dead) return;
-        setWaiting(a);
         setRunning(r);
         setProjects(p);
       } catch (e) {
@@ -42,7 +41,9 @@ function DeskView({ onError, pulse, onOpenSession }) {
     return () => {
       dead = true;
     };
-  }, [pulse, onError]);
+    // `waiting` comes from App, so this re-reads when the pending set changes
+    // — which is the same moment the running list is worth re-reading.
+  }, [waiting, onError]);
 
   return (
     <div className="view">
@@ -61,7 +62,7 @@ function DeskView({ onError, pulse, onOpenSession }) {
               <Empty glyph="✓">nothing waiting on you</Empty>
             ) : (
               waiting.map((a) => (
-                <ApprovalCard key={a.approval_id} item={a} onResolve={() => setWaiting((w) => w.filter((x) => x.approval_id !== a.approval_id))} onError={onError} />
+                <ApprovalCard key={a.approval_id} item={a} onResolve={onOpenSession ? () => {} : undefined} onError={onError} />
               ))
             )}
           </div>
@@ -122,19 +123,8 @@ function DeskView({ onError, pulse, onOpenSession }) {
 
 /* ---------- APPROVALS ---------- */
 
-function ApprovalsView({ onError, pulse }) {
-  const [waiting, setWaiting] = useState(null);
-
-  useEffect(() => {
-    let dead = false;
-    api
-      .attention()
-      .then((a) => !dead && setWaiting(a))
-      .catch((e) => !dead && onError(e));
-    return () => {
-      dead = true;
-    };
-  }, [pulse, onError]);
+function ApprovalsView({ onError, waiting, onResolved }) {
+  // Null until App has read it once; the view says so rather than "all caught up".
 
   return (
     <div className="view">
@@ -149,7 +139,7 @@ function ApprovalsView({ onError, pulse }) {
           <ApprovalCard
             key={a.approval_id}
             item={a}
-            onResolve={() => setWaiting((w) => w.filter((x) => x.approval_id !== a.approval_id))}
+            onResolve={onResolved}
             onError={onError}
           />
         ))}
@@ -683,65 +673,6 @@ function ComputerView({ onError }) {
   );
 }
 
-/* ---------- CHAT ---------- */
-
-/* The home session: the standing conversation, in the design's chat shape.
-   Same session and same events as any window — this one just reads as a
-   conversation because that is what it is. */
-function ChatView({ sessionId, onError, onPulse, composer }) {
-  const { session, events, pending, questions, refreshQuestions } = useStream(sessionId, onError, onPulse);
-  const tail = useRef(null);
-
-  useEffect(() => {
-    if (tail.current) tail.current.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [events.length, pending.length]);
-
-  if (!sessionId) {
-    return (
-      <div className="view">
-        <PageHead title="chat" />
-        <Empty glyph="◇">no home session yet — sign out and back in, and the server will make one</Empty>
-      </div>
-    );
-  }
-
-  const said = grouped(events).filter((e) => e.kind === "user" || e.kind === "content");
-
-  return (
-    <div className="view">
-      <PageHead
-        title="chat"
-        lede="think out loud. this conversation stands between sessions, and what is worth keeping goes to memory."
-      />
-      <div className="chat-wrap">
-        {!said.length && !pending.length && <Empty glyph="○">nothing said yet — the bar below is the way in</Empty>}
-        {said.map((m) => (
-          <div className={"msg " + (m.kind === "user" ? "user" : "buddy")} key={m.seq}>
-            <span className="who">{m.kind === "user" ? "you" : "ark"}</span>
-            <span className="bubble">{m.text}</span>
-          </div>
-        ))}
-        {pending.map((p) => (
-          <div className="msg user pending" key={p.id}>
-            <span className="who">you</span>
-            <span className="bubble">{p.text}</span>
-          </div>
-        ))}
-        {questions.map((q) => (
-          <AskBlock key={q.approval_id} item={q} onAnswered={refreshQuestions} onError={onError} />
-        ))}
-        {session && session.status === "running" && (
-          <div className="ev-status">
-            <span className="spin" />
-            working…
-          </div>
-        )}
-        <div ref={tail} />
-      </div>
-      {composer}
-    </div>
-  );
-}
 
 /* ---------- SETTINGS ---------- */
 
@@ -763,30 +694,48 @@ function SettingsModal({ user, onClose, onSignOut, onError }) {
 
   useEffect(() => {
     refresh();
+  }, [refresh]);
+
+  /* Re-read when this window becomes the one being looked at again.
+
+     The OAuth popup is on another origin, so nothing tells this page when it
+     finishes — which is why this used to poll `api.connections()` every two
+     seconds. Contracts forbids polling anywhere, and it was also the wrong
+     shape: it burned requests while the user was still typing a password, and
+     stopped the moment they tabbed away. Coming back to the tab, or the popup
+     closing, IS the event. `postMessage` from the callback page arrives too
+     (`/oauth/callback/{server}` posts one before it closes), and whichever
+     lands first wins — `refresh` is idempotent. */
+  useEffect(() => {
+    const again = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    const posted = (e) => {
+      if (e.data && e.data.type === "arkos:connection") refresh();
+    };
+    window.addEventListener("focus", again);
+    document.addEventListener("visibilitychange", again);
+    window.addEventListener("message", posted);
     return () => {
+      window.removeEventListener("focus", again);
+      document.removeEventListener("visibilitychange", again);
+      window.removeEventListener("message", posted);
       if (poll.current) clearInterval(poll.current);
     };
   }, [refresh]);
 
-  /* Watch until the server says connected or the popup closes: the browser
-     gets no callback when a popup on another origin finishes. */
+  /* The popup closing is the other end of the same signal, and it is the only
+     one a user who never leaves the tab will produce. One watcher, cleared as
+     soon as the window is gone — this checks a boolean, it does not fetch. */
   function watch(server, popup) {
+    if (!popup) return;
     if (poll.current) clearInterval(poll.current);
-    poll.current = setInterval(async () => {
-      let current = [];
-      try {
-        current = await api.connections();
-      } catch (e) {
-        return;
-      }
-      setRows(current);
-      const row = current.find((r) => r.server === server);
-      if ((row && row.status === "connected") || (popup && popup.closed)) {
-        clearInterval(poll.current);
-        poll.current = null;
-        setTimeout(refresh, 400);
-      }
-    }, 2000);
+    poll.current = setInterval(() => {
+      if (!popup.closed) return;
+      clearInterval(poll.current);
+      poll.current = null;
+      refresh();
+    }, 500);
   }
 
   function connect(server) {

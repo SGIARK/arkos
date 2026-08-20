@@ -17,6 +17,7 @@ import asyncpg
 
 from agent_module.events import Event, ToolCallEvent, ToolResultEvent, parse_event
 from db import pool
+from db.ids import as_uuid as _uuid
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,18 @@ async def _check_invariant(conn: asyncpg.Connection, session_id: str, event: Eve
             )
 
 
+async def open_calls(session_id: str) -> dict[str, str]:
+    """Return `{call_id: name}` for every tool_call this run left open.
+
+    Read-only, unlike `close_dangling`, because 11.7 has a case where an open
+    call must be settled rather than abandoned: a session parked on a gated call
+    resumes into it, and closing it first would throw away the thing the human
+    approved.
+    """
+    rows = await pool.fetch(_OPEN_CALLS, _uuid(session_id))
+    return {r["call_id"]: r["name"] for r in rows}
+
+
 async def close_dangling(session_id: str) -> list[StoredEvent]:
     """Closes every tool_call the run left open, with an `interrupted` result.
 
@@ -252,11 +265,3 @@ async def read_blob(ref: str, offset: int = 0, limit: int = 2000, *, user_id: st
     )
 
 
-def _uuid(value: str) -> uuid.UUID:
-    """Parses an id as a UUID, the key type throughout this schema."""
-    if isinstance(value, uuid.UUID):
-        return value
-    try:
-        return uuid.UUID(str(value))
-    except (ValueError, AttributeError, TypeError) as e:
-        raise ValueError(f"expected a UUID, got {value!r}") from e

@@ -14,9 +14,9 @@ resource until someone intervenes.
 from __future__ import annotations
 
 import logging
-import uuid
 
 from db import pool
+from db.ids import as_uuid as _uuid
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,3 @@ async def holder(resource_key: str) -> str | None:
     return str(held) if held else None
 
 
-def _uuid(value: str) -> uuid.UUID:
-    if isinstance(value, uuid.UUID):
-        return value
-    return uuid.UUID(str(value))

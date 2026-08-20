@@ -38,14 +38,13 @@ This document is the why and the build plan.
 **Status:** Tasks 0-8, 8.1-8.10, 9, LG-1 (+1.5-1.8) and LG-2 done ·
 Tasks **11.4, 11.5, 11.6 DONE 2026-08-20** (session window + tools popover +
 surface endpoints; backend MCP wiring; clock + tool-result timestamps) ·
-**11.8 item 4 (the files view) DONE 2026-08-20**, ahead of its card, and past
-what it asked for: folders that are durable when named, drag-to-rearrange, and
-the two endpoints under them (`POST /projects/{id}/folders`,
-`POST /projects/{id}/files/move` — both now contract rows) ·
-next **11.8 → 12**, with **11.7 unsequenced** (P1, the approval gate parks on
-the gated call — a Task 6 defect, no blockers, take it early; 11.8 added
-2026-08-20: the desk IA from the refreshed `new-frontend/` export — five
-views, project create/rename, chat bar removed) |
+next **11.7.5 → 11.8 → 12.1 → 12.2 → 12.3 → 13**, with **11.7 unsequenced** (P1, the
+approval gate parks on the gated call — a Task 6 defect, no blockers, take it
+early; 11.7.5 added 2026-08-20: the code review's P0 fixes + trim, see
+`docs/code_review_2026-08-20.md`; 11.8 added 2026-08-20, delta-only: project
+create + rename, chat removed; 12.1-12.3 added 2026-08-20, split from one
+card against the `sign-up/` export: auth screen + Google OAuth, on-brand
+auth emails, buddy rebrand) |
 **Author:** John Wallace | **Last updated:** 2026-08-20
 
 **Where things actually stand, for a session picking this up cold:**
@@ -54,7 +53,7 @@ views, project create/rename, chat bar removed) |
 |---|---|
 | Database | Supabase `sbtbbytesjobdpmqojlr`, migration 0 applied, 12 tables |
 | Model | hosted OpenAI, `gpt-4.1-mini` — `run_turn` verified end to end against it |
-| Suite | 509 collected, plus 7 unrun cases added to `tests/test_api.py` on 2026-08-20 (folders and moves) — written on a machine with no pytest and never executed, so treat the count and their colour as unverified until someone runs them. `integration`-marked tests (real e2b sandbox, real Supabase Storage) are deselected by default; `pytest -m integration` runs them |
+| Suite | 509 collected. `integration`-marked tests (real e2b sandbox, real Supabase Storage) are deselected by default; `pytest -m integration` runs them |
 | Store | Supabase Storage, private bucket `arkos`, created 2026-08-18. Project URL derives from `DB_URL`; `SUPABASE_SECRET_KEY` must be an `sb_secret_` key |
 | HTTP server | `harness_module/api.py`, `uvicorn harness_module.api:app`. Needs `SUPABASE_JWT_SECRET` and `ARK_SESSION_SECRET` |
 | Blocking decisions | none — endpoints, budgets, port, approval default, callback trigger all settled 2026-08-16/17 |
@@ -288,7 +287,7 @@ All interfaces, invariants, and the event vocabulary: **contracts.md**.
   prove insufficient in practice.
 
 **Not in scope:** model swap (config later), replacing browser_use, watching/
-triggers (scrapped, own future feature), multi-worker leasing (Task 13).
+triggers (scrapped, own future feature), multi-worker leasing (Task 15).
 
 **Deletion inventory:**
 
@@ -1178,7 +1177,7 @@ Looking Glass canvas and its progress is `status` events in the session window �
 so building the browser before the window means developing a live video pane
 over curl and finding the rendering problems later anyway. LG-1 is Task 9's
 consumer; it goes first. LG-1's first commit is the two carded stream bugs
-(SSE backlog paging, lifecycle publish-after-commit). Task 12 stays last:
+(SSE backlog paging, lifecycle publish-after-commit). Task 13 (frontend modernization, renumbered from 12) stays last:
 build tooling and polish, not function.
 
 ## Task 11.4: The new frontend — the designed surface lands, with the endpoints it reads
@@ -1437,90 +1436,180 @@ observe exactly one PR.
 Slack without asking") — Future Work; this card's grant machinery is their
 substrate. | **P1, 1-1.5d, no blockers** — a Task 6 defect, take it early.
 
+## Task 11.7.5
+**Title:** Fix the review's P0s and trim the duplication
+**Problem:** The 2026-08-20 code review (`docs/code_review_2026-08-20.md` —
+the working list for this card, file:line for every item) found one real bug
+in the fresh 11.7 code, one standing contracts violation, one missed publish,
+~600-700 lines of duplication and dead code, and three files the review
+could not see.
+**Done when:** (1) the three P0s are fixed — `_answer_by_message` refuses
+`kind == "call"` so composer prose can never silently decline a gated call
+(pin with a test: a message to a call-parked session 409s); the settings
+panel's 2s OAuth poll is replaced with recheck-on-popup-close +
+focus/visibility; `close_dangling` publishes at all five sites via one
+`publish_all` helper. (2) The P1 lists land: `_uuid` (12 copies) and `_cfg`
+(8 copies) each get one home; the dead store plumbing (snapshots section,
+`diff_tree`, `read_notes`, unused lease/stream/event members) is deleted
+after confirming no out-of-tree caller; api.py's copy-pasted shaping and
+ownership checks collapse into the helpers that already exist; the frontend's
+shared primitives (file tree, list row, snapshot-on-pulse hook, modal/scrim,
+escape/scroll hooks, one Dot) move to components.jsx and the 4x attention
+fetch becomes one. (3) The review re-runs over the three unseen files —
+`smithery.py`, `components.jsx`, `api.jsx` — and its findings are fixed or
+carded. P2 items (runner/store splits, blocking JWKS fetch, missing hints,
+`GET /health` contracts row) are done as encountered, not gated on.
+**Touch point:** per the review doc — `harness_module/*`, `tool_module/*`,
+`frontend/*`, `docs/contracts.md` (health row), tests.
+**Acceptance test:** the P0 pin tests pass; `grep -rn "def _uuid\|def _cfg"`
+returns one definition each; no `setInterval`/`setTimeout`-driven refetch
+anywhere in `frontend/`; the deleted store functions have no references;
+suite green; production line count reported before/after in the commit
+message.
+**Not this card:** restructuring beyond the named splits, and any new
+feature riding along.
+| **P1, 1-1.5d** | **Blockers:** 11.7 settled (its mid-flight residue is
+part of the trim).
+
 ## Task 11.8
-**Title:** Build the desk IA: five views, project create and rename
-**Problem:** The app lands in a bare chat window; projects cannot be created
-deliberately or renamed (they exist only as a side effect of `POST /sessions`
-and `PATCH`/`POST /projects` exist nowhere); and the design's desk, approvals,
-files, and chat surfaces are unbuilt.
-**Done when:** The shell matches the SECOND 2026-08-20 export under
-`new-frontend/` (ground truth — it omits chat entirely, no chat view and no
-ambient bar, and carries rename inline, so the two deviations this card
-briefly named are now the design itself). Broken down:
+**Title:** Add project create and rename; remove chat
+**Problem:** Projects cannot be created deliberately (only as a side effect
+of `POST /sessions`) or renamed at all, and the chat view + ambient bar still
+ship though the current design export removes them.
+**Done when:** Three deltas against the ACTIVE frontend (which already has
+the five-view nav, desk, approvals, files, projects grid, and session detail
+from 11.4 — none of that is this card), matching the second 2026-08-20
+export under `new-frontend/`:
 
-1. **Shell:** vertical rail nav — desk · approvals · files · projects —
-   active-view rule and color, pending pill in the top bar, dark toggle at the
-   rail's foot.
-2. **Desk is the landing:** three columns from existing endpoints — waiting on
-   you (attention cards with plan steps, tool chips, inline approve/decline;
-   user-scope `GET /attention`), running (live sessions with hop meter;
-   `GET /sessions?status=running`), projects (recent, status dot;
-   `GET /projects`).
-3. **Approvals view:** the same attention rows at user scope, resolvable
-   there — one row, wherever you see it (LG-2's three-scope law, no new
-   endpoint).
-4. **Files view — DONE 2026-08-20, ahead of this card.** Cross-project store
-   browser: project dropdown, +file / +folder, drag-drop with the drop-target
-   underline, reader with line numbers, edit/save/revert on text files through
-   the existing upload path. Two things went past what this item asked for,
-   and both are contract rows now, not implementation details:
-   - **Rearranging.** Rows are draggable; a drop is a move when it was lifted
-     from the tree and an upload when it came from the desktop.
-     `POST /projects/{id}/files/move` moves a file or a whole subtree in one
-     transaction — rows only, never blobs — and corrects every live box in the
-     same request, because flush commits what is on disk and a box left on the
-     old path would undo the move at the end of its turn.
-   - **An empty folder is durable when it is named.** `POST /projects/{id}/folders`
-     writes a zero-byte `.keep`, because the sandbox round trip carries files
-     and only files: a directory kept as a row of its own dies at the first
-     flush. Nothing about the tree lives in the browser.
-   **Left open, and pinned here rather than lost:** a move that lands in the
-   store and fails in a box leaves that session stale until it flushes, when
-   the old path wins. The user is told (`stale_sessions`, plus an `error` in
-   `system_events`); nothing repairs it. Closing it needs the project lease
-   held across the move, or flush verifying against the tree it materialized.
-   Unsequenced — it belongs with 11.7's parking work or later.
-   **Measure:** the design's `max-width` values are held as ratios of its 1320
-   content width (approvals 47%, chat 57.5%, lede 29%), and `.view` carries no
-   cap at all. That is a deliberate departure: the design caps every view at
-   1320px with no auto margin, which on a monitor wider than its canvas pins
-   the whole page to the left. Anything this card adds should follow the same
-   rule — the ratio is the design, the pixel was the canvas.
-5. **Projects index:** card grid (dot, name, when, dir, file count, state),
-   the corner plus button AND the dashed new-project card, both opening the
+1. **Create:** the corner plus and the dashed new-project card open the
    modal — name; "a new directory" (start empty) vs "an existing directory"
-   (store dirs dropdown); slug preview — `POST /projects` (contracts row in
-   the same commit), landing in the fresh project's session view with its
-   empty states (transcript, TODO, canvas all have designed empty text).
-6. **Rename:** `PATCH /projects/{id}` (contracts row), driven by the designed
-   affordance — double-click the project name on the index card or in the
-   session header (plus the hover "rename" button on cards); Enter or blur
-   commits, Escape cancels.
-7. **Chat is omitted by design.** No chat view, no ambient bar. The home
-   session (LG-1.7: `users.home_session_id`, its quota exemption) keeps
-   existing in the backend untouched, but has NO surface in this IA — the
-   buddy is unreachable from the UI until a future card decides its return
-   or its retirement. Noted here so the orphan is a recorded fact, not a
-   surprise.
+   (store dirs dropdown); slug preview — backed by `POST /projects`
+   (contracts row in the same commit), landing in the new project's session
+   view with the export's empty states.
+2. **Rename:** double-click the project name on the index card or the
+   session header (plus the hover "rename" button); Enter/blur commits,
+   Escape cancels — backed by `PATCH /projects/{id}` (contracts row).
+3. **Remove chat:** "chat" leaves the nav, `ChatView` and the ambient bar
+   (and the `bare`/no-ambient plumbing) are deleted. The home session
+   (LG-1.7 machinery) keeps existing backend-side with NO surface — the
+   buddy's return or retirement is a future card; recorded here so the
+   orphan is a fact, not a surprise.
 
-**Touch point:** frontend (all views), `api.py` + contracts
-(`POST /projects`, `PATCH /projects/{id}`; item 4's
-`POST /projects/{id}/folders` and `POST /projects/{id}/files/move` are in),
-`store.move_path` and `workspace.move_through`, design export at
-`new-frontend/`.
+**Touch point:** `frontend/lookingglass.jsx` (modal, rename), `app.jsx`
+(nav, ambient removal), `api.py` + contracts (`POST /projects`,
+`PATCH /projects/{id}`).
 **Acceptance test:** Create a project from the modal both ways and land in
-its empty session view; double-click its name in the grid AND in the session
-header, rename, and see the change everywhere it renders (grid, desk,
-header); resolve an attention row on the desk and watch it leave desk,
-approvals view, and the session window; drop a file in the files view, read
-it back with line numbers, edit and save a text file; no chat nav item and no
-ambient bar renders anywhere; nav marks the active view.
-**Not this card:** the tools popover and its endpoints (11.4), manifest
-enforcement (11.5), any approval-flow mechanics (11.7 — this card renders
-attention rows, it does not change how they park or resolve).
-| **P1, 2-3d** | **Blockers:** none (11.4 is done; same shell).
+its empty session view; double-click its name on the card AND in the header,
+rename, and see the change in grid, desk, and header; no chat nav item and
+no ambient bar renders anywhere; the home session receives nothing from any
+surface.
+**Not this card:** everything 11.4 already shipped (nav, desk, approvals,
+files view, tools popover); approval-flow mechanics (11.7).
+| **P1, 0.5-1d** | **Blockers:** none.
 
-## Task 12: Frontend modernization
+## Task 12.1
+**Title:** Build the auth screen: sign-up and Google OAuth
+**Problem:** The only way in is `signInWithPassword` against accounts nobody
+can create — no sign-up, no OAuth — and the sign-in screen is a bare form
+where the design (`sign-up/`, 2026-08-20 export, ground truth) specs a full
+pre-app auth surface.
+**Done when:** The auth screen matches the export — marketing panel left,
+auth card right with sign-up mode (name, username, password → "create
+account") and sign-in mode (username, password, "forgot") switching in
+place, the "or" divider, "continue with google". Sign-up is real: Supabase
+`signUp` with the name carried as user metadata into a `users.display_name`
+column (migration) so the buddy knows what to call them; the existing
+`POST /auth/session` exchange and first-login home-session path are
+unchanged and work for a brand-new account end to end. Google OAuth:
+`signInWithOAuth({provider: "google"})` → redirect back to `/app` → the SAME
+`POST /auth/session` token exchange and cookie — one session-establishment
+path; OAuth is only a different way to obtain the Supabase token. Provider
+side is config, not code (Google Cloud OAuth client, Supabase provider
+settings, redirect URLs), recorded in `.env.example`/`auth.md`, never in the
+repo; contracts' same-origin `/app` requirement holds through the redirect.
+**Touch point:** frontend (auth screen), one migration (`display_name`),
+`auth.md`, Supabase + Google Cloud config.
+**Acceptance test:** A brand-new user signs up with email+password, lands in
+their home session, name in `users.display_name`; signing up again with the
+same email is refused cleanly; a new user through Google lands identically
+with exactly one home session; sign-out and back in works both ways;
+`POST /auth/session` remains the only session-establishment endpoint (no
+second auth path in `api.py`).
+**Not this card:** magic links or other providers; the emails (12.2); any
+change to cookie/session mechanics.
+| **P1, 1d** | **Blockers:** 11.8 (the shell it lands in).
+
+## Task 12.2
+**Title:** Make the auth emails work and read on brand
+**Problem:** Sign-up and reset both ride on emails Supabase sends, and today
+those go from the dev-grade built-in sender with stock templates — off-brand,
+rate-limited to a handful of emails an hour, restricted to team addresses,
+and therefore a gate a real signup would hit.
+**What Supabase actually sends (so nobody re-derives it):** Auth owns six
+dashboard-editable templates — confirm signup, invite user, magic link,
+change email address, reset password, reauthentication — rendered
+server-side with Go-template variables (`{{ .ConfirmationURL }}`,
+`{{ .Token }}`, `{{ .SiteURL }}`); the links land on the configured Site URL
++ redirect allowlist. This card touches the two in use: confirm signup and
+reset password. There is NO email server, renderer, or template in this
+repo — subject and HTML live in the Supabase dashboard, delivery is SMTP
+config.
+**Done when:** A real SMTP sender replaces the built-in one in Supabase's
+SMTP settings, with SPF/DKIM on the sending domain. **v1 sender is Bluehost
+(owner, 2026-08-20)** — we already pay for it: a `noreply@` mailbox, its
+SMTP host/port/creds in the dashboard, SPF/DKIM set in cPanel. Known limits,
+accepted: ~150 outbound/hour (plenty for auth email at this scale), shared
+IP reputation, no bounce log. **Named escalation trigger:** the first
+spam-folder or missing-email report moves delivery to a transactional
+provider (Resend / Postmark / SES class) — a credential swap in the
+dashboard, zero code, so nothing else in this card changes. the confirm-signup and reset-password
+templates are re-skinned to the paper/mono voice (mono type, the accent
+green, buddy's tone — copy checked in under `docs/email_templates/` so the
+dashboard state has a reviewable source of truth); email confirmation is ON
+for password signups while Google users arrive pre-verified and skip it; the
+"forgot" link on the auth screen sends the reset email and the redirect
+target completes the new-password flow in the app. This reverses `auth.md`'s
+"no reset flow until there are users to self-serve" — sign-up IS self-serve,
+so the deferral's own condition has arrived; `auth.md` is amended in the
+same commit, and provider choice + creds are recorded in
+`auth.md`/`.env.example`, never in the repo.
+**Touch point:** Supabase dashboard (SMTP + templates + Site URL/redirects),
+`docs/email_templates/`, frontend (reset-completion screen), `auth.md`.
+**Acceptance test:** A fresh signup receives a confirm email from the
+custom domain (not the built-in sender), styled on brand, and the link lands
+in the app confirmed; "forgot" round-trips a reset and the new password
+signs in; a Google signup receives no confirmation email; SPF/DKIM verify on
+the sending domain.
+**Not this card:** the other four templates (magic link, invite, change
+email, reauthentication) — re-skin when a flow uses them.
+| **P1, 0.5d** | **Blockers:** 12.1 (the screen its links land on).
+
+## Task 12.3
+**Title:** Rebrand: every ark becomes b and buddy
+**Problem:** The product's name is settled (owner, 2026-08-20: buddy) and
+the app still says ark in the rail logo, top bar, composer prompt, page
+title, empty-state copy, and the system prompt's persona.
+**Done when:** Every user-visible and model-visible "ark" is gone: the rail
+logo (`a` → `b`, keeping the ping dot), "ark v1" in the top bar, the `ark>`
+composer prompt, the page title, empty-state and status copy, and
+`prompts.py`'s "You are ARK" — the model introduces itself as buddy.
+Internal identifiers (the arkos repo, module names, `ARK_SESSION_SECRET`)
+are NOT in scope; this is the name as users and the model meet it.
+**Touch point:** frontend (sweep), `agent_module/prompts.py` (persona).
+**Acceptance test:** A case-insensitive grep for "ark" over `frontend/` and
+the system prompt finds no user-visible or model-visible remnant (internal
+identifiers exempt); the model says buddy when asked its name.
+**Not this card, with its trigger named: the landing (`landing/`, on
+Vercel).** It has no same-origin constraint (only the app does, per
+contracts), so it never merges with the app — but the day 12.1-12.3 land it
+becomes the last surface saying ark AND its waitlist CTA dead-ends against
+open signup. That day, card the landing: rebrand to buddy, CTA → sign-up (or
+a deliberate invite gate), same paper/mono language as the auth screen's
+marketing panel.
+| **P1, 0.5d** | **Blockers:** none — runs last of the 12.x family by
+design: rebrand once, over finished surfaces.
+
+## Task 13: Frontend modernization (renumbered from 12 on 2026-08-20; the 12.x family is the sign-up/rebrand work)
 **Done when:** Vite build (production React, no runtime Babel, sub-1s paint);
 push everywhere (EventSource + Last-Event-ID), polling deleted; optimistic
 commands; motion + skeletons.
@@ -1571,7 +1660,7 @@ half is posture, and it gains two items:
   convenience. Until then the defense-in-depth budget is spent on the app role
   above, which does not fight the pooler or the userless system writes.
 
-## Task 13: Multi-worker safety (follow-up)
+## Task 15: Multi-worker safety (follow-up, renumbered from 13 on 2026-08-20)
 **Done when:** dispatch claims via conditional update / SKIP LOCKED; semaphore
 per worker; stale leases expire; **connection-cache invalidation crosses
 processes**.
@@ -1637,7 +1726,7 @@ the spine. Task-level acceptance tests live on each card above.
 - Watching/triggers (scrapped from this redesign; own feature).
 - Looking Glass two-way (operator tool takeover; hop-boundary arbitration).
 - Long-term memory reimplementation (direction in contracts.md).
-- Multi-process scale-out: N workers claiming tasks via leases (Task 13) +
+- Multi-process scale-out: N workers claiming tasks via leases (Task 15) +
   Postgres LISTEN/NOTIFY so any worker can serve any session's SSE stream.
 
 ---
@@ -1819,7 +1908,7 @@ remembered to seed. Neither of these was in the seed.
 Sandboxes were NOT reaped first. Four were alive (all paused since June); their
 handles are `ij06czr3ca5fl784k5lbe`, `iic0cu1gr3aqn9vt7pvub`,
 `ibwyx5gj6p8s9ieqohq88`, `i3u42o3ufy9ye7901yo1n` and the owner is killing them
-in the e2b console. Task 14 was NOT done first either; the risk was accepted
+in the e2b console. Task 14 (hardening) was NOT done first either; the risk was accepted
 knowingly, per the card.
 
 **2026-08-13 — Task 3d: a tool call never opens an OAuth flow.** The old
@@ -2144,7 +2233,7 @@ because they cost an hour each to rediscover:
   is unreachable". The transaction pooler is the way out, and `db/pool.py`'s
   `statement_cache_size=0` is already exactly what the pooler requires.
 
-**Consequence for Task 14.** That card is P0 and blocks 0c and Task 4 because the
+**Consequence for Task 14 (hardening).** That card is P0 and blocks 0c and Task 4 because the
 ark host's integrity was unestablished. The database half of that concern is now
 moot — this is a fresh managed project, not the box in question. The host-side
 items in `~/dev/vulnerabilities.md` stand on their own and are not addressed by

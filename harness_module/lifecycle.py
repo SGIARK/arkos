@@ -8,11 +8,11 @@ transaction and publishes it once that transaction has committed.
 from __future__ import annotations
 
 import logging
-import uuid
 from typing import Any, Literal
 
 from agent_module.events import DoneEvent, LifecycleEvent
 from db import pool
+from db.ids import as_uuid as _uuid
 from harness_module import session_log
 from harness_module.stream import stream
 
@@ -175,9 +175,10 @@ async def sweep_interrupted(reason: str = "interrupted") -> int:
         session_id = str(row["id"])
         try:
             # Dangling calls close first: a session holding one cannot be folded back
-            # into messages.
-            await session_log.close_dangling(session_id)
-            await session_log.append(session_id, DoneEvent(reason=reason))
+            # into messages. Published, like every other close: a watcher of a
+            # swept session would otherwise see its calls hang open forever.
+            stream.publish_all(session_id, await session_log.close_dangling(session_id))
+            stream.publish(session_id, await session_log.append(session_id, DoneEvent(reason=reason)))
             if await transition(session_id, "running", "failed", reason):
                 swept += 1
         except Exception:
@@ -187,10 +188,3 @@ async def sweep_interrupted(reason: str = "interrupted") -> int:
     return swept
 
 
-def _uuid(value: str) -> uuid.UUID:
-    if isinstance(value, uuid.UUID):
-        return value
-    try:
-        return uuid.UUID(str(value))
-    except (ValueError, AttributeError, TypeError) as e:
-        raise ValueError(f"expected a UUID, got {value!r}") from e

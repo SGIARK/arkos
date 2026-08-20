@@ -26,6 +26,7 @@ from agent_module.events import (
     ToolResultEvent,
     UserEvent,
 )
+from config_module.loader import cfg as _cfg
 from config_module.loader import config
 from model_module import client as model_client
 from model_module.errors import ModelError
@@ -39,9 +40,6 @@ Mode = Literal["attended", "unattended"]
 FINISH_TOOL = "finish_task"
 
 
-def _cfg(key: str, default: Any) -> Any:
-    value = config.get(key)
-    return default if value is None else value
 
 
 def _require(key: str) -> Any:

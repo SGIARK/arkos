@@ -1265,6 +1265,116 @@ async def test_the_disk_endpoints_are_scoped_to_the_session_owner(client, awake)
     assert read.status_code == 404
 
 
+# --- projects made and renamed deliberately (11.8) ---------------------------------
+
+
+async def test_a_project_can_be_created_on_its_own(client):
+    """Until now a project existed only as a side effect of starting a session."""
+    await _signed_in(client)
+
+    made = await client.post("/projects", json={"title": "weekend reading"})
+
+    assert made.status_code == 201
+    assert made.json()["title"] == "weekend reading"
+    assert made.json()["files"] == 0
+    # Not `== [...]`: first login makes the home session's own project (LG-1.7),
+    # so a fresh account already owns one.
+    assert "weekend reading" in [p["title"] for p in (await client.get("/projects")).json()]
+
+
+async def test_a_project_needs_a_name(client):
+    await _signed_in(client)
+
+    assert (await client.post("/projects", json={"title": "   "})).status_code == 400
+    assert (await client.post("/projects", json={})).status_code == 400
+
+
+async def test_seeding_copies_the_tree_and_leaves_the_source_alone(client):
+    """Blobs are content-addressed, so this costs a row per file and no bytes."""
+    user_id = await _signed_in(client)
+    source = str(await pool.fetchval(
+        "INSERT INTO projects (user_id, title) VALUES ($1, 'source') RETURNING id", uuid.UUID(user_id)
+    ))
+    for path in ("notes/a.md", "notes/deep/b.md", "elsewhere/c.md"):
+        await pool.execute(
+            "INSERT INTO project_files (project_id, path, content_hash, size, mtime) "
+            "VALUES ($1, $2, $3, $4, now())",
+            uuid.UUID(source), path, "h" * 64, 10,
+        )
+
+    made = await client.post(
+        "/projects", json={"title": "notes copy", "seed_from": {"project_id": source, "path": "notes"}}
+    )
+
+    assert made.status_code == 201
+    assert made.json()["files"] == 2, "the directory and its children, not the sibling"
+    copied = await client.get(f"/projects/{made.json()['id']}/files")
+    assert sorted(f["path"] for f in copied.json()) == ["notes/a.md", "notes/deep/b.md"]
+    still = await client.get(f"/projects/{source}/files")
+    assert len(still.json()) == 3, "the source is untouched"
+
+
+async def test_seeding_from_an_empty_directory_is_not_found(client):
+    user_id = await _signed_in(client)
+    source = str(await pool.fetchval(
+        "INSERT INTO projects (user_id, title) VALUES ($1, 'source') RETURNING id", uuid.UUID(user_id)
+    ))
+
+    made = await client.post(
+        "/projects", json={"title": "x", "seed_from": {"project_id": source, "path": "nothing"}}
+    )
+
+    assert made.status_code == 404
+
+
+async def test_seeding_from_someone_elses_project_is_not_found(client):
+    theirs = str(uuid.uuid4())
+    _seeded.append(uuid.UUID(theirs))
+    await pool.execute("INSERT INTO users (id) VALUES ($1)", uuid.UUID(theirs))
+    their_project = str(await pool.fetchval(
+        "INSERT INTO projects (user_id, title) VALUES ($1, 'theirs') RETURNING id", uuid.UUID(theirs)
+    ))
+    await _signed_in(client)
+
+    made = await client.post(
+        "/projects", json={"title": "x", "seed_from": {"project_id": their_project, "path": "notes"}}
+    )
+
+    assert made.status_code == 404
+
+
+async def test_a_project_can_be_renamed(client):
+    await _signed_in(client)
+    made = (await client.post("/projects", json={"title": "untitled"})).json()
+
+    renamed = await client.patch(f"/projects/{made['id']}", json={"title": "inbox triage"})
+
+    assert renamed.status_code == 200
+    assert renamed.json()["title"] == "inbox triage"
+    titles = [p["title"] for p in (await client.get("/projects")).json()]
+    assert "inbox triage" in titles and "untitled" not in titles
+
+
+async def test_renaming_someone_elses_project_is_not_found(client):
+    theirs = str(uuid.uuid4())
+    _seeded.append(uuid.UUID(theirs))
+    await pool.execute("INSERT INTO users (id) VALUES ($1)", uuid.UUID(theirs))
+    their_project = str(await pool.fetchval(
+        "INSERT INTO projects (user_id, title) VALUES ($1, 'theirs') RETURNING id", uuid.UUID(theirs)
+    ))
+    await _signed_in(client)
+
+    assert (await client.patch(f"/projects/{their_project}", json={"title": "mine now"})).status_code == 404
+
+
+async def test_a_rename_to_nothing_is_refused(client):
+    await _signed_in(client)
+    made = (await client.post("/projects", json={"title": "keep me"})).json()
+
+    assert (await client.patch(f"/projects/{made['id']}", json={"title": "  "})).status_code == 400
+    assert "keep me" in [p["title"] for p in (await client.get("/projects")).json()]
+
+
 # --- the app is served from the API's own origin ---------------------------------
 
 

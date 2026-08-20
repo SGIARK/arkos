@@ -67,9 +67,6 @@ class FrameBroker:
                 if not watchers:
                     del self._subscribers[key]
 
-    def watching(self, user_id: str, session_id: str) -> bool:
-        """Whether anyone is looking, so a run does not pay for frames nobody sees."""
-        return bool(self._subscribers.get((str(user_id), str(session_id))))
 
 
 broker = FrameBroker()

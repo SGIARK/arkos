@@ -8,15 +8,13 @@ from typing import Any
 
 import asyncpg
 
+from config_module.loader import cfg as _cfg
 from config_module.loader import config
 
 _pool: asyncpg.Pool | None = None
 _lock = asyncio.Lock()
 
 
-def _cfg(key: str, default: Any) -> Any:
-    value = config.get(key)
-    return default if value is None else value
 
 
 async def pool() -> asyncpg.Pool:

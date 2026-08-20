@@ -22,7 +22,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from config_module.loader import config
+from config_module.loader import cfg as _cfg
 from tool_module import session_tools
 from tool_module import tools as tools_package
 from tool_module.envelope import ResultEnvelope, Tool, ToolContext, ToolSpec, execute, fail
@@ -87,9 +87,6 @@ class Manifest:
         return [s for s in self.servers if s.benched]
 
 
-def _cfg(key: str, default: Any) -> Any:
-    value = config.get(key)
-    return default if value is None else value
 
 
 logger = logging.getLogger(__name__)

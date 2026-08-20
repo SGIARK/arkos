@@ -30,7 +30,7 @@ from openai import (
     UnprocessableEntityError,
 )
 
-from config_module.loader import config
+from config_module.loader import cfg as _cfg
 from model_module.errors import ModelError
 
 logger = logging.getLogger(__name__)
@@ -39,10 +39,6 @@ logger = logging.getLogger(__name__)
 Source = Literal["interactive", "background"]
 
 
-def _cfg(key: str, default: Any) -> Any:
-    """Read a config key, keeping falsy values such as temperature 0."""
-    value = config.get(key)
-    return default if value is None else value
 
 
 # --- deltas -----------------------------------------------------------------

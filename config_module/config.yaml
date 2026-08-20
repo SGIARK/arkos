@@ -44,9 +44,6 @@ store:
   # rather than a ${VAR}: an unset interpolation fails config load for the whole
   # process, including the parts that never touch the store.
   bucket: "arkos"
-  # Snapshots kept per project by scripts/snapshot_store.py. A snapshot is tree
-  # rows, so this is a cheap number to raise.
-  snapshot_keep: 14
   prefix: "arkos"
   root: ".arkos-store"
 

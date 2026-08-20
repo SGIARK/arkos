@@ -774,7 +774,8 @@ kbd {
   overflow: hidden;
   animation: pop .22s var(--ease) both;
 }
-@keyframes pop { from { opacity: 0; transform: translateY(6px); } }
+/* `pop` is defined once, in the design section above. This duplicate silently
+   overrode it for every earlier consumer, which is a bug wearing a style. */
 
 .tb-head { padding: 16px 18px 14px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
 .tb-head-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
@@ -940,3 +941,113 @@ kbd {
 }
 .cv-save:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); }
 .cv-save:disabled { opacity: .45; cursor: default; }
+
+/* A gated call awaiting a decision (11.7). Not a question card: the session is
+   parked with this exact call open, and the args shown are the ones that run. */
+.ev-gated .call { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 6px 0 8px; }
+.ev-gated .call .nm { font-size: 12.5px; color: var(--ink); }
+.ev-gated .call .age { font-size: 10.5px; color: var(--ink-mute); font-variant-numeric: tabular-nums; }
+.ev-gated .args {
+  margin: 0; padding: 9px 12px; border-radius: 6px;
+  background: var(--surface); border: 1px solid var(--accent-line);
+  font-family: var(--mono); font-size: 11px; line-height: 1.6; color: var(--ink-soft);
+  white-space: pre-wrap; max-height: 180px; overflow: auto;
+}
+
+/* =========================================================
+   projects: create and rename (11.8)
+   ========================================================= */
+.pg-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; }
+.pg-new {
+  flex-shrink: 0; width: 34px; height: 34px; border-radius: 50%;
+  border: 1px solid var(--ink-faint); background: var(--surface);
+  color: var(--ink-soft); font-size: 15px; font-family: var(--mono);
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+  transition: border-color .18s var(--ease), color .18s var(--ease), background .18s var(--ease);
+}
+.pg-new:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.proj-new {
+  border: 1px dashed var(--line); border-radius: 12px; min-height: 128px;
+  display: grid; place-items: center; cursor: pointer;
+  color: var(--ink-mute); font-size: 11.5px; font-style: italic;
+  transition: border-color .2s var(--ease), color .2s var(--ease);
+}
+.proj-new:hover { border-color: var(--ink-faint); color: var(--ink-soft); }
+
+/* The rename affordance is quiet until the card is hovered: a button on every
+   card at all times reads as the primary action, and opening is. */
+.pc-name { display: flex; align-items: baseline; gap: 6px; }
+.pc-name > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: text; }
+.pc-rename-btn {
+  flex-shrink: 0; font-size: 10.5px; color: var(--ink-faint); background: none;
+  border: none; font-family: var(--mono); padding: 2px 5px; border-radius: 4px;
+  cursor: text; opacity: 0; transition: opacity .15s var(--ease);
+}
+.proj-card:hover .pc-rename-btn { opacity: 1; }
+.pc-rename-btn:hover { color: var(--ink-soft); background: var(--surface-2); }
+.pc-rename {
+  width: 100%; background: var(--surface); border: 1px solid var(--accent-line);
+  border-radius: 5px; padding: 2px 7px; font-family: var(--mono);
+  font-size: 13px; color: var(--ink); outline: none; margin-bottom: 6px;
+}
+
+.np-over {
+  position: fixed; inset: 0; z-index: 900; display: grid; place-items: center; padding: 48px;
+  background: color-mix(in oklch, var(--paper) 55%, transparent);
+  backdrop-filter: blur(6px) saturate(1.1);
+}
+.np {
+  width: min(440px, 100%); border: 1px solid var(--ink-faint); border-radius: 12px;
+  background: var(--surface); overflow: hidden; box-shadow: var(--shadow-lift);
+  animation: pop .22s var(--ease) both;
+}
+.np-head { padding: 16px 20px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; }
+.np-x {
+  width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--line);
+  background: var(--surface); color: var(--ink-soft); font-size: 9px; cursor: pointer;
+  font-family: var(--mono); display: inline-flex; align-items: center; justify-content: center;
+}
+.np-x:hover { border-color: var(--ink-faint); color: var(--ink); }
+.np-body { padding: 20px; display: flex; flex-direction: column; gap: 20px; }
+.np-field { display: flex; flex-direction: column; gap: 9px; }
+.np-label { font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-mute); }
+.np-field input {
+  background: var(--paper); border: 1px solid var(--line); border-radius: 6px;
+  padding: 9px 11px; font-family: var(--mono); font-size: 13px; color: var(--ink); outline: none;
+}
+.np-field input:focus { border-color: var(--accent-line); background: var(--surface); }
+.np-pick {
+  display: flex; gap: 11px; align-items: flex-start; border: 1px solid var(--line);
+  background: var(--surface); border-radius: 7px; padding: 12px 13px; cursor: pointer;
+}
+.np-pick.on { border-color: var(--accent-line); background: var(--accent-soft); }
+.np-radio {
+  width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; margin-top: 2px;
+  border: 1px solid var(--ink-faint); background: var(--surface);
+}
+.np-pick.on .np-radio { border-color: var(--accent); box-shadow: inset 0 0 0 3px var(--accent); }
+.np-copy { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 0; }
+.np-copy .t { font-size: 12.5px; color: var(--ink); }
+.np-copy .s { font-size: 11px; color: var(--ink-mute); line-height: 1.5; }
+.np-copy select {
+  width: 100%; margin-top: 4px; background: var(--surface); border: 1px solid var(--line);
+  border-radius: 6px; padding: 7px 9px; font-family: var(--mono); font-size: 12px;
+  color: var(--ink); outline: none;
+}
+.np-foot {
+  border-top: 1px solid var(--line); background: var(--surface-2); padding: 12px 20px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.np-preview { font-size: 10px; color: var(--ink-mute); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.np-acts { display: flex; gap: 8px; flex-shrink: 0; }
+.np-cancel {
+  font-size: 11px; color: var(--ink-soft); padding: 6px 12px; border-radius: 6px;
+  cursor: pointer; border: 1px solid transparent; background: none; font-family: var(--mono);
+}
+.np-cancel:hover { border-color: var(--line); background: var(--surface); }
+.np-go {
+  font-size: 11px; border: 1px solid var(--ink); background: var(--ink); color: var(--paper);
+  padding: 6px 14px; border-radius: 6px; cursor: pointer; font-family: var(--mono);
+}
+.np-go:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); }
+.np-go:disabled { opacity: .45; cursor: default; }

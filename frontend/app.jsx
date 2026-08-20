@@ -8,12 +8,16 @@
 
    `projects` is the projects surface and only that; it was called "looking
    glass" until the 11.4 design renamed it to what it shows, and `computer`
-   became `files` for the same reason. The ambient bar at the bottom talks to
-   the home session, which is the standing conversation; projects hides it,
-   because a session's own composer is in its window.
+   became `files` for the same reason.
+
+   Chat and the ambient bar are GONE (11.8): the design export removed them, and
+   a session's own composer is where you talk to a session. The home session
+   (LG-1.7) still exists backend-side and now has no surface at all — the
+   buddy's return or retirement is a future card, and the orphan is recorded in
+   the spec rather than left to be discovered.
    ========================================================= */
 
-const NAV = ["desk", "approvals", "files", "projects", "chat"];
+const NAV = ["desk", "approvals", "files", "projects"];
 
 /* The hash a browser may still be holding from before the rename. Landing on
    the desk because a bookmark says "computer" would be a small betrayal of a
@@ -28,17 +32,18 @@ function App() {
   const [view, setView] = useState(() => {
     const hash = decodeURIComponent(location.hash.replace("#", ""));
     const named = NAV_ALIAS[hash] || hash;
-    return NAV.includes(named) ? named : "chat";
+    return NAV.includes(named) ? named : "projects";
   });
   const [settings, setSettings] = useState(false);
   const [error, setError] = useState(null);
-  const [floaters, setFloaters] = useState([]);
   // Bumped when something happened that the counts are made of.
   const [pulse, setPulse] = useState(0);
-  const [waiting, setWaiting] = useState([]);
+  // Fetched ONCE per pulse and passed down. Every surface that shows what is
+  // waiting shows the same unscoped list, and four components each fetching it
+  // was four identical requests on every change. Null means not yet read.
+  const [waiting, setWaiting] = useState(null);
   // A session opened from somewhere other than the grid — the desk, say.
   const [jump, setJump] = useState(null);
-  const inputRef = useRef(null);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -79,23 +84,8 @@ function App() {
     api.attention().then(setWaiting).catch(() => {});
   }, [user, pulse]);
 
-  useEffect(() => {
-    function key(e) {
-      if (e.key === "/" && document.activeElement !== inputRef.current) {
-        e.preventDefault();
-        if (inputRef.current) inputRef.current.focus();
-      }
-      if (e.key === "Escape") {
-        if (settings) setSettings(false);
-        else if (inputRef.current) {
-          inputRef.current.value = "";
-          inputRef.current.blur();
-        }
-      }
-    }
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  }, [settings]);
+  // `/` focused the ambient bar, which is gone; escape still closes settings.
+  useEscape(settings, () => setSettings(false));
 
   async function signIn(who) {
     setUser(who);
@@ -113,83 +103,21 @@ function App() {
     setTimeout(() => setUser(null), 450);
   }
 
-  /* The ambient bar speaks to the home session: one standing conversation,
-     reachable from every view. What is said floats up and folds away, and the
-     chat view has the durable copy. */
-  const home = user && user.home_session_id;
-
-  async function say(text) {
-    if (!home) return;
-    const id = "f" + Date.now();
-    setFloaters((f) => [...f, { id, who: "you", text }]);
-    setTimeout(() => {
-      setFloaters((f) => f.map((x) => (x.id === id ? { ...x, fold: true } : x)));
-      setTimeout(() => setFloaters((f) => f.filter((x) => x.id !== id)), 460);
-    }, 2400);
-    try {
-      await api.send(home, text);
-      bump();
-    } catch (e) {
-      onError(e);
-    }
-  }
-
-  function onKey(e) {
-    if (e.key === "Enter" && e.target.value.trim()) {
-      say(e.target.value.trim());
-      e.target.value = "";
-    }
-  }
-
   if (booting) return <div className="login" />;
   if (!user) return <Login gone={gone} onSignedIn={signIn} />;
 
-  const ambient = (
-    <div className="ambient">
-      <span className="prompt">ark&gt;</span>
-      <input
-        ref={inputRef}
-        spellCheck={false}
-        autoComplete="off"
-        placeholder="tell ark what to do. or just think out loud."
-        onKeyDown={onKey}
-      />
-      <div className="hints">
-        <span className="hint">
-          <kbd>/</kbd> focus
-        </span>
-        <span className="hint">
-          <kbd>enter</kbd> send
-        </span>
-        <span className="hint">
-          <kbd>esc</kbd> clear
-        </span>
-      </div>
-      <div className="floaters">
-        {floaters.map((f) => (
-          <div className={"floater" + (f.fold ? " fold" : "")} key={f.id}>
-            <span className="who">{f.who}</span>
-            {f.text}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-
   const views = {
-    desk: <DeskView onError={onError} pulse={pulse} onOpenSession={(id) => { setJump(id); setView("projects"); }} />,
-    approvals: <ApprovalsView onError={onError} pulse={pulse} />,
+    desk: <DeskView onError={onError} waiting={waiting} onOpenSession={(id) => { setJump(id); setView("projects"); }} />,
+    approvals: <ApprovalsView onError={onError} waiting={waiting} onResolved={bump} />,
     files: <ComputerView onError={onError} />,
-    projects: <LookingGlassView onError={onError} pulse={pulse} onPulse={bump} jump={jump} onJumped={() => setJump(null)} />,
-    chat: <ChatView sessionId={home} onError={onError} onPulse={bump} />,
+    projects: <LookingGlassView onError={onError} pulse={pulse} waiting={waiting} onPulse={bump} jump={jump} onJumped={() => setJump(null)} />,
   };
 
-  const pending = waiting.length;
-  const bare = view === "projects";
+  const pending = (waiting || []).length;
 
   return (
     <React.Fragment>
-      <div className={"app" + (bare ? " no-ambient" : "")}>
+      <div className="app no-ambient">
         <div className="rail">
           <div className="mark">
             <span className="glyph">a</span>
@@ -244,7 +172,6 @@ function App() {
           {views[view]}
         </main>
 
-        {!bare && ambient}
       </div>
 
       {settings && (

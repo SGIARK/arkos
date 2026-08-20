@@ -17,7 +17,7 @@ from typing import Any
 
 import aiohttp
 
-from config_module.loader import config
+from config_module.loader import cfg as _cfg
 from tool_module import connections as conns
 from tool_module.connections import CONNECTED, Connection
 from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, fail, ok
@@ -28,9 +28,6 @@ logger = logging.getLogger(__name__)
 _HTTP_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10)
 
 
-def _cfg(key: str, default: Any) -> Any:
-    value = config.get(key)
-    return default if value is None else value
 
 
 class AuthRequiredError(Exception):

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 
 from harness_module.session_log import StoredEvent
@@ -43,6 +43,18 @@ class SessionStream:
                 _drain(queue)
                 queue.put_nowait(LAGGED)
 
+    def publish_all(self, session_id: str, events: Iterable[StoredEvent]) -> None:
+        """Publish a batch, in order.
+
+        `close_dangling` returns events that were appended without being
+        published, and the append-then-publish pair was copy-pasted at five
+        call sites — where the fifth (`lifecycle.sweep_interrupted`) forgot the
+        publish, so a watcher of a swept session saw the calls hang open
+        forever. One helper is one place to forget it.
+        """
+        for event in events:
+            self.publish(session_id, event)
+
     @asynccontextmanager
     async def subscribe(self, session_id: str) -> AsyncIterator[asyncio.Queue[Item]]:
         """Attaches to a session's live events for the life of the context.
@@ -60,10 +72,6 @@ class SessionStream:
                 subscribers.discard(queue)
                 if not subscribers:
                     del self._subscribers[session_id]
-
-    def subscriber_count(self, session_id: str) -> int:
-        return len(self._subscribers.get(session_id, ()))
-
 
 def _drain(queue: asyncio.Queue[Item]) -> None:
     while True:

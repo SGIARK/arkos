@@ -1,0 +1,1056 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="crossorigin" />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" />
+<style>
+  html, body { height: 100%; margin: 0; background: #f7f6f1; color: #1c1b18; font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 13px; line-height: 1.55; -webkit-font-smoothing: antialiased; overflow: hidden; }
+  a { color: oklch(0.55 0.075 150); text-decoration: none; }
+  a:hover { color: #1c1b18; }
+  ::selection { background: oklch(0.55 0.075 150 / 0.12); }
+  @keyframes ping { 0% { box-shadow: 0 0 0 0 oklch(0.55 0.075 150 / 0.12); } 70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+  @keyframes pop { from { opacity: 0; transform: translateY(6px); } }
+  @keyframes blink { 50% { opacity: 0; } }
+</style>
+</helmet>
+
+<sc-if value="{{ authView }}" hint-placeholder-val="{{ true }}">
+  <div style="height: 100vh; display: grid; grid-template-columns: 1.05fr 1fr; background: #f7f6f1">
+    <div style="border-right: 1px solid #e6e3da; background: #fdfcf9; padding: 56px 56px 44px; display: flex; flex-direction: column; justify-content: space-between; min-width: 0">
+      <div style="display: flex; align-items: center; gap: 10px">
+        <span style="position: relative; display: inline-grid; place-items: center; width: 26px; height: 26px"><span style="font-weight: 700; font-size: 18px; letter-spacing: -0.04em">b</span><span style="position: absolute; top: -1px; right: -4px; width: 5px; height: 5px; border-radius: 50%; background: oklch(0.55 0.075 150); animation: ping 2.4s cubic-bezier(.4,0,.2,1) infinite"></span></span>
+        <span style="font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase; color: #97948a">buddy</span>
+      </div>
+      <div style="max-width: 460px">
+        <h1 style="margin: 0 0 18px; font-weight: 500; font-size: 38px; line-height: 1.08; letter-spacing: -0.03em; text-wrap: pretty">a digital intern<br />still on the job<br />next week.<span style="display: inline-block; width: 10px; height: 0.9em; vertical-align: -0.06em; background: oklch(0.55 0.075 150); margin-left: 6px; animation: blink 1.2s steps(1) infinite"></span></h1>
+        <p style="margin: 0; font-size: 13px; line-height: 1.75; color: #54524b; text-wrap: pretty">buddy works on a real computer and browser, with a persistent filesystem that survives between runs. workflows can span days, and it asks before anything leaves your account.</p>
+      </div>
+      <div style="display: flex; gap: 26px; font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #97948a">
+        <span>approvals first</span><span>disposable compute</span><span>durable storage</span>
+      </div>
+    </div>
+
+    <div style="display: grid; place-items: center; padding: 48px 40px; min-width: 0">
+      <div style="width: 100%; max-width: 348px; display: flex; flex-direction: column; gap: 22px">
+        <div style="display: flex; flex-direction: column; gap: 6px">
+          <span style="font-size: 10.5px; letter-spacing: 0.22em; text-transform: uppercase; color: #97948a">{{ authKicker }}</span>
+          <span style="font-size: 20px; font-weight: 500; letter-spacing: -0.02em">{{ authTitle }}</span>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 12px">
+          <sc-if value="{{ signingUp }}" hint-placeholder-val="{{ false }}">
+            <label style="display: flex; flex-direction: column; gap: 6px">
+              <span style="font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #97948a">name</span>
+              <input value="{{ authName }}" onChange="{{ onAuthName }}" spellCheck="{{ false }}" placeholder="what should buddy call you?" style="background: #fdfcf9; border: 1px solid #e6e3da; border-radius: 7px; padding: 10px 12px; font-family: inherit; font-size: 13px; color: #1c1b18; outline: none" style-focus="border-color: oklch(0.55 0.075 150 / 0.35)" />
+            </label>
+          </sc-if>
+          <label style="display: flex; flex-direction: column; gap: 6px">
+            <span style="font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #97948a">username</span>
+            <input value="{{ authUser }}" onChange="{{ onAuthUser }}" onKeyDown="{{ onAuthKey }}" spellCheck="{{ false }}" autoComplete="username" placeholder="nathaniel@buddy.computer" style="background: #fdfcf9; border: 1px solid #e6e3da; border-radius: 7px; padding: 10px 12px; font-family: inherit; font-size: 13px; color: #1c1b18; outline: none" style-focus="border-color: oklch(0.55 0.075 150 / 0.35)" />
+          </label>
+          <label style="display: flex; flex-direction: column; gap: 6px">
+            <span style="display: flex; align-items: baseline; justify-content: space-between; gap: 10px"><span style="font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #97948a">password</span><sc-if value="{{ signingIn }}" hint-placeholder-val="{{ true }}"><span style="font-size: 10.5px; color: #97948a; cursor: pointer; text-decoration: underline; text-underline-offset: 2px">forgot</span></sc-if></span>
+            <input value="{{ authPass }}" onChange="{{ onAuthPass }}" onKeyDown="{{ onAuthKey }}" type="password" autoComplete="current-password" placeholder="••••••••" style="background: #fdfcf9; border: 1px solid #e6e3da; border-radius: 7px; padding: 10px 12px; font-family: inherit; font-size: 13px; color: #1c1b18; outline: none" style-focus="border-color: oklch(0.55 0.075 150 / 0.35)" />
+          </label>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 11px">
+          <span onClick="{{ submitAuth }}" style="text-align: center; font-size: 12.5px; border: 1px solid #1c1b18; background: #1c1b18; color: #f7f6f1; padding: 10px 14px; border-radius: 7px; cursor: pointer" style-hover="background: oklch(0.55 0.075 150); border-color: oklch(0.55 0.075 150)">{{ authCta }}</span>
+          <div style="display: flex; align-items: center; gap: 12px; color: #c4c1b6; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase"><span style="flex: 1; height: 1px; background: #e6e3da"></span>or<span style="flex: 1; height: 1px; background: #e6e3da"></span></div>
+          <span onClick="{{ submitAuth }}" style="display: flex; align-items: center; justify-content: center; gap: 9px; font-size: 12.5px; border: 1px solid #e6e3da; background: #fdfcf9; color: #1c1b18; padding: 10px 14px; border-radius: 7px; cursor: pointer" style-hover="border-color: #c4c1b6; background: #f1efe8"><span style="width: 15px; height: 15px; border-radius: 50%; border: 1px solid #c4c1b6; display: inline-grid; place-items: center; font-size: 9px; font-weight: 700; color: #54524b">G</span>continue with google</span>
+        </div>
+
+        <div style="font-size: 11.5px; color: #97948a; text-align: center; line-height: 1.6">{{ authSwitchNote }} <span onClick="{{ switchAuth }}" style="color: oklch(0.55 0.075 150); cursor: pointer; text-decoration: underline; text-underline-offset: 2px">{{ authSwitchCta }}</span></div>
+      </div>
+    </div>
+  </div>
+</sc-if>
+
+<sc-if value="{{ appView }}" hint-placeholder-val="{{ false }}">
+<div style="height: 100vh; display: grid; grid-template-columns: 62px 1fr; grid-template-rows: 60px 1fr auto; background: #f7f6f1">
+
+  <div style="grid-row: 1 / -1; border-right: 1px solid #e6e3da; background: #fdfcf9; display: flex; flex-direction: column; align-items: center; padding: 18px 0 16px; gap: 6px">
+    <div style="position: relative; width: 26px; height: 26px; display: grid; place-items: center; margin-bottom: 14px">
+      <span style="font-weight: 700; font-size: 16px; letter-spacing: -0.04em">b</span>
+      <span style="position: absolute; top: -1px; right: -3px; width: 5px; height: 5px; border-radius: 50%; background: oklch(0.55 0.075 150); animation: ping 2.4s cubic-bezier(.4,0,.2,1) infinite"></span>
+    </div>
+    <nav style="display: flex; flex-direction: column; align-items: center; gap: 2px; flex: 1">
+      <span onClick="{{ goDesk }}" style="writing-mode: vertical-rl; rotate: 180deg; font-size: 11px; letter-spacing: 0.14em; padding: 11px 0; cursor: pointer; position: relative; display: flex; justify-content: center; width: 100%; color: {{ deskNavColor }}">desk<span style="position: absolute; left: -4px; top: 11px; bottom: 11px; width: 2px; background: {{ deskNavRule }}"></span></span>
+      <span onClick="{{ goApprovals }}" style="writing-mode: vertical-rl; rotate: 180deg; font-size: 11px; letter-spacing: 0.14em; padding: 11px 0; cursor: pointer; position: relative; display: flex; justify-content: center; width: 100%; color: {{ apprNavColor }}">approvals<span style="position: absolute; left: -4px; top: 11px; bottom: 11px; width: 2px; background: {{ apprNavRule }}"></span></span>
+      <span onClick="{{ goFiles }}" style="writing-mode: vertical-rl; rotate: 180deg; font-size: 11px; letter-spacing: 0.14em; padding: 11px 0; cursor: pointer; position: relative; display: flex; justify-content: center; width: 100%; color: {{ filesNavColor }}">files<span style="position: absolute; left: -4px; top: 11px; bottom: 11px; width: 2px; background: {{ filesNavRule }}"></span></span>
+      <span onClick="{{ goProjects }}" style="writing-mode: vertical-rl; rotate: 180deg; font-size: 11px; letter-spacing: 0.14em; padding: 11px 0; cursor: pointer; position: relative; display: flex; justify-content: center; width: 100%; color: {{ projNavColor }}">projects<span style="position: absolute; left: -4px; top: 11px; bottom: 11px; width: 2px; background: {{ projNavRule }}"></span></span>
+    </nav>
+    <span style="writing-mode: vertical-rl; rotate: 180deg; font-size: 10px; letter-spacing: 0.12em; color: #97948a; padding: 4px 0">dark</span>
+  </div>
+
+  <div style="border-bottom: 1px solid #e6e3da; background: #fdfcf9; display: flex; align-items: center; justify-content: space-between; padding: 0 28px">
+    <div style="display: flex; align-items: baseline; gap: 22px; font-size: 12px; color: #97948a">
+      <span>buddy <b style="color: #54524b; font-weight: 500">v1</b></span>
+      <span style="color: #c4c1b6">/</span>
+      <span>user <b style="color: #54524b; font-weight: 500">{{ whoami }}</b></span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 8px">
+      <span onClick="{{ goApprovals }}" style="display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 100px; font-size: 11px; background: #fdfcf9; cursor: pointer; border: 1px solid {{ pillLine }}; color: {{ pillColor }}">{{ pendingCount }} pending</span>
+      <span style="color: #97948a; font-size: 12px; padding: 6px 8px; cursor: pointer" style-hover="color: #1c1b18">settings</span>
+      <span onClick="{{ signOut }}" style="color: #97948a; font-size: 12px; padding: 6px 8px; cursor: pointer" style-hover="color: #1c1b18">sign out</span>
+    </div>
+  </div>
+
+  <main style="min-height: 0; overflow: hidden; display: flex; flex-direction: column">
+    <sc-if value="{{ deskView }}" hint-placeholder-val="{{ false }}">
+      <div style="flex: 1; min-height: 0; overflow-y: auto"><div style="padding: 46px 56px 64px; max-width: 1320px">
+        <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: 40px; margin-bottom: 52px">
+          <h1 style="margin: 0; font-weight: 500; font-size: 30px; letter-spacing: -0.025em; line-height: 1.05">the desk<span style="display: inline-block; width: 9px; height: 0.92em; vertical-align: -0.06em; background: oklch(0.55 0.075 150); margin-left: 5px; animation: blink 1.2s steps(1) infinite"></span></h1>
+          <div style="color: #97948a; font-size: 12.5px; max-width: 380px; text-align: right; line-height: 1.6; text-wrap: pretty">what is waiting on you, what is running, and where the work lives. nothing moves without your say-so.</div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1.25fr 1fr 0.95fr">
+          <section style="padding-right: 34px; min-width: 0">
+            <header style="display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 22px">
+              <span style="font-size: 10.5px; letter-spacing: 0.22em; text-transform: uppercase; color: #97948a; font-weight: 500">waiting on you</span>
+              <span style="font-size: 11px; color: #97948a; font-variant-numeric: tabular-nums">{{ pendingCount }}</span>
+            </header>
+            <div style="display: flex; flex-direction: column; gap: 12px">
+              <sc-for list="{{ approvals }}" as="a" hint-placeholder-count="2">
+                <div style="border: 1px solid #e6e3da; background: #fdfcf9; border-radius: 7px; padding: 16px 16px 14px" style-hover="border-color: #c4c1b6; box-shadow: 0 1px 2px rgba(28,27,24,.03), 0 12px 32px -20px rgba(28,27,24,.18)">
+                  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 11px">
+                    <span style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #54524b"><span style="width: 6px; height: 6px; border-radius: 50%; background: {{ a.dot }}"></span>{{ a.source }}</span>
+                    <span style="font-size: 10.5px; color: #97948a; font-variant-numeric: tabular-nums">{{ a.when }}</span>
+                  </div>
+                  <div style="font-size: 13px; color: #1c1b18; line-height: 1.45; margin-bottom: 4px; text-wrap: pretty">{{ a.title }}</div>
+                  <div style="font-size: 12px; color: #54524b; line-height: 1.55; text-wrap: pretty">{{ a.body }}</div>
+                  <div style="margin: 12px 0; border-left: 2px solid oklch(0.55 0.075 150 / 0.35); background: #f1efe8; border-radius: 0 5px 5px 0; padding: 11px 13px; font-size: 11.5px; color: #54524b; line-height: 1.7">
+                    <ol style="margin: 0; padding-left: 18px"><sc-for list="{{ a.plan }}" as="step" hint-placeholder-count="3"><li style="margin-bottom: 3px">{{ step }}</li></sc-for></ol>
+                    <div style="margin-top: 9px; display: flex; flex-wrap: wrap; gap: 6px"><sc-for list="{{ a.tools }}" as="t" hint-placeholder-count="2"><span style="font-size: 10px; color: #97948a; border: 1px solid #e6e3da; background: #fdfcf9; padding: 2px 7px; border-radius: 100px">{{ t }}</span></sc-for></div>
+                  </div>
+                  <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 13px; align-items: center">
+                    <span onClick="{{ a.decline }}" style="font-size: 11px; border: 1px solid transparent; color: #54524b; padding: 6px 12px; border-radius: 6px; cursor: pointer" style-hover="border-color: #e6e3da; background: #f1efe8">decline</span>
+                    <span onClick="{{ a.approve }}" style="font-size: 11px; border: 1px solid #1c1b18; background: #1c1b18; color: #f7f6f1; padding: 6px 12px; border-radius: 6px; cursor: pointer" style-hover="background: oklch(0.55 0.075 150); border-color: oklch(0.55 0.075 150)">approve</span>
+                  </div>
+                </div>
+              </sc-for>
+              <sc-if value="{{ noApprovals }}" hint-placeholder-val="{{ false }}">
+                <div style="border: 1px dashed #e6e3da; border-radius: 7px; padding: 30px 20px; text-align: center; color: #97948a; font-size: 12px; font-style: italic"><span style="display: block; font-style: normal; color: #c4c1b6; font-size: 18px; margin-bottom: 8px">✓</span>nothing waiting on you</div>
+              </sc-if>
+            </div>
+          </section>
+
+          <section style="padding: 0 34px; min-width: 0; border-left: 1px solid #e6e3da">
+            <header style="display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 22px">
+              <span style="font-size: 10.5px; letter-spacing: 0.22em; text-transform: uppercase; color: #97948a; font-weight: 500">running</span>
+              <span style="font-size: 11px; color: #97948a; font-variant-numeric: tabular-nums">2</span>
+            </header>
+            <div style="display: flex; flex-direction: column; gap: 12px">
+              <div onClick="{{ goProjects }}" style="border: 1px solid #e6e3da; background: #fdfcf9; border-radius: 7px; padding: 13px 15px; display: flex; align-items: center; gap: 13px; font-size: 12.5px; cursor: pointer" style-hover="border-color: #c4c1b6">
+                <span style="display: flex; align-items: center; gap: 11px; min-width: 0; flex: 1"><span style="width: 11px; height: 11px; border: 1.5px solid oklch(0.55 0.075 150 / 0.35); border-top-color: oklch(0.55 0.075 150); border-radius: 50%; flex-shrink: 0"></span><span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #1c1b18">clear the weekend backlog<span style="color: #97948a"> · inbox triage</span></span></span>
+                <span style="color: #97948a; font-size: 10.5px; font-variant-numeric: tabular-nums; flex-shrink: 0">7/24</span>
+              </div>
+              <div onClick="{{ goProjects }}" style="border: 1px solid #e6e3da; background: #fdfcf9; border-radius: 7px; padding: 13px 15px; display: flex; align-items: center; gap: 13px; font-size: 12.5px; cursor: pointer" style-hover="border-color: #c4c1b6">
+                <span style="display: flex; align-items: center; gap: 11px; min-width: 0; flex: 1"><span style="width: 11px; height: 11px; border: 1.5px solid oklch(0.55 0.075 150 / 0.35); border-top-color: oklch(0.55 0.075 150); border-radius: 50%; flex-shrink: 0"></span><span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #1c1b18">summarize the ops thread<span style="color: #97948a"> · weekend reading</span></span></span>
+                <span style="color: #97948a; font-size: 10.5px; font-variant-numeric: tabular-nums; flex-shrink: 0">2/24</span>
+              </div>
+            </div>
+          </section>
+
+          <section style="padding-left: 34px; min-width: 0; border-left: 1px solid #e6e3da">
+            <header style="display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 22px">
+              <span style="font-size: 10.5px; letter-spacing: 0.22em; text-transform: uppercase; color: #97948a; font-weight: 500">projects</span>
+              <span style="font-size: 11px; color: #97948a; font-variant-numeric: tabular-nums">3</span>
+            </header>
+            <div style="display: flex; flex-direction: column; gap: 12px">
+              <div onClick="{{ goProjects }}" style="border: 1px solid #e6e3da; background: #fdfcf9; border-radius: 7px; padding: 13px 15px; display: flex; align-items: center; gap: 13px; font-size: 12.5px; cursor: pointer" style-hover="border-color: #c4c1b6"><span style="display: flex; align-items: center; gap: 11px; min-width: 0; flex: 1"><span style="width: 6px; height: 6px; border-radius: 50%; background: oklch(0.55 0.075 150); flex-shrink: 0"></span><span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #1c1b18">inbox triage</span></span><span style="color: #97948a; font-size: 10.5px; flex-shrink: 0">2m ago</span></div>
+              <div onClick="{{ goProjects }}" style="border: 1px solid #e6e3da; background: #fdfcf9; border-radius: 7px; padding: 13px 15px; display: flex; align-items: center; gap: 13px; font-size: 12.5px; cursor: pointer" style-hover="border-color: #c4c1b6"><span style="display: flex; align-items: center; gap: 11px; min-width: 0; flex: 1"><span style="width: 6px; height: 6px; border-radius: 50%; background: oklch(0.66 0.085 75); flex-shrink: 0"></span><span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #1c1b18">weekend reading</span></span><span style="color: #97948a; font-size: 10.5px; flex-shrink: 0">1h ago</span></div>
+              <div onClick="{{ goProjects }}" style="border: 1px solid #e6e3da; background: #fdfcf9; border-radius: 7px; padding: 13px 15px; display: flex; align-items: center; gap: 13px; font-size: 12.5px; cursor: pointer" style-hover="border-color: #c4c1b6"><span style="display: flex; align-items: center; gap: 11px; min-width: 0; flex: 1"><span style="width: 6px; height: 6px; border-radius: 50%; background: #c4c1b6; flex-shrink: 0"></span><span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #1c1b18">arkos</span></span><span style="color: #97948a; font-size: 10.5px; flex-shrink: 0">2d ago</span></div>
+            </div>
+          </section>
+        </div>
+      </div></div>
+    </sc-if>
+
+    <sc-if value="{{ apprView }}" hint-placeholder-val="{{ false }}">
+      <div style="flex: 1; min-height: 0; overflow-y: auto"><div style="padding: 46px 56px 64px; max-width: 1320px">
+        <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: 40px; margin-bottom: 52px">
+          <h1 style="margin: 0; font-weight: 500; font-size: 30px; letter-spacing: -0.025em; line-height: 1.05">approvals<span style="display: inline-block; width: 9px; height: 0.92em; vertical-align: -0.06em; background: oklch(0.55 0.075 150); margin-left: 5px; animation: blink 1.2s steps(1) infinite"></span></h1>
+          <div style="color: #97948a; font-size: 12.5px; max-width: 380px; text-align: right; line-height: 1.6; text-wrap: pretty">questions a run stopped to ask. answering here is answering in its window, one row wherever you see it.</div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 12px; max-width: 620px">
+          <sc-for list="{{ approvals }}" as="a" hint-placeholder-count="2">
+            <div style="border: 1px solid #e6e3da; background: #fdfcf9; border-radius: 7px; padding: 16px 16px 14px" style-hover="border-color: #c4c1b6; box-shadow: 0 1px 2px rgba(28,27,24,.03), 0 12px 32px -20px rgba(28,27,24,.18)">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 11px">
+                <span style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #54524b"><span style="width: 6px; height: 6px; border-radius: 50%; background: {{ a.dot }}"></span>{{ a.source }}</span>
+                <span style="display: flex; align-items: center; gap: 10px"><span style="font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: oklch(0.55 0.075 150); border: 1px solid oklch(0.55 0.075 150 / 0.35); padding: 2px 7px; border-radius: 100px">{{ a.kind }}</span><span style="font-size: 10.5px; color: #97948a">{{ a.when }}</span></span>
+              </div>
+              <div style="font-size: 13px; color: #1c1b18; line-height: 1.45; margin-bottom: 4px; text-wrap: pretty">{{ a.title }}</div>
+              <div style="font-size: 12px; color: #54524b; line-height: 1.55; text-wrap: pretty">{{ a.body }}</div>
+              <div style="margin: 12px 0; border-left: 2px solid oklch(0.55 0.075 150 / 0.35); background: #f1efe8; border-radius: 0 5px 5px 0; padding: 11px 13px; font-size: 11.5px; color: #54524b; line-height: 1.7">
+                <ol style="margin: 0; padding-left: 18px"><sc-for list="{{ a.plan }}" as="step" hint-placeholder-count="3"><li style="margin-bottom: 3px">{{ step }}</li></sc-for></ol>
+                <div style="margin-top: 9px; display: flex; flex-wrap: wrap; gap: 6px"><sc-for list="{{ a.tools }}" as="t" hint-placeholder-count="2"><span style="font-size: 10px; color: #97948a; border: 1px solid #e6e3da; background: #fdfcf9; padding: 2px 7px; border-radius: 100px">{{ t }}</span></sc-for></div>
+              </div>
+              <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 13px; align-items: center">
+                <span style="flex: 1; font-size: 10.5px; color: #97948a">{{ a.session }}</span>
+                <span onClick="{{ a.decline }}" style="font-size: 11px; border: 1px solid transparent; color: #54524b; padding: 6px 12px; border-radius: 6px; cursor: pointer" style-hover="border-color: #e6e3da; background: #f1efe8">decline</span>
+                <span onClick="{{ a.approve }}" style="font-size: 11px; border: 1px solid #1c1b18; background: #1c1b18; color: #f7f6f1; padding: 6px 12px; border-radius: 6px; cursor: pointer" style-hover="background: oklch(0.55 0.075 150); border-color: oklch(0.55 0.075 150)">approve</span>
+              </div>
+            </div>
+          </sc-for>
+          <sc-if value="{{ noApprovals }}" hint-placeholder-val="{{ false }}">
+            <div style="border: 1px dashed #e6e3da; border-radius: 7px; padding: 30px 20px; text-align: center; color: #97948a; font-size: 12px; font-style: italic"><span style="display: block; font-style: normal; color: #c4c1b6; font-size: 18px; margin-bottom: 8px">✓</span>all caught up. nothing waiting on you</div>
+          </sc-if>
+        </div>
+      </div></div>
+    </sc-if>
+
+    <sc-if value="{{ filesView }}" hint-placeholder-val="{{ false }}">
+      <div onDragOver="{{ onDragOver }}" onDragLeave="{{ onDragLeave }}" onDrop="{{ onDrop }}" style="position: relative; flex: 1; min-height: 0; display: grid; grid-template-columns: 264px 1fr">
+        <sc-if value="{{ dragging }}" hint-placeholder-val="{{ false }}">
+          <div style="position: absolute; inset: 12px; z-index: 60; pointer-events: none; border: 1px dashed oklch(0.55 0.075 150 / 0.35); border-radius: 12px; background: oklch(0.55 0.075 150 / 0.12); display: grid; place-items: center">
+            <span style="font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: oklch(0.55 0.075 150); background: #fdfcf9; border: 1px solid oklch(0.55 0.075 150 / 0.35); border-radius: 100px; padding: 7px 16px">drop to add to inbox triage</span>
+          </div>
+        </sc-if>
+        <div style="border-right: 1px solid #e6e3da; display: flex; flex-direction: column; min-height: 0; background: #fdfcf9">
+          <div style="padding: 10px 18px; border-bottom: 1px solid #e6e3da; flex-shrink: 0">
+            <select style="width: 100%; background: #fdfcf9; color: #1c1b18; border: 1px solid #e6e3da; border-radius: 6px; padding: 6px 8px; font-family: inherit; font-size: 11.5px; outline: none">
+              <option>inbox triage</option>
+              <option>arkos</option>
+              <option>weekend reading</option>
+            </select>
+          </div>
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 18px; border-bottom: 1px solid #e6e3da; flex-shrink: 0">
+            <span style="font-size: 11px; color: #54524b">{{ fileCount }}</span>
+            <span style="display: flex; align-items: center; gap: 6px; flex-shrink: 0">
+              <label title="attach files to this project" style="font-size: 10.5px; border: 1px solid #e6e3da; background: #fdfcf9; color: #54524b; padding: 3px 10px; border-radius: 6px; cursor: pointer" style-hover="border-color: #c4c1b6; color: #1c1b18">+ file<input type="file" multiple="{{ true }}" hidden="{{ true }}" onChange="{{ onPick }}" /></label>
+              <span onClick="{{ startFolder }}" title="new folder" style="font-size: 10.5px; border: 1px solid #e6e3da; background: #fdfcf9; color: #54524b; padding: 3px 10px; border-radius: 6px; cursor: pointer" style-hover="border-color: #c4c1b6; color: #1c1b18">+ folder</span>
+            </span>
+          </div>
+          <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 8px 0">
+            <sc-if value="{{ creating }}" hint-placeholder-val="{{ false }}">
+              <div style="display: flex; align-items: center; gap: 9px; padding: 5px 18px">
+                <span style="color: #97948a; width: 12px; flex-shrink: 0">▸</span>
+                <input value="{{ newName }}" onChange="{{ onNewName }}" onKeyDown="{{ onNewKey }}" onBlur="{{ commitFolder }}" autoFocus="{{ true }}" spellCheck="{{ false }}" placeholder="folder name" style="flex: 1; min-width: 0; background: #fdfcf9; border: 1px solid oklch(0.55 0.075 150 / 0.35); border-radius: 5px; padding: 3px 8px; font-family: inherit; font-size: 12px; color: #1c1b18; outline: none" />
+              </div>
+            </sc-if>
+            <sc-for list="{{ rows }}" as="r" hint-placeholder-count="8">
+              <div onClick="{{ r.click }}" onDragOver="{{ r.dragOver }}" title="{{ r.path }}" style="display: flex; align-items: center; gap: 10px; justify-content: space-between; padding: 6px 18px 6px {{ r.pad }}; cursor: pointer; font-size: 12px; color: {{ r.color }}; background: {{ r.bg }}; box-shadow: {{ r.bar }}" style-hover="background: #f1efe8; color: #1c1b18">
+                <span style="display: flex; align-items: center; gap: 9px; min-width: 0">
+                  <span style="color: #97948a; width: 12px; flex-shrink: 0">{{ r.glyph }}</span>
+                  <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ r.name }}</span>
+                </span>
+                <span style="font-size: 10px; color: #97948a; flex-shrink: 0">{{ r.meta }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; min-height: 0; background: #f7f6f1">
+          <div style="padding: 11px 22px; border-bottom: 1px solid #e6e3da; flex-shrink: 0; font-size: 11px; color: #97948a; display: flex; justify-content: space-between; align-items: center; gap: 14px">
+            <span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ openPath }}<span style="color: oklch(0.55 0.075 150)">{{ dirtyMark }}</span></span>
+            <span style="display: flex; align-items: center; gap: 10px; flex-shrink: 0">
+              <span>{{ openSize }}</span>
+              <sc-if value="{{ canEdit }}" hint-placeholder-val="{{ true }}">
+                <span onClick="{{ toggleEdit }}" style="font-size: 10.5px; border: 1px solid #e6e3da; background: #fdfcf9; color: #54524b; padding: 4px 11px; border-radius: 6px; cursor: pointer" style-hover="border-color: #c4c1b6; color: #1c1b18">{{ editLabel }}</span>
+              </sc-if>
+              <sc-if value="{{ dirty }}" hint-placeholder-val="{{ false }}">
+                <span onClick="{{ revert }}" style="font-size: 10.5px; color: #97948a; cursor: pointer; text-decoration: underline; text-underline-offset: 2px">revert</span>
+              </sc-if>
+            </span>
+          </div>
+          <sc-if value="{{ editing }}" hint-placeholder-val="{{ false }}">
+            <textarea value="{{ draft }}" onChange="{{ onEdit }}" spellCheck="{{ false }}" style="flex: 1; min-height: 0; resize: none; border: none; outline: none; background: #fdfcf9; color: #1c1b18; font-family: inherit; font-size: 12px; line-height: 1.75; padding: 22px 26px 22px 62px"></textarea>
+            <div style="flex-shrink: 0; border-top: 1px solid #e6e3da; background: #fdfcf9; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 22px">
+              <span style="font-size: 10px; color: #97948a">{{ editNote }}</span>
+              <span onClick="{{ save }}" style="font-size: 11px; background: #1c1b18; border: 1px solid #1c1b18; color: #f7f6f1; padding: 6px 14px; border-radius: 6px; cursor: pointer" style-hover="background: oklch(0.55 0.075 150); border-color: oklch(0.55 0.075 150)">save</span>
+            </div>
+          </sc-if>
+          <sc-if value="{{ reading }}" hint-placeholder-val="{{ true }}">
+          <div style="flex: 1; overflow: auto; padding: 22px 26px; font-size: 12px; line-height: 1.75; color: #54524b"><sc-for list="{{ lines }}" as="l" hint-placeholder-count="12"><div style="white-space: pre-wrap; word-break: break-word"><span style="color: #c4c1b6; user-select: none; margin-right: 18px; white-space: pre">{{ l.n }}</span>{{ l.text }}</div></sc-for></div>
+          </sc-if>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ projIndex }}" hint-placeholder-val="{{ false }}">
+      <div style="flex: 1; min-height: 0; overflow-y: auto"><div style="padding: 46px 56px 64px; max-width: 1320px">
+        <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: 40px; margin-bottom: 46px">
+          <div>
+            <h1 style="margin: 0 0 8px; font-weight: 500; font-size: 30px; letter-spacing: -0.025em; line-height: 1.05">projects<span style="display: inline-block; width: 9px; height: 0.92em; vertical-align: -0.06em; background: oklch(0.55 0.075 150); margin-left: 5px; animation: blink 1.2s steps(1) infinite"></span></h1>
+            <div style="color: #97948a; font-size: 12.5px; line-height: 1.6; max-width: 460px; text-wrap: pretty">a project is a folder of files and the sessions that worked on them. open one to watch it run.</div>
+          </div>
+          <span onClick="{{ startProject }}" title="new project" style="flex-shrink: 0; width: 34px; height: 34px; border-radius: 50%; border: 1px solid #c4c1b6; background: #fdfcf9; color: #54524b; font-size: 15px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer" style-hover="border-color: oklch(0.55 0.075 150); color: oklch(0.55 0.075 150); background: oklch(0.55 0.075 150 / 0.12)">+</span>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(272px, 1fr)); gap: 14px">
+          <sc-for list="{{ projects }}" as="p" hint-placeholder-count="3">
+            <div onClick="{{ p.open }}" style="border: 1px solid {{ p.cardLine }}; background: {{ p.cardFill }}; border-radius: 9px; padding: 17px 18px 15px; cursor: pointer; display: flex; flex-direction: column; gap: 13px" style-hover="border-color: #c4c1b6; box-shadow: 0 1px 2px rgba(28,27,24,.03), 0 14px 34px -22px rgba(28,27,24,.20)">
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px">
+                <span style="display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1"><span style="width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: {{ p.dot }}"></span>
+                  <sc-if value="{{ p.renaming }}" hint-placeholder-val="{{ false }}">
+                    <input value="{{ renameText }}" onChange="{{ onRenameText }}" onKeyDown="{{ onRenameKey }}" onBlur="{{ commitRename }}" onClick="{{ stopClick }}" autoFocus="{{ true }}" spellCheck="{{ false }}" style="flex: 1; min-width: 0; background: #fdfcf9; border: 1px solid oklch(0.55 0.075 150 / 0.35); border-radius: 5px; padding: 2px 7px; font-family: inherit; font-size: 13px; color: #1c1b18; outline: none" />
+                  </sc-if>
+                  <sc-if value="{{ p.notRenaming }}" hint-placeholder-val="{{ true }}">
+                    <span onDoubleClick="{{ p.startRename }}" title="double-click to rename" style="font-size: 13.5px; color: #1c1b18; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ p.name }}</span>
+                  </sc-if>
+                </span>
+                <span onClick="{{ p.startRename }}" title="rename" style="flex-shrink: 0; font-size: 10.5px; color: #c4c1b6; padding: 2px 5px; border-radius: 4px; cursor: text" style-hover="color: #54524b; background: #f1efe8">rename</span>
+                <span style="font-size: 10.5px; color: #97948a; flex-shrink: 0">{{ p.when }}</span>
+              </div>
+              <div style="font-size: 11.5px; color: #97948a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ p.dir }}</div>
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid #efece4; padding-top: 11px; font-size: 10.5px; color: #97948a">
+                <span>{{ p.files }} files</span>
+                <span style="color: {{ p.stateColor }}">{{ p.state }}</span>
+              </div>
+            </div>
+          </sc-for>
+          <div onClick="{{ startProject }}" style="border: 1px dashed #e6e3da; border-radius: 9px; min-height: 128px; display: grid; place-items: center; cursor: pointer; color: #97948a; font-size: 11.5px; font-style: italic" style-hover="border-color: #c4c1b6; color: #54524b">new project</div>
+        </div>
+      </div></div>
+
+      <sc-if value="{{ makingProject }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ cancelProject }}" style="position: fixed; inset: 0; z-index: 900; display: grid; place-items: center; padding: 48px; background: color-mix(in oklch, #f7f6f1 55%, transparent); backdrop-filter: blur(6px) saturate(1.1)">
+          <div onClick="{{ stopClick }}" style="width: min(440px, 100%); border: 1px solid #c4c1b6; border-radius: 12px; background: #fdfcf9; overflow: hidden; box-shadow: 0 1px 2px rgba(28,27,24,.04), 0 30px 70px -30px rgba(28,27,24,.30); animation: pop .22s cubic-bezier(.4,0,.2,1) both">
+            <div style="padding: 16px 20px; border-bottom: 1px solid #e6e3da; display: flex; align-items: center; justify-content: space-between">
+              <span style="font-size: 10.5px; letter-spacing: 0.22em; text-transform: uppercase; color: #97948a; font-weight: 500">new project</span>
+              <span onClick="{{ cancelProject }}" style="width: 22px; height: 22px; border-radius: 50%; border: 1px solid #e6e3da; color: #54524b; font-size: 9px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer">✕</span>
+            </div>
+            <div style="padding: 20px; display: flex; flex-direction: column; gap: 20px">
+              <label style="display: flex; flex-direction: column; gap: 8px">
+                <span style="font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #97948a">name</span>
+                <input value="{{ pName }}" onChange="{{ onPName }}" autoFocus="{{ true }}" spellCheck="{{ false }}" placeholder="what is this project for?" style="background: #f7f6f1; border: 1px solid #e6e3da; border-radius: 6px; padding: 9px 11px; font-family: inherit; font-size: 13px; color: #1c1b18; outline: none" style-focus="border-color: oklch(0.55 0.075 150 / 0.35); background: #fdfcf9" />
+              </label>
+              <div style="display: flex; flex-direction: column; gap: 9px">
+                <span style="font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #97948a">files</span>
+                <div onClick="{{ pickNew }}" style="display: flex; gap: 11px; align-items: flex-start; border: 1px solid {{ newLine }}; background: {{ newFill }}; border-radius: 7px; padding: 12px 13px; cursor: pointer">
+                  <span style="width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; margin-top: 2px; border: 1px solid {{ newRadioLine }}; background: {{ newRadioFill }}; box-shadow: {{ newRadioDot }}"></span>
+                  <span style="display: flex; flex-direction: column; gap: 3px"><span style="font-size: 12.5px; color: #1c1b18">a new directory</span><span style="font-size: 11px; color: #97948a; line-height: 1.5">start empty. sessions and drops fill it</span></span>
+                </div>
+                <div onClick="{{ pickExisting }}" style="display: flex; gap: 11px; align-items: flex-start; border: 1px solid {{ exLine }}; background: {{ exFill }}; border-radius: 7px; padding: 12px 13px; cursor: pointer">
+                  <span style="width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; margin-top: 2px; border: 1px solid {{ exRadioLine }}; background: {{ exRadioFill }}; box-shadow: {{ exRadioDot }}"></span>
+                  <span style="display: flex; flex-direction: column; gap: 7px; flex: 1; min-width: 0">
+                    <span style="font-size: 12.5px; color: #1c1b18">an existing directory</span>
+                    <span style="font-size: 11px; color: #97948a; line-height: 1.5">point at files already in the store</span>
+                    <sc-if value="{{ useExisting }}" hint-placeholder-val="{{ false }}">
+                      <select value="{{ pDir }}" onChange="{{ onPDir }}" style="width: 100%; margin-top: 2px; background: #fdfcf9; border: 1px solid #e6e3da; border-radius: 6px; padding: 7px 9px; font-family: inherit; font-size: 12px; color: #1c1b18; outline: none">
+                        <sc-for list="{{ dirChoices }}" as="d" hint-placeholder-count="3"><option value="{{ d }}">{{ d }}</option></sc-for>
+                      </select>
+                    </sc-if>
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div style="border-top: 1px solid #e6e3da; background: #f1efe8; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px">
+              <span style="font-size: 10px; color: #97948a; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ pPreview }}</span>
+              <span style="display: flex; gap: 8px; flex-shrink: 0">
+                <span onClick="{{ cancelProject }}" style="font-size: 11px; color: #54524b; padding: 6px 12px; border-radius: 6px; cursor: pointer; border: 1px solid transparent" style-hover="border-color: #e6e3da; background: #fdfcf9">cancel</span>
+                <span onClick="{{ createProject }}" style="font-size: 11px; border: 1px solid #1c1b18; background: #1c1b18; color: #f7f6f1; padding: 6px 14px; border-radius: 6px; cursor: pointer; opacity: {{ createOpacity }}" style-hover="background: oklch(0.55 0.075 150); border-color: oklch(0.55 0.075 150)">create</span>
+              </span>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+    </sc-if>
+
+    <sc-if value="{{ projSession }}" hint-placeholder-val="{{ true }}">
+    <div style="display: flex; align-items: center; gap: 14px; padding: 18px 56px 22px; border-bottom: 1px solid #e6e3da; font-size: 12px; color: #54524b; flex-wrap: wrap">
+      <span onClick="{{ backToIndex }}" style="color: #97948a; font-size: 11px; margin-right: 4px; cursor: pointer" style-hover="color: #1c1b18">← projects</span>
+      <span style="display: inline-flex; align-items: center; gap: 4px">
+        <sc-if value="{{ curRenaming }}" hint-placeholder-val="{{ false }}">
+          <input value="{{ renameText }}" onChange="{{ onRenameText }}" onKeyDown="{{ onRenameKey }}" onBlur="{{ commitRename }}" autoFocus="{{ true }}" spellCheck="{{ false }}" style="background: #fdfcf9; border: 1px solid oklch(0.55 0.075 150 / 0.35); border-radius: 5px; padding: 2px 7px; font-family: inherit; font-size: 12px; color: #1c1b18; outline: none; width: 200px" />
+        </sc-if>
+        <sc-if value="{{ curNotRenaming }}" hint-placeholder-val="{{ true }}">
+          <b onDoubleClick="{{ startCurRename }}" title="double-click to rename" style="color: #1c1b18; font-weight: 500; cursor: text">{{ curName }}</b>
+        </sc-if>
+        <span style="color: #c4c1b6; margin: 0 4px">▸</span>{{ curTask }}</span>
+      <sc-if value="{{ curRunning }}" hint-placeholder-val="{{ true }}">
+        <span style="display: inline-flex; align-items: center; gap: 7px; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: oklch(0.55 0.075 150); border: 1px solid oklch(0.55 0.075 150 / 0.35); background: oklch(0.55 0.075 150 / 0.12); padding: 4px 10px; border-radius: 100px"><span style="width: 6px; height: 6px; border-radius: 50%; background: oklch(0.55 0.075 150); animation: ping 2.4s cubic-bezier(.4,0,.2,1) infinite"></span>running</span>
+        <span style="font-size: 11px; color: #97948a; font-variant-numeric: tabular-nums">hop 7/24</span>
+      </sc-if>
+      <sc-if value="{{ curFresh }}" hint-placeholder-val="{{ false }}">
+        <span style="display: inline-flex; align-items: center; gap: 7px; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: #97948a; border: 1px solid #e6e3da; background: #fdfcf9; padding: 4px 10px; border-radius: 100px"><span style="width: 6px; height: 6px; border-radius: 50%; background: #c4c1b6"></span>idle</span>
+        <span style="font-size: 11px; color: #97948a">{{ curDir }}</span>
+      </sc-if>
+      <span style="flex: 1"></span>
+      <sc-if value="{{ curRunning }}" hint-placeholder-val="{{ true }}">
+        <span style="width: 26px; height: 26px; border-radius: 50%; border: 1px solid #e6e3da; background: #fdfcf9; color: oklch(0.58 0.10 28); font-size: 9px; display: inline-flex; align-items: center; justify-content: center">✕</span>
+      </sc-if>
+    </div>
+
+    <div style="flex: 1; display: grid; grid-template-columns: 1fr 300px; min-height: 0; overflow: hidden">
+      <div style="min-width: 0; min-height: 0; display: flex; flex-direction: column; border-right: 1px solid #e6e3da; position: relative">
+        <sc-if value="{{ curFresh }}" hint-placeholder-val="{{ false }}">
+          <div style="flex: 1; min-height: 0; display: grid; place-items: center; padding: 40px">
+            <div style="max-width: 380px; text-align: center; display: flex; flex-direction: column; gap: 11px">
+              <span style="font-size: 13px; color: #1c1b18">{{ curName }} is empty</span>
+              <span style="font-size: 12px; color: #97948a; line-height: 1.65; text-wrap: pretty">nothing has run here yet. say what you want done and buddy will start a session in <span style="color: #54524b">{{ curDir }}</span>, and you'll see every hop as it happens.</span>
+            </div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ curRunning }}" hint-placeholder-val="{{ true }}">
+        <div style="flex: 1; overflow-y: auto; padding: 26px 40px 20px; display: flex; flex-direction: column; gap: 16px">
+          <div style="max-width: 620px; align-self: flex-end">
+            <span style="display: block; font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase; color: oklch(0.55 0.075 150); margin-bottom: 6px">you</span>
+            <div style="background: #f1efe8; border-radius: 7px; padding: 10px 14px; font-size: 12.5px; color: #1c1b18; line-height: 1.6">pull anything from the weekend that still needs an answer, and don't touch calendar this time.</div>
+          </div>
+
+          <div style="max-width: 760px; font-size: 13px; line-height: 1.7; color: #54524b">
+            <span style="display: block; font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase; color: #97948a; margin-bottom: 6px">buddy</span>
+            <p style="margin: 0">calendar is off for this session. reading gmail and slack only. three threads look like they want you rather than me.</p>
+          </div>
+
+          <div style="max-width: 760px; display: flex; flex-direction: column; gap: 6px">
+            <div style="display: flex; align-items: center; gap: 9px; font-size: 12px; color: #54524b">
+              <span style="color: oklch(0.55 0.075 150); font-weight: 600">→</span>
+              <span style="color: #1c1b18">gmail.search_threads</span>
+              <span style="font-size: 10.5px; letter-spacing: 0.22em; text-transform: uppercase; color: #97948a; margin-left: 2px">tool</span>
+            </div>
+            <div style="margin-left: 20px; border-left: 2px solid #e6e3da; padding: 8px 12px; font-size: 11px; color: #97948a; line-height: 1.65; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{ "query": "is:unread newer_than:3d -category:promotions", "limit": 25 }</div>
+          </div>
+
+          <div style="max-width: 760px; border: 1px solid #e6e3da; border-radius: 7px; background: #fdfcf9; padding: 13px 15px">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px">
+              <span style="font-size: 11px; color: #54524b; display: flex; align-items: center; gap: 8px"><span style="width: 6px; height: 6px; border-radius: 50%; background: oklch(0.58 0.08 150)"></span>gmail · 11 threads</span>
+              <span style="font-size: 10.5px; color: #97948a; text-decoration: underline; text-underline-offset: 2px">expand</span>
+            </div>
+            <pre style="margin: 0; font-size: 11px; color: #54524b; line-height: 1.6; max-height: 64px; overflow: hidden; white-space: pre-wrap">1  rachel@lumen.co "re: pilot terms" (2 replies, waiting on you)
+2  billing@e2b.dev "invoice 1182" (no reply needed)
+3  ops@northline.co "room booking for thursday"</pre>
+          </div>
+
+          <div style="max-width: 760px; display: flex; flex-direction: column; gap: 6px">
+            <div style="display: flex; align-items: center; gap: 9px; font-size: 12px; color: #54524b">
+              <span style="color: oklch(0.55 0.075 150); font-weight: 600">→</span>
+              <span style="color: #1c1b18">slack.list_mentions</span>
+              <span style="font-size: 10.5px; letter-spacing: 0.22em; text-transform: uppercase; color: #97948a; margin-left: 2px">tool</span>
+            </div>
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 9px; font-size: 11.5px; color: #97948a">
+            <span style="width: 11px; height: 11px; border: 1.5px solid oklch(0.55 0.075 150 / 0.35); border-top-color: oklch(0.55 0.075 150); border-radius: 50%; animation: pop .01s"></span>
+            working…
+          </div>
+        </div>
+        </sc-if>
+
+        <sc-if value="{{ open }}" hint-placeholder-val="{{ true }}">
+          <div onClick="{{ close }}" style="position: absolute; inset: 0; z-index: 30"></div>
+          <div style="position: absolute; left: 40px; bottom: 62px; z-index: 40; width: 400px; max-width: calc(100% - 80px); max-height: calc(100% - 90px); display: flex; flex-direction: column; background: #fdfcf9; border: 1px solid #c4c1b6; border-radius: 12px; box-shadow: 0 1px 2px rgba(28,27,24,.04), 0 26px 60px -28px rgba(28,27,24,.30); animation: pop .22s cubic-bezier(.4,0,.2,1) both; overflow: hidden">
+
+            <div style="padding: 16px 18px 14px; border-bottom: 1px solid #e6e3da; flex-shrink: 0">
+              <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 11px">
+                <span style="font-size: 10.5px; letter-spacing: 0.22em; text-transform: uppercase; color: #97948a; font-weight: 500">tools in this session</span>
+                <span style="font-size: 11.5px; color: #1c1b18; font-variant-numeric: tabular-nums">{{ used }}<span style="color: #97948a">/{{ budget }}</span></span>
+              </div>
+              <div style="height: 3px; border-radius: 100px; background: #f1efe8; overflow: hidden">
+                <div style="height: 100%; border-radius: 100px; transition: width .28s cubic-bezier(.4,0,.2,1); width: {{ pct }}; background: {{ meterColor }}"></div>
+              </div>
+              <div style="margin-top: 10px; font-size: 10.5px; color: #97948a; line-height: 1.6">{{ meterNote }}</div>
+            </div>
+
+            <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 6px 0">
+              <sc-for list="{{ servers }}" as="s" hint-placeholder-count="5">
+                <div onClick="{{ s.toggle }}" style="display: flex; align-items: center; gap: 11px; padding: 9px 18px; cursor: {{ s.cursor }}; opacity: {{ s.opacity }}">
+                  <span style="width: 13px; height: 13px; border-radius: 3px; flex-shrink: 0; display: grid; place-items: center; font-size: 9px; line-height: 1; color: #fdfcf9; border: 1px solid {{ s.boxLine }}; background: {{ s.boxFill }}">{{ s.check }}</span>
+                  <span style="min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px">
+                    <span style="font-size: 12.5px; color: {{ s.nameColor }}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ s.name }}</span>
+                    <span style="font-size: 10px; color: #97948a; letter-spacing: .04em">{{ s.sub }}</span>
+                  </span>
+                  <span style="font-size: 10.5px; color: {{ s.countColor }}; font-variant-numeric: tabular-nums; flex-shrink: 0">{{ s.countLabel }}</span>
+                </div>
+              </sc-for>
+            </div>
+
+            <div style="border-top: 1px solid #e6e3da; background: #f1efe8; padding: 11px 18px; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px">
+              <span style="flex: 1"></span>
+              <span onClick="{{ reset }}" style="font-size: 10.5px; color: #54524b; border: 1px solid #e6e3da; background: #fdfcf9; padding: 4px 10px; border-radius: 100px; cursor: pointer; flex-shrink: 0">reset</span>
+            </div>
+          </div>
+        </sc-if>
+
+        <div style="border-top: 1px solid #e6e3da; background: #fdfcf9; display: flex; align-items: center; gap: 12px; padding: 12px 40px; flex-shrink: 0">
+          <div onClick="{{ toggleOpen }}" title="mcp connectors in this session" style="display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; cursor: pointer; user-select: none; border: 1px solid {{ boxLine }}; background: {{ boxFill }}; border-radius: 7px; padding: 5px 9px; transition: border-color .18s cubic-bezier(.4,0,.2,1), background .18s cubic-bezier(.4,0,.2,1)">
+            <span style="width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: {{ pipColor }}"></span>
+            <span style="font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: #97948a">tools</span>
+            <span style="font-size: 11.5px; color: #1c1b18; font-variant-numeric: tabular-nums">{{ used }}<span style="color: #97948a">/{{ budget }}</span></span>
+            <span style="font-size: 8px; color: #97948a">{{ caret }}</span>
+          </div>
+          <span style="color: oklch(0.55 0.075 150); font-size: 13px; user-select: none; flex-shrink: 0">buddy&gt;</span>
+          <input spellCheck="{{ false }}" autoComplete="off" placeholder="suggest or steer this session…" style="flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: #1c1b18; font-family: inherit; font-size: 13px" />
+          <span style="font-size: 10.5px; color: #97948a; border: 1px solid #e6e3da; padding: 4px 10px; border-radius: 100px; background: #fdfcf9; flex-shrink: 0; cursor: pointer">attach</span>
+        </div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; min-height: 0; overflow: hidden">
+        <div style="padding: 16px 18px; border-bottom: 1px solid #e6e3da; flex-shrink: 0">
+          <span style="display: block; font-size: 10.5px; letter-spacing: 0.22em; text-transform: uppercase; color: #97948a; font-weight: 500; margin-bottom: 10px">todo</span>
+          <sc-if value="{{ curFresh }}" hint-placeholder-val="{{ false }}">
+            <span style="font-size: 11.5px; color: #97948a; font-style: italic">buddy writes this list when it starts</span>
+          </sc-if>
+          <sc-if value="{{ curRunning }}" hint-placeholder-val="{{ true }}">
+          <div style="display: flex; flex-direction: column; gap: 8px">
+            <label style="display: flex; align-items: center; gap: 9px; font-size: 12px; color: #97948a"><input type="checkbox" checked="{{ true }}" readOnly="{{ true }}" style="accent-color: oklch(0.55 0.075 150); width: 13px; height: 13px" /><span style="text-decoration: line-through; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">read the weekend's unread mail</span></label>
+            <label style="display: flex; align-items: center; gap: 9px; font-size: 12px; color: #54524b"><input type="checkbox" readOnly="{{ true }}" style="accent-color: oklch(0.55 0.075 150); width: 13px; height: 13px" /><span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">cross-check slack mentions</span></label>
+            <label style="display: flex; align-items: center; gap: 9px; font-size: 12px; color: #54524b"><input type="checkbox" readOnly="{{ true }}" style="accent-color: oklch(0.55 0.075 150); width: 13px; height: 13px" /><span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">draft three replies for approval</span></label>
+          </div>
+          </sc-if>
+        </div>
+        <div style="display: flex; border-bottom: 1px solid #e6e3da; flex-shrink: 0">
+          <button onClick="{{ showFiles }}" style="flex: 1; background: none; border: none; font-family: inherit; font-size: 11px; letter-spacing: .06em; padding: 13px 0 0; cursor: pointer; color: {{ filesTabColor }}"><span style="position: relative; display: inline-block; padding-bottom: 13px">working files<span style="position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: {{ filesTabRule }}"></span></span></button>
+          <button onClick="{{ showBrowser }}" style="flex: 1; background: none; border: none; font-family: inherit; font-size: 11px; letter-spacing: .06em; padding: 13px 0 0; cursor: pointer; color: {{ browserTabColor }}"><span style="position: relative; display: inline-block; padding-bottom: 13px">browser{{ browserPip }}<span style="position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: {{ browserTabRule }}"></span></span></button>
+        </div>
+
+        <sc-if value="{{ filesTab }}" hint-placeholder-val="{{ true }}">
+          <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 16px 0">
+            <sc-if value="{{ curRunning }}" hint-placeholder-val="{{ true }}">
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 18px; font-size: 12px; color: #54524b"><span style="display: flex; align-items: center; gap: 9px; min-width: 0"><span style="color: #97948a; width: 12px">·</span>triage/backlog.md</span><span style="font-size: 10px; color: #97948a">4.1 kb</span></div>
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 18px; font-size: 12px; color: #54524b"><span style="display: flex; align-items: center; gap: 9px; min-width: 0"><span style="color: #97948a; width: 12px">·</span>triage/drafts/rachel.txt</span><span style="font-size: 10px; color: #97948a">812 b</span></div>
+            </sc-if>
+            <div style="margin: 14px 18px 0; border: 1px dashed #e6e3da; border-radius: 7px; padding: 20px 12px; text-align: center; font-size: 11px; color: #97948a; font-style: italic">drop files into this project</div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ browserTab }}" hint-placeholder-val="{{ true }}">
+          <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 16px 18px 20px; display: flex; flex-direction: column; gap: 12px">
+            <sc-if value="{{ curFresh }}" hint-placeholder-val="{{ false }}">
+              <div style="border: 1px dashed #e6e3da; border-radius: 7px; padding: 26px 14px; text-align: center; font-size: 11px; color: #97948a; font-style: italic; line-height: 1.6">no browser yet. one opens when a session needs a page</div>
+            </sc-if>
+            <sc-if value="{{ curRunning }}" hint-placeholder-val="{{ true }}">
+            <div style="flex-shrink: 0; border: 1px solid #e6e3da; border-radius: 10px; background: #fdfcf9; overflow: hidden; box-shadow: 0 1px 2px rgba(28,27,24,.03), 0 12px 32px -20px rgba(28,27,24,.18)">
+              <div style="display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid #efece4; background: #f1efe8">
+                <span style="width: 6px; height: 6px; border-radius: 50%; background: oklch(0.55 0.075 150); flex-shrink: 0; animation: ping 2.4s cubic-bezier(.4,0,.2,1) infinite"></span>
+                <span style="flex: 1; min-width: 0; font-size: 10px; color: #54524b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">mail.google.com/…/thread/pilot-terms</span>
+                <span onClick="{{ expand }}" title="open larger" style="flex-shrink: 0; width: 20px; height: 20px; border-radius: 6px; border: 1px solid #e6e3da; background: #fdfcf9; color: #97948a; font-size: 9px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer" style-hover="color: #1c1b18; border-color: #c4c1b6">⤢</span>
+              </div>
+              <div onClick="{{ expand }}" style="aspect-ratio: 16 / 10; cursor: zoom-in; display: grid; place-items: center; background-color: #f7f6f1; background-image: repeating-linear-gradient(135deg, #efece4 0 6px, #f7f6f1 6px 12px)">
+                <span style="font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase; color: #97948a; background: #fdfcf9; border: 1px solid #e6e3da; border-radius: 100px; padding: 4px 10px">live frame</span>
+              </div>
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 10px; color: #97948a">
+              <span>streaming · 6 fps</span>
+              <span onClick="{{ expand }}" style="cursor: pointer; text-decoration: underline; text-underline-offset: 2px">expand</span>
+            </div>
+            </sc-if>
+          </div>
+        </sc-if>
+      </div>
+    </div>
+    </sc-if>
+  </main>
+
+  <sc-if value="{{ expanded }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ collapse }}" style="position: fixed; inset: 0; z-index: 900; display: grid; place-items: center; padding: 48px; background: color-mix(in oklch, #f7f6f1 55%, transparent); backdrop-filter: blur(6px) saturate(1.1)">
+      <div onClick="{{ stopClick }}" style="width: min(1100px, 100%); border: 1px solid #c4c1b6; border-radius: 14px; background: #fdfcf9; overflow: hidden; box-shadow: 0 1px 2px rgba(28,27,24,.04), 0 30px 70px -30px rgba(28,27,24,.30); animation: pop .25s cubic-bezier(.4,0,.2,1) both">
+        <div style="display: flex; align-items: center; gap: 12px; padding: 11px 16px; border-bottom: 1px solid #e6e3da; background: #f1efe8">
+          <span style="width: 6px; height: 6px; border-radius: 50%; background: oklch(0.55 0.075 150); flex-shrink: 0; animation: ping 2.4s cubic-bezier(.4,0,.2,1) infinite"></span>
+          <span style="flex: 1; min-width: 0; font-size: 11px; color: #54524b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">mail.google.com/mail/u/0/#inbox/thread/pilot-terms</span>
+          <span style="font-size: 10px; color: #97948a; letter-spacing: .1em; text-transform: uppercase">streaming · 6 fps</span>
+          <span onClick="{{ collapse }}" style="flex-shrink: 0; width: 24px; height: 24px; border-radius: 50%; border: 1px solid #e6e3da; background: #fdfcf9; color: #54524b; font-size: 10px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer">✕</span>
+        </div>
+        <div style="aspect-ratio: 16 / 9; display: grid; place-items: center; background-color: #f7f6f1; background-image: repeating-linear-gradient(135deg, #efece4 0 8px, #f7f6f1 8px 16px)">
+          <span style="font-size: 10.5px; letter-spacing: .18em; text-transform: uppercase; color: #97948a; background: #fdfcf9; border: 1px solid #e6e3da; border-radius: 100px; padding: 6px 14px">live frame</span>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</sc-if>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;maxTools&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:64,&quot;tsType&quot;:&quot;number&quot;,&quot;min&quot;:16,&quot;max&quot;:128,&quot;section&quot;:&quot;tool budget&quot;},&quot;ourTools&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:12,&quot;tsType&quot;:&quot;number&quot;,&quot;min&quot;:0,&quot;max&quot;:40,&quot;section&quot;:&quot;tool budget&quot;}}">
+const ACCENT = "oklch(0.55 0.075 150)";
+const ACCENT_C = "oklch(0.55 0.075 150)";
+const ACCENT_LINE = "oklch(0.55 0.075 150 / 0.35)";
+const ACCENT_SOFT = "oklch(0.55 0.075 150 / 0.12)";
+const WORK = "oklch(0.66 0.085 75)";
+const STOP = "oklch(0.58 0.10 28)";
+
+const SERVERS = [
+  { id: "gmail", name: "Gmail", tools: 12, connected: true },
+  { id: "slack", name: "Slack", tools: 9, connected: true, shared: true },
+  { id: "linear", name: "Linear", tools: 11, connected: true },
+  { id: "google-calendar", name: "Google Calendar", tools: 8, connected: true },
+  { id: "github", name: "GitHub", tools: 14, connected: true },
+  { id: "notion", name: "Notion", tools: 10, connected: true },
+  { id: "parallel-search", name: "Parallel Web Search", tools: 3, connected: false },
+];
+
+const FILES = [
+  { path: "triage/backlog.md", size: 4187 },
+  { path: "triage/drafts/rachel.txt", size: 812 },
+  { path: "triage/drafts/room-booking.txt", size: 604 },
+  { path: "triage/sources/gmail-export.json", size: 96140 },
+  { path: "notes/weekend.md", size: 2210 },
+  { path: "notes/people/rachel.md", size: 1104 },
+];
+
+const TEXT = {
+  "triage/backlog.md": `# weekend backlog
+
+three threads want a person, not a draft:
+
+- rachel@lumen.co, pilot terms. she asked for a number by tuesday.
+- ops, thursday room booking, needs a yes/no.
+- billing@e2b.dev, invoice 1182, no reply needed. filed.
+
+everything else was promotions or already answered.
+calendar was off for this run, so nothing was scheduled.`,
+  "triage/drafts/rachel.txt": `Rachel,
+
+Tuesday works. On terms: we can hold the pilot at the
+current seat count through the end of the quarter, and
+revisit once the second team is on.
+
+I'll send the amended sheet tomorrow morning.`,
+  "triage/drafts/room-booking.txt": `Yes to thursday, 6pm, the small room.
+I'll bring the projector adapter.`,
+  "triage/sources/gmail-export.json": null,
+  "notes/weekend.md": `saturday: nothing urgent. sunday: two threads landed late.
+worth remembering that lumen answers fastest on sunday nights.`,
+  "notes/people/rachel.md": `rachel, of lumen.co, pilot owner.
+prefers numbers up front. replies within a day.
+does not like being cc'd on internal threads.`,
+};
+
+function fileSize(n) {
+  if (n === null || n === undefined) return "";
+  if (n < 1024) return n + " b";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " kb";
+  return (n / 1024 / 1024).toFixed(1) + " mb";
+}
+
+const APPROVALS = [
+  {
+    id: "a1",
+    source: "gmail · rachel@lumen.co",
+    when: "4m ago",
+    kind: "send",
+    title: "send the reply about pilot terms?",
+    body: "she asked for a number by tuesday. i drafted the seat-count hold through the quarter.",
+    plan: ["read the thread and the last amended sheet", "draft a reply holding seats through the quarter", "send from your address, cc nobody"],
+    tools: ["gmail.send_message", "files.read"],
+    session: "inbox triage · clear the weekend backlog",
+    dot: "oklch(0.66 0.085 75)",
+  },
+  {
+    id: "a2",
+    source: "slack · #ops",
+    when: "12m ago",
+    kind: "post",
+    title: "confirm thursday, 6pm, the small room?",
+    body: "the room is free and nothing else is on your calendar that evening.",
+    plan: ["post a yes in the thread", "note the adapter you're bringing"],
+    tools: ["slack.post_message"],
+    session: "inbox triage · clear the weekend backlog",
+    dot: "oklch(0.66 0.085 75)",
+  },
+];
+
+const PROJECTS = [
+  { id: "triage", name: "inbox triage", dir: "triage/", files: 4, when: "2m ago", state: "running", dot: ACCENT_C, stateColor: ACCENT_C },
+  { id: "reading", name: "weekend reading", dir: "notes/", files: 2, when: "1h ago", state: "waiting on you", dot: "oklch(0.66 0.085 75)", stateColor: "oklch(0.66 0.085 75)" },
+  { id: "arkos", name: "arkos", dir: "arkos/", files: 0, when: "2d ago", state: "idle", dot: "#c4c1b6", stateColor: "#97948a" },
+];
+
+class Component extends DCLogic {
+  state = { signedIn: false, authMode: "in", authName: "", authUser: "", authPass: "", open: true, on: { gmail: true, slack: true, linear: true }, tab: "files", expanded: false, view: "desk", dirs: { triage: true }, sel: "triage/backlog.md", drafts: {}, saved: {}, editing: false, dragging: false, added: [], folders: [], dropTarget: "", creating: false, newName: "", resolved: {}, projView: "index", projects: PROJECTS, cur: "triage", renaming: null, renameText: "", making: false, pName: "", pMode: "new", pDir: "triage/" };
+
+  drop(list, into) {
+    const dir = into !== undefined ? into : this.state.dropTarget || "";
+    const names = [...(list || [])].map((f) => ({
+      path: (dir ? dir + "/" : "") + (f.name || "untitled"),
+      size: f.size || 0,
+      fresh: true,
+    }));
+    if (!names.length) return;
+    this.setState((st) => ({
+      added: st.added.concat(names),
+      dirs: dir ? { ...st.dirs, [dir]: true } : st.dirs,
+      sel: names[0].path,
+    }));
+  }
+
+  commitName() {
+    const id = this.state.renaming;
+    const name = (this.state.renameText || "").trim();
+    if (!id) return;
+    this.setState((st) => ({
+      renaming: null,
+      renameText: "",
+      projects: name ? st.projects.map((p) => (p.id === id ? { ...p, name } : p)) : st.projects,
+    }));
+  }
+
+  commit() {
+    const name = (this.state.newName || "").trim().replace(/^\/+|\/+$/g, "");
+    if (!name) return this.setState({ creating: false, newName: "" });
+    this.setState((st) => ({
+      folders: st.folders.includes(name) ? st.folders : st.folders.concat(name),
+      dirs: { ...st.dirs, [name]: true },
+      creating: false,
+      newName: "",
+    }));
+  }
+
+  allFiles() {
+    return FILES.concat(this.state.added || []);
+  }
+
+  textOf(path) {
+    const drafts = this.state.drafts || {};
+    if (path in drafts) return drafts[path];
+    return path in TEXT ? TEXT[path] : "";
+  }
+
+  fileRows() {
+    const tree = { dirs: new Map(), files: [] };
+    for (const f of this.allFiles()) {
+      const parts = f.path.split("/");
+      let node = tree;
+      for (const d of parts.slice(0, -1)) {
+        if (!node.dirs.has(d)) node.dirs.set(d, { dirs: new Map(), files: [] });
+        node = node.dirs.get(d);
+      }
+      node.files.push({ ...f, name: parts[parts.length - 1] });
+    }
+    const count = (node) => node.files.length + [...node.dirs.values()].reduce((n, c) => n + count(c), 0);
+    for (const f of this.state.folders || []) {
+      const parts = f.split("/");
+      let node = tree;
+      for (const d of parts) {
+        if (!node.dirs.has(d)) node.dirs.set(d, { dirs: new Map(), files: [] });
+        node = node.dirs.get(d);
+      }
+    }
+    const target = this.state.dragging ? this.state.dropTarget || "" : null;
+    const BAR = "inset 0 -2px 0 0 oklch(0.55 0.075 150)";
+    const rows = [];
+    const walk = (node, prefix, depth) => {
+      for (const [name, child] of [...node.dirs.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+        const full = prefix ? prefix + "/" + name : name;
+        const isOpen = !!this.state.dirs[full];
+        rows.push({
+          path: full,
+          name,
+          glyph: isOpen ? "▾" : "▸",
+          meta: String(count(child)),
+          depth,
+          color: "#1c1b18",
+          bg: "transparent",
+          bar: target === full ? BAR : "none",
+          dragOver: (e) => {
+            e.preventDefault();
+            if (this.state.dropTarget !== full) this.setState({ dropTarget: full, dragging: true });
+          },
+          click: () => this.setState((st) => ({ dirs: { ...st.dirs, [full]: !st.dirs[full] } })),
+        });
+        if (isOpen) walk(child, full, depth + 1);
+      }
+      const sorted = [...node.files].sort((a, b) => a.name.localeCompare(b.name));
+      for (const f of sorted) {
+        const on = this.state.sel === f.path;
+        rows.push({
+          path: f.path,
+          name: f.name,
+          glyph: "·",
+          meta: fileSize(f.size),
+          depth,
+          color: on ? "#1c1b18" : "#54524b",
+          bg: on ? "oklch(0.55 0.075 150 / 0.12)" : "transparent",
+          bar: target !== null && target === prefix && f === sorted[sorted.length - 1] ? BAR : "none",
+          dragOver: (e) => {
+            e.preventDefault();
+            if (this.state.dropTarget !== prefix) this.setState({ dropTarget: prefix, dragging: true });
+          },
+          click: () => this.setState({ sel: f.path }),
+        });
+      }
+    };
+    walk(tree, "", 0);
+    return rows.map((r) => ({ ...r, pad: 18 + r.depth * 13 + "px" }));
+  }
+
+  componentDidMount() {
+    this._key = (e) => { if (e.key === "Escape") this.setState({ expanded: false }); };
+    window.addEventListener("keydown", this._key);
+  }
+
+  componentWillUnmount() {
+    window.removeEventListener("keydown", this._key);
+  }
+
+  budget() {
+    const max = this.props.maxTools ?? 64;
+    const ours = this.props.ourTools ?? 12;
+    return Math.max(0, max - ours);
+  }
+
+  used() {
+    return SERVERS.reduce((n, s) => (this.state.on[s.id] ? n + s.tools : n), 0);
+  }
+
+  renderVals() {
+    const budget = this.budget();
+    const used = this.used();
+    const left = budget - used;
+    const ratio = budget ? used / budget : 0;
+    const meterColor = ratio >= 1 ? STOP : ratio > 0.8 ? WORK : ACCENT;
+
+    const servers = SERVERS.map((s) => {
+      const on = !!this.state.on[s.id];
+      const wouldFit = on || s.tools <= left;
+      const blocked = !s.connected || !wouldFit;
+      return {
+        ...s,
+        check: on ? "✓" : "",
+        cursor: blocked ? "default" : "pointer",
+        opacity: blocked ? 0.5 : 1,
+        boxFill: on ? ACCENT : "#fdfcf9",
+        boxLine: on ? ACCENT : "#c4c1b6",
+        nameColor: on ? "#1c1b18" : "#54524b",
+        countColor: on ? ACCENT : "#97948a",
+        countLabel: s.tools + " tools",
+        sub: !s.connected
+          ? "not connected. authorize in settings"
+          : !wouldFit
+            ? "would exceed the cap"
+            : s.shared
+              ? "shared connection"
+              : on
+                ? "in the manifest"
+                : "off for this session",
+        toggle: blocked
+          ? () => {}
+          : () => this.setState((st) => ({ on: { ...st.on, [s.id]: !st.on[s.id] } })),
+      };
+    });
+
+    const up = this.state.authMode === "up";
+    const cur = this.state.projects.find((p) => p.id === this.state.cur) || this.state.projects[0];
+    const sel = this.state.sel;
+    const selFile = this.allFiles().find((f) => f.path === sel);
+    const isText = sel ? TEXT[sel] !== null : false;
+    const draft = sel ? this.textOf(sel) : "";
+    const body = sel ? (isText ? draft : null) : undefined;
+    const dirty = !!sel && sel in (this.state.drafts || {}) && this.state.drafts[sel] !== (this.state.saved[sel] ?? TEXT[sel] ?? "");
+
+    return {
+      editing: this.state.editing && !!sel && isText,
+      reading: !(this.state.editing && !!sel && isText),
+      canEdit: !!sel && isText,
+      editLabel: this.state.editing ? "reading" : "edit",
+      toggleEdit: () => this.setState((st) => ({ editing: !st.editing })),
+      draft,
+      dirty,
+      dirtyMark: dirty ? " ●" : "",
+      editNote: dirty ? "unsaved changes in this project's copy" : "editing the project's copy. sessions mount it on their next box",
+      onEdit: (e) => {
+        const text = e.target.value;
+        this.setState((st) => ({ drafts: { ...st.drafts, [sel]: text } }));
+      },
+      save: () =>
+        this.setState((st) => ({
+          saved: { ...st.saved, [sel]: st.drafts[sel] ?? "" },
+          editing: false,
+        })),
+      revert: () =>
+        this.setState((st) => {
+          const drafts = { ...st.drafts };
+          delete drafts[sel];
+          return { drafts };
+        }),
+      dragging: this.state.dragging,
+      creating: this.state.creating,
+      newName: this.state.newName,
+      startFolder: () => this.setState({ creating: true, newName: "" }),
+      onPick: (e) => {
+        const list = e.target.files;
+        const dir = this.state.sel && this.state.sel.includes("/") ? this.state.sel.split("/").slice(0, -1).join("/") : "";
+        this.setState({ dropTarget: dir });
+        this.drop(list, dir);
+        e.target.value = "";
+      },
+      onNewName: (e) => this.setState({ newName: e.target.value }),
+      onNewKey: (e) => {
+        if (e.key === "Enter") this.commit();
+        if (e.key === "Escape") this.setState({ creating: false, newName: "" });
+      },
+      commitFolder: () => this.commit(),
+      onDragOver: (e) => {
+        e.preventDefault();
+        if (!this.state.dragging) this.setState({ dragging: true });
+      },
+      onDragLeave: (e) => {
+        if (e.currentTarget.contains(e.relatedTarget)) return;
+        this.setState({ dragging: false, dropTarget: "" });
+      },
+      onDrop: (e) => {
+        e.preventDefault();
+        this.setState({ dragging: false });
+        this.drop(e.dataTransfer && e.dataTransfer.files);
+      },
+      authView: !this.state.signedIn,
+      appView: this.state.signedIn,
+      signingUp: up,
+      signingIn: !up,
+      authKicker: up ? "new account" : "sign in",
+      authTitle: up ? "make an account" : "welcome back",
+      authCta: up ? "create account" : "sign in",
+      authSwitchNote: up ? "already have an account?" : "no account yet?",
+      authSwitchCta: up ? "sign in" : "make one",
+      switchAuth: () => this.setState({ authMode: up ? "in" : "up" }),
+      authName: this.state.authName,
+      authUser: this.state.authUser,
+      authPass: this.state.authPass,
+      onAuthName: (e) => this.setState({ authName: e.target.value }),
+      onAuthUser: (e) => this.setState({ authUser: e.target.value }),
+      onAuthPass: (e) => this.setState({ authPass: e.target.value }),
+      onAuthKey: (e) => {
+        if (e.key === "Enter") this.setState({ signedIn: true, view: "desk" });
+      },
+      submitAuth: () => this.setState({ signedIn: true, view: "desk" }),
+      whoami: this.state.authUser || "nathaniel@buddy.computer",
+      signOut: () => this.setState({ signedIn: false, authPass: "" }),
+      view: this.state.view,
+      filesView: this.state.view === "files",
+      projectsView: this.state.view === "projects",
+      projIndex: this.state.view === "projects" && this.state.projView === "index",
+      projSession: this.state.view === "projects" && this.state.projView === "session",
+      backToIndex: () => this.setState({ projView: "index" }),
+      projects: this.state.projects.map((p) => ({
+        ...p,
+        cardLine: "#e6e3da",
+        cardFill: "#fdfcf9",
+        renaming: this.state.renaming === p.id,
+        notRenaming: this.state.renaming !== p.id,
+        startRename: (e) => {
+          if (e && e.stopPropagation) e.stopPropagation();
+          this.setState({ renaming: p.id, renameText: p.name });
+        },
+        open: () => this.setState({ projView: "session", cur: p.id }),
+      })),
+      renameText: this.state.renameText,
+      onRenameText: (e) => this.setState({ renameText: e.target.value }),
+      onRenameKey: (e) => {
+        if (e.key === "Enter") this.commitName();
+        if (e.key === "Escape") this.setState({ renaming: null, renameText: "" });
+      },
+      commitRename: () => this.commitName(),
+      curRenaming: this.state.renaming === cur.id,
+      curNotRenaming: this.state.renaming !== cur.id,
+      startCurRename: () => this.setState({ renaming: cur.id, renameText: cur.name }),
+      curName: cur.name,
+      curDir: cur.dir,
+      curTask: cur.fresh ? "no session yet" : "clear the weekend backlog",
+      curFresh: !!cur.fresh,
+      browserPip: cur.fresh ? "" : " ●",
+      curRunning: !cur.fresh,
+      stopClick: (e) => e.stopPropagation(),
+      makingProject: this.state.making,
+      startProject: () => this.setState({ making: true, pName: "", pMode: "new", pDir: "triage/" }),
+      cancelProject: () => this.setState({ making: false }),
+      pName: this.state.pName,
+      onPName: (e) => this.setState({ pName: e.target.value }),
+      pDir: this.state.pDir,
+      onPDir: (e) => this.setState({ pDir: e.target.value }),
+      dirChoices: ["triage/", "notes/", "notes/people/", "arkos/"],
+      useExisting: this.state.pMode === "existing",
+      pickNew: () => this.setState({ pMode: "new" }),
+      pickExisting: () => this.setState({ pMode: "existing" }),
+      newLine: this.state.pMode === "new" ? ACCENT_LINE : "#e6e3da",
+      newFill: this.state.pMode === "new" ? ACCENT_SOFT : "#fdfcf9",
+      newRadioLine: this.state.pMode === "new" ? ACCENT : "#c4c1b6",
+      newRadioFill: this.state.pMode === "new" ? ACCENT : "#fdfcf9",
+      newRadioDot: this.state.pMode === "new" ? "inset 0 0 0 2px #fdfcf9" : "none",
+      exLine: this.state.pMode === "existing" ? ACCENT_LINE : "#e6e3da",
+      exFill: this.state.pMode === "existing" ? ACCENT_SOFT : "#fdfcf9",
+      exRadioLine: this.state.pMode === "existing" ? ACCENT : "#c4c1b6",
+      exRadioFill: this.state.pMode === "existing" ? ACCENT : "#fdfcf9",
+      exRadioDot: this.state.pMode === "existing" ? "inset 0 0 0 2px #fdfcf9" : "none",
+      pPreview:
+        this.state.pMode === "existing"
+          ? "files: " + this.state.pDir
+          : "files: " + ((this.state.pName || "untitled").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "untitled") + "/",
+      createOpacity: this.state.pName.trim() ? 1 : 0.45,
+      createProject: () => {
+        const name = this.state.pName.trim();
+        if (!name) return;
+        const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "untitled";
+        const dir = this.state.pMode === "existing" ? this.state.pDir : slug + "/";
+        this.setState((st) => ({
+          making: false,
+          projView: "session",
+          cur: slug,
+          projects: [
+            { id: slug, name, dir, files: st.pMode === "existing" ? 2 : 0, when: "just now", state: "idle", dot: "#c4c1b6", stateColor: "#97948a", fresh: true },
+            ...st.projects,
+          ],
+        }));
+      },
+      deskView: this.state.view === "desk",
+      apprView: this.state.view === "approvals",
+      goFiles: () => this.setState({ view: "files" }),
+      goProjects: () => this.setState({ view: "projects" }),
+      goDesk: () => this.setState({ view: "desk" }),
+      goApprovals: () => this.setState({ view: "approvals" }),
+      filesNavColor: this.state.view === "files" ? "#1c1b18" : "#97948a",
+      projNavColor: this.state.view === "projects" ? "#1c1b18" : "#97948a",
+      deskNavColor: this.state.view === "desk" ? "#1c1b18" : "#97948a",
+      apprNavColor: this.state.view === "approvals" ? "#1c1b18" : APPROVALS.some((a) => !this.state.resolved[a.id]) ? ACCENT : "#97948a",
+      filesNavRule: this.state.view === "files" ? ACCENT : "transparent",
+      projNavRule: this.state.view === "projects" ? ACCENT : "transparent",
+      deskNavRule: this.state.view === "desk" ? ACCENT : "transparent",
+      apprNavRule: this.state.view === "approvals" ? ACCENT : "transparent",
+      approvals: APPROVALS.filter((a) => !this.state.resolved[a.id]).map((a) => ({
+        ...a,
+        approve: () => this.setState((st) => ({ resolved: { ...st.resolved, [a.id]: "approved" } })),
+        decline: () => this.setState((st) => ({ resolved: { ...st.resolved, [a.id]: "declined" } })),
+      })),
+      noApprovals: APPROVALS.every((a) => this.state.resolved[a.id]),
+      pendingCount: APPROVALS.filter((a) => !this.state.resolved[a.id]).length,
+      pillLine: APPROVALS.some((a) => !this.state.resolved[a.id]) ? ACCENT_LINE : "#e6e3da",
+      pillColor: APPROVALS.some((a) => !this.state.resolved[a.id]) ? ACCENT : "#54524b",
+      rows: this.fileRows(),
+      fileCount: this.allFiles().length + " files",
+      openPath: sel || "select a file to read",
+      openSize: selFile ? fileSize(selFile.size) : "",
+      lines: !sel
+        ? [{ n: "", text: "the project's files live in the store, not on a computer. click one to read it; nothing has to be awake." }]
+        : body == null
+          ? [{ n: "", text: "this file is not text, " + fileSize(selFile && selFile.size) + " of it" }]
+          : body.split("\n").map((text, i) => ({ n: String(i + 1).padStart(3, " "), text: text || " " })),
+      open: this.state.open,
+      filesTab: this.state.tab === "files",
+      browserTab: this.state.tab === "browser",
+      filesTabColor: this.state.tab === "files" ? "#1c1b18" : "#97948a",
+      browserTabColor: this.state.tab === "browser" ? "#1c1b18" : "#97948a",
+      filesTabRule: this.state.tab === "files" ? ACCENT : "transparent",
+      browserTabRule: this.state.tab === "browser" ? ACCENT : "transparent",
+      showFiles: () => this.setState({ tab: "files" }),
+      showBrowser: () => this.setState({ tab: "browser" }),
+      expanded: this.state.expanded,
+      expand: () => this.setState({ expanded: true }),
+      collapse: () => this.setState({ expanded: false }),
+      servers,
+      used,
+      budget,
+      pct: Math.min(100, Math.round(ratio * 100)) + "%",
+      meterColor,
+      meterNote:
+        left <= 0
+          ? "cap reached. turn something off to enable anything else"
+          : left + " of " + budget + " slots left · " + (this.props.ourTools ?? 12) + " reserved for buddy's own tools",
+      caret: this.state.open ? "▾" : "▸",
+      pipColor: ratio >= 1 ? STOP : used ? ACCENT : "#c4c1b6",
+      boxLine: this.state.open ? ACCENT_LINE : "#e6e3da",
+      boxFill: this.state.open ? ACCENT_SOFT : "#fdfcf9",
+      toggleOpen: () => this.setState((st) => ({ open: !st.open })),
+      close: () => this.setState({ open: false }),
+      reset: () => this.setState({ on: { gmail: true, slack: true, linear: true } }),
+    };
+  }
+}
+</script>
+</body>
+</html>

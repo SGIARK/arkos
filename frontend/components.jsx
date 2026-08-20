@@ -36,6 +36,19 @@ function Spinner() {
   return <span className="spin" />;
 }
 
+/* Escape closes the thing on top. Written four times across two files before
+   11.7.5 — each an effect, a listener and a matching teardown, and each one a
+   chance to forget the teardown. `active` gates it so a closed modal is not
+   holding a listener for a key it would ignore. */
+function useEscape(active, close) {
+  useEffect(() => {
+    if (!active) return undefined;
+    const key = (e) => e.key === "Escape" && close();
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [active, close]);
+}
+
 /* The approval card, ported. It collapses itself on resolve rather than
    vanishing, and it carries the note field: answering a question and adding a
    sentence about why are the same gesture, so they are the same control.
@@ -49,10 +62,13 @@ function ApprovalCard({ item, onResolve, onError }) {
   const note = useRef(null);
 
   const isAsk = item.kind === "ask";
+  // A gated call is decided, not discussed: the API takes exactly approve or
+  // decline, so no note is appended to it and the verbs are its own.
+  const isCall = item.kind === "call";
 
   async function resolve(answer) {
     const extra = note.current ? note.current.value.trim() : "";
-    const body = extra ? `${answer}\n\n${extra}` : answer;
+    const body = isCall || !extra ? answer : `${answer}\n\n${extra}`;
     setGone(true);
 
     // Collapse in place: the card shrinking is what says "answered", and the
@@ -93,27 +109,32 @@ function ApprovalCard({ item, onResolve, onError }) {
         </span>
         <span className="tag accent">{isAsk ? "answer" : "approve / decline"}</span>
       </div>
-      <div className="title">{item.prompt}</div>
+      <div className="title">{isCall ? `Run ${item.tool_name}?` : item.prompt}</div>
+      {isCall && <pre className="args">{JSON.stringify(item.tool_args || {}, null, 2)}</pre>}
       {item.project_title && <div className="body">{item.project_title}</div>}
 
       {isAsk ? (
         <AskAnswer disabled={gone} onSend={resolve} />
       ) : (
         <>
-          <textarea
-            ref={note}
-            className={"note" + (noteOpen ? " open" : "")}
-            placeholder="add a note or a condition before approving…"
-          />
+          {!isCall && (
+            <textarea
+              ref={note}
+              className={"note" + (noteOpen ? " open" : "")}
+              placeholder="add a note or a condition before approving…"
+            />
+          )}
           <div className="actions">
-            <button className="btn ghost" onClick={() => setNoteOpen((o) => !o)}>
-              {noteOpen ? "− note" : "+ note"}
-            </button>
+            {!isCall && (
+              <button className="btn ghost" onClick={() => setNoteOpen((o) => !o)}>
+                {noteOpen ? "− note" : "+ note"}
+              </button>
+            )}
             <span className="grow" />
-            <button className="btn" disabled={gone} onClick={() => resolve("no")}>
+            <button className="btn" disabled={gone} onClick={() => resolve(isCall ? "decline" : "no")}>
               decline
             </button>
-            <button className="btn primary" disabled={gone} onClick={() => resolve("yes")}>
+            <button className="btn primary" disabled={gone} onClick={() => resolve(isCall ? "approve" : "yes")}>
               approve →
             </button>
           </div>
@@ -436,6 +457,28 @@ function AskBlock({ item, onAnswered, onError }) {
       onError(e);
     }
   };
+
+  /* A gated call is not a question. The session is parked with this exact call
+     open in the transcript, so the card shows the call and its arguments — the
+     thing that will actually run — and answering runs or closes it. Approving a
+     description of an action was the old shape, and nothing bound the
+     description to the action. */
+  if (item.kind === "call") {
+    return (
+      <div className="ev-block ev-ask ev-gated">
+        <span className="who">ark — wants to run this</span>
+        <div className="call">
+          <span className="nm">{item.tool_name}</span>
+          <span className="age">{relTime(item.created_at)}</span>
+        </div>
+        <pre className="args">{JSON.stringify(item.tool_args || {}, null, 2)}</pre>
+        <div className="opts">
+          <span className="opt" onClick={() => !busy && answer("approve")}>approve</span>
+          <span className="opt" onClick={() => !busy && answer("decline")}>decline</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="ev-block ev-ask">

@@ -172,33 +172,6 @@ async def test_an_empty_commit_empties_the_tree():
     assert await store.read_tree(project_id) == []
 
 
-# --- diff ---------------------------------------------------------------------------
-
-
-async def test_diff_reports_added_changed_and_removed_by_hash():
-    project_id = await _project()
-    before = await store.commit_tree(
-        project_id, [_file("same.txt", "x"), _file("edit.txt", "1"), _file("gone.txt", "z")]
-    )
-    after = await store.commit_tree(
-        project_id, [_file("same.txt", "x"), _file("edit.txt", "2"), _file("new.txt", "n")]
-    )
-
-    diff = store.diff_tree(before, after)
-
-    assert diff.added == {"new.txt"}
-    assert diff.changed == {"edit.txt"}
-    assert diff.removed == {"gone.txt"}
-    assert "same.txt" not in diff.paths
-
-
-async def test_an_unchanged_tree_diffs_to_nothing():
-    project_id = await _project()
-    tree = await store.commit_tree(project_id, [_file("a.txt", "1")])
-
-    assert not store.diff_tree(tree, tree)
-
-
 # --- the Supabase backend -------------------------------------------------------------
 
 

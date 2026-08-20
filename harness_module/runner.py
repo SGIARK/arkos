@@ -12,7 +12,6 @@ import json
 import logging
 import posixpath
 import time
-import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -32,8 +31,10 @@ from agent_module.events import (
     ViewTransformEvent,
 )
 from agent_module.loop import Budgets, Dispatch, run_turn
+from config_module.loader import cfg as _cfg
 from config_module.loader import config
 from db import pool
+from db.ids import as_uuid as _uuid
 from harness_module import approvals, hands, leases, lifecycle, store, system_log, workspace
 from harness_module import session_log as slog
 from harness_module.stream import stream
@@ -45,9 +46,6 @@ from tool_module.tools.control import PARK_KINDS
 logger = logging.getLogger(__name__)
 
 
-def _cfg(key: str, default: Any) -> Any:
-    value = config.get(key)
-    return default if value is None else value
 
 
 @dataclass(slots=True)
@@ -478,15 +476,23 @@ async def _drive(session_id: str) -> None:
             return
         sink = _Sink(session)
 
-        # Close any call the last run left open: the chat template rejects a tool_call
-        # id with no matching tool message.
-        for closed in await slog.close_dangling(session_id):
-            stream.publish(session_id, closed)
-
         # The manifest comes BEFORE the fold: the system prompt names the services
         # this request carries, and it cannot do that until the request is decided.
         shipped = await _manifest_for(session)
         _announce_benching(sink, shipped)
+
+        dispatch = sink.write_ahead(
+            registry.bind(sink.tool_context(), mcp_call=_mcp_call(), tools=shipped.specs),
+            shipped.specs,
+        )
+
+        # A call this session parked on is settled BEFORE anything closes it as
+        # dangling: it is open on purpose, and it is what the human answered.
+        await _settle_gated_call(session, sink, dispatch)
+
+        # Close any call the last run left open: the chat template rejects a tool_call
+        # id with no matching tool message.
+        stream.publish_all(session_id, await slog.close_dangling(session_id))
 
         started = time.monotonic()
         folded = await fold(session, shipped.servers)
@@ -504,10 +510,6 @@ async def _drive(session_id: str) -> None:
             # The clearing is recorded as an event; the log itself keeps every result.
             sink.emit(folded.transform)
         tools = shipped.specs
-        dispatch = sink.write_ahead(
-            registry.bind(sink.tool_context(), mcp_call=_mcp_call(), tools=tools),
-            tools,
-        )
         async for event in run_turn(
             messages,
             tools,
@@ -550,6 +552,101 @@ async def _drive(session_id: str) -> None:
         await _shielded(_ending(session_id, sink, "model_error"))
     finally:
         _cancelling.discard(session_id)
+
+
+async def _settle_gated_call(session: Session, sink: _Sink, dispatch: Dispatch) -> bool:
+    """Close a call the session parked on, with the human's decision.
+
+    This is where consent turns into execution, and the ordering is the whole
+    guarantee. The call is still OPEN in the log — that is what the approvals row
+    is bound to — so it is settled here, before `close_dangling` would abandon it
+    as interrupted.
+
+    Three outcomes:
+      approved   -> claim the latch, run THAT call through normal dispatch, and
+                    close it with the real result.
+      declined   -> close it with the failure the model already knows how to
+                    read, and it routes around rather than retrying.
+      re-entered -> the row is already claimed and the call is still open, so a
+                    previous wake died between claiming and appending. The tool
+                    may well have run. Close it as interrupted and never repeat
+                    it: sending a message twice is worse than not knowing whether
+                    it sent once.
+
+    Returns True when it settled something.
+    """
+    row = await approvals.grantable(session.id)
+    if row is None or row.tool_name is None:
+        return False
+    if row.tool_call_id not in await slog.open_calls(session.id):
+        # Already settled by an earlier wake; nothing is owed.
+        return False
+
+    if row.consumed_at is not None:
+        logger.warning(
+            "session %s: gated call %s was claimed but never closed; repairing without re-running it",
+            session.id,
+            row.tool_call_id,
+        )
+        sink.emit(
+            ToolResultEvent(id=row.tool_call_id, ok=False, content=slog.INTERRUPTED, error_kind="interrupted")
+        )
+        await sink.barrier()
+        return True
+
+    if not row.approved:
+        sink.emit(
+            ToolResultEvent(
+                id=row.tool_call_id,
+                ok=False,
+                content=f"The human declined {row.tool_name}. Do not retry it; choose another approach.",
+                error_kind="upstream_error",
+            )
+        )
+        await sink.barrier()
+        return True
+
+    claimed = await approvals.consume(row.id)
+    if claimed is None:
+        # Another wake got there first and is running it. Leave the call alone:
+        # it is theirs to close.
+        logger.info("session %s: gated call %s claimed by another wake", session.id, row.tool_call_id)
+        return False
+
+    envelope = await dispatch_granted(sink, dispatch, row.tool_name, row.tool_args or {})
+    sink.emit(_result_event(row.tool_call_id, envelope))
+    await sink.barrier()
+    return True
+
+
+async def dispatch_granted(sink: _Sink, dispatch: Dispatch, name: str, args: dict[str, Any]) -> ResultEnvelope:
+    """Run one approved call through NORMAL dispatch, with a one-shot grant.
+
+    Normal dispatch, not a side door: the schema check, the timeout, the lease
+    and the write-ahead barrier all still apply. The grant only answers the
+    approval gate, once — anything the model reaches for afterwards is gated
+    again.
+    """
+    sink._grant_once = True
+    try:
+        return await dispatch(name, args)
+    finally:
+        sink._grant_once = False
+
+
+def _result_event(call_id: str, envelope: ResultEnvelope) -> ToolResultEvent:
+    """Build the result event for a call settled outside the loop."""
+    cap = int(_cfg("tools.result_view_cap_chars", 4000))
+    content = envelope.content
+    total = len(content) if len(content) > cap else None
+    return ToolResultEvent(
+        id=call_id,
+        ok=envelope.ok,
+        content=content[:cap] if total else content,
+        error_kind=envelope.error_kind if envelope.error_kind != "none" else None,
+        total_chars=total,
+        ref=envelope.ref,
+    )
 
 
 async def _manifest_for(session: Session) -> registry.Manifest:
@@ -631,8 +728,7 @@ async def _ending(
     try:
         status = "cancelled" if reason == "cancelled" else "failed"
         # The invariant refuses a `done` while a call is open.
-        for closed in await slog.close_dangling(session_id):
-            stream.publish(session_id, closed)
+        stream.publish_all(session_id, await slog.close_dangling(session_id))
         stored = await slog.append(session_id, DoneEvent(reason=reason))
         stream.publish(session_id, stored)
         # `transition` publishes its own event; this call wants only whether it moved.
@@ -640,6 +736,12 @@ async def _ending(
     except Exception:
         logger.exception("session %s: could not record the %s ending", session_id, reason)
         return False
+
+
+# The `error_kind` the gate raises to mean "this call is parked, not failed".
+# It never reaches the log: `emit` recognises it and suppresses the result, which
+# is what leaves the tool_call open across the park.
+_GATED = "approval_required"
 
 
 def _park_prompt(name: str, args: dict[str, Any]) -> str:
@@ -712,6 +814,13 @@ class _Sink:
         # the result, at which point the call is closed in the transcript.
         self._park: tuple[str, str, dict[str, Any]] | None = None
         self._park_calls: dict[str, tuple[str, dict[str, Any]]] = {}
+        # Every tool call of this turn, so a parked one can be bound to its own
+        # id and args without threading the id through the approval gate.
+        self._calls: dict[str, tuple[str, dict[str, Any]]] = {}
+        # True for exactly one gated call: the one the human approved.
+        self._grant_once = False
+        # Set when the park left a call open, so `abort` knows to close it.
+        self._gated_call: str | None = None
         # Resource keys this session holds, so a second call skips the database.
         self._leases: set[str] = set()
         # Set once this turn has a slot in the user's sandbox pool, so a second
@@ -743,37 +852,47 @@ class _Sink:
         )
 
     async def _approve(self, name: str, args: dict[str, Any]) -> bool:
-        """Answers a `requires_approval` tool.
+        """Answer a `requires_approval` call, or park the turn on it.
 
-        This gate cannot ask anyone: it runs inside tool dispatch, and asking
-        means ending the turn and waking on the answer. So it says which of the
-        two things it means, rather than returning a bare False that the caller
-        renders as "the human declined" — a sentence nobody has any grounds for
-        when nobody was asked.
+        Three outcomes, and only two of them return.
 
-        Neither mode answers for the human. Both are sent to `request_approval`,
-        which parks the session and writes the row the desk, the rail and the
-        window all render: an attended human answers in the window, an
-        unattended one answers whenever they next look and the run resumes at
-        its cursor. Parking for hours is what unattended parking is for.
+        A grant issued by the resume path returns True once. It is one-shot on
+        purpose: the resumed turn runs exactly the call the human approved, and
+        anything the model reaches for afterwards is gated again.
 
-        Refusing instead — which is what unattended did — tells the model the
-        human declined, and it goes looking for another route to the same
-        effect. Nobody declined. Nobody was asked.
+        Otherwise there is no grant, so the turn PARKS on this call. The gate
+        cannot park by itself — it runs inside dispatch, which must return an
+        envelope — so it raises the marker that `emit` recognises: the loop turns
+        it into a result, `emit` suppresses that result so the call stays OPEN in
+        the log, and `park()` writes the approvals row bound to that call id
+        carrying the real (name, args). The human then approves the thing that
+        will run rather than a sentence the model wrote about it.
 
-        `approvals.attended_auto_approve` remains as an escape hatch and now
-        defaults OFF: it turned every gated call into a silent yes, which is why
-        an approval row had never once been written.
+        The refusal this replaces told the model to call `request_approval` and
+        promised "you may call {name} once they agree" — a promise nothing kept,
+        because this gate never read the approvals table. It also logged asking
+        correctly as `invalid_args`, spending the per-tool failure cap on it.
+
+        Only one call may park per hop: the transcript permits exactly one open
+        tool call across a park. A second gated call in the same hop is told so
+        and closes normally; it is re-issued after the first is answered.
+
+        `approvals.attended_auto_approve` remains the escape hatch, still OFF by
+        default: it turns every gated call into a silent yes.
         """
+        if self._grant_once:
+            self._grant_once = False
+            return True
         if self.session.mode == "attended" and bool(_cfg("approvals.attended_auto_approve", False)):
             return True
-        raise ToolUnavailable(
-            "invalid_args",
-            f"{name} needs the human's approval, and this gate cannot ask them. "
-            f"Call request_approval describing exactly what you intend to do and why; "
-            f"the session parks until they answer, and you may call {name} once they agree.",
-            retryable=False,
-        )
+        if self._park is not None:
+            raise ToolUnavailable(
+                "approval_required",
+                f"{name} needs the human's approval and another call is already waiting for it. "
+                "Wait for that answer; this one has not been asked yet.",
+                retryable=False,
+            )
+        raise ToolUnavailable(_GATED, f"{name} is waiting for the human to approve it.", retryable=False)
 
     def drop_park(self) -> None:
         """Discards a pending park. The question is never written."""
@@ -806,8 +925,9 @@ class _Sink:
         claims = await workspace.claims_for(self.session.id)
         await self._claim_sandbox()
         for claim in claims:
-            if claim.mode == "write":
-                await self._acquire(f"project:{claim.project_id}", claim.slug)
+            key = workspace.lease_key(claim)
+            if key is not None:
+                await self._acquire(key, claim.slug)
 
         materialized = await workspace.materialize(sandbox_manager.manager(), self.session.id, claims)
         self._workspace = (claims, materialized.manifest)
@@ -969,14 +1089,31 @@ class _Sink:
             self.emit(StatusEvent(label=f"discarded edits to read-only files: {names}{more}"))
 
     def emit(self, event: Event) -> None:
-        """Queues one event for the writer. Never blocks."""
+        """Queues one event for the writer. Never blocks.
+
+        With one exception, which is the whole of 11.7: the result of a call the
+        gate parked on is DROPPED rather than queued. A queued result closes the
+        call, and the call has to stay open — it is what the approval row is
+        bound to, and what the resumed turn executes. The loop's own view of the
+        turn is about to be abandoned at the hop boundary, so nothing downstream
+        reads the result we are discarding.
+        """
         if isinstance(event, BudgetEvent):
             self._hops = event.hops_used
-        elif isinstance(event, ToolCallEvent) and event.name in PARK_KINDS:
-            self._park_calls[event.id] = (event.name, event.args)
-        elif isinstance(event, ToolResultEvent) and event.ok and event.id in self._park_calls:
-            name, args = self._park_calls[event.id]
-            self._park = (event.id, name, args)
+        elif isinstance(event, ToolCallEvent):
+            self._calls[event.id] = (event.name, event.args)
+            if event.name in PARK_KINDS:
+                self._park_calls[event.id] = (event.name, event.args)
+        elif isinstance(event, ToolResultEvent):
+            if event.error_kind == _GATED and self._park is None:
+                name, args = self._calls.get(event.id, ("", {}))
+                self._park = (event.id, name, args)
+                self._gated_call = event.id
+                logger.info("session %s: parking on gated call %s (%s)", self.session.id, event.id, name)
+                return  # dropped on purpose: the call stays open across the park
+            if event.ok and event.id in self._park_calls:
+                name, args = self._park_calls[event.id]
+                self._park = (event.id, name, args)
         self._queue.put_nowait(event)
 
     # --- write-ahead for anything that acts --------------------------------------
@@ -1098,9 +1235,10 @@ class _Sink:
                 await self._release_leases()
                 await self._drain()
                 # The invariant refuses a `done` while a call is open.
-                for closed in await slog.close_dangling(self.session.id):
-                    stream.publish(self.session.id, closed)
-                    self._last_seq = closed.seq
+                closed = await slog.close_dangling(self.session.id)
+                stream.publish_all(self.session.id, closed)
+                if closed:
+                    self._last_seq = closed[-1].seq
                 await self._append(done)
                 self._done_appended = True
 
@@ -1176,7 +1314,21 @@ class _Sink:
         await self._release_leases(keep_box=True)
         await self._drain()
         call_id, name, args = self._park
-        approval = await approvals.create(self.session.id, call_id, PARK_KINDS[name], _park_prompt(name, args))
+        if self._gated_call == call_id:
+            # A gated call: the row carries the call itself, and the call is
+            # still open in the log for the answer to close.
+            approval = await approvals.create(
+                self.session.id,
+                call_id,
+                "call",
+                f"Run {name}?",
+                tool_name=name,
+                tool_args=args,
+            )
+        else:
+            approval = await approvals.create(
+                self.session.id, call_id, PARK_KINDS[name], _park_prompt(name, args)
+            )
         await self._save_cursor()
         moved = await lifecycle.transition(self.session.id, "running", "awaiting_approval", name) is not None
         if moved:
@@ -1216,7 +1368,3 @@ class _Sink:
             )
 
 
-def _uuid(value: str) -> uuid.UUID:
-    if isinstance(value, uuid.UUID):
-        return value
-    return uuid.UUID(str(value))

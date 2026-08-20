@@ -34,15 +34,13 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
-from config_module.loader import config
+from config_module.loader import cfg as _cfg
 from db import pool
+from db.ids import as_uuid as _uuid
 
 logger = logging.getLogger(__name__)
 
 
-def _cfg(key: str, default: Any) -> Any:
-    value = config.get(key)
-    return default if value is None else value
 
 
 @dataclass(frozen=True, slots=True)
@@ -596,148 +594,6 @@ def diff_tree(before: Sequence[TreeEntry], after: Sequence[TreeEntry]) -> TreeDi
     )
 
 
-# --- snapshots --------------------------------------------------------------------
-#
-# A snapshot is a copy of a project's tree rows and nothing else. The bytes are
-# content-addressed and never mutated, so the rows are the whole of the state:
-# taking one costs a row copy, and restoring one points the tree back at blobs
-# that were always there.
-
-
-@dataclass(frozen=True, slots=True)
-class Snapshot:
-    """One saved tree: when it was taken, why, and how big it was."""
-
-    id: str
-    project_id: str
-    label: str | None
-    taken_at: datetime
-    files: int
-
-
-async def snapshot_project(project_id: str, label: str | None = None) -> str:
-    """
-    Save the project's tree as it stands now.
-
-    The copy happens in one statement inside the same transaction that creates
-    the snapshot row, so a snapshot is never half a tree — and an empty project
-    snapshots to an empty tree, which is a state worth being able to return to.
-
-    Returns:
-        The snapshot's id.
-    """
-    async with (await pool.pool()).acquire() as conn, conn.transaction():
-        snapshot_id = await conn.fetchval(
-            "INSERT INTO project_snapshots (project_id, label) VALUES ($1, $2) RETURNING id",
-            _uuid(project_id),
-            label,
-        )
-        await conn.execute(
-            """
-            INSERT INTO snapshot_files (snapshot_id, path, content_hash, size, mtime)
-            SELECT $1, path, content_hash, size, mtime FROM project_files WHERE project_id = $2
-            """,
-            snapshot_id,
-            _uuid(project_id),
-        )
-    return str(snapshot_id)
-
-
-async def list_snapshots(project_id: str, limit: int = 50) -> list[Snapshot]:
-    """The project's snapshots, newest first."""
-    rows = await pool.fetch(
-        """
-        SELECT s.id, s.project_id, s.label, s.taken_at, count(f.path) AS files
-          FROM project_snapshots s LEFT JOIN snapshot_files f ON f.snapshot_id = s.id
-         WHERE s.project_id = $1
-         GROUP BY s.id
-         ORDER BY s.taken_at DESC
-         LIMIT $2
-        """,
-        _uuid(project_id),
-        max(1, limit),
-    )
-    return [
-        Snapshot(
-            id=str(r["id"]),
-            project_id=str(r["project_id"]),
-            label=r["label"],
-            taken_at=r["taken_at"],
-            files=r["files"],
-        )
-        for r in rows
-    ]
-
-
-async def restore_snapshot(snapshot_id: str) -> list[TreeEntry]:
-    """
-    Put a project's tree back the way the snapshot has it.
-
-    Blobs are checked before any row moves, exactly as a commit checks them: a
-    snapshot whose bytes are no longer in the store must not become a tree
-    pointing at files that cannot be read. Nothing deletes blobs today, so this
-    is a guard against the day something does, not a condition seen in practice.
-
-    A path the project has now and the snapshot does not is deleted, because a
-    restore is the tree as it stood and not a merge with what came after.
-
-    Raises:
-        StoreError: no such snapshot, or the store no longer holds its blobs.
-    """
-    row = await pool.fetchrow(
-        "SELECT project_id FROM project_snapshots WHERE id = $1", _uuid(snapshot_id)
-    )
-    if row is None:
-        raise StoreError(f"no snapshot {snapshot_id}")
-    project_id = row["project_id"]
-
-    saved = await pool.fetch(
-        "SELECT path, content_hash, size, mtime FROM snapshot_files WHERE snapshot_id = $1",
-        _uuid(snapshot_id),
-    )
-    absent = await missing_blobs({r["content_hash"] for r in saved})
-    if absent:
-        raise StoreError(
-            f"refusing to restore snapshot {snapshot_id}: {len(absent)} blob(s) are not in the store"
-        )
-
-    async with (await pool.pool()).acquire() as conn, conn.transaction():
-        await conn.execute("DELETE FROM project_files WHERE project_id = $1", project_id)
-        await conn.execute(
-            """
-            INSERT INTO project_files (project_id, path, content_hash, size, mtime)
-            SELECT $2, path, content_hash, size, mtime FROM snapshot_files WHERE snapshot_id = $1
-            """,
-            _uuid(snapshot_id),
-            project_id,
-        )
-
-    return await read_tree(str(project_id))
-
-
-async def prune_snapshots(project_id: str, keep: int) -> int:
-    """Delete all but the newest `keep` snapshots of a project.
-
-    Returns:
-        How many were deleted.
-    """
-    result = await pool.execute(
-        """
-        DELETE FROM project_snapshots
-         WHERE project_id = $1
-           AND id NOT IN (
-               SELECT id FROM project_snapshots
-                WHERE project_id = $1
-                ORDER BY taken_at DESC
-                LIMIT $2
-           )
-        """,
-        _uuid(project_id),
-        max(0, keep),
-    )
-    return int(result.rsplit(" ", 1)[-1] or 0)
-
-
 # --- memory -----------------------------------------------------------------------
 #
 # The user's own region, `{user}/memory/` in the layout, kept in `memory_files`
@@ -771,14 +627,6 @@ _MEMORY_UPSERT = """
             body = EXCLUDED.body
 """
 
-
-@dataclass(frozen=True, slots=True)
-class Note:
-    """One note a session appended: where it lives, what it says, when it landed."""
-
-    path: str
-    text: str
-    written_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -859,21 +707,6 @@ async def read_memory(user_id: str) -> str:
     return body or ""
 
 
-async def read_notes(user_id: str) -> list[Note]:
-    """Every note the user has, oldest first — the name carries the order."""
-    rows = await pool.fetch(
-        """
-        SELECT path, body, mtime
-          FROM memory_files
-         WHERE user_id = $1 AND path LIKE $2
-         ORDER BY path
-        """,
-        _uuid(user_id),
-        f"{NOTES_DIR}/%",
-    )
-    return [Note(path=r["path"], text=r["body"], written_at=r["mtime"]) for r in rows]
-
-
 async def search_memory(user_id: str, query: str, limit: int = 10) -> list[Hit]:
     """
     Full-text search over one user's memory, core and notes alike.
@@ -935,7 +768,3 @@ def _relative(subpath: str) -> str:
     return (subpath or "/").strip("/")
 
 
-def _uuid(value: str) -> uuid.UUID:
-    if isinstance(value, uuid.UUID):
-        return value
-    return uuid.UUID(str(value))

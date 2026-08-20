@@ -174,9 +174,12 @@ approvals (
   session_id   uuid not null references sessions(id) on delete cascade,
   tool_call_id text not null,             -- stays OPEN across the park; the
                                           -- response event closes it
-  kind         text not null check (kind in ('approval','ask')),
+  kind         text not null check (kind in ('approval','ask','call')),
   prompt       text not null,
-  answer       text,
+  answer       text,           -- prose for ask/approval; 'approve'|'decline' for call
+  tool_name    text,           -- `call` only: the call that runs if approved, so
+  tool_args    jsonb,          -- consent binds to it and not to a description
+  consumed_at  timestamptz,    -- the exactly-once latch; consumed-but-open = repair
   created_at   timestamptz not null default now(),
   answered_at  timestamptz
 )

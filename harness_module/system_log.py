@@ -16,12 +16,12 @@ import asyncio
 import contextlib
 import json
 import logging
-import uuid
 from collections import deque
 from typing import Any, Literal
 
-from config_module.loader import config
+from config_module.loader import cfg as _cfg
 from db import pool
+from db.ids import as_uuid_or_none as _uuid
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +38,6 @@ _stopping: asyncio.Event | None = None
 _SHUTDOWN_GRACE_S = 10.0
 
 
-def _cfg(key: str, default: Any) -> Any:
-    value = config.get(key)
-    return default if value is None else value
 
 
 def record(
@@ -143,12 +140,3 @@ async def prune() -> int:
         days,
     )
     return int(result.rsplit(" ", 1)[-1] or 0)
-
-
-def _uuid(value: str | None) -> uuid.UUID | None:
-    if value is None:
-        return None
-    try:
-        return uuid.UUID(str(value))
-    except (ValueError, AttributeError, TypeError):
-        return None

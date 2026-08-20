@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from config_module.loader import config
+from config_module.loader import cfg as _cfg
 from harness_module import store
 from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, ToolUnavailable, fail, ok
 
@@ -23,9 +23,6 @@ from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, ToolUnav
 _SNIPPET_CHARS = 600
 
 
-def _cfg(key: str, default: Any) -> Any:
-    value = config.get(key)
-    return default if value is None else value
 
 
 def _user(ctx: ToolContext) -> str:

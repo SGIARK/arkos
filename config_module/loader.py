@@ -155,3 +155,16 @@ env_path = project_root / ".env"
 load_dotenv(dotenv_path=env_path, override=False)
 
 config = ConfigLoader()
+
+
+def cfg(key: str, default: Any = None) -> Any:
+    """Read one config value, falling back to `default`.
+
+    The single home for what was an identical four-line `_cfg` in eleven
+    modules. It is a thin function over `config.get` rather than the bound
+    method so that modules can import it under their own name — every one does
+    `from config_module.loader import cfg as _cfg`, which keeps the module
+    attribute that tests monkeypatch as a per-module seam. Patching one module's
+    config must not silently reconfigure every other module in the call path.
+    """
+    return config.get(key, default)

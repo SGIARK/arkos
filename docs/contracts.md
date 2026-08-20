@@ -241,7 +241,6 @@ sandbox:
 app:
   public_url: "https://..."    # the one origin /app and the API are served from
 store:
-  snapshot_keep: 14            # snapshots kept per project by scripts/snapshot_store.py
 memory:
   prompt_max_chars: 4000       # of MEMORY.md, injected into the system prompt at fold
   core_max_chars: 20000        # update_memory refuses a longer document
@@ -314,9 +313,11 @@ chat plumbing. One error shape everywhere: `{code, message, retryable}`.
 | `POST /sessions` | `{goal, steps?, project_id?}` | `{session_id, project_id}` (new project unless given; `steps` seed the todo list) |
 | `POST /sessions/{id}/messages` | `{text}` | 202 — appended as a user event and read at the next hop, including by a turn already running (LG-1.8). Delivery, never interruption: it waits for the current hop to finish, and stopping a run mid-step is `POST /cancel` |
 | `POST /sessions/{id}/cancel` | — | 202 |
-| `POST /approvals/{id}/respond` | `{answer}` | 202 — appends event, wakes at cursor |
+| `POST /approvals/{id}/respond` | `{answer}` | 202 — wakes at cursor. `ask`/`approval` take prose and append a `user` event; `call` takes exactly `approve` or `decline`, appends nothing, and the resumed run executes or closes that call |
 | `GET /projects` | — | `[{id, title, status_rollup, updated_at}]` |
-| `GET /attention` | `project_id?` `session_id?` | pending approvals/asks, oldest first, each carrying its session and project. One query at three scopes — no filter is the Command Center, `project_id` is a project's list, `session_id` is one window — because an approval is a state of the session, not something a surface owns |
+| `POST /projects` | `{title, seed_from?:{project_id, path}}` | `{id, title, files}` — a project made deliberately rather than as a side effect of `POST /sessions`. `seed_from` copies TREE ROWS from a directory in another of the caller's projects: blobs are content-addressed, so the same file in two projects is one blob, the copy costs a row each, and the source is untouched |
+| `PATCH /projects/{id}` | `{title}` | `{id, title, updated_at}` — rename. The title is a label; nothing durable is keyed by it |
+| `GET /attention` | `project_id?` `session_id?` | pending approvals/asks, oldest first, each carrying its session and project. A `call` also carries `tool_name` and `tool_args` — the call itself, so the human decides on it rather than on a description. One query at three scopes — no filter is the Command Center, `project_id` is a project's list, `session_id` is one window — because an approval is a state of the session, not something a surface owns |
 | `GET /sessions` | `status?` | `[{session_id, title, status, mode, project_id, project_title, hops_used/max, last_event_at}]` — the user's sessions across every project. The rail asks `?status=running`; the per-project list does not compose into a view that spans tabs |
 | `GET /projects/{id}/sessions` | — | `[{session_id, title, status, mode, hops_used/max, open_questions, last_event_at}]` — how the grid gets from a bubble to a window, most recently active first |
 | `GET /projects/{id}/files` | — | `[{file_id, path, name, size, mtime}]` — tree rows; no sandbox is woken |
@@ -409,14 +410,45 @@ it was typed — the same ordering the fold applies on replay, and the one the
 model API requires. The loop never reads the log itself: it is the brain, and
 the log is the harness's.
 
-**The approval gate asks; it never answers.** `requires_approval` is checked in
-`envelope.execute`, which runs inside tool dispatch and cannot park a turn — so
-it refuses with a message naming `request_approval`, and the model asks properly.
-That parks the session, writes the approvals row, and the desk, the rail and the
-window all render it; the answer wakes the run at its cursor. This holds in both
-modes: an attended human answers in the window, an unattended one answers
-whenever they next look. `approvals.attended_auto_approve` (default OFF) is the
-escape hatch, and turning it on means every gated call is a silent yes.
+**The approval gate parks on the CALL. Consent binds to the call, never to a
+description of one.** `requires_approval` is checked in `envelope.execute`; with
+no grant it raises the `approval_required` marker, the runner's sink DROPS that
+result instead of queueing it, and the tool_call therefore stays OPEN in the
+transcript. `park()` writes an approvals row of kind `call`, bound to that call's
+own id and carrying the real `(tool_name, tool_args)`. The human approves the
+thing that will run.
+
+**Exactly one open tool call is permitted across a park**, and only across a
+park. The partial unique index on `(session_id, tool_call_id) WHERE answered_at
+IS NULL` enforces one row per call in the database; a second gated call in the
+same hop is refused with `approval_required` and closes normally, to be
+re-issued after the first is answered. Every reader is checked against this: the
+fold never runs while the call is open (the resume settles it first), the
+startup sweep only touches `running` sessions and a parked one is
+`awaiting_approval`, LG-1.8 steering is carried because the call closes before
+the fold, and the renderer draws the open call as a pending-call card.
+
+**Answering runs the call, exactly once.** `approve`/`decline` are the whole
+vocabulary for a `call` row — a decision, not prose, so nothing is appended as a
+`user` event. Approve claims a `consumed_at` latch (the same conditional-update
+pattern as `answer`, so concurrent wakes admit exactly one executor) and runs
+that call through NORMAL dispatch with a one-shot grant; the result closes the
+call. Decline closes it with "the human declined; choose another approach".
+**A row consumed while its call is still open is repaired, never repeated** — the
+process died mid-flight and the tool may have run, so the call closes as
+`interrupted`: sending a message twice is worse than not knowing whether it sent
+once.
+
+`request_approval` and `ask` remain, for plan-level questions only. Their
+answers are prose, delivered as a `user` event, and they close their own call
+before parking. `approvals.attended_auto_approve` (default OFF) is the escape
+hatch, and turning it on means every gated call is a silent yes.
+
+What this replaced: the gate refused with a message naming `request_approval`
+and promised "you may call {name} once they agree" — a promise nothing kept,
+because the gate never read the approvals table. Every gated call looped
+forever, consent bound to prose, and asking correctly was logged as
+`invalid_args`, spending the per-tool failure cap on it.
 
 **Auth on every endpoint above: the session cookie.** httpOnly + Secure +
 SameSite=Lax, set by us after verifying Supabase's JWT once. The browser attaches
@@ -641,9 +673,6 @@ update_memory(user_id, text)         # replaces MEMORY.md whole, under an adviso
 read_memory(user_id) -> str          # the curated core, '' when there is none
 read_notes(user_id) -> [Note{path, text, written_at}]
 search_memory(user_id, query, limit) -> [Hit{path, text, written_at, rank}]
-snapshot_project(project_id, label) -> id   # copies tree rows, never blobs
-restore_snapshot(id) -> [TreeEntry]         # the tree as it stood, deletions included
-list_snapshots(project_id) · prune_snapshots(project_id, keep)
 ```
 
 **Layout is fixed.** `{prefix}/blobs/{hh}/{sha256}` for bytes;
@@ -722,14 +751,14 @@ fails is logged and nothing more — the store already has the file. An empty fi
 is content like any other. `quotas.upload_max_mb` is enforced as the upload is
 read, not after.
 
-**A snapshot is tree rows, and that is only true while blobs are immutable.**
-`snapshot_project` copies a project's rows into `snapshot_files`; `restore_snapshot`
-replaces the tree with them, deletions included — a restore is the tree as it
-stood, not a merge with what came after. It refuses if the store no longer holds
-the blobs, which is the commit rule pointed backwards: no tree may come to point
-at bytes that are not there. Nothing deletes a blob today, and **a blob GC, if
-one is ever written, must walk snapshots as well as trees** or a restore becomes
-a promise the store cannot keep.
+**Snapshots were REMOVED (11.7.5).** `snapshot_project` / `restore_snapshot` /
+`list_snapshots` / `prune_snapshots` had no caller in the tree, and
+`scripts/snapshot_store.py` — named by the config comment that configured them —
+has never existed in this repository's history. The design was sound (a snapshot
+is tree rows, which is only true because blobs are immutable and never mutated),
+and it is in git if it is ever wanted. What is not kept is 142 lines of a
+capability nothing invokes.
+
 
 **No store credentials enter the sandbox.** Bytes flow store → harness → e2b
 API, never sandbox → store. This is also why the FUSE probe mounted rclone's
@@ -807,7 +836,7 @@ on concurrently running sessions. None of this exists in prod until it does —
 
 | Test | Pins |
 |---|---|
-| `test_transcript_invariant` | every tool_call.id closed once; interrupted synthesis on abort |
+| `test_transcript_invariant` | every tool_call.id closed once; interrupted synthesis on abort. ONE exception: a call parked for approval stays open across the park and is closed by the answer |
 | `test_lifecycle_transitions` | ALLOWED map only; cancel wins a live race |
 | `test_streaming_first_token` | first content event before the mocked model finishes |
 | `test_retry_budget_bounded` | ≤3 attempts, bounded wall clock; background no-retry |

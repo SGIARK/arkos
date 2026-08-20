@@ -87,6 +87,28 @@ function asEvent(raw) {
   return { ...rest, ...(payload || {}) };
 }
 
+/* Multipart goes around `request` rather than through it: the browser sets its
+   own boundary, and a Content-Type we invented would break it. */
+async function _postFile(projectId, blob, path, whenItFails) {
+  const form = new FormData();
+  if (path) {
+    form.append("file", blob, path.split("/").pop());
+    form.append("path", path);
+  } else {
+    form.append("file", blob);
+  }
+  const response = await fetch(`${API}/projects/${projectId}/files`, {
+    method: "POST",
+    credentials: "same-origin",
+    body: form,
+  });
+  if (!response.ok) {
+    const shape = await response.json().catch(() => ({}));
+    throw new ApiError(shape.code || "upload_failed", shape.message || whenItFails);
+  }
+  return response.json();
+}
+
 const api = {
   ApiError,
 
@@ -124,6 +146,12 @@ const api = {
   /* --- what is here ----------------------------------------------------- */
 
   projects: () => request("GET", "/projects"),
+  /* Deliberately, rather than as a side effect of starting a session.
+     `seed_from` copies tree rows from a directory in another project — blobs
+     are content-addressed, so the same file in two projects is one blob. */
+  createProject: (title, seedFrom) =>
+    request("POST", "/projects", seedFrom ? { title, seed_from: seedFrom } : { title }),
+  renameProject: (projectId, title) => request("PATCH", `/projects/${projectId}`, { title }),
   sessions: (status) => request("GET", status ? `/sessions?status=${encodeURIComponent(status)}` : "/sessions"),
   projectSessions: (projectId) => request("GET", `/projects/${projectId}/sessions`),
   async session(sessionId) {
@@ -143,46 +171,17 @@ const api = {
     return request("GET", "/attention" + query);
   },
 
-  /* Multipart, so it goes around `request` rather than through it: the browser
-     sets its own boundary and a Content-Type we invented would break it. */
-  async upload(projectId, file, dir) {
-    const form = new FormData();
-    form.append("file", file);
-    /* A folder is a path prefix, not a row: the store keeps flat paths and the
-       tree is derived from them, so uploading INTO a directory is uploading a
-       file whose path carries it. Absent, the name alone lands it at the root. */
-    if (dir) form.append("path", `${dir}/${file.name}`);
-    const response = await fetch(`${API}/projects/${projectId}/files`, {
-      method: "POST",
-      credentials: "same-origin",
-      body: form,
-    });
-    if (!response.ok) {
-      const shape = await response.json().catch(() => ({}));
-      throw new ApiError(shape.code || "upload_failed", shape.message || `Could not upload ${file.name}.`);
-    }
-    return response.json();
-  },
+  /* Uploading a file and saving an edit are the SAME call: `put_file` upserts
+     on (project_id, path), so writing a path that already exists replaces it,
+     and write-through puts it in any box already holding the project.
 
-  /* Save an edit back to the store. The same multipart endpoint an upload
-     uses, because it is the same operation: `put_file` upserts on
-     (project_id, path), so writing a file that already exists replaces it and
-     write-through puts it in any box already holding the project. */
-  async saveFile(projectId, path, text) {
-    const form = new FormData();
-    form.append("file", new Blob([text], { type: "text/plain" }), path.split("/").pop());
-    form.append("path", path);
-    const response = await fetch(`${API}/projects/${projectId}/files`, {
-      method: "POST",
-      credentials: "same-origin",
-      body: form,
-    });
-    if (!response.ok) {
-      const shape = await response.json().catch(() => ({}));
-      throw new ApiError(shape.code || "save_failed", shape.message || `Could not save ${path}.`);
-    }
-    return response.json();
-  },
+     A folder is a path prefix, not a row: the store keeps flat paths and the
+     tree is derived from them, so uploading INTO a directory is uploading a
+     file whose path carries it. Absent, the name alone lands it at the root. */
+  upload: (projectId, file, dir) =>
+    _postFile(projectId, file, dir ? `${dir}/${file.name}` : null, `Could not upload ${file.name}.`),
+  saveFile: (projectId, path, text) =>
+    _postFile(projectId, new Blob([text], { type: "text/plain" }), path, `Could not save ${path}.`),
 
   /* A folder is durable the moment it is named: the server writes a zero-byte
      sentinel inside it, because the tree is flat paths and a directory is not a

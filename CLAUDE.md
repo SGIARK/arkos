@@ -53,6 +53,13 @@ and a `system_events` row. **The system prompt is generated from the manifest
 that shipped, never from the toggles**, which is why `_drive` builds the
 manifest before it folds. Do not add a second path that assembles tool specs.
 
+**A gated tool call PARKS the turn on itself** (11.7). `requires_approval` with
+no grant leaves that call OPEN in the transcript, and the `approvals` row of
+kind `call` carries the real `(tool_name, tool_args)` — consent binds to the
+call, never to prose about it. Answering is `approve`/`decline`, and approving
+runs that exact call once through normal dispatch, latched by `consumed_at`.
+Never re-run a consumed-but-unclosed call: repair it as interrupted.
+
 **The design lives at `new_frontend/`** — the checked-in copy of the Claude
 Design project 11.4 was built from. Where it and `frontend/` disagree, the
 design wins and `frontend/` is amended, not the other way round.

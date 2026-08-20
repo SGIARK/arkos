@@ -732,21 +732,22 @@ async def test_the_loop_does_not_re_read_its_own_nudge(model, tools, monkeypatch
     assert "a nudge, not a person" not in [m["content"] for m in model.messages_seen[1]]
 
 
-async def test_an_attended_gate_sends_the_model_to_ask_rather_than_answering_for_the_human():
-    """It used to answer yes on the human's behalf, silently.
+async def test_an_attended_gate_parks_on_the_call_rather_than_answering_for_the_human():
+    """It used to answer yes on the human's behalf, silently; then it refused and
+    told the model to describe its intention to `request_approval`, which bound
+    consent to prose and looped forever because nothing read the grant back.
 
-    Every requires_approval call was auto-approved while nobody was asked, which
-    is why the approvals table was empty and every surface built on it showed
-    "all caught up". The gate cannot ask from inside tool dispatch, so it says
-    so and names the tool that can.
+    Now the gate raises the marker that parks the turn ON THIS CALL (11.7).
     """
     session = _fake_session(mode="attended")
 
     with pytest.raises(ToolUnavailable) as raised:
         await session._approve("mcp_GoogleCalendar_CreateEvent", {"summary": "deep work"})
 
-    assert "request_approval" in raised.value.message
+    assert raised.value.error_kind == runner._GATED
     assert raised.value.retryable is False
+    assert "request_approval" not in raised.value.message, "the refusal path is deleted"
+    assert raised.value.error_kind != "invalid_args", "asking correctly is not a bad-args failure"
 
 
 async def test_the_escape_hatch_still_works_when_it_is_asked_for(monkeypatch):
@@ -757,23 +758,49 @@ async def test_the_escape_hatch_still_works_when_it_is_asked_for(monkeypatch):
     assert await session._approve("mcp_GoogleCalendar_CreateEvent", {}) is True
 
 
-async def test_an_unattended_gate_asks_too_rather_than_refusing():
+async def test_an_unattended_gate_parks_too_rather_than_refusing():
     """It used to return False, which the caller renders as "the human declined"
     — so the model went looking for another route to the same effect. Nobody
     declined; nobody was asked. Parking for hours is what unattended parking is
-    for."""
+    for, and the park is identical in both modes."""
     session = _fake_session(mode="unattended")
 
     with pytest.raises(ToolUnavailable) as raised:
         await session._approve("mcp_GoogleCalendar_CreateEvent", {})
 
-    assert "request_approval" in raised.value.message
+    assert raised.value.error_kind == runner._GATED
+
+
+async def test_a_granted_call_passes_the_gate_exactly_once():
+    """The resumed turn runs what the human approved; the next call is gated again."""
+    session = _fake_session(mode="attended")
+    session._grant_once = True
+
+    assert await session._approve("mcp_GoogleCalendar_CreateEvent", {}) is True
+
+    with pytest.raises(ToolUnavailable):
+        await session._approve("mcp_GoogleCalendar_CreateEvent", {})
+
+
+async def test_a_second_gated_call_in_one_hop_does_not_park_as_well():
+    """The transcript permits exactly one open call across a park."""
+    session = _fake_session(mode="attended")
+    session._park = ("c1", "mcp_send_email", {})
+
+    with pytest.raises(ToolUnavailable) as raised:
+        await session._approve("mcp_post_message", {})
+
+    assert "already waiting" in raised.value.message
 
 
 def _fake_session(mode: str):
     """A sink with just enough session on it for the approval gate."""
     sink = runner._Sink.__new__(runner._Sink)
     sink.session = SimpleNamespace(id="3f1d4a02-0000-4000-8000-0000000000aa", mode=mode)
+    # `__init__` is skipped, so the state the gate reads is set by hand. Adding a
+    # field to the sink means adding it here, which is the cost of the shortcut.
+    sink._grant_once = False
+    sink._park = None
     return sink
 
 

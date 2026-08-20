@@ -21,6 +21,30 @@ from tool_module import registry
 from tool_module.envelope import ToolContext
 from tool_module.sandbox import manager as sandbox_manager
 
+
+class _Note:
+    """One note, as these tests read them back."""
+
+    def __init__(self, path: str, text: str):
+        self.path, self.text = path, text
+
+
+async def read_notes(user_id: str) -> list[_Note]:
+    """Every note a user has, oldest first — the name carries the order.
+
+    This lived in `store` until 11.7.5, where it was found to have no production
+    caller: only these tests, verifying what `save_memory` wrote. A public store
+    API that exists for the test suite is the suite's helper, so it moved here.
+    Reading it back through the same query the writer uses is still the right
+    assertion — it just is not a shipped capability.
+    """
+    rows = await pool.fetch(
+        "SELECT path, body FROM memory_files WHERE user_id = $1 AND path LIKE $2 ORDER BY path",
+        uuid.UUID(str(user_id)),
+        f"{store.NOTES_DIR}/%",
+    )
+    return [_Note(path=r["path"], text=r["body"]) for r in rows]
+
 pytestmark = pytest.mark.asyncio
 
 _seeded: list[uuid.UUID] = []
@@ -70,7 +94,7 @@ async def test_a_note_is_a_file_of_its_own():
     path = await store.append_note(user_id, "the human prefers short replies")
 
     assert path.startswith(f"{store.NOTES_DIR}/")
-    notes = await store.read_notes(user_id)
+    notes = await read_notes(user_id)
     assert [(n.path, n.text) for n in notes] == [(path, "the human prefers short replies")]
 
 
@@ -81,7 +105,7 @@ async def test_concurrent_appends_land_as_separate_files():
     paths = await asyncio.gather(*(store.append_note(user_id, f"note {i}") for i in range(10)))
 
     assert len(set(paths)) == 10
-    assert {n.text for n in await store.read_notes(user_id)} == {f"note {i}" for i in range(10)}
+    assert {n.text for n in await read_notes(user_id)} == {f"note {i}" for i in range(10)}
 
 
 async def test_notes_read_back_oldest_first():
@@ -89,7 +113,7 @@ async def test_notes_read_back_oldest_first():
     first = await store.append_note(user_id, "one")
     second = await store.append_note(user_id, "two")
 
-    assert [n.path for n in await store.read_notes(user_id)] == [first, second]
+    assert [n.path for n in await read_notes(user_id)] == [first, second]
 
 
 async def test_one_users_memory_is_not_anothers():
@@ -99,7 +123,7 @@ async def test_one_users_memory_is_not_anothers():
 
     await store.append_note(mine, "mine")
 
-    assert [n.text for n in await store.read_notes(mine)] == ["mine"]
+    assert [n.text for n in await read_notes(mine)] == ["mine"]
     assert await store.read_memory(mine) == ""
     assert await store.search_memory(mine, "yours") == []
 
@@ -121,7 +145,7 @@ async def test_curating_replaces_the_core_whole():
     await store.update_memory(user_id, "# Memory\n\nShort replies. Ships on Fridays.\n")
 
     assert await store.read_memory(user_id) == "# Memory\n\nShort replies. Ships on Fridays.\n"
-    assert await store.read_notes(user_id) == [], "the core came back as a note"
+    assert await read_notes(user_id) == [], "the core came back as a note"
     rows = await pool.fetchval(
         "SELECT count(*) FROM memory_files WHERE user_id = $1 AND path = $2",
         uuid.UUID(user_id),
@@ -198,7 +222,7 @@ async def test_save_memory_refuses_a_transcript():
 
     assert result.ok is False
     assert "at most" in result.content
-    assert await store.read_notes(user_id) == []
+    assert await read_notes(user_id) == []
 
 
 async def test_update_memory_requires_reading_the_document_first():

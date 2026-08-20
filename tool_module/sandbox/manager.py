@@ -20,11 +20,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 from typing import Any
 
 from config_module.loader import config
 from db import pool
+from db.ids import as_uuid as _uuid
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +71,6 @@ def _template() -> str | None:
     return name if name and name != "base" else None
 
 
-def _uuid(value: str) -> uuid.UUID:
-    if isinstance(value, uuid.UUID):
-        return value
-    return uuid.UUID(str(value))
 
 
 async def claim_slot(session_id: str) -> bool:
@@ -362,9 +358,6 @@ class SandboxManager:
 
     # ---------- reading a live box without waking one ----------
 
-    def awake(self, session_id: str) -> Any | None:
-        """Return the session's box only if this process is already holding it, never boot one."""
-        return self._live.get(session_id)
 
     async def browse(self, session_id: str, path: str = "/home/user") -> list[dict[str, Any]]:
         """List a directory in a box that is already awake.

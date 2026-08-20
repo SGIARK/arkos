@@ -34,12 +34,13 @@ import posixpath
 import shlex
 import tarfile
 import uuid as _uuid_module
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from collections.abc import Sequence
 from typing import Any, Protocol
 
 from db import pool
+from db.ids import as_uuid as _uuid
 from harness_module import store
 
 logger = logging.getLogger(__name__)
@@ -126,9 +127,19 @@ async def claims_for(session_id: str) -> list[Claim]:
     ]
 
 
+def lease_key(claim: Claim) -> str | None:
+    """The project lease this claim takes, or None. A read claim takes none.
+
+    The rule lives here alone. `runner` re-derived it inline while this function
+    sat beside it, which is two places for one answer about who may write to a
+    project — and the kind of pair that drifts silently.
+    """
+    return f"project:{claim.project_id}" if claim.mode == "write" else None
+
+
 def lease_keys(claims: list[Claim]) -> list[str]:
-    """The project leases a claim set takes. Read claims take none."""
-    return [f"project:{c.project_id}" for c in claims if c.mode == "write"]
+    """The project leases a claim set takes."""
+    return [key for c in claims if (key := lease_key(c))]
 
 
 async def materialize(sandbox: SandboxIO, session_id: str, claims: list[Claim]) -> Materialized:
@@ -411,10 +422,6 @@ async def _remove(sandbox: SandboxIO, session_id: str, paths: tuple[str, ...]) -
     await sandbox.exec(session_id, f"rm -f {quoted}")
 
 
-def _uuid(value: str) -> _uuid_module.UUID:
-    if isinstance(value, _uuid_module.UUID):
-        return value
-    return _uuid_module.UUID(str(value))
 
 
 async def _live_boxes(project_id: str) -> list[str]:

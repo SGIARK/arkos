@@ -19,21 +19,61 @@ function pcStatus(status) {
   return "ok";
 }
 
-function LookingGlassView({ onError, pulse, onPulse, jump, onJumped }) {
+function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJumped }) {
   const [projects, setProjects] = useState(null);
-  const [waiting, setWaiting] = useState([]);
+  // From App, which reads it once per pulse for every surface that shows it.
+  const waiting = pending || [];
   const [openProject, setOpenProject] = useState(null);
   const [sessions, setSessions] = useState([]);
   const [openSession, setOpenSession] = useState(null);
+  const [making, setMaking] = useState(false);
+  // The project whose name is being edited, and the text so far. One at a time.
+  const [renaming, setRenaming] = useState(null);
+  const [renameText, setRenameText] = useState("");
+
+  const reload = useCallback(async () => {
+    try {
+      setProjects(await api.projects());
+    } catch (e) {
+      onError(e);
+    }
+  }, [onError]);
+
+  const startRename = (project) => {
+    setRenaming(project.id);
+    setRenameText(project.title);
+  };
+
+  /* Enter and blur both commit, escape cancels — the export's contract, and the
+     one people already have for renaming a file. An unchanged or empty name is
+     a no-op rather than a request: renaming a thing to what it is called is not
+     an edit. */
+  const commitRename = async () => {
+    const id = renaming;
+    const title = renameText.trim();
+    setRenaming(null);
+    if (!id || !title) return;
+    const was = (projects || []).find((p) => p.id === id);
+    if (was && was.title === title) return;
+    // Optimistic: the name is yours, and waiting a round trip to see your own
+    // typing is the one latency a rename cannot have.
+    setProjects((list) => (list || []).map((p) => (p.id === id ? { ...p, title } : p)));
+    try {
+      await api.renameProject(id, title);
+      if (onPulse) onPulse();
+    } catch (e) {
+      onError(e);
+      reload();
+    }
+  };
 
   useEffect(() => {
     let dead = false;
     (async () => {
       try {
-        const [list, attention] = await Promise.all([api.projects(), api.attention()]);
+        const list = await api.projects();
         if (dead) return;
         setProjects(list);
-        setWaiting(attention);
       } catch (e) {
         if (!dead) onError(e);
       }
@@ -119,15 +159,45 @@ function LookingGlassView({ onError, pulse, onPulse, jump, onJumped }) {
   return (
     <div className="lg-view">
       <div className="projects-grid">
+        <div className="pg-head">
+          <span className="kicker">projects</span>
+          <button className="pg-new" title="new project" onClick={() => setMaking(true)}>
+            +
+          </button>
+        </div>
         {projects === null && <Empty>reading…</Empty>}
-        {projects !== null && !projects.length && (
-          <Empty glyph="◇">no projects yet — start something from the command bar</Empty>
-        )}
         <div className="pg-grid">
           {(projects || []).map((p) => (
-            <div className="proj-card" key={p.id} onClick={() => open(p)}>
+            <div className="proj-card" key={p.id} onClick={() => renaming !== p.id && open(p)}>
               <span className={"pc-status " + pcStatus(p.status_rollup)} title={statusLabel(p.status_rollup)} />
-              <div className="pc-name">{p.title}</div>
+              {renaming === p.id ? (
+                <input
+                  className="pc-rename"
+                  value={renameText}
+                  autoFocus
+                  spellCheck={false}
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={(e) => setRenameText(e.target.value)}
+                  onBlur={commitRename}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") commitRename();
+                    if (e.key === "Escape") setRenaming(null);
+                  }}
+                />
+              ) : (
+                <div className="pc-name">
+                  <span onDoubleClick={(e) => { e.stopPropagation(); startRename(p); }} title="double-click to rename">
+                    {p.title}
+                  </span>
+                  <button
+                    className="pc-rename-btn"
+                    title="rename"
+                    onClick={(e) => { e.stopPropagation(); startRename(p); }}
+                  >
+                    rename
+                  </button>
+                </div>
+              )}
               <div className="pc-sess">
                 {p.sessions === 1 ? "1 session" : p.sessions + " sessions"}
                 {waitingFor[p.id] ? ` · ${waitingFor[p.id]} waiting on you` : ""}
@@ -137,6 +207,147 @@ function LookingGlassView({ onError, pulse, onPulse, jump, onJumped }) {
               </div>
             </div>
           ))}
+          {projects !== null && (
+            <div className="proj-new" onClick={() => setMaking(true)}>
+              new project
+            </div>
+          )}
+        </div>
+      </div>
+
+      {making && (
+        <NewProject
+          projects={projects || []}
+          onError={onError}
+          onClose={() => setMaking(false)}
+          onMade={async (project) => {
+            setMaking(false);
+            await reload();
+            if (onPulse) onPulse();
+            // Land in the new project, which is what the plus was for.
+            open({ id: project.id, title: project.title });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/* The new-project modal.
+
+   Two ways to start, and they differ in exactly one thing: whether the project
+   begins empty or holding files that already exist. Seeding COPIES TREE ROWS,
+   not bytes — the store is content-addressed, so the same file in two projects
+   is one blob and the source is untouched.
+
+   The directory choices are derived from the projects already listed rather
+   than from a dedicated endpoint: there are a handful of projects, their file
+   lists are one request each, and a fourth route for a dropdown is a route to
+   maintain forever. */
+function NewProject({ projects, onClose, onMade, onError }) {
+  const [name, setName] = useState("");
+  const [mode, setMode] = useState("new");
+  const [dirs, setDirs] = useState(null);
+  const [dir, setDir] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEscape(true, onClose);
+
+  // Only when asked for: a person starting an empty project should not pay for
+  // a file listing of every project they own.
+  useEffect(() => {
+    if (mode !== "existing" || dirs !== null) return;
+    let dead = false;
+    (async () => {
+      const found = [];
+      for (const p of projects) {
+        try {
+          for (const f of await api.files(p.id)) {
+            const at = f.path.lastIndexOf("/");
+            if (at > 0) found.push({ project_id: p.id, path: f.path.slice(0, at), label: `${p.title} / ${f.path.slice(0, at)}` });
+          }
+        } catch (e) {
+          /* one unreadable project is not a broken dropdown */
+        }
+      }
+      if (dead) return;
+      const seen = new Set();
+      const unique = found.filter((d) => !seen.has(d.label) && seen.add(d.label));
+      setDirs(unique);
+      if (unique.length) setDir(unique[0].label);
+    })();
+    return () => { dead = true; };
+  }, [mode, dirs, projects]);
+
+  const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "untitled";
+  const chosen = (dirs || []).find((d) => d.label === dir);
+  const ready = !!name.trim() && !busy && (mode === "new" || !!chosen);
+
+  const create = async () => {
+    if (!ready) return;
+    setBusy(true);
+    try {
+      onMade(await api.createProject(name.trim(), mode === "existing" && chosen ? chosen : null));
+    } catch (e) {
+      setBusy(false);
+      onError(e);
+    }
+  };
+
+  return (
+    <div className="np-over" onClick={onClose}>
+      <div className="np" onClick={(e) => e.stopPropagation()}>
+        <div className="np-head">
+          <span className="kicker">new project</span>
+          <button className="np-x" onClick={onClose}>✕</button>
+        </div>
+        <div className="np-body">
+          <label className="np-field">
+            <span className="np-label">name</span>
+            <input
+              value={name}
+              autoFocus
+              spellCheck={false}
+              placeholder="what is this project for?"
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && create()}
+            />
+          </label>
+          <div className="np-field">
+            <span className="np-label">files</span>
+            <div className={"np-pick" + (mode === "new" ? " on" : "")} onClick={() => setMode("new")}>
+              <span className="np-radio" />
+              <span className="np-copy">
+                <span className="t">a new directory</span>
+                <span className="s">start empty — sessions and drops fill it</span>
+              </span>
+            </div>
+            <div className={"np-pick" + (mode === "existing" ? " on" : "")} onClick={() => setMode("existing")}>
+              <span className="np-radio" />
+              <span className="np-copy">
+                <span className="t">an existing directory</span>
+                <span className="s">point at files already in the store</span>
+                {mode === "existing" && (
+                  <select value={dir} onClick={(e) => e.stopPropagation()} onChange={(e) => setDir(e.target.value)}>
+                    {dirs === null && <option>reading…</option>}
+                    {dirs !== null && !dirs.length && <option value="">no directories yet</option>}
+                    {(dirs || []).map((d) => (
+                      <option key={d.label} value={d.label}>{d.label}</option>
+                    ))}
+                  </select>
+                )}
+              </span>
+            </div>
+          </div>
+        </div>
+        <div className="np-foot">
+          <span className="np-preview">{slug}/</span>
+          <span className="np-acts">
+            <button className="np-cancel" onClick={onClose}>cancel</button>
+            <button className="np-go" disabled={!ready} onClick={create}>
+              {busy ? "creating…" : "create"}
+            </button>
+          </span>
         </div>
       </div>
     </div>
@@ -150,7 +361,24 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse }) {
   const { session, events, pending, questions, todo, browserUrl, browserLabel, send, refreshQuestions } = stream;
   const [text, setText] = useState("");
   const [tab, setTab] = useState(() => localStorage.getItem("ark-canvas") || "files");
+  // Renaming the project from its own session header: the same gesture as on
+  // the card, because it is the same name.
+  const [headRename, setHeadRename] = useState(false);
+  const [headText, setHeadText] = useState("");
   const tail = useRef(null);
+
+  const commitHeadRename = async () => {
+    const title = headText.trim();
+    setHeadRename(false);
+    if (!project || !title || title === project.title) return;
+    try {
+      await api.renameProject(project.id, title);
+      project.title = title;
+      if (onPulse) onPulse();
+    } catch (e) {
+      onError(e);
+    }
+  };
 
   useEffect(() => {
     localStorage.setItem("ark-canvas", tab);
@@ -172,7 +400,28 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse }) {
           </button>
         )}
         <span className="path">
-          <b>{(project && project.title) || session.title || "session"}</b>
+          {headRename ? (
+            <input
+              className="pc-rename"
+              value={headText}
+              autoFocus
+              spellCheck={false}
+              onChange={(e) => setHeadText(e.target.value)}
+              onBlur={commitHeadRename}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitHeadRename();
+                if (e.key === "Escape") setHeadRename(false);
+              }}
+            />
+          ) : (
+            <b
+              onDoubleClick={() => project && (setHeadText(project.title), setHeadRename(true))}
+              title={project ? "double-click to rename" : undefined}
+              style={project ? { cursor: "text" } : undefined}
+            >
+              {(project && project.title) || session.title || "session"}
+            </b>
+          )}
           <span className="crumb">▸</span>
           {session.title || "untitled session"}
         </span>
@@ -322,12 +571,7 @@ function SessionTools({ sessionId, onError }) {
     if (open) load();
   }, [open, load]);
 
-  useEffect(() => {
-    if (!open) return undefined;
-    const key = (e) => e.key === "Escape" && setOpen(false);
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  }, [open]);
+  useEscape(open, () => setOpen(false));
 
   const budget = doc ? doc.budget : 0;
   const used = doc ? doc.used : 0;
@@ -563,12 +807,7 @@ function BrowserCanvas({ url, label }) {
     return () => source.close();
   }, [url]);
 
-  useEffect(() => {
-    if (!big) return undefined;
-    const key = (e) => e.key === "Escape" && setBig(false);
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  }, [big]);
+  useEscape(big, () => setBig(false));
 
   // The run ending takes the popout with it: an expanded still of a stream that
   // has stopped is a picture pretending to be a window.

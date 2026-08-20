@@ -30,8 +30,10 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
 from agent_module.events import TodoEvent, UserEvent
+from config_module.loader import cfg as _cfg
 from config_module.loader import config
 from db import pool
+from db.ids import as_uuid
 from harness_module import approvals, hands, jwt_utils, lifecycle, runner, store, system_log, workspace
 from harness_module import session_log as slog
 from harness_module.stream import LAGGED, stream
@@ -44,9 +46,6 @@ from tool_module.smithery import AuthRequiredError, SmitheryError
 logger = logging.getLogger(__name__)
 
 
-def _cfg(key: str, default: Any) -> Any:
-    value = config.get(key)
-    return default if value is None else value
 
 
 # --- error shape ---------------------------------------------------------------
@@ -463,6 +462,77 @@ async def list_projects(user_id: str = CurrentUser) -> list[dict[str, Any]]:
     ]
 
 
+@app.post("/projects", status_code=201)
+async def create_project(body: dict[str, Any] = JsonBody, user_id: str = CurrentUser) -> dict[str, Any]:
+    """Make a project deliberately, rather than as a side effect of starting a session.
+
+    Optionally seeded from a directory that already exists in another of the
+    caller's projects. Seeding COPIES TREE ROWS, not bytes: blobs are addressed
+    by the sha256 of their content, so the same file in two projects is one blob
+    and the copy costs a row each. Nothing is moved and the source is untouched —
+    two projects holding the same file is the normal state of a content-addressed
+    store, not a special case.
+    """
+    title = str(body.get("title") or "").strip()
+    if not title:
+        raise ApiError(400, "invalid_request", "A project needs a name.")
+
+    seed = body.get("seed_from")
+    rows: list[Any] = []
+    if seed is not None:
+        if not isinstance(seed, dict):
+            raise ApiError(400, "invalid_request", "seed_from is {project_id, path}.")
+        await _owned_project(str(seed.get("project_id") or ""), user_id)
+        try:
+            prefix = store.safe_path(str(seed.get("path") or "")).rstrip("/")
+        except ValueError as e:
+            raise ApiError(400, "invalid_request", str(e)) from e
+        rows = await pool.fetch(
+            "SELECT path, content_hash, size, mtime FROM project_files "
+            "WHERE project_id = $1 AND (path = $2 OR path LIKE $2 || '/%')",
+            _uuid(str(seed["project_id"]), "project"),
+            prefix,
+        )
+        if not rows:
+            raise ApiError(404, "not_found", f"No files under {prefix!r} to start from.")
+
+    project_id = await pool.fetchval(
+        "INSERT INTO projects (user_id, title) VALUES ($1, $2) RETURNING id",
+        _uuid(user_id, "user"),
+        title,
+    )
+    for row in rows:
+        await pool.execute(
+            "INSERT INTO project_files (project_id, path, content_hash, size, mtime) "
+            "VALUES ($1, $2, $3, $4, $5) ON CONFLICT (project_id, path) DO NOTHING",
+            project_id,
+            row["path"],
+            row["content_hash"],
+            row["size"],
+            row["mtime"],
+        )
+    return {"id": str(project_id), "title": title, "files": len(rows)}
+
+
+@app.patch("/projects/{project_id}")
+async def rename_project(
+    project_id: str,
+    body: dict[str, Any] = JsonBody,
+    user_id: str = CurrentUser,
+) -> dict[str, Any]:
+    """Rename a project. The title is a label; nothing durable is keyed by it."""
+    await _owned_project(project_id, user_id)
+    title = str(body.get("title") or "").strip()
+    if not title:
+        raise ApiError(400, "invalid_request", "A project needs a name.")
+    row = await pool.fetchrow(
+        "UPDATE projects SET title = $2, updated_at = now() WHERE id = $1 RETURNING id, title, updated_at",
+        _uuid(project_id, "project"),
+        title,
+    )
+    return {"id": str(row["id"]), "title": row["title"], "updated_at": row["updated_at"].isoformat()}
+
+
 @app.get("/projects/{project_id}/sessions")
 async def list_project_sessions(project_id: str, user_id: str = CurrentUser) -> list[dict[str, Any]]:
     """The project's sessions, most recently active first.
@@ -530,6 +600,7 @@ async def attention(
     rows = await pool.fetch(
         """
         SELECT a.id, a.session_id, a.kind, a.prompt, a.created_at, a.tool_call_id,
+               a.tool_name, a.tool_args,
                s.title AS session_title, s.project_id, p.title AS project_title
           FROM approvals a
           JOIN sessions s ON s.id = a.session_id
@@ -553,6 +624,10 @@ async def attention(
             "project_title": r["project_title"],
             "kind": r["kind"],
             "prompt": r["prompt"],
+            # Only a `call` carries these: the tool that runs if it is approved,
+            # so the human decides on the call rather than a description of it.
+            "tool_name": r["tool_name"],
+            "tool_args": json.loads(r["tool_args"]) if isinstance(r["tool_args"], str) else r["tool_args"],
             "created_at": r["created_at"].isoformat(),
         }
         for r in rows
@@ -762,8 +837,7 @@ async def post_message(
     if not runner.is_running(session_id):
         # Calls left open by a dead run are closed before the message is
         # appended, so no user event lands between a call and its result.
-        for closed in await slog.close_dangling(session_id):
-            stream.publish(session_id, closed)
+        stream.publish_all(session_id, await slog.close_dangling(session_id))
 
     await _append(session_id, UserEvent(text=text, source="human"))
     started = await runner.start(session_id)
@@ -776,10 +850,16 @@ async def respond_to_approval(
     body: dict[str, Any] = JsonBody,
     user_id: str = CurrentUser,
 ) -> dict[str, Any]:
-    """Answer an open question and wake the session that raised it.
+    """Answer an open question, or decide a gated call, and wake the session.
 
-    The answer is appended as a `user` event. The tool call that raised the
-    question was closed before the session parked, so nothing is back-filled.
+    The two kinds are answered differently because they mean different things.
+    A question (`ask`, `approval`) takes prose, which is appended as a `user`
+    event for the model to read. A `call` takes exactly `approve` or `decline`:
+    it is a decision about a tool call that is still open in the transcript, and
+    the resumed run executes or closes that call itself. Nothing is appended as
+    a user message for a call — the model was not asked a question, and telling
+    it "approve" as though the human had spoken would be a second, false record
+    of what happened.
     """
     text = str(body.get("answer") or "").strip()
     if not text:
@@ -789,13 +869,24 @@ async def respond_to_approval(
     if approval is None:
         raise ApiError(404, "not_found", "No such approval.")
 
+    if approval.gated_call:
+        text = text.lower()
+        if text not in (approvals.APPROVE, approvals.DECLINE):
+            raise ApiError(
+                400,
+                "invalid_request",
+                f"A tool call is decided, not discussed: send "
+                f'{{"answer": "{approvals.APPROVE}"}} or {{"answer": "{approvals.DECLINE}"}}.',
+            )
+
     # The UPDATE matches on answered_at IS NULL, so two people answering at once
     # produce one wake.
     answered = await approvals.answer(approval_id, text)
     if answered is None:
         raise ApiError(409, "already_answered", "That question has already been answered.")
 
-    await _append(answered.session_id, UserEvent(text=text, source="human"))
+    if not answered.gated_call:
+        await _append(answered.session_id, UserEvent(text=text, source="human"))
     started = await runner.start(answered.session_id, reason="answered")
     return {"accepted": True, "session_id": answered.session_id, "started": started}
 
@@ -1327,15 +1418,23 @@ async def _answer_by_message(session_id: str, text: str) -> dict[str, Any]:
     """Route a composer message sent to a parked session.
 
     A question raised by `ask` is answered by the message, and the session
-    wakes. A request raised by `request_approval` is answered only through
-    `/approvals/{id}/respond`, where the action being agreed to is on screen.
+    wakes. Consent is NOT: an `approval` and a gated `call` are both answered
+    only through `/approvals/{id}/respond`, where the thing being agreed to is
+    on screen.
+
+    A `call` falling through here was the sharp edge. `approvals.approved` is an
+    allow-list, so any prose that is not the approve word reads as a decline —
+    "sounds good, go ahead" typed in the composer would have silently declined a
+    call the human never saw, which undoes the whole point of binding consent to
+    the call.
     """
     open_questions = await approvals.open_for(session_id)
-    if open_questions and open_questions[0].kind == "approval":
+    if open_questions and open_questions[0].kind in ("approval", "call"):
+        waiting = "a tool call" if open_questions[0].kind == "call" else "an approval"
         raise ApiError(
             409,
             "awaiting_approval",
-            "This session is waiting on an approval. Answer it from the approval itself.",
+            f"This session is waiting on {waiting}. Answer it there, where you can see what it does.",
         )
 
     if open_questions:
@@ -1452,9 +1551,16 @@ def _int_or(value: Any, default: int) -> int:
 
 
 def _uuid(value: Any, what: str) -> uuid.UUID:
+    """Coerce an id from the wire, or 404 with the noun in it.
+
+    The coercion is `db.ids.as_uuid`; what is local is the ANSWER. A malformed
+    id over HTTP is indistinguishable from one that simply does not exist, and
+    saying "no such project" leaks nothing while "invalid UUID" tells a prober
+    it guessed the shape right.
+    """
     try:
-        return uuid.UUID(str(value))
-    except (ValueError, AttributeError, TypeError) as e:
+        return as_uuid(value)
+    except ValueError as e:
         raise ApiError(404, "not_found", f"No such {what}.") from e
 
 

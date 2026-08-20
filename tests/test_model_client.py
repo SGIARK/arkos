@@ -19,8 +19,11 @@ from openai import (
 from model_module import client as mc
 from model_module.errors import ModelError
 
-# Captured before monkeypatching so the override lambdas can defer to the real loader.
-_real_get = mc.config.get
+# Captured before monkeypatching so the override lambdas can defer to the real
+# loader. `_cfg` rather than `config.get`: the module-level alias is the seam now
+# (11.7.5 gave the eleven copies one home), and patching it isolates this module
+# instead of reconfiguring every other one through the shared singleton.
+_real_cfg = mc._cfg
 
 
 # --- doubles ----------------------------------------------------------------
@@ -97,7 +100,7 @@ def fake(monkeypatch):
 
     # Keep the suite fast: the attempt count is what's under test, not the clock.
     overrides = {"llm.retry_backoff_s": 0.001, "llm.retry_backoff_max_s": 0.004}
-    monkeypatch.setattr(mc.config, "get", lambda k, *a, **kw: overrides.get(k, _real_get(k)))
+    monkeypatch.setattr(mc, "_cfg", lambda k, d=None: overrides.get(k, _real_cfg(k, d)))
     return install
 
 
@@ -350,7 +353,7 @@ async def test_falsy_config_values_are_honoured(monkeypatch):
     """`temperature: 0` must reach the wire rather than being discarded as falsy."""
     completions = _FakeCompletions(lambda n: _Stream([_chunk(content="ok", finish="stop")]))
     monkeypatch.setattr(mc, "get_client", lambda: SimpleNamespace(chat=SimpleNamespace(completions=completions)))
-    monkeypatch.setattr(mc.config, "get", lambda k, *a, **kw: 0 if k == "llm.temperature" else _real_get(k))
+    monkeypatch.setattr(mc, "_cfg", lambda k, d=None: 0 if k == "llm.temperature" else _real_cfg(k, d))
 
     await _drain()
     assert completions.kwargs["temperature"] == 0.0
@@ -362,7 +365,7 @@ async def test_bad_max_retries_still_raises_model_error(monkeypatch, bad_value):
     """generate() raises ModelError and nothing else, whatever the config holds."""
     completions = _FakeCompletions(lambda n: APITimeoutError(request=None))
     monkeypatch.setattr(mc, "get_client", lambda: SimpleNamespace(chat=SimpleNamespace(completions=completions)))
-    monkeypatch.setattr(mc.config, "get", lambda k, *a, **kw: bad_value if k == "llm.max_retries" else _real_get(k))
+    monkeypatch.setattr(mc, "_cfg", lambda k, d=None: bad_value if k == "llm.max_retries" else _real_cfg(k, d))
 
     with pytest.raises(ModelError):
         await _drain()
@@ -372,7 +375,7 @@ async def test_bad_max_retries_still_raises_model_error(monkeypatch, bad_value):
 def test_client_is_cached_with_the_configured_timeout(monkeypatch):
     """The bounded wall clock depends on the timeout actually being applied."""
     mc.reset_client()
-    monkeypatch.setattr(mc.config, "get", lambda k, *a, **kw: 12.5 if k == "llm.timeout_s" else _real_get(k))
+    monkeypatch.setattr(mc, "_cfg", lambda k, d=None: 12.5 if k == "llm.timeout_s" else _real_cfg(k, d))
 
     first = mc.get_client()
     assert first is mc.get_client(), "a new client per call was the old bug"
@@ -380,7 +383,7 @@ def test_client_is_cached_with_the_configured_timeout(monkeypatch):
     assert first.max_retries == 0, "the SDK retry layer is one of the three nested loops being deleted"
 
     # timeout is part of the cache key, so a config reload is not silently ignored.
-    monkeypatch.setattr(mc.config, "get", lambda k, *a, **kw: 34.0 if k == "llm.timeout_s" else _real_get(k))
+    monkeypatch.setattr(mc, "_cfg", lambda k, d=None: 34.0 if k == "llm.timeout_s" else _real_cfg(k, d))
     assert mc.get_client().timeout == 34.0
     mc.reset_client()
 

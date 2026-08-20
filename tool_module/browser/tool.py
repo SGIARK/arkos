@@ -32,16 +32,13 @@ import time
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from config_module.loader import config
+from config_module.loader import cfg as _cfg
 from tool_module.browser.stream import broker
 from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, ToolUnavailable, fail, ok
 
 logger = logging.getLogger(__name__)
 
 
-def _cfg(key: str, default: Any) -> Any:
-    value = config.get(key)
-    return default if value is None else value
 
 
 def _frames_url(session_id: str) -> str:

@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from db import pool
+from db.ids import as_uuid as _uid
 
 PENDING = "pending"
 CONNECTED = "connected"
@@ -49,12 +50,6 @@ def mint_id(mcp_url: str) -> str:
     return f"{slug}-{uuid.uuid4().hex[:12]}" if slug else uuid.uuid4().hex
 
 
-def _uid(user_id: str) -> uuid.UUID:
-    """Parse a user_id as the Supabase auth UUID it must be, raising ValueError otherwise."""
-    try:
-        return uuid.UUID(user_id)
-    except (ValueError, TypeError, AttributeError) as e:
-        raise ValueError(f"user_id must be a Supabase auth UUID, got {user_id!r}") from e
 
 
 def _row(record: Any) -> Connection:
