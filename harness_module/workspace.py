@@ -36,6 +36,7 @@ import tarfile
 import uuid as _uuid_module
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from collections.abc import Sequence
 from typing import Any, Protocol
 
 from db import pool
@@ -414,6 +415,83 @@ def _uuid(value: str) -> _uuid_module.UUID:
     if isinstance(value, _uuid_module.UUID):
         return value
     return _uuid_module.UUID(str(value))
+
+
+async def _live_boxes(project_id: str) -> list[str]:
+    """The sessions whose box is awake and holding this project's owner's work."""
+    rows = await pool.fetch(
+        """
+        SELECT p.session_id
+          FROM session_sandboxes p
+          JOIN sessions s ON s.id = p.session_id
+         WHERE p.workspace_nonce IS NOT NULL
+           AND p.sandbox_id IS NOT NULL
+           AND p.expires_at > now()
+           AND s.status = 'running'
+           AND s.user_id = (SELECT user_id FROM projects WHERE id = $1)
+        """,
+        _uuid(project_id),
+    )
+    return [str(r["session_id"]) for r in rows]
+
+
+async def move_through(
+    sandbox: SandboxIO, project_id: str, moves: Sequence[tuple[str, str]]
+) -> tuple[list[str], list[str]]:
+    """
+    Apply a store-side move to every live box that has this project materialized.
+
+    This is not the courtesy that `write_through` is. A flush commits what is ON
+    DISK under the claim, so a box still holding the old path would put it back
+    and delete the new one when the turn ends — the move would quietly undo
+    itself. A box that cannot be moved is therefore reported, not swallowed.
+
+    Returns:
+        The sessions whose box was moved, and the sessions whose box is now
+        stale and would fight the store at flush time.
+    """
+    if not moves:
+        return [], []
+
+    moved: list[str] = []
+    stale: list[str] = []
+    for session_id in await _live_boxes(project_id):
+        for claim in await claims_for(session_id):
+            if claim.project_id != project_id:
+                continue
+            # Only what this claim mounted. A move that leaves the claim is a
+            # removal as far as this box is concerned, and one that arrives from
+            # outside it waits for the next materialize.
+            steps: list[str] = []
+            for was, now in moves:
+                had, wants = store.covers(claim.subpath, was), store.covers(claim.subpath, now)
+                src = posixpath.join(claim.mount, was)
+                if had and wants:
+                    dst = posixpath.join(claim.mount, now)
+                    steps.append(
+                        f"mkdir -p {shlex.quote(posixpath.dirname(dst))} && mv -f {shlex.quote(src)} {shlex.quote(dst)}"
+                    )
+                elif had:
+                    steps.append(f"rm -f {shlex.quote(src)}")
+            if not steps:
+                # This claim mounts none of it; another claim of the same
+                # project still might.
+                continue
+            try:
+                result = await sandbox.exec(session_id, " && ".join(steps))
+            except Exception:  # noqa: BLE001 - reported to the caller, never raised at the user
+                logger.exception("could not move files in the box of session %s", session_id)
+                stale.append(session_id)
+            else:
+                if result["exit_code"] == 0:
+                    moved.append(session_id)
+                else:
+                    logger.error(
+                        "session %s: the box refused the move: %s", session_id, result["stderr"][:200]
+                    )
+                    stale.append(session_id)
+            break
+    return moved, stale
 
 
 async def write_through(sandbox: SandboxIO, project_id: str, path: str, content: bytes) -> list[str]:

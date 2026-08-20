@@ -69,7 +69,7 @@ async def _run(name: str, args: dict, ctx: ToolContext):
 
 
 async def test_the_sandbox_tools_ship_in_the_manifest():
-    specs = {s.name: s for s in await registry.manifest("8f1d4a02-0000-4000-8000-000000000001")}
+    specs = {s.name: s for s in (await registry.manifest("8f1d4a02-0000-4000-8000-000000000001")).specs}
 
     for name in ("run_command", "read_file", "write_file", "edit_file", "list_dir", "grep", "glob"):
         assert name in specs, f"{name} is missing from the manifest"
@@ -301,3 +301,90 @@ async def test_no_credentials_are_passed_into_the_sandbox(monkeypatch):
     assert set(created) <= {"template", "timeout", "metadata"}
     assert created.get("metadata") == {"session_id": "s1"}
     assert not any("key" in k.lower() or "env" in k.lower() or "token" in k.lower() for k in created)
+
+
+# --- reading a live box over HTTP, without waking one (11.4) ----------------------
+
+
+class _AwakeBox:
+    """Enough of an e2b handle for `browse` and `peek`, and nothing else."""
+
+    class _Entry:
+        def __init__(self, name: str, path: str, kind: str, size: int):
+            self.name, self.path, self.type, self.size = name, path, kind, size
+
+    class _Files:
+        def __init__(self, blobs: dict[str, bytes]):
+            self._blobs = blobs
+            self.listed: list[str] = []
+
+        def list(self, path: str) -> list[Any]:
+            self.listed.append(path)
+            return [
+                _AwakeBox._Entry("notes", f"{path}/notes", "dir", 0),
+                _AwakeBox._Entry("out.txt", f"{path}/out.txt", "file", 5),
+            ]
+
+        def read(self, path: str, format: str | None = None) -> bytes:
+            if path not in self._blobs:
+                raise FileNotFoundError(path)
+            return self._blobs[path]
+
+    def __init__(self, blobs: dict[str, bytes] | None = None):
+        self.files = _AwakeBox._Files(blobs or {})
+
+
+def _manager_with(session_id: str | None, box: _AwakeBox | None) -> Any:
+    manager = sandbox_manager.SandboxManager()
+    if session_id is not None and box is not None:
+        manager._live[session_id] = box
+    return manager
+
+
+async def test_browsing_a_box_that_is_not_awake_never_boots_one(monkeypatch):
+    """A person opening a file browser must not start compute.
+
+    `get_or_create` is the one thing that could, so the test asserts it is not
+    reached — a parked or reaped session has no disk, and that is the answer.
+    """
+    manager = _manager_with(None, None)
+
+    async def boom(*a, **kw):
+        raise AssertionError("browse booted a sandbox")
+
+    monkeypatch.setattr(manager, "get_or_create", boom)
+
+    with pytest.raises(sandbox_manager.BoxNotAwake):
+        await manager.browse("s-1", "/home/user")
+    with pytest.raises(sandbox_manager.BoxNotAwake):
+        await manager.peek("s-1", "/home/user/out.txt", max_bytes=100)
+
+
+async def test_browsing_an_awake_box_lists_it():
+    box = _AwakeBox()
+    manager = _manager_with("s-1", box)
+
+    entries = await manager.browse("s-1", "/home/user")
+
+    assert box.files.listed == ["/home/user"]
+    assert entries == [
+        {"name": "notes", "path": "/home/user/notes", "is_dir": True, "size": 0},
+        {"name": "out.txt", "path": "/home/user/out.txt", "is_dir": False, "size": 5},
+    ]
+
+
+async def test_a_peek_stops_at_the_cap_and_says_it_did():
+    manager = _manager_with("s-1", _AwakeBox({"/home/user/big.log": b"x" * 100}))
+
+    short, truncated = await manager.peek("s-1", "/home/user/big.log", max_bytes=10)
+    whole, untruncated = await manager.peek("s-1", "/home/user/big.log", max_bytes=1000)
+
+    assert (short, truncated) == (b"x" * 10, True)
+    assert (whole, untruncated) == (b"x" * 100, False)
+
+
+async def test_one_sessions_box_is_not_anothers():
+    manager = _manager_with("s-1", _AwakeBox())
+
+    with pytest.raises(sandbox_manager.BoxNotAwake):
+        await manager.browse("s-2", "/home/user")

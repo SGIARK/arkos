@@ -147,7 +147,7 @@ function LookingGlassView({ onError, pulse, onPulse, jump, onJumped }) {
    project session — they are the same thing (D5). */
 function SessionDetail({ sessionId, project, onBack, onError, onPulse }) {
   const stream = useStream(sessionId, onError, onPulse);
-  const { session, events, pending, questions, todo, browserUrl, send, refreshQuestions } = stream;
+  const { session, events, pending, questions, todo, browserUrl, browserLabel, send, refreshQuestions } = stream;
   const [text, setText] = useState("");
   const [tab, setTab] = useState(() => localStorage.getItem("ark-canvas") || "files");
   const tail = useRef(null);
@@ -227,6 +227,7 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse }) {
               }
             }}
           >
+            <SessionTools sessionId={sessionId} onError={onError} />
             <span className="prompt">ark&gt;</span>
             <input
               value={text}
@@ -270,7 +271,7 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse }) {
           {tab === "files" ? (
             <FilesCanvas projectId={session.project_id} onError={onError} />
           ) : (
-            <BrowserCanvas url={browserUrl} />
+            <BrowserCanvas url={browserUrl} label={browserLabel} />
           )}
         </div>
       </div>
@@ -278,11 +279,207 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse }) {
   );
 }
 
+/* =========================================================
+   the tool budget — the chip in the composer, and the panel behind it
+
+   Choosing what this session can reach sits next to asking it for something,
+   which is why the control is in the composer and not beside the claims. The
+   meter reads `enabled / (llm.max_tools - ours)`: our own tools are always
+   loaded and never spend the human's allowance, so the denominator moves on
+   its own if we add one.
+
+   A toggle that would overflow the cap is refused HERE, dim and with the
+   numbers on the row, and fires no request. The API refuses it too — this is
+   the half that makes the refusal legible instead of a 400 from somewhere else.
+
+   What this panel does NOT claim is effect. Until Task 11.5 wires the toggles
+   into the manifest, the prompt and the loop, a server turned on is recorded
+   and displayed and nothing more, which is why no row here says a word about
+   what the model was handed.
+   ========================================================= */
+
+function SessionTools({ sessionId, onError }) {
+  const [doc, setDoc] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(null);
+  const [refused, setRefused] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      setDoc(await api.sessionTools(sessionId));
+    } catch (e) {
+      onError(e);
+    }
+  }, [sessionId, onError]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // A server connected in settings while this window was open is one the panel
+  // should offer the moment it is asked for, not on the next reload.
+  useEffect(() => {
+    if (open) load();
+  }, [open, load]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const key = (e) => e.key === "Escape" && setOpen(false);
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [open]);
+
+  const budget = doc ? doc.budget : 0;
+  const used = doc ? doc.used : 0;
+  const left = budget - used;
+  const ratio = budget ? used / budget : 0;
+  const meter = ratio >= 1 ? "stop" : ratio > 0.8 ? "work" : "";
+
+  const toggle = async (row, blocked) => {
+    if (blocked || busy) {
+      // Refused in the panel, with the numbers, and no request leaves the page.
+      if (blocked && !row.enabled) setRefused(row.server);
+      return;
+    }
+    setRefused(null);
+    setBusy(row.server);
+    try {
+      setDoc(await api.setSessionTool(sessionId, row.server, !row.enabled));
+    } catch (e) {
+      onError(e);
+      await load();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const clear = async () => {
+    const on = (doc ? doc.servers : []).filter((s) => s.enabled);
+    if (!on.length) return;
+    setBusy("*");
+    try {
+      let latest = doc;
+      for (const row of on) latest = await api.setSessionTool(sessionId, row.server, false);
+      setDoc(latest);
+    } catch (e) {
+      onError(e);
+      await load();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <React.Fragment>
+      {open && <div className="tb-scrim" onClick={() => setOpen(false)} />}
+      {open && (
+        <div className="tb-panel" role="dialog" aria-label="tools in this session">
+          <div className="tb-head">
+            <div className="tb-head-row">
+              <span className="kicker">tools in this session</span>
+              <span className="tb-count">
+                {used}
+                <span className="mute">/{budget}</span>
+              </span>
+            </div>
+            <div className="tb-meter">
+              <div className={"tb-fill " + meter} style={{ width: Math.min(100, Math.round(ratio * 100)) + "%" }} />
+            </div>
+            <div className="tb-note">
+              {!doc
+                ? "reading…"
+                : left <= 0
+                  ? "cap reached — nothing else can be enabled until something is turned off"
+                  : `${left} of ${budget} slots left · ${doc.ours} reserved for ark's own tools`}
+            </div>
+          </div>
+
+          <div className="tb-list">
+            {doc && !doc.servers.length && <div className="tb-empty">no servers are configured</div>}
+            {(doc ? doc.servers : []).map((row) => {
+              const connected = row.status === "connected";
+              const fits = row.enabled || row.tool_count <= left;
+              const blocked = !connected || !fits;
+              return (
+                <div
+                  className={"tb-row" + (blocked ? " blocked" : "") + (row.enabled ? " on" : "")}
+                  key={row.server}
+                  onClick={() => toggle(row, blocked)}
+                  title={row.name}
+                >
+                  <span className="tb-box">{row.enabled ? "✓" : ""}</span>
+                  <span className="tb-name">
+                    <span className="nm">{row.name}</span>
+                    <span className="sub">
+                      {!connected
+                        ? "not connected — authorize in settings"
+                        : !fits
+                          ? "would exceed the cap"
+                          : !row.requires_auth
+                            ? "shared connection"
+                            : row.enabled
+                              ? "on for this session"
+                              : "off for this session"}
+                    </span>
+                  </span>
+                  <span className="tb-n">{row.tool_count} tools</span>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="tb-foot">
+            <span className="tb-refused">
+              {refused ? `${refused} needs more slots than are left` : ""}
+            </span>
+            <button type="button" className="tb-reset" onClick={clear} disabled={!!busy} title="back to ark's own tools only">
+              reset
+            </button>
+          </div>
+        </div>
+      )}
+
+      <button
+        type="button"
+        className={"tb-chip" + (open ? " open" : "")}
+        title="mcp connectors in this session"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className={"tb-pip" + (ratio >= 1 ? " stop" : used ? " on" : "")} />
+        <span className="k">tools</span>
+        <span className="n">
+          {doc ? used : "—"}
+          <span className="mute">/{doc ? budget : "—"}</span>
+        </span>
+        <span className="caretglyph">{open ? "▾" : "▸"}</span>
+      </button>
+    </React.Fragment>
+  );
+}
+
 /* The project's durable files: uploaded here, mounted into the sandbox when a
-   session takes its box, readable without waking anything. */
+   session takes its box, readable without waking anything.
+
+   The SAME tree the files view draws — `asTree` and `Branch`, directories
+   closed until asked for. A project that has had a repository cloned into it is
+   thousands of paths, and rendering them flat turned a 300px panel into a
+   scroll through somebody else's `.git/objects`. The tree was written for
+   exactly that and there is no reason for this panel to have its own idea of
+   what a file list looks like. */
 function FilesCanvas({ projectId, onError }) {
   const [files, setFiles] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [selected, setSelected] = useState(null);
+  // Closed by default: what you came to look at is never the hundredth row.
+  const [open, setOpen] = useState(() => new Set());
+
+  const toggle = (path) =>
+    setOpen((current) => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
 
   const load = useCallback(async () => {
     if (!projectId) return;
@@ -321,15 +518,18 @@ function FilesCanvas({ projectId, onError }) {
         send(e.dataTransfer.files);
       }}
     >
-      {(files || []).map((f) => (
-        <div className="cv-entry" key={f.file_id} title={f.path}>
-          <span className="nm">
-            <span className="g">·</span>
-            {f.path}
-          </span>
-          <span className="sz">{fileSize(f.size)}</span>
-        </div>
-      ))}
+      {files === null && <div className="cv-entry loading">reading…</div>}
+      {files !== null && files.length > 0 && (
+        <Branch
+          node={asTree(files)}
+          path=""
+          depth={0}
+          open={open}
+          onToggle={toggle}
+          onRead={(file) => setSelected(file.path)}
+          selected={selected}
+        />
+      )}
       <label className="dropzone">
         {busy ? "uploading…" : "drop files into this project"}
         <input type="file" multiple hidden onChange={(e) => send(e.target.files)} />
@@ -338,9 +538,16 @@ function FilesCanvas({ projectId, onError }) {
   );
 }
 
-/* The browser's frames while it is browsing. Never events, never replayed. */
-function BrowserCanvas({ url }) {
+/* The browser's frames while it is browsing. Never events, never replayed.
+
+   A popout, not a fixed canvas: the 300px panel is where you notice the browser
+   is working, and it is nowhere near enough to read a page in. Clicking the
+   thumbnail opens the same single frame stream at a size you can actually see,
+   over the conversation rather than instead of it, and escape puts it back.
+   (The 11.4 design supersedes LG-2's right-panel wording here.) */
+function BrowserCanvas({ url, label }) {
   const [frame, setFrame] = useState(null);
+  const [big, setBig] = useState(false);
 
   useEffect(() => {
     if (!url) return undefined;
@@ -356,13 +563,64 @@ function BrowserCanvas({ url }) {
     return () => source.close();
   }, [url]);
 
+  useEffect(() => {
+    if (!big) return undefined;
+    const key = (e) => e.key === "Escape" && setBig(false);
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [big]);
+
+  // The run ending takes the popout with it: an expanded still of a stream that
+  // has stopped is a picture pretending to be a window.
+  useEffect(() => {
+    if (!url) setBig(false);
+  }, [url]);
+
   if (!url) return <div className="ctx-content"><div className="waiting">no browser run in this session</div></div>;
+
+  const picture = frame ? (
+    <img className="frame" alt="what the browser is looking at" src={"data:image/jpeg;base64," + frame} />
+  ) : (
+    <div className="bw-hatch">
+      <span className="pill-flat">waiting for the first frame</span>
+    </div>
+  );
+
   return (
     <div className="ctx-content">
-      {frame ? (
-        <img className="frame" alt="what the browser is looking at" src={"data:image/jpeg;base64," + frame} />
-      ) : (
-        <div className="waiting">waiting for the first frame…</div>
+      <div className="bw-card">
+        <div className="bw-chrome">
+          <span className="dot live" />
+          <span className="bw-where">{label || "using the browser…"}</span>
+          <button type="button" className="bw-expand" title="open larger" onClick={() => setBig(true)}>
+            ⤢
+          </button>
+        </div>
+        <div className="bw-shot" onClick={() => setBig(true)}>
+          {picture}
+        </div>
+      </div>
+      <div className="bw-foot">
+        <span>streaming</span>
+        <button type="button" className="bw-link" onClick={() => setBig(true)}>
+          expand
+        </button>
+      </div>
+
+      {big && (
+        <div className="bw-over" onClick={() => setBig(false)}>
+          <div className="bw-big" onClick={(e) => e.stopPropagation()}>
+            <div className="bw-chrome">
+              <span className="dot live" />
+              <span className="bw-where">{label || "using the browser…"}</span>
+              <span className="bw-fps">streaming</span>
+              <button type="button" className="bw-close" onClick={() => setBig(false)}>
+                ✕
+              </button>
+            </div>
+            <div className="bw-shot big">{picture}</div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -229,6 +229,18 @@ shared_connections (
   refreshed_at timestamptz not null default now()
 )
 
+-- what one session may reach ------------------------------------------------
+-- Absent row = OFF. The default is ours alone, so a fresh session cannot be the
+-- one that puts 164 schemas in a request. Keyed by mcp_url, never by the
+-- config label, for the reason stated under the connection tables above.
+session_tools (
+  session_id   uuid not null references sessions(id) on delete cascade,
+  mcp_url      text not null,
+  enabled      boolean not null default true,
+  updated_at   timestamptz not null default now(),
+  primary key (session_id, mcp_url)
+)
+
 -- carried over / out of scope -----------------------------------------------
 waitlist      -- preserved: real signups from the landing page
 repeat_tasks  -- untouched; watching is scrapped for this redesign

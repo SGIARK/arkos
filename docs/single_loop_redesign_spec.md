@@ -35,9 +35,10 @@ before Task 7 deletes the fallback machinery.
 
 This document is the why and the build plan.
 
-**Status:** Tasks 0-8, 8.1-8.10, 9, LG-1 (+1.5-1.8) and LG-2 done · **11.5 → 12**
-(sequencing settled 2026-08-18, see the note at Tasks 10-11) |
-**Author:** John Wallace | **Last updated:** 2026-08-18
+**Status:** Tasks 0-8, 8.1-8.10, 9, LG-1 (+1.5-1.8), LG-2, 11.4, 11.5 and 11.6
+done · **11.7 → 12** (11.7: the approval gate parks on the gated call — a Task 6
+defect that makes every gated MCP call loop forever; no blockers, take it early) |
+**Author:** John Wallace | **Last updated:** 2026-08-20
 
 **Where things actually stand, for a session picking this up cold:**
 
@@ -1172,6 +1173,98 @@ consumer; it goes first. LG-1's first commit is the two carded stream bugs
 (SSE backlog paging, lifecycle publish-after-commit). Task 12 stays last:
 build tooling and polish, not function.
 
+## Task 11.4: The new frontend — the designed surface lands, with the endpoints it reads
+**Why (owner, 2026-08-19):** the tool-budget affordance got designed for real —
+a rendered mock in Claude Design, in the existing paper/mono language, checked
+into this repo as `new_frontend/` — and designing it moved the control from
+"beside where claims render" (11.5's original amendment 2) into the composer,
+where choosing your reach sits next to asking. Implementing that design is
+frontend work plus the endpoints the refreshed surface reads, and leaving all
+of it inside 11.5 made one card carry a surface and an enforcement regime at
+once. Split (owner, 2026-08-19): **this card is the surface and its
+endpoints; 11.5 is the backend that makes the numbers true.** This card runs
+first; the popover renders real recorded state before 11.5 gives that state
+teeth.
+
+**The design is ground truth (owner, 2026-08-19)** — `new_frontend/`, a
+checked-in copy of the Claude Design project below; if they ever disagree, the
+checked-in copy is what was approved. Where the design and the current
+`frontend/` disagree, the design wins and `frontend/` is amended to match, not
+the other way around. Beyond the popover it carries surface-wide changes, all
+in scope here: spacing fixed throughout; the "looking glass" nav item renamed
+**"projects"** (finishing what LG-1.7's amendment already said in prose);
+"computer" renamed **"files"**; the leftmost bar's spacing corrected, with the
+green running indicator below the label; and the browser view is now a
+**popout in Projects** rather than a fixed canvas tab — where that contradicts
+LG-2's right-panel wording, the design supersedes it and the looking-glass
+spec gets the amendment when this card lands.
+
+**The MCP tool selector in the chat window must not get lost in the refresh**
+(owner, 2026-08-19). It is one item among the renames and spacing above, but
+it is the item with a backend card waiting on it and the piece the buddy's
+"X is not enabled in this session" line will point at — implement it as the
+design renders it, not approximately, and do not ship this card without it.
+The session window is unchanged in language, with a
+`tools 32/52` box sitting left of the `ark>` prompt in the composer. Clicking
+it opens a popover: the meter at the top reads `enabled / (llm.max_tools −
+ours)` and moves green → amber → red as it fills; below it one row per
+connected MCP server with its tool count; a row whose enabling would overflow
+the cap renders dim with "would exceed the cap" — refused visibly in the
+panel, not by a failing request. Header and footer are pinned and only the
+server list scrolls, so the meter stays visible at short viewport heights. In
+the rail, the green running indicator spans the full label height rather than
+a fixed 26px. Deliberately absent (owner, 2026-08-19): any mention of
+`registry.manifest` in the popover — enforcement language belongs to the spec,
+the `status` event and `system_events`, never to the human. The mock's
+per-server tool counts are placeholders; the real numbers come from the
+manifest.
+
+Design import, verbatim for the implementing session:
+
+> Use the claude_design MCP (https://api.anthropic.com/v1/design/mcp, auth via
+> /design-login) to import this project:
+> https://claude.ai/design/p/c43f95b8-1af4-4c74-bfed-fe5c8e023959?file=Looking+Glass+-+Tool+Budget.dc.html
+> Focus on these files (the whole project is readable):
+> `Looking Glass - Tool Budget.dc.html`. Also read these files the selection
+> imports: `support.js`. Implement: `Looking Glass - Tool Budget.dc.html`.
+
+**Done when:** the session window carries the composer chip and popover as
+designed, wired to real state, and the two endpoint families the surface was
+missing exist, each with its contracts rows in the same commit:
+
+1. **Session tools state.** `GET /sessions/{id}/tools` — servers with
+   per-server tool counts, enabled flags, and the meter's numbers — and a
+   toggle write per server. This card lands storage and truthful reads and
+   writes; it does NOT land enforcement. Until 11.5, a toggle is recorded and
+   displayed but the loop does not read it: the popover is honest about state
+   before it is honest about effect, and the card boundary says so out loud.
+   The migration residue from 11.5's stopped first build resolves here —
+   reuse the applied `0009_session_tools.sql` table or drop and re-issue it
+   (destructive DDL, owner's call); do not leave a second tools table beside
+   it.
+2. **Filesystem browse.** The LG-2 deferral comes due: `list_dir` and
+   `read_file` exist as model tools and not as endpoints, so the computer view
+   lists the store and cannot walk the live sandbox disk. HTTP over the box —
+   a list endpoint and a read endpoint per session, ownership-checked the way
+   the frame stream is, 404 when the box is parked or gone.
+
+**NOT this card:** pointing the files view at the disk endpoints. LG-2's
+warning stands — a filesystem that dies with the session shown beside one that
+does not wants its own deliberate design pass, and the `new_frontend/` design,
+broad as it is, does not answer that question. This card supplies the
+endpoints that pass will need.
+Also not this card: everything enforcement — the manifest cap, the per-turn
+prompt, benching, quota coherence are 11.5.
+**Touch:** `new_frontend/` → `frontend/`, `api.py` + contracts (both endpoint
+families), migration, `looking_glass_spec.md` (rename + browser-popout
+amendments) | **P1, 1.5-2d** | **Blockers:** none
+**Test:** the chip shows enabled/allowed and updates when a toggle commits; a
+toggle that would exceed the cap is dim with the numbers in the panel and
+fires no request; at a short viewport the header and footer stay pinned and
+only the list scrolls; the rail indicator spans the label; the fs endpoints
+return only the caller's session's box and 404 on a parked one; contracts
+rows exist for every endpoint added.
+
 ## Task 11.5: The tool budget — the session chooses what it can reach
 **Why (found in use, 2026-08-19):** connecting a few MCP servers put 164 tool
 schemas in the request and OpenAI refused it — `array too long. Expected an
@@ -1198,6 +1291,19 @@ cap is enforced in `registry.manifest` regardless of what any toggle says: a
 stale set, or a server that grows its tool list overnight, must not be able to
 produce a request the API will reject — which is exactly how 164 appeared
 without anyone changing anything.
+
+**Re-scoped (owner, 2026-08-19): this card is now backend only.** The surface
+and the state it displays moved to Task 11.4 — the composer chip and popover,
+the `GET /sessions/{id}/tools` reads and toggle writes, and the
+`session_tools` migration all land there, against the `new_frontend/` design
+(which relocated the control from "beside the claims" to the composer;
+amendment 2 below reads accordingly). What remains here is the wiring that
+makes the recorded toggles TRUE for the model: the cap enforced in
+`registry.manifest`, the per-turn system prompt generated from the shipped
+manifest, the benching backstop with its `status` event and `system_events`
+record, `assert_coherent`, and the loop actually reading the toggles 11.4
+records. 11.4 runs first; until this card lands, a toggle is display, not
+reach.
 
 **Amended on review (owner, 2026-08-19), two changes before build:**
 
@@ -1226,9 +1332,9 @@ Also: `ours < llm.max_tools` joins `assert_coherent`.
 implementation was halted and reverted (its code sits in `git stash@{0}`), but
 migration `0009_session_tools.sql` had already been APPLIED to the dev
 database: an empty `session_tools` table exists and `schema_migrations` has its
-row. Nothing reads it while the code is reverted. When this card builds for
-real, either reuse that migration number/table or clean up first —
-`DROP TABLE session_tools; DELETE FROM schema_migrations WHERE name =
+row. Nothing reads it while the code is reverted. **Resolves in 11.4** (which
+now owns the migration): either reuse that migration number/table or clean up
+first — `DROP TABLE session_tools; DELETE FROM schema_migrations WHERE name =
 '0009_session_tools.sql';` — destructive DDL, owner's call, do not leave a
 second tools table beside it.
 
@@ -1241,16 +1347,97 @@ up MCP-less until they toggle servers back in.
 leaves that door open without designing for it now. (When it comes, the model
 asking to enable a server is naturally an `ask` through the attention
 machinery — a prompt change, not a mechanism.)
-**Touch:** migration, `registry.manifest`, `api.py` + contracts, `prompts.py`,
-`config.yaml`, frontend | **P1, 1d** | **Blockers:** none
+**Touch:** `registry.manifest`, `prompts.py`, `config.yaml`, contracts (the
+migration, `api.py` endpoints and frontend moved to 11.4) | **P1, 0.5-1d** |
+**Blockers:** 11.4
 **Test:** a session with nothing enabled gets exactly our tools; enabling a
 server adds only its tools; the manifest never exceeds the budget even when the
 toggles say it should; the prompt names enabled and disabled servers and changes
 between turns when a toggle does — and is generated from the shipped manifest,
 pinned by a test where a server grows past budget overnight, gets benched
-wholly, and that turn's prompt names it unavailable while the human sees why; a
-toggle that would exceed the budget is refused with the numbers in the message
-and in the panel.
+wholly, and that turn's prompt names it unavailable while the human sees why.
+(The panel-side refusal of an over-budget toggle is 11.4's test; this card's
+half is that the API refuses it too, with the numbers in the message.)
+
+## Task 11.6
+**Title:** Give the agent a clock and timestamped tool results
+**Problem:** The model cannot see the current time or when a tool result was
+fetched, so it presents week-old reads as current and cannot notice it slept.
+**Done when:** The system prompt carries the current date-time, rebuilt every
+turn; every tool result the fold renders carries its fetch time, taken from
+the event's own timestamp, with stored events byte-identical (presentation
+only — no API, wire, or tool-schema change; the stamp is text in the rendered
+result content); and the prompt keeps the snapshot rule with its termination
+anchor (results fetched this turn are fresh; one re-check before acting
+satisfies it).
+**Touch point:** `agent_module/prompts.py` (`system_prompt` gains the clock
+and the sentence), the fold in `harness_module/runner.py` (the stamps).
+**Acceptance test:** A fold test over a log holding an old tool result: the
+built messages show the fetch time on the result and the current date-time in
+the prompt, and the stored events compare byte-identical before and after.
+Manually: resume a days-old session and ask "how long since my last message?"
+— it answers from the clock and the last event's stamp.
+**Not this card:** push — a world that announces its changes (webhooks, MCP
+`subscriptions/listen`). Open question to settle first: what may wake an idle
+session. | **P2, 0.5d, no blockers** — pairs with 11.5's prompt work.
+
+**Status: DONE 2026-08-20.** `prompts.clock()` formats every instant one way
+(minute resolution, UTC); `_FRESHNESS` carries the clock, the session's start
+date and the snapshot rule; `runner._stamped()` prefixes each rendered result
+with `[fetched <when>]` from `stored.ts`.
+
+**`now` is an ARGUMENT of the fold, not a clock it reads** — the same move 11.5
+made for `reach`. A fold that read `datetime.now()` internally would have made
+`test_event_replay_deterministic` flake at a minute boundary, and the fold's
+determinism is a conformance test, so the invariant is restated as "same log AND
+same inputs" and the two determinism tests pin the instant. Contracts amended in
+the same commit.
+
+**The stamp is absolute, never an age.** An age is more readable and would have
+been the obvious choice; it also rewrites every tool message on every fold,
+changing the provider's cached prefix each hop. The model has the current time
+in its prompt and can subtract.
+
+**One thing the card did not predict:** the freshness block costs ~177 tokens on
+EVERY hop (the prompt went ~1313 → ~1484), and `tiny_window` in
+`tests/test_runner.py` was tuned to the old size — its ceiling has to sit above
+the system prompt, since rung 1 clears results and nothing else, so a ceiling
+below the prompt is a view that can never come under budget. Retuned 2440 →
+2800, and the fixture now says out loud that it is prompt-size-coupled so the
+next person who grows the prompt knows why it broke.
+
+## Task 11.7
+**Title:** Park the turn on the gated call itself
+**Problem:** `_approve` (`harness_module/runner.py`) refuses gated calls with
+a promise it never keeps — it does not read the approvals table — so every
+gated MCP call loops forever, consent binds to prose instead of the call, the
+refusal is logged as `invalid_args` (spending the per-tool failure cap on
+asking correctly), and the "human declined" path is unreachable.
+**Done when:** A call hitting `requires_approval` with no grant parks the
+turn with that call open, after the hop's other calls close, with the
+approvals row bound to the call's own id carrying the real (name, args); the
+parked call renders inline in the chat window with its args and its age, and
+is answered there (prose pre-grants remain non-binding); approve → the
+resumed run executes exactly that call through NORMAL dispatch, exactly once
+(consume latch in `answer()`'s conditional-update pattern, plus a repair rule
+for consumed-but-unclosed); decline → the call closes with the existing
+"human declined; choose another approach" failure; contracts is amended in
+the same commit to permit exactly one open tool call across a park (fold,
+reaper, LG-1.8 steering, renderer each checked against it); the refusal path
+is deleted. `request_approval`/`ask` remain for plan-level questions only.
+**Touch point:** `harness_module/runner.py` (`_approve`, emit/park, resume),
+`harness_module/approvals.py` (consume latch), `docs/contracts.md`, frontend
+(pending-call card).
+**Acceptance test:** pytest: gated call parks with the row bound to its call
+id; concurrent wakes admit one executor; a consumed-but-unclosed call repairs
+without re-executing; decline closes the call and the model routes around it;
+parallel ungated calls close before the park; steering during the park is
+carried per LG-1.8; no `invalid_args` anywhere in the flow. Manually: trigger
+`mcp_create_pull_request` in an attended session, approve on the inline card,
+observe exactly one PR.
+**Not this card:** session-scoped standing grants ("this session may send
+Slack without asking") — Future Work; this card's grant machinery is their
+substrate. | **P1, 1-1.5d, no blockers** — a Task 6 defect, take it early.
 
 ## Task 12: Frontend modernization
 **Done when:** Vite build (production React, no runtime Babel, sub-1s paint);

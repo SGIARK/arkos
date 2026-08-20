@@ -4,7 +4,26 @@ Companion to `docs/single_loop_redesign_spec.md` (build plan) and
 `docs/contracts.md` (law: event vocabulary, endpoints, lifecycle).
 Scope: the product surfaces — Looking Glass, Projects, Command Center.
 
-**Status:** LG-1, LG-1.5/1.6/1.7 and LG-2 DONE (unrendered — a first browser pass is the outstanding gate) | **Author:** John Wallace | **Last updated:** 2026-08-18
+**Status:** LG-1, LG-1.5/1.6/1.7 and LG-2 DONE · amended by Task 11.4 (2026-08-19) | **Author:** John Wallace | **Last updated:** 2026-08-19
+
+**Amended by Task 11.4 (owner, 2026-08-19), three changes, all from the
+`new_frontend/` design, which is ground truth where it and this spec disagree:**
+
+1. **The rail says what it shows.** "looking glass" is now **projects** and
+   "computer" is now **files** — finishing what LG-1.7's amendment already said
+   in prose. The surface is unchanged; only its name in the nav is. Old hashes
+   (`#computer`, `#looking glass`) still land where they used to.
+2. **The browser is a POPOUT, not a fixed canvas.** Where "The right panel"
+   below says the browser canvas is chosen and then full-height, read it as:
+   the canvas holds a live thumbnail with the run's own status line, and
+   clicking it opens the stream over the conversation at a size a page can
+   actually be read at; escape puts it back. The reasoning in that section is
+   unchanged and is in fact the argument for this — 300px was never "full-height
+   and readable", it was a notification. It still does not steal focus.
+3. **The composer carries the session's reach.** A `tools used/budget` chip sits
+   left of the `ark>` prompt with the per-server panel behind it. Choosing what
+   a session can reach belongs next to asking it for something; see Task 11.4 in
+   `single_loop_redesign_spec.md`.
 
 ---
 
@@ -118,7 +137,11 @@ does not steal focus or pop over the conversation. Choosing it is what makes it
 visible, which is the difference between watching and being interrupted. Chosen,
 it is full-height and legible; today's fixed 360px corner overlay
 (`.browser-pane`, mounted by a permanently-open EventSource) is replaced by this.
-Frames are ephemeral and never replayed from the log.
+Frames are ephemeral and never replayed from the log. (**Amended by 11.4:** the
+canvas holds a thumbnail and the full-size view is a popout over the
+conversation — see the amendment at the top of this file. The stream URL is also
+recovered from the session snapshot, so reloading the page mid-run no longer
+loses the pane until the next step happens to fire.)
 
 ## Live updates
 
@@ -383,6 +406,14 @@ walk the sandbox disk itself is a later card: it needs HTTP over the box
 (`list_dir` and `read_file` exist as model tools, not as endpoints), and it
 would show a filesystem that dies with the session beside one that does not,
 which wants a deliberate design rather than a second dropdown entry.
+
+**Half of that came due in Task 11.4 (2026-08-19): the endpoints exist.**
+`GET /sessions/{id}/fs` and `GET /sessions/{id}/fs/file` read the live box,
+ownership-checked and never booting one — a parked or reaped session is a 404.
+The other half is deliberately still open: nothing points the files view at
+them, because the question of showing a disk that dies beside a store that does
+not is exactly the design pass this paragraph asked for, and the 11.4 design,
+broad as it is, does not answer it.
 
 ### Build decomposition (tracking tasks)
 Backend: per-session SSE stream · session snapshot · steer/pause-cancel/read_result

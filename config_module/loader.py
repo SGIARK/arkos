@@ -119,6 +119,20 @@ class ConfigLoader:
                 "quota permits could never get a computer"
             )
 
+        # Imported here, not at module scope: `registry` reads this loader, and a
+        # config module that imports the tool registry at import time would be a
+        # cycle. By the time anything calls this, both are loaded.
+        from tool_module.registry import local_tools
+
+        ours = len(local_tools())
+        cap = int(self.get("llm.max_tools") or 0)
+        if cap and ours >= cap:
+            problems.append(
+                f"llm.max_tools ({cap}) is not above the {ours} tools we author ourselves: "
+                "the session's own allowance would be zero or negative, so no connected "
+                "service could ever be reached and the meter would read out of a budget of nothing"
+            )
+
         asked = float(self.get("browser.wall_clock_s") or 0)
         forced = float(self.get("browser.hard_timeout_s") or 0)
         if asked and forced <= asked:

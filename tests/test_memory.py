@@ -229,7 +229,7 @@ async def test_read_memory_says_so_when_there_is_nothing_yet():
 
 
 async def test_the_memory_tools_ship_in_the_manifest():
-    specs = {s.name: s for s in await registry.manifest(await _user())}
+    specs = {s.name: s for s in (await registry.manifest(await _user())).specs}
 
     for name in ("save_memory", "search_memory", "read_memory", "update_memory"):
         assert name in specs, f"{name} is missing from the manifest"

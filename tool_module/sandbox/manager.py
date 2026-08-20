@@ -41,6 +41,16 @@ class SandboxUnavailable(RuntimeError):
     """Raised when a box is asked for outside the pool that caps it."""
 
 
+class BoxNotAwake(RuntimeError):
+    """Raised when a read-only caller asked for a box this process is not holding awake.
+
+    The difference from `SandboxUnavailable` is who is asking. A tool call may
+    boot a box; an HTTP reader may not — a person opening a file browser must
+    never start compute, and a session that has parked or finished has no live
+    disk to show. Both cases read the same to the caller: there is nothing here.
+    """
+
+
 def _timeout() -> int:
     return int(config.get("sandbox.timeout_seconds") or _DEFAULT_TIMEOUT)
 
@@ -348,15 +358,43 @@ class SandboxManager:
     async def list_dir(self, session_id: str, path: str = "/home/user") -> list[dict[str, Any]]:
         """List a directory as [{name, path, is_dir, size}]."""
         sandbox = await self.get_or_create(session_id)
-        entries = await asyncio.to_thread(sandbox.files.list, path)
+        return _entries(await asyncio.to_thread(sandbox.files.list, path))
 
-        def is_dir(entry: Any) -> bool:
-            kind = getattr(entry, "type", None)
-            return getattr(kind, "value", str(kind)).lower() == "dir"
+    # ---------- reading a live box without waking one ----------
 
-        return [
-            {"name": e.name, "path": e.path, "is_dir": is_dir(e), "size": getattr(e, "size", 0)} for e in entries
-        ]
+    def awake(self, session_id: str) -> Any | None:
+        """Return the session's box only if this process is already holding it, never boot one."""
+        return self._live.get(session_id)
+
+    async def browse(self, session_id: str, path: str = "/home/user") -> list[dict[str, Any]]:
+        """List a directory in a box that is already awake.
+
+        Raises:
+            BoxNotAwake: nothing is running for this session here. Booting one to
+                answer a browse would charge a person for looking.
+        """
+        sandbox = self._require_awake(session_id)
+        return _entries(await asyncio.to_thread(sandbox.files.list, path))
+
+    async def peek(self, session_id: str, path: str, *, max_bytes: int) -> tuple[bytes, bool]:
+        """Read up to `max_bytes` of a file in a box that is already awake.
+
+        Returns the bytes and whether they were cut short, so a reader can say
+        so instead of showing half a file as if it were the whole one.
+
+        Raises:
+            BoxNotAwake: as `browse`.
+        """
+        sandbox = self._require_awake(session_id)
+        raw = await asyncio.to_thread(lambda: sandbox.files.read(path, format="bytes"))
+        blob = bytes(raw)
+        return blob[:max_bytes], len(blob) > max_bytes
+
+    def _require_awake(self, session_id: str) -> Any:
+        sandbox = self._live.get(session_id)
+        if sandbox is None:
+            raise BoxNotAwake(f"session {session_id} has no box awake in this process")
+        return sandbox
 
     async def pause(self, session_id: str) -> None:
         """Hibernate the session's box, keeping its slot.
@@ -404,6 +442,16 @@ class SandboxManager:
         else:
             await _kill(sandbox_id)
         logger.info("reaped sandbox %s for session %s", sandbox_id, session_id)
+
+
+def _entries(raw: Any) -> list[dict[str, Any]]:
+    """Normalize the SDK's directory entries to [{name, path, is_dir, size}]."""
+
+    def is_dir(entry: Any) -> bool:
+        kind = getattr(entry, "type", None)
+        return getattr(kind, "value", str(kind)).lower() == "dir"
+
+    return [{"name": e.name, "path": e.path, "is_dir": is_dir(e), "size": getattr(e, "size", 0)} for e in raw]
 
 
 _manager: SandboxManager | None = None

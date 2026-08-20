@@ -71,7 +71,7 @@ async def _run(name: str, args: dict, user_id: str):
 
 
 async def test_the_five_world_tools_ship_in_the_manifest():
-    specs = {s.name: s for s in await registry.manifest(await _user())}
+    specs = {s.name: s for s in (await registry.manifest(await _user())).specs}
 
     for name in ("list_projects", "get_project", "list_sessions", "get_session", "list_files"):
         assert name in specs, f"{name} is missing from the manifest"

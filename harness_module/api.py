@@ -35,8 +35,10 @@ from db import pool
 from harness_module import approvals, hands, jwt_utils, lifecycle, runner, store, system_log, workspace
 from harness_module import session_log as slog
 from harness_module.stream import LAGGED, stream
+from tool_module import registry, session_tools
 from tool_module.browser.stream import broker as frames
 from tool_module.sandbox import manager as sandbox_manager
+from tool_module.sandbox import tools as sandbox_tools
 from tool_module.smithery import AuthRequiredError, SmitheryError
 
 logger = logging.getLogger(__name__)
@@ -650,6 +652,95 @@ async def upload_project_file(
     }
 
 
+@app.post("/projects/{project_id}/folders", status_code=201)
+async def create_project_folder(
+    project_id: str,
+    body: dict[str, Any] = JsonBody,
+    user_id: str = CurrentUser,
+) -> dict[str, Any]:
+    """Make a folder durable the moment it is named.
+
+    A directory is not a row — the tree is flat paths — so what lands is a
+    zero-byte sentinel inside it. Holding the folder in the browser until a file
+    arrived would put the truth in two places, and the first reload would
+    disagree with one of them.
+    """
+    await _owned_project(project_id, user_id)
+    try:
+        folder = store.safe_path(str(body.get("path") or ""))
+    except ValueError as e:
+        raise ApiError(400, "invalid_request", str(e)) from e
+    if posixpath.basename(folder) == store.DIR_SENTINEL:
+        raise ApiError(
+            400, "invalid_request", f"{store.DIR_SENTINEL} is how an empty folder is kept, not a folder to make."
+        )
+
+    taken = await pool.fetchval(
+        "SELECT 1 FROM project_files WHERE project_id = $1 AND (path = $2 OR path LIKE $3) LIMIT 1",
+        _uuid(project_id, "project"),
+        folder,
+        f"{folder}/%",
+    )
+    if taken:
+        raise ApiError(409, "already_exists", f"{folder} is already in this project.")
+
+    sentinel = store.dir_sentinel(folder)
+    await store.put_file(project_id, sentinel, b"")
+    await pool.execute("UPDATE projects SET updated_at = now() WHERE id = $1", _uuid(project_id, "project"))
+    await workspace.write_through(sandbox_manager.manager(), project_id, sentinel, b"")
+    return {"path": folder, "sentinel": sentinel}
+
+
+@app.post("/projects/{project_id}/files/move")
+async def move_project_file(
+    project_id: str,
+    body: dict[str, Any] = JsonBody,
+    user_id: str = CurrentUser,
+) -> dict[str, Any]:
+    """Move a file or a whole folder inside the project: store first, boxes after.
+
+    The store is the record and moves in one transaction. A live box is a cache
+    and is corrected immediately after, because flush commits what is on disk —
+    a box left holding the old path would put it back and delete the new one
+    when the turn ends, undoing the move without saying so. Sessions whose box
+    refused come back as `stale_sessions` rather than being swallowed.
+    """
+    await _owned_project(project_id, user_id)
+    try:
+        src = store.safe_path(str(body.get("from") or ""))
+        dst = store.safe_path(str(body.get("to") or ""))
+    except ValueError as e:
+        raise ApiError(400, "invalid_request", str(e)) from e
+
+    try:
+        moves = await store.move_path(project_id, src, dst)
+    except store.MissingPath as e:
+        raise ApiError(404, "not_found", str(e)) from e
+    except store.StoreError as e:
+        raise ApiError(409, "move_refused", str(e)) from e
+
+    if not moves:
+        return {"from": src, "to": dst, "moved": [], "stale_sessions": []}
+
+    await pool.execute("UPDATE projects SET updated_at = now() WHERE id = $1", _uuid(project_id, "project"))
+    _, stale = await workspace.move_through(sandbox_manager.manager(), project_id, moves)
+    if stale:
+        system_log.record(
+            "workspace.move_stale",
+            level="error",
+            user_id=user_id,
+            project_id=project_id,
+            sessions=stale,
+            moved=len(moves),
+        )
+    return {
+        "from": src,
+        "to": dst,
+        "moved": [{"from": was, "to": now} for was, now in moves],
+        "stale_sessions": stale,
+    }
+
+
 @app.post("/sessions/{session_id}/messages", status_code=202)
 async def post_message(
     session_id: str,
@@ -1008,6 +1099,153 @@ def _require_smithery() -> Any:
 
 def _callback_url(server: str) -> str | None:
     return f"{_origin}/oauth/callback/{server}" if _origin else None
+
+
+# --- what this session may reach ------------------------------------------------
+
+
+@app.get("/sessions/{session_id}/tools")
+async def session_tools_state(session_id: str, user_id: str = CurrentUser) -> dict[str, Any]:
+    """The tool budget for one session: the meter's numbers and a row per connected server.
+
+    `budget` is `llm.max_tools - ours`, so the meter moves on its own when we add
+    a local tool — ours are always loaded and never spend the human's allowance.
+    `used` is the tool count of the servers this session has been given.
+
+    What this does NOT say is what the model will actually be handed. Recording a
+    toggle and obeying it are two cards: until Task 11.5 the loop builds its
+    manifest without reading any of this, so the panel is honest about state
+    before it is honest about effect.
+    """
+    await _owned_session(session_id, user_id)
+    return await _tools_document(session_id, user_id)
+
+
+@app.put("/sessions/{session_id}/tools/{server}")
+async def set_session_tool(
+    session_id: str,
+    server: str,
+    body: dict[str, Any] = JsonBody,
+    user_id: str = CurrentUser,
+) -> dict[str, Any]:
+    """Give this session a server, or take it away. Returns the whole document.
+
+    The refusals are the point of the endpoint. A toggle that would put the
+    manifest over `llm.max_tools` is refused HERE, with the numbers in the
+    message, rather than being recorded and discovered later as a `bad_request`
+    from the provider with nothing near the connection that caused it. The panel
+    refuses it too, before the request; this is the half that holds when the
+    panel is stale, and it is what makes the recorded state a state the system
+    could actually ship.
+    """
+    await _owned_session(session_id, user_id)
+    if "enabled" not in body:
+        raise ApiError(400, "invalid_request", 'Send {"enabled": true|false}.')
+    wanted = bool(body["enabled"])
+
+    document = await _tools_document(session_id, user_id)
+    row = next((r for r in document["servers"] if r["server"] == server), None)
+    if row is None:
+        raise ApiError(404, "not_found", f"No server {server!r} is configured.")
+
+    if wanted and not row["enabled"]:
+        if row["status"] != "connected":
+            raise ApiError(
+                409,
+                "not_connected",
+                f"{row['name']} is not connected. Authorize it in settings before adding it to a session.",
+            )
+        left = document["budget"] - document["used"]
+        if row["tool_count"] > left:
+            raise ApiError(
+                409,
+                "tool_budget",
+                f"{row['name']} needs {row['tool_count']} of the {left} tool slot(s) left "
+                f"({document['used']}/{document['budget']} in use). Turn something off first.",
+            )
+
+    await session_tools.set_enabled(session_id, row["mcp_url"], wanted)
+    return await _tools_document(session_id, user_id)
+
+
+async def _tools_document(session_id: str, user_id: str) -> dict[str, Any]:
+    """Build the meter and the server rows from config, the connections and the toggles."""
+    client = hands.smithery()
+    rows = await client.connections(user_id) if client is not None else []
+    on = set(await session_tools.enabled_urls(session_id))
+
+    ours = len(registry.local_tools())
+    max_tools = int(_cfg("llm.max_tools", 128))
+    budget = max(0, max_tools - ours)
+
+    servers = [{**row, "enabled": row["mcp_url"] in on} for row in rows]
+    return {
+        "max_tools": max_tools,
+        "ours": ours,
+        "budget": budget,
+        "used": sum(s["tool_count"] for s in servers if s["enabled"]),
+        "servers": servers,
+    }
+
+
+# --- the session's disk ---------------------------------------------------------
+
+
+@app.get("/sessions/{session_id}/fs")
+async def list_sandbox_dir(
+    session_id: str,
+    path: str = sandbox_tools.HOME,
+    user_id: str = CurrentUser,
+) -> dict[str, Any]:
+    """List a directory on the session's live sandbox disk.
+
+    Ownership-checked the way the frame stream is, and it never boots anything:
+    a box that has parked or been reaped reads as 404, because starting compute
+    so that somebody can look at a folder is not a thing a browse should do.
+    """
+    await _owned_session(session_id, user_id)
+    try:
+        entries = await sandbox_manager.manager().browse(session_id, path)
+    except sandbox_manager.BoxNotAwake as e:
+        raise _no_box(session_id) from e
+    except Exception as e:  # noqa: BLE001 - e2b raises its own types
+        raise ApiError(404, "not_found", f"Could not list {path!r} in this session's box.") from e
+    return {"path": path, "entries": entries}
+
+
+@app.get("/sessions/{session_id}/fs/file")
+async def read_sandbox_file(session_id: str, path: str, user_id: str = CurrentUser) -> dict[str, Any]:
+    """One file from the session's live sandbox disk, on the same terms as the listing.
+
+    Text is returned decoded and anything that is not UTF-8 says so rather than
+    arriving as mojibake — the same bargain `GET /projects/{id}/files/{file_id}`
+    makes about the store. A file past `sandbox.browse_max_bytes` comes back cut
+    short and SAYS it was, because half a file rendered as a whole one is the
+    kind of quiet lie a reader pane should never tell.
+    """
+    await _owned_session(session_id, user_id)
+    cap = int(_cfg("sandbox.browse_max_bytes", 1048576))
+    try:
+        blob, truncated = await sandbox_manager.manager().peek(session_id, path, max_bytes=cap)
+    except sandbox_manager.BoxNotAwake as e:
+        raise _no_box(session_id) from e
+    except Exception as e:  # noqa: BLE001 - e2b raises its own types
+        raise ApiError(404, "not_found", f"Could not read {path!r} in this session's box.") from e
+
+    try:
+        text = blob.decode()
+    except UnicodeDecodeError:
+        return {"path": path, "size": len(blob), "text": None, "binary": True, "truncated": truncated}
+    return {"path": path, "size": len(blob), "text": text, "binary": False, "truncated": truncated}
+
+
+def _no_box(session_id: str) -> ApiError:
+    """The one answer for a session whose disk is not there to read."""
+    return ApiError(
+        404,
+        "not_found",
+        "This session has no computer running. Its disk exists only while it is awake.",
+    )
 
 
 # --- helpers -------------------------------------------------------------------

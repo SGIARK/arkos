@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -109,8 +110,8 @@ def tools(monkeypatch):
     """A manifest of two tools whose dispatch records the calls it is given."""
     calls: list[tuple[str, dict]] = []
 
-    async def manifest(user_id, mcp=None):
-        return [ToolSpec(name="grep", readonly=True), ToolSpec(name="finish_task")]
+    async def manifest(user_id, mcp=None, session_id=None):
+        return runner.registry.Manifest(specs=[ToolSpec(name="grep", readonly=True), ToolSpec(name="finish_task")])
 
     def bind(ctx, **kw):
         async def dispatch(name, args):
@@ -143,7 +144,10 @@ async def test_the_fold_rebuilds_messages_from_the_log():
     # Streamed chunks are one assistant message, carrying that hop's tool calls.
     assert messages[2]["content"] == "Looking now."
     assert messages[2]["tool_calls"][0]["function"]["name"] == "grep"
-    assert messages[3] == {"role": "tool", "tool_call_id": "c1", "content": "found it"}
+    # The result carries the moment it was fetched (11.6); the body follows it.
+    assert messages[3]["role"] == "tool" and messages[3]["tool_call_id"] == "c1"
+    assert messages[3]["content"].startswith("[fetched ")
+    assert messages[3]["content"].endswith("found it")
     assert hops == 0
 
 
@@ -167,10 +171,60 @@ async def test_event_replay_deterministic():
     await slog.append(session_id, ContentEvent(text="hello"))
 
     session = await runner.load(session_id)
-    first = (await runner.fold(session)).messages
-    second = (await runner.fold(session)).messages
+    # `now` is an input to the fold (11.6), so it is pinned here rather than
+    # read twice: the invariant is same log AND same inputs => same messages.
+    at = datetime(2026, 8, 20, 14, 32, tzinfo=UTC)
+    first = (await runner.fold(session, now=at)).messages
+    second = (await runner.fold(session, now=at)).messages
 
     assert first == second
+
+
+async def test_the_fold_stamps_a_result_and_dates_the_prompt(monkeypatch):
+    """11.6: the model can see when it is, and when each result was true.
+
+    A week-old inbox read must not render as the current one, and the session
+    must be able to notice it slept.
+    """
+    session_id = await _session()
+    await slog.append(session_id, UserEvent(text="what is in my inbox?"))
+    await slog.append(session_id, ToolCallEvent(id="c1", name="mcp_gmail_search", args={}))
+    await slog.append(session_id, ToolResultEvent(id="c1", ok=True, content="3 threads"))
+
+    # Age the stored result, the way a session resumed days later would see it.
+    fetched = datetime(2026, 8, 13, 9, 14, tzinfo=UTC)
+    await pool.execute(
+        "UPDATE session_events SET ts = $2 WHERE session_id = $1 AND kind = 'tool_result'",
+        uuid.UUID(session_id),
+        fetched,
+    )
+
+    session = await runner.load(session_id)
+    folded = await runner.fold(session, now=datetime(2026, 8, 20, 14, 32, tzinfo=UTC))
+
+    system = folded.messages[0]["content"]
+    assert "It is 2026-08-20 14:32 UTC" in system, "the prompt carries the current time"
+    assert "One re-check is enough" in system, "the snapshot rule keeps its termination anchor"
+
+    result = next(m for m in folded.messages if m.get("role") == "tool")
+    assert result["content"].startswith("[fetched 2026-08-13 09:14 UTC]")
+    assert "3 threads" in result["content"]
+
+
+async def test_the_stamps_are_presentation_only(monkeypatch):
+    """The stored log is untouched: the stamp is the fold's view, not a rewrite."""
+    session_id = await _session()
+    await slog.append(session_id, ToolCallEvent(id="c1", name="grep", args={}))
+    await slog.append(session_id, ToolResultEvent(id="c1", ok=True, content="a match"))
+
+    before = await slog.get_events(session_id, after_seq=0, limit=100)
+    session = await runner.load(session_id)
+    await runner.fold(session, now=datetime(2026, 8, 20, 14, 32, tzinfo=UTC))
+    after = await slog.get_events(session_id, after_seq=0, limit=100)
+
+    assert [(e.seq, e.ts, e.event) for e in before] == [(e.seq, e.ts, e.event) for e in after]
+    stored = next(e for e in after if isinstance(e.event, ToolResultEvent))
+    assert stored.event.content == "a match", "no stamp reached the stored event"
 
 
 async def test_hops_reset_at_a_done_and_carry_inside_one_run():
@@ -461,7 +515,8 @@ async def test_a_message_typed_mid_call_still_folds_legally():
     _assert_loadable(messages)
     # The message is kept, ordered after the result that was already open.
     assert [m["content"] for m in messages if m["role"] == "user"] == ["do it", "actually, hurry"]
-    assert messages.index({"role": "tool", "tool_call_id": "c1", "content": "found"}) < len(messages) - 1
+    result = next(m for m in messages if m["role"] == "tool" and m["tool_call_id"] == "c1")
+    assert messages.index(result) < len(messages) - 1
 
 
 async def test_an_interrupted_call_repaired_after_a_user_message_still_folds_legally():
@@ -830,8 +885,8 @@ async def test_a_finish_task_that_fails_does_not_complete_the_run(model, monkeyp
     session_id = await _session(mode="unattended")
     await slog.append(session_id, UserEvent(text="go"))
 
-    async def manifest(user_id, mcp=None):
-        return [ToolSpec(name="finish_task")]
+    async def manifest(user_id, mcp=None, session_id=None):
+        return runner.registry.Manifest(specs=[ToolSpec(name="finish_task")])
 
     def bind(ctx, **kw):
         async def dispatch(name, args):
@@ -886,12 +941,16 @@ async def test_a_killed_run_resumes_without_repeating_its_side_effect(model, too
 def tiny_window(monkeypatch):
     """A window small enough that a few results overflow it.
 
-    The ceiling sits above the ~1313-token system prompt, which rung 1 cannot clear.
+    The ceiling has to sit ABOVE the system prompt, because rung 1 clears stored
+    results and nothing else — a ceiling below the prompt is a view that can
+    never come under budget however much it drops. So this number is tuned to
+    the prompt's size and has to be retuned whenever the prompt grows: it was
+    ~1313 tokens, and 11.6's freshness block took it to ~1484.
     """
 
     def cfg(key, default):
         return {
-            "llm.context_window": 2440,
+            "llm.context_window": 2800,
             "llm.max_tokens": 400,
             "context.recovery_threshold": 0.8,
             "context.chars_per_token": 4,
@@ -961,8 +1020,9 @@ async def test_the_same_log_folds_byte_identically_twice(tiny_window):
     await _bulky_log(session_id)
     session = await runner.load(session_id)
 
-    first = await runner.fold(session)
-    second = await runner.fold(session)
+    at = datetime(2026, 8, 20, 14, 32, tzinfo=UTC)
+    first = await runner.fold(session, now=at)
+    second = await runner.fold(session, now=at)
 
     assert first.messages == second.messages
     assert first.transform.dropped_refs == second.transform.dropped_refs

@@ -120,6 +120,13 @@ llm:
   model_name: "gpt-4.1-mini"
   api_key: "${OPENAI_API_KEY}"   # client.py falls back to "-" when this is unset
   max_tokens: 8192          # tokens reserved for the completion
+  # The most tool schemas the API accepts in ONE request. Above it the provider
+  # refuses the whole turn ("array too long"), before a token is generated —
+  # which is how connecting a few MCP servers put 164 schemas in the request and
+  # killed every hop. The human's allowance is what is left after ours:
+  # `llm.max_tools - ours` is the meter in the session window, so adding a local
+  # tool moves the meter rather than silently overspending the cap.
+  max_tools: 128
   context_window: 128000    # tokens of context assumed when sizing the input budget;
                             # at or below what the API accepts for model_name
   temperature: 0.7
@@ -157,6 +164,9 @@ sandbox:
                                            # above quotas.max_unattended_sessions, checked at boot
   slot_ttl_s: 900                          # a slot expires unless a call into its box renews it,
                                            # so a process that dies frees its capacity
+  browse_max_bytes: 1048576                # cap on one HTTP read of the live disk
+                                           # (GET /sessions/{id}/fs/file). Over it the
+                                           # response is cut short and says so.
 
 # All MCP traffic flows through Smithery Connect: it hosts the OAuth apps, stores
 # credentials write-only, and refreshes tokens.

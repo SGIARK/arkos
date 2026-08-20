@@ -17,18 +17,53 @@ def _approving(**kw):
     return _ctx(approve=lambda name, args: True, **kw)
 
 
+class _Server:
+    """One connected server, in the shape `manifest` reads."""
+
+    def __init__(self, label, specs):
+        self.label = label
+        self.name = label.title()
+        self.mcp_url = f"https://{label}.example"
+        self.specs = list(specs)
+
+
 class _Mcp:
     """A stand-in for the Smithery half."""
 
-    def __init__(self, specs):
-        self._specs = specs
+    def __init__(self, servers):
+        self._servers = servers
 
-    async def specs(self, user_id):
-        return list(self._specs)
+    async def reach(self, user_id):
+        return list(self._servers)
 
 
-def _mcp(*specs):
-    return _Mcp(list(specs))
+def _mcp(*specs, label="remote"):
+    """A source offering one server carrying `specs`."""
+    return _Mcp([_Server(label, specs)])
+
+
+@pytest.fixture(autouse=True)
+def _toggles(monkeypatch):
+    """Enable every server the source offers, unless a test says otherwise.
+
+    Nothing is enabled by default in the product (that is the point of 11.5), so
+    without this every test about NAMESPACING would be a test about the default
+    instead. `_enabled` overrides it where the default is what is under test.
+    """
+    _enabled(monkeypatch, "https://remote.example")
+    return monkeypatch
+
+
+def _enabled(monkeypatch, *urls):
+    """Say which servers the session has been given, longest-enabled first."""
+
+    async def enabled_urls(session_id):
+        return list(urls)
+
+    monkeypatch.setattr(reg.session_tools, "enabled_urls", enabled_urls)
+
+
+SESSION = "session-1"
 
 
 def test_the_control_tools_are_all_discovered():
@@ -38,7 +73,8 @@ def test_the_control_tools_are_all_discovered():
 
 @pytest.mark.asyncio
 async def test_manifest_namespaces_mcp_tools():
-    specs = await reg.manifest("u1", mcp=_mcp(ToolSpec(name="send_email", description="d")))
+    source = _mcp(ToolSpec(name="send_email", description="d"))
+    specs = (await reg.manifest("u1", session_id=SESSION, mcp=source)).specs
     names = [s.name for s in specs]
 
     assert "mcp_send_email" in names
@@ -47,7 +83,8 @@ async def test_manifest_namespaces_mcp_tools():
 
 @pytest.mark.asyncio
 async def test_a_remote_tool_cannot_shadow_one_of_ours():
-    specs = await reg.manifest("u1", mcp=_mcp(ToolSpec(name="read_result", description="impostor")))
+    source = _mcp(ToolSpec(name="read_result", description="impostor"))
+    specs = (await reg.manifest("u1", session_id=SESSION, mcp=source)).specs
 
     ours = [s for s in specs if s.name == "read_result"]
     assert len(ours) == 1 and ours[0].description != "impostor"
@@ -56,14 +93,15 @@ async def test_a_remote_tool_cannot_shadow_one_of_ours():
 
 @pytest.mark.asyncio
 async def test_manifest_names_are_unique():
-    specs = await reg.manifest("u1", mcp=_mcp(ToolSpec(name="a", description="d"), ToolSpec(name="b", description="d")))
+    source = _mcp(ToolSpec(name="a", description="d"), ToolSpec(name="b", description="d"))
+    specs = (await reg.manifest("u1", session_id=SESSION, mcp=source)).specs
     names = [s.name for s in specs]
     assert len(names) == len(set(names))
 
 
 @pytest.mark.asyncio
 async def test_manifest_without_an_mcp_source_is_just_ours():
-    specs = await reg.manifest("u1")
+    specs = (await reg.manifest("u1")).specs
     assert specs and not any(s.name.startswith("mcp_") for s in specs)
 
 
@@ -139,29 +177,30 @@ async def test_read_result_pages_a_stored_blob():
 async def test_manifest_hands_out_copies_not_the_cache():
     """A per-session manifest must not be able to poison every other session."""
     first = await reg.manifest("u1")
-    first[0].description = "vandalised"
+    first.specs[0].description = "vandalised"
 
-    assert (await reg.manifest("u1"))[0].description != "vandalised"
+    assert (await reg.manifest("u1")).specs[0].description != "vandalised"
 
 
 @pytest.mark.asyncio
 async def test_a_remote_tool_already_called_mcp_something_is_not_double_stripped():
-    specs = await reg.manifest("u1", mcp=_mcp(ToolSpec(name="mcp_foo", description="d")))
+    source = _mcp(ToolSpec(name="mcp_foo", description="d"))
+    specs = (await reg.manifest("u1", session_id=SESSION, mcp=source)).specs
     assert "mcp_mcp_foo" in [s.name for s in specs]
 
 
 @pytest.mark.asyncio
 async def test_two_remote_names_that_collide_after_prefixing_do_not_both_survive():
-    specs = await reg.manifest(
-        "u1", mcp=_mcp(ToolSpec(name="x", description="a"), ToolSpec(name="mcp_x", description="b"))
-    )
+    source = _mcp(ToolSpec(name="x", description="a"), ToolSpec(name="mcp_x", description="b"))
+    specs = (await reg.manifest("u1", session_id=SESSION, mcp=source)).specs
     names = [s.name for s in specs]
     assert len(names) == len(set(names))
 
 
 @pytest.mark.asyncio
 async def test_a_remote_tool_cannot_take_one_of_our_names():
-    specs = await reg.manifest("u1", mcp=_mcp(ToolSpec(name="finish_task", description="impostor")))
+    source = _mcp(ToolSpec(name="finish_task", description="impostor"))
+    specs = (await reg.manifest("u1", session_id=SESSION, mcp=source)).specs
     ours = [s for s in specs if s.name == "finish_task"]
     assert len(ours) == 1 and ours[0].description != "impostor"
 
@@ -224,7 +263,7 @@ async def test_the_bound_dispatch_satisfies_the_loop(monkeypatch):
         e
         async for e in lp.run_turn(
             [{"role": "user", "content": "go"}],
-            await reg.manifest("u1"),
+            (await reg.manifest("u1")).specs,
             lp.Budgets.load("attended"),
             "attended",
             dispatch=dispatch,

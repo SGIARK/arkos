@@ -194,6 +194,21 @@ class Route:
     tool: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class ServerTools:
+    """One connected server and the tools it is offering right now.
+
+    `label` is the `mcp_servers:` config key, for logs and for the toggle the
+    panel writes; `name` is what a human is shown; `mcp_url` is the identity
+    everything durable is keyed by.
+    """
+
+    label: str
+    name: str
+    mcp_url: str
+    specs: list[ToolSpec]
+
+
 class Smithery:
     """The MCP servers, configured by `mcp_servers:` in config.yaml.
 
@@ -388,14 +403,38 @@ class Smithery:
                             routes[name] = Route(owner, conn, tool)
         return routes
 
-    async def specs(self, user_id: str) -> list[ToolSpec]:
-        """Return every MCP tool this user can reach, named bare; `registry.manifest` prefixes them."""
+    async def reach(self, user_id: str) -> list[ServerTools]:
+        """Return every connected server and the tools it currently offers, grouped.
+
+        Grouped rather than flattened because the budget is spent and refused a
+        SERVER at a time: half of Slack in the manifest is a model that thinks it
+        can post and finds out mid-task that it cannot. `registry.manifest` does
+        the choosing; this only reports what is there.
+
+        Tool counts come from the live `tools_cache`, so a server that grew its
+        list overnight is seen at its new size here — which is exactly the case
+        the cap exists to survive.
+        """
         routes = await self._routes(user_id)
+        grouped: dict[str, list[ToolSpec]] = {}
+        for route in routes.values():
+            if not route.conn.connected:
+                continue
+            url = route.conn.mcp_url
+            grouped.setdefault(url, []).append(_to_spec(route.tool, self._auto_approve_for(url)))
         return [
-            _to_spec(r.tool, self._auto_approve_for(r.conn.mcp_url))
-            for r in routes.values()
-            if r.conn.connected
+            ServerTools(label=self._label(url), name=self._display(url), mcp_url=url, specs=specs)
+            for url, specs in grouped.items()
         ]
+
+    async def specs(self, user_id: str) -> list[ToolSpec]:
+        """Every MCP tool this user could reach, named bare and ungated by any session.
+
+        This is the WHOLE of what is connected, not what a turn ships. Only
+        `registry.manifest` decides what a session reaches, and it does that from
+        `reach()`.
+        """
+        return [spec for server in await self.reach(user_id) for spec in server.specs]
 
     def _auto_approve_for(self, mcp_url: str) -> Any:
         """The `auto_approve` setting for the server behind a url, absent meaning approve nothing."""

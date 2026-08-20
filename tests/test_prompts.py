@@ -7,8 +7,8 @@ from agent_module import prompts
 
 
 def test_the_finishing_contract_is_the_difference_between_the_modes():
-    attended = prompts.system_prompt("attended", date="2026-08-17")
-    unattended = prompts.system_prompt("unattended", date="2026-08-17")
+    attended = prompts.system_prompt("attended", date="2026-08-17", now="2026-08-20 14:32 UTC")
+    unattended = prompts.system_prompt("unattended", date="2026-08-17", now="2026-08-20 14:32 UTC")
 
     assert "finish_task" in unattended
     assert "Text alone is NOT an exit" in unattended
@@ -16,7 +16,7 @@ def test_the_finishing_contract_is_the_difference_between_the_modes():
 
 
 def test_the_prompt_teaches_the_disciplines_the_tools_assume():
-    text = prompts.system_prompt("unattended", date="2026-08-17")
+    text = prompts.system_prompt("unattended", date="2026-08-17", now="2026-08-20 14:32 UTC")
 
     assert "Never edit a file you" in text and "have not read" in text
     assert "unique" in text, "edit_file's exact-match rule is missing"
@@ -31,7 +31,7 @@ def test_the_prompt_says_whose_computer_it_is():
     rather than a thing to report, and the user cannot fix it for the model —
     they cannot even see it.
     """
-    prompt = prompts.system_prompt("attended", date="2026-08-18")
+    prompt = prompts.system_prompt("attended", date="2026-08-18", now="2026-08-20 14:32 UTC")
 
     assert "sudo apt-get" in prompt, "the model has no idea it may install things"
     assert "not the user's machine" in prompt
@@ -46,8 +46,8 @@ def test_the_prompt_says_whose_computer_it_is():
 
 def test_the_same_session_builds_the_same_prompt_forever():
     """The same inputs build the same prompt; nothing in it reads a clock."""
-    first = prompts.system_prompt("attended", date="2026-08-17", goal="file the return")
-    second = prompts.system_prompt("attended", date="2026-08-17", goal="file the return")
+    first = prompts.system_prompt("attended", date="2026-08-17", now="2026-08-20 14:32 UTC", goal="file the return")
+    second = prompts.system_prompt("attended", date="2026-08-17", now="2026-08-20 14:32 UTC", goal="file the return")
 
     assert first == second
     assert "file the return" in first

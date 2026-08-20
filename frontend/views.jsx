@@ -142,7 +142,7 @@ function ApprovalsView({ onError, pulse }) {
         title="approvals"
         lede="questions a run stopped to ask. answering here is answering in its window — one row, wherever you see it."
       />
-      <div className="stack" style={{ maxWidth: 620 }}>
+      <div className="stack zoned">
         {waiting === null && <Empty>reading…</Empty>}
         {waiting !== null && waiting.length === 0 && <Empty glyph="✓">all caught up — nothing waiting on you</Empty>}
         {(waiting || []).map((a) => (
@@ -163,18 +163,37 @@ function ApprovalsView({ onError, pulse }) {
 /* Flat paths into a tree. The store keeps `arkos/.git/objects/pack/…` as one
    string per file, which is the right shape for a tree and the wrong shape for
    a list: a clone turns the panel into 182 rows of somebody else's repository. */
+/* The zero-byte file that makes an empty folder durable. It is a real row, so
+   it rides materialize and flush like anything else — which is why an empty
+   folder survives a session at all — and it is never shown. */
+const SENTINEL = ".keep";
+
+function isSentinel(path) {
+  return path === SENTINEL || path.endsWith("/" + SENTINEL);
+}
+
 function asTree(files) {
   const root = { dirs: new Map(), files: [] };
-  for (const file of files) {
-    const parts = file.path.split("/");
+  const descend = (parts) => {
     let node = root;
-    for (const dir of parts.slice(0, -1)) {
+    for (const dir of parts) {
       if (!node.dirs.has(dir)) node.dirs.set(dir, { dirs: new Map(), files: [] });
       node = node.dirs.get(dir);
     }
-    node.files.push({ ...file, name: parts[parts.length - 1] });
+    return node;
+  };
+  for (const file of files) {
+    const parts = file.path.split("/");
+    // Descending is the whole point of the sentinel; listing it is not.
+    const node = descend(parts.slice(0, -1));
+    if (!isSentinel(file.path)) node.files.push({ ...file, name: parts[parts.length - 1] });
   }
   return root;
+}
+
+/* The directory a path sits in; "" is the project root. */
+function dirOf(path) {
+  return path && path.includes("/") ? path.split("/").slice(0, -1).join("/") : "";
 }
 
 function countFiles(node) {
@@ -183,7 +202,7 @@ function countFiles(node) {
   return n;
 }
 
-function Branch({ node, path, depth, open, onToggle, onRead, selected }) {
+function Branch({ node, path, depth, open, onToggle, onRead, selected, dropTarget, onTarget, onLift, lifted }) {
   const indent = (d) => ({ paddingLeft: 18 + d * 13 });
   const dirs = [...node.dirs.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   const files = [...node.files].sort((a, b) => a.name.localeCompare(b.name));
@@ -195,7 +214,24 @@ function Branch({ node, path, depth, open, onToggle, onRead, selected }) {
         const isOpen = open.has(full);
         return (
           <React.Fragment key={full}>
-            <div className="cv-entry dir" style={indent(depth)} onClick={() => onToggle(full)}>
+            <div
+              className={"cv-entry dir" + (dropTarget === full ? " drop" : "") + (lifted === full ? " lifted" : "")}
+              style={indent(depth)}
+              onClick={() => onToggle(full)}
+              draggable
+              onDragStart={(e) => {
+                e.stopPropagation();
+                e.dataTransfer.effectAllowed = "move";
+                // Firefox starts no drag without payload; the path is the payload.
+                e.dataTransfer.setData("text/plain", full);
+                onLift(full);
+              }}
+              onDragEnd={() => onLift(null)}
+              onDragOver={(e) => {
+                e.preventDefault();
+                onTarget(full);
+              }}
+            >
               <span className="nm">
                 <span className="g">{isOpen ? "▾" : "▸"}</span>
                 {name}
@@ -211,17 +247,41 @@ function Branch({ node, path, depth, open, onToggle, onRead, selected }) {
                 onToggle={onToggle}
                 onRead={onRead}
                 selected={selected}
+                dropTarget={dropTarget}
+                onTarget={onTarget}
+                onLift={onLift}
+                lifted={lifted}
               />
             )}
           </React.Fragment>
         );
       })}
-      {files.map((file) => (
+      {files.map((file, i) => (
         <div
-          className={"cv-entry" + (selected === file.path ? " sel" : "")}
+          className={
+            "cv-entry" +
+            (selected === file.path ? " sel" : "") +
+            /* The bar sits under the LAST file of the directory a drop would
+               land in, so it reads as "into this folder" rather than "onto
+               this file" — dropping on a file means the folder holding it. */
+            (dropTarget === path && i === files.length - 1 ? " drop" : "") +
+            (lifted === file.path ? " lifted" : "")
+          }
           key={file.file_id}
           style={indent(depth)}
           onClick={() => onRead(file)}
+          draggable
+          onDragStart={(e) => {
+            e.stopPropagation();
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", file.path);
+            onLift(file.path);
+          }}
+          onDragEnd={() => onLift(null)}
+          onDragOver={(e) => {
+            e.preventDefault();
+            onTarget(path);
+          }}
           title={file.path}
         >
           <span className="nm">
@@ -247,6 +307,23 @@ function ComputerView({ onError }) {
   // Directories start closed: a clone is hundreds of files and none of them is
   // what you came to look at.
   const [expanded, setExpanded] = useState(() => new Set());
+  const [dragging, setDragging] = useState(false);
+  const [busy, setBusy] = useState(false);
+  // `target` is where the next drop or pick lands, "" being the project root;
+  // `moving` is the path being dragged, which is what makes a drop a rearrange
+  // rather than an upload.
+  const [moving, setMoving] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [target, setTarget] = useState("");
+  const cancelled = useRef(false);
+  // The editor, as the design draws it. `draft` is null when reading; a string
+  // means the pane is in edit mode, dirty or not.
+  const [draft, setDraft] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  // What the panel counts. The sentinels are structure, not content.
+  const shown = files ? files.filter((f) => !isSentinel(f.path)) : null;
 
   const toggle = (path) =>
     setExpanded((current) => {
@@ -271,10 +348,14 @@ function ComputerView({ onError }) {
     setFiles(null);
     setOpen(null);
     setExpanded(new Set());
+    setCreating(false);
+    setNewName("");
+    setTarget("");
     api.files(projectId).then(setFiles).catch(onError);
   }, [projectId, onError]);
 
   const read = async (file) => {
+    setDraft(null);
     setOpen({ path: file.path, loading: true });
     try {
       setOpen(await api.file(projectId, file.file_id));
@@ -284,9 +365,150 @@ function ComputerView({ onError }) {
     }
   };
 
+  /* The store is the durable copy, so saving here is not a scratch edit: a
+     session already holding this project is written through and reads it on its
+     next turn, and every other session gets it at its next materialize. */
+  const save = async () => {
+    if (draft === null || !open) return;
+    setSaving(true);
+    try {
+      await api.saveFile(projectId, open.path, draft);
+      setOpen({ ...open, text: draft, size: new Blob([draft]).size });
+      setDraft(null);
+      setFiles(await api.files(projectId));
+    } catch (e) {
+      onError(e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Only text is editable. A binary file has no draft to hold and no editor
+  // that would not corrupt it.
+  const canEdit = !!open && !open.loading && !open.binary;
+  const dirty = draft !== null && draft !== (open && open.text);
+
+  /* Dropped or picked, they go to the store — the same endpoint the session
+     window's panel uses, because it is the same shelf. A session already
+     holding this project is written through and reads them on its next turn. */
+  const add = async (list, dir) => {
+    if (!projectId || !list || !list.length) return;
+    const into = dir === undefined ? target : dir;
+    setBusy(true);
+    try {
+      for (const file of list) await api.upload(projectId, file, into);
+      setFiles(await api.files(projectId));
+    } catch (e) {
+      onError(e);
+    } finally {
+      setBusy(false);
+      setDragging(false);
+    }
+  };
+
+  /* Enter or blur commits, Escape cancels. Leading and trailing slashes come
+     off so the name cannot read as absolute; `a/b` nests, and every prefix is
+     opened so what you just made is on screen instead of inside a shut parent.
+     The new folder becomes the target, because a folder you cannot put a file
+     in is furniture.
+
+     It goes to the server before it is drawn: the tree it appears in is the
+     store's, so a folder held here until a file arrived would be a second
+     version of the truth that the next reload would contradict. */
+  const commitFolder = async () => {
+    /* Escape unmounts the input, and removing a focused element fires blur —
+       which would commit the name the user just cancelled. The flag is read and
+       cleared here so that blur does nothing. */
+    if (cancelled.current) {
+      cancelled.current = false;
+      return;
+    }
+    const name = newName.trim().replace(/^\/+|\/+$/g, "");
+    setCreating(false);
+    setNewName("");
+    if (!name) return;
+    setBusy(true);
+    try {
+      await api.newFolder(projectId, name);
+      setFiles(await api.files(projectId));
+      setExpanded((current) => {
+        const next = new Set(current);
+        const parts = name.split("/");
+        for (let i = 0; i < parts.length; i++) next.add(parts.slice(0, i + 1).join("/"));
+        return next;
+      });
+      setTarget(name);
+    } catch (e) {
+      onError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /* Rearranging. The store moves in one transaction and every live box is
+     corrected in the same request, so the only copy that can be behind is this
+     one — which is why the tree is re-read rather than patched in place. */
+  const move = async (from, into) => {
+    const dest = into || "";
+    const to = dest ? `${dest}/${from.split("/").pop()}` : from.split("/").pop();
+    // Into itself, or back where it already is: both are no-ops, and the first
+    // would be a folder swallowing its own subtree.
+    if (to === from || dest === from || dest.startsWith(from + "/")) return;
+    setBusy(true);
+    try {
+      const result = await api.moveFile(projectId, from, to);
+      setFiles(await api.files(projectId));
+      if (dest) setExpanded((current) => new Set(current).add(dest));
+      // The row id survives a move, so what is open is still open — under a new name.
+      if (open && (open.path === from || open.path.startsWith(from + "/"))) {
+        setOpen({ ...open, path: to + open.path.slice(from.length) });
+      }
+      if (result.stale_sessions && result.stale_sessions.length) {
+        onError(
+          new ApiError(
+            "move_stale",
+            `Moved in the store, but ${result.stale_sessions.length} running session(s) still hold the old path on disk.`
+          )
+        );
+      }
+    } catch (e) {
+      onError(e);
+    } finally {
+      setBusy(false);
+      setMoving(null);
+      setTarget("");
+    }
+  };
+
   return (
-    <div className="view view-wide" style={{ padding: 0, height: "100%" }}>
-      <div className="computer">
+    <div className="view" style={{ padding: 0, height: "100%" }}>
+      <div
+        className="computer"
+        onDragOver={(e) => {
+          e.preventDefault();
+          if (!dragging) setDragging(true);
+        }}
+        onDragLeave={(e) => {
+          if (e.currentTarget.contains(e.relatedTarget)) return;
+          setDragging(false);
+          if (!moving) setTarget("");
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          /* Read the drag before clearing it, and clear it HERE rather than in
+             whatever runs next: both of those can decide there is nothing to do
+             and return early, and an overlay that outlives the drop is the bug
+             that makes. */
+          const lifted = moving;
+          const into = target;
+          setDragging(false);
+          setMoving(null);
+          setTarget("");
+          // Lifted from the tree: a rearrange. From the desktop: an upload.
+          if (lifted) move(lifted, into);
+          else add(e.dataTransfer.files, into);
+        }}
+      >
         <div className="cv-files">
           <div className="cv-project">
             <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
@@ -298,11 +520,64 @@ function ComputerView({ onError }) {
             </select>
           </div>
           <div className="cv-head">
-            <span className="path">{files ? `${files.length} file${files.length === 1 ? "" : "s"}` : "…"}</span>
+            <span className="path">
+              {busy ? "working…" : shown ? `${shown.length} file${shown.length === 1 ? "" : "s"}` : "…"}
+            </span>
+            <span className="cv-acts">
+              <label className="cv-add" title="attach files to this project">
+                + file
+                <input
+                  type="file"
+                  multiple
+                  hidden
+                  onChange={(e) => {
+                    // Into the folder you just made, else the one you are reading.
+                    add(e.target.files, target || dirOf(open && open.path));
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+              <span
+                className="cv-add"
+                title="new folder"
+                onClick={() => {
+                  // If a blur never came to clear it, the last Escape must not
+                  // swallow this one.
+                  cancelled.current = false;
+                  setCreating(true);
+                  setNewName("");
+                }}
+              >
+                + folder
+              </span>
+            </span>
           </div>
           <div className="cv-entries">
+            {creating && (
+              <div className="cv-newdir">
+                <span className="g">▸</span>
+                <input
+                  value={newName}
+                  autoFocus
+                  spellCheck={false}
+                  placeholder="folder name"
+                  onChange={(e) => setNewName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") commitFolder();
+                    if (e.key === "Escape") {
+                      cancelled.current = true;
+                      setCreating(false);
+                      setNewName("");
+                    }
+                  }}
+                  onBlur={commitFolder}
+                />
+              </div>
+            )}
             {files === null && <div className="cv-entry loading">reading…</div>}
-            {files !== null && !files.length && <div className="cv-entry loading">no files in this project</div>}
+            {files !== null && !files.length && !creating && (
+              <div className="cv-entry loading">no files in this project</div>
+            )}
             {files !== null && files.length > 0 && (
               <Branch
                 node={asTree(files)}
@@ -312,17 +587,76 @@ function ComputerView({ onError }) {
                 onToggle={toggle}
                 onRead={read}
                 selected={open ? open.path : null}
+                dropTarget={dragging ? target : null}
+                onTarget={setTarget}
+                onLift={(path) => {
+                  setMoving(path);
+                  // dragend with nothing lifted means the drag was abandoned —
+                  // Escape, or a drop outside the panel — and no drop is coming.
+                  if (!path) {
+                    setDragging(false);
+                    setTarget("");
+                  }
+                }}
+                lifted={moving}
               />
             )}
           </div>
         </div>
 
         <div className="cv-read">
+          {/* Over the reader, never over the tree: the tree is what you are
+              aiming at, and the row underline is the answer to "where". */}
+          {dragging && (
+            <div className="cv-drop">
+              <span>
+                {moving ? "move" : "drop to add"} to{" "}
+                {target || (projects.find((p) => p.id === projectId) || {}).title || "this project"}
+              </span>
+            </div>
+          )}
           <div className="cv-read-head">
-            <span>{open ? open.path : "select a file to read"}</span>
-            {open && !open.loading && <span>{fileSize(open.size)}</span>}
+            <span className="path">
+              {open ? open.path : "select a file to read"}
+              {dirty && <span className="dirty"> ●</span>}
+            </span>
+            <span className="acts">
+              {open && !open.loading && <span>{fileSize(open.size)}</span>}
+              {canEdit && (
+                <button
+                  className="cv-edit"
+                  onClick={() => setDraft(draft === null ? open.text || "" : null)}
+                >
+                  {draft === null ? "edit" : "reading"}
+                </button>
+              )}
+              {dirty && (
+                <button className="cv-revert" onClick={() => setDraft(open.text || "")}>
+                  revert
+                </button>
+              )}
+            </span>
           </div>
-          {open && open.loading ? (
+          {draft !== null ? (
+            <React.Fragment>
+              <textarea
+                className="cv-editor"
+                value={draft}
+                spellCheck={false}
+                onChange={(e) => setDraft(e.target.value)}
+              />
+              <div className="cv-editbar">
+                <span>
+                  {dirty
+                    ? "unsaved changes in this project's copy"
+                    : "editing the project's copy — sessions mount it on their next box"}
+                </span>
+                <button className="cv-save" onClick={save} disabled={saving || !dirty}>
+                  {saving ? "saving…" : "save"}
+                </button>
+              </div>
+            </React.Fragment>
+          ) : open && open.loading ? (
             <div className="cv-read-body" style={{ fontStyle: "italic", color: "var(--ink-mute)" }}>
               reading…
             </div>

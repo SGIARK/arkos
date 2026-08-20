@@ -15,7 +15,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from agent_module import prompts
@@ -135,19 +135,31 @@ def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
     return int(chars / max(1, int(_cfg("context.chars_per_token", 4))))
 
 
-async def fold(session: Session) -> Folded:
+async def fold(
+    session: Session,
+    reach: Sequence[registry.ServerReach] = (),
+    *,
+    now: datetime | None = None,
+) -> Folded:
     """Rebuilds the model's message list from the session's log.
 
     `user` and `content` events become messages, `tool_call` and `tool_result` become the
     paired assistant and tool messages, `reasoning` is dropped, and the remaining kinds are
     UI-only.
 
-    The output is a function of (log, config, mode, memory): no clock is read, and the
-    date in the system prompt comes from `sessions.created_at`.
+    The output is a function of (log, config, mode, memory, reach, now) — all arguments,
+    which is what keeps it deterministic now that the prompt carries a clock. `now`
+    defaults to reading one, ONCE, so a fold is internally consistent; a caller that
+    needs two folds to compare must pass the same instant to both.
+
+    `reach` is this turn's manifest, which is why the caller builds it FIRST — the system
+    prompt names the services the request actually carries, and a prompt written before
+    the manifest could only name the ones somebody asked for.
     """
+    now = now or datetime.now(UTC)
     events = await _all_events(session.id)
     memory = _capped_memory(await store.read_memory(session.user_id))
-    messages, hops_used = _assemble(session, events, frozenset(), memory)
+    messages, hops_used = _assemble(session, events, frozenset(), memory, reach, now)
     last_seq = events[-1].seq if events else 0
 
     # Rung 0 measures the view; rung 1 clears the oldest results holding a blob ref
@@ -161,7 +173,7 @@ async def fold(session: Session) -> Folded:
     cleared: list[str] = []
     for ref in _clearable_refs(events):
         cleared.append(ref)
-        messages, hops_used = _assemble(session, events, frozenset(cleared), memory)
+        messages, hops_used = _assemble(session, events, frozenset(cleared), memory, reach, now)
         if _estimate_tokens(messages) <= ceiling:
             break
 
@@ -249,6 +261,8 @@ def _assemble(
     events: list[slog.StoredEvent],
     cleared: frozenset[str],
     memory: str = "",
+    reach: Sequence[registry.ServerReach] = (),
+    now: datetime | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Builds the message list from events, with `cleared` refs reduced to a pointer.
 
@@ -262,8 +276,10 @@ def _assemble(
             "content": prompts.system_prompt(
                 session.mode,
                 date=session.created_at.date().isoformat(),
+                now=prompts.clock(now or datetime.now(UTC)),
                 goal=session.goal,
                 memory=memory,
+                reach=reach,
             ),
         }
     ]
@@ -323,7 +339,9 @@ def _assemble(
             # after the assistant message carrying its call.
             flush_assistant()
             body = _cleared_text(event.ref) if event.ref and event.ref in cleared else _result_text(event)
-            messages.append({"role": "tool", "tool_call_id": event.id, "content": body})
+            messages.append(
+                {"role": "tool", "tool_call_id": event.id, "content": _stamped(body, stored.ts)}
+            )
             open_calls.discard(event.id)
             drain_deferred()
         elif isinstance(event, BudgetEvent):
@@ -360,6 +378,21 @@ def _result_text(event: ToolResultEvent) -> str:
             f"read_result(ref={event.ref!r}) for the rest]"
         )
     return event.content
+
+
+def _stamped(body: str, when: datetime) -> str:
+    """Prefix a rendered result with when it was fetched.
+
+    Presentation only. The stored event is untouched — this is the fold's view
+    of it, the same place the ladder replaces a cleared result with a pointer.
+    Without it the model reads a week-old inbox as the current one, because
+    nothing in a `tool` message says when it was true.
+
+    The stamp is ABSOLUTE, not an age. An age would rewrite every result on
+    every fold, which changes the cached prefix each hop for no gain — the model
+    has the current time in its system prompt and can subtract.
+    """
+    return f"[fetched {prompts.clock(when)}]\n{body}"
 
 
 def _dumps(args: dict[str, Any]) -> str:
@@ -450,8 +483,13 @@ async def _drive(session_id: str) -> None:
         for closed in await slog.close_dangling(session_id):
             stream.publish(session_id, closed)
 
+        # The manifest comes BEFORE the fold: the system prompt names the services
+        # this request carries, and it cannot do that until the request is decided.
+        shipped = await _manifest_for(session)
+        _announce_benching(sink, shipped)
+
         started = time.monotonic()
-        folded = await fold(session)
+        folded = await fold(session, shipped.servers)
         messages, hops_used = folded.messages, folded.hops_used
         system_log.record(
             "fold",
@@ -465,13 +503,7 @@ async def _drive(session_id: str) -> None:
         if folded.transform is not None:
             # The clearing is recorded as an event; the log itself keeps every result.
             sink.emit(folded.transform)
-        try:
-            tools = await registry.manifest(session.user_id, mcp=hands.smithery())
-        except Exception:
-            # An unreachable MCP server leaves the manifest without its remote tools.
-            logger.exception("session %s: building the full manifest failed", session_id)
-            tools = await registry.manifest(session.user_id)
-
+        tools = shipped.specs
         dispatch = sink.write_ahead(
             registry.bind(sink.tool_context(), mcp_call=_mcp_call(), tools=tools),
             tools,
@@ -518,6 +550,54 @@ async def _drive(session_id: str) -> None:
         await _shielded(_ending(session_id, sink, "model_error"))
     finally:
         _cancelling.discard(session_id)
+
+
+async def _manifest_for(session: Session) -> registry.Manifest:
+    """Build the turn's tool list, degrading to ours alone rather than failing the turn.
+
+    An unreachable MCP vendor is a smaller tool list, never a dead session. The
+    fallback drops the session id with the MCP source, which is the honest
+    degradation: with no way to read what a server offers there is no way to
+    know whether it fits, and ours always do.
+    """
+    try:
+        return await registry.manifest(session.user_id, mcp=hands.smithery(), session_id=session.id)
+    except Exception:
+        logger.exception("session %s: building the full manifest failed", session.id)
+        return await registry.manifest(session.user_id)
+
+
+def _announce_benching(sink: _Sink, shipped: registry.Manifest) -> None:
+    """Say, in the transcript and in the operational log, that a server was left out.
+
+    A benched server is the one case where what the human switched on and what
+    the model was handed disagree, and it happens for a reason nobody typed —
+    a server grew its tool list. Silence here is how 164 tool schemas appeared
+    without anyone changing anything, so it gets a line the human can read and a
+    row an operator can query.
+    """
+    benched = shipped.benched
+    if not benched:
+        return
+    names = ", ".join(s.name for s in benched)
+    sink.emit(
+        StatusEvent(
+            label=(
+                f"{names} left out this turn: {shipped.used}/{shipped.budget} tool slots are already "
+                "in use. Turn something off to make room."
+            )
+        )
+    )
+    system_log.record(
+        "tools_benched",
+        level="warn",
+        session_id=sink.session.id,
+        user_id=sink.session.user_id,
+        benched=[s.label for s in benched],
+        shipped=[s.label for s in shipped.servers if s.shipped],
+        used=shipped.used,
+        budget=shipped.budget,
+    )
 
 
 async def _shielded(work: Awaitable[None]) -> None:

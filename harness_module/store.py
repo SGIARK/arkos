@@ -227,6 +227,10 @@ class StoreError(RuntimeError):
     """Raised when the blob backend refuses a read or a write."""
 
 
+class MissingPath(StoreError):
+    """Raised when an operation names a path the project's tree does not have."""
+
+
 def _is_absent(response: Any) -> bool:
     """Whether a response means the object is not there.
 
@@ -423,6 +427,81 @@ async def put_file(
             path=row["path"], content_hash=row["content_hash"], size=row["size"], mtime=row["mtime"]
         ),
     )
+
+
+# A folder with nothing in it. The tree is flat paths and the sandbox round trip
+# carries files and only files — materialize writes them, `_sweep` finds them,
+# flush commits them — so a directory that is not a file has nowhere to survive:
+# the next flush would replace the subtree from what is on disk and the empty
+# folder would be gone. A zero-byte sentinel IS a file, so it rides the whole
+# pipeline like any other and cannot be silently dropped.
+DIR_SENTINEL = ".keep"
+
+
+def dir_sentinel(path: str) -> str:
+    """The sentinel path that makes an empty directory durable."""
+    return f"{path}/{DIR_SENTINEL}"
+
+
+async def move_path(project_id: str, src: str, dst: str) -> list[tuple[str, str]]:
+    """
+    Move one file, or a whole subtree, to another path in the same project.
+
+    Blobs never move: they are content-addressed and immutable, so a rename is
+    a row edit and nothing is re-uploaded. Every row moves in one transaction,
+    which is what keeps a half-moved folder from existing.
+
+    Returns:
+        The (from, to) pairs that moved, in path order.
+
+    Raises:
+        MissingPath: nothing is at `src`.
+        StoreError: `dst` is inside `src`, or something already sits at a
+            destination path.
+    """
+    if src == dst:
+        return []
+    if dst.startswith(f"{src}/"):
+        raise StoreError(f"cannot move {src!r} into itself")
+
+    async with (await pool.pool()).acquire() as conn, conn.transaction():
+        rows = await conn.fetch(
+            """
+            SELECT path FROM project_files
+             WHERE project_id = $1 AND (path = $2 OR path LIKE $3)
+             ORDER BY path
+            """,
+            _uuid(project_id),
+            src,
+            f"{src}/%",
+        )
+        if not rows:
+            raise MissingPath(f"nothing to move at {src!r}")
+
+        # `src` itself is a file when a row matches it exactly; otherwise it is a
+        # directory and only the part after the prefix is kept.
+        moves = [(r["path"], dst if r["path"] == src else dst + r["path"][len(src) :]) for r in rows]
+
+        taken = await conn.fetch(
+            "SELECT path FROM project_files WHERE project_id = $1 AND path = ANY($2::text[])",
+            _uuid(project_id),
+            [to for _, to in moves],
+        )
+        if taken:
+            names = ", ".join(sorted(r["path"] for r in taken))
+            raise StoreError(f"something is already at {names}")
+
+        for was, now in moves:
+            await conn.execute(
+                "UPDATE project_files SET path = $3 WHERE project_id = $1 AND path = $2",
+                _uuid(project_id),
+                was,
+                now,
+            )
+
+    # mtime is left alone on purpose: a move does not change what the file says,
+    # and materialize decides what to transfer by content hash regardless.
+    return moves
 
 
 async def commit_tree(

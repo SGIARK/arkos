@@ -40,8 +40,22 @@ browser in the harness process. The pre-redesign `browser_tool.py`,
 
 Where the live code is: `agent_module/loop.py` (the one loop),
 `model_module/client.py` (the one model client), `tool_module/`
-(envelope · registry · connections · smithery · tools/ · sandbox),
-`db/pool.py` (asyncpg; the psycopg2 helpers are gone — do not add more).
+(envelope · registry · connections · session_tools · smithery · tools/ ·
+sandbox), `db/pool.py` (asyncpg; the psycopg2 helpers are gone — do not add
+more).
+
+**A session reaches only the MCP servers it was given** (11.4 + 11.5). The
+toggles are `session_tools`, keyed by `mcp_url` and never by the `mcp_servers:`
+config label. `registry.manifest` is the ONE builder of a turn's tool list and
+it cannot exceed `llm.max_tools` whatever the toggles say — whole servers are
+benched, most-recently-enabled first, and a benched server gets a `status` event
+and a `system_events` row. **The system prompt is generated from the manifest
+that shipped, never from the toggles**, which is why `_drive` builds the
+manifest before it folds. Do not add a second path that assembles tool specs.
+
+**The design lives at `new_frontend/`** — the checked-in copy of the Claude
+Design project 11.4 was built from. Where it and `frontend/` disagree, the
+design wins and `frontend/` is amended, not the other way round.
 
 Coding standards still need the rewrite Task 7 promised. Until then: ruff, type
 hints on every signature, `async def` for anything that awaits, no blocking IO in

@@ -1013,6 +1013,258 @@ async def _read_frames(stream, user_id, session_id):
     await gen.aclose()
 
 
+# --- the tool budget (11.4): what this session may reach ---------------------------
+
+
+class _FakeSmithery:
+    """The connections half of `Smithery`, which is all the tools document reads."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    async def connections(self, user_id):
+        return [dict(r) for r in self._rows]
+
+
+def _server(label, *, tools, connected=True, requires_auth=True):
+    return {
+        "server": label,
+        "name": label.title(),
+        "mcp_url": f"https://{label}.example",
+        "requires_auth": requires_auth,
+        "status": "connected" if connected else "disconnected",
+        "tool_count": tools,
+        "refreshed_at": None,
+        "setup_url": None,
+    }
+
+
+@pytest.fixture
+def mcp(monkeypatch):
+    """Install a connections source, and return a setter for what it holds."""
+
+    def use(rows):
+        monkeypatch.setattr(api.hands, "smithery", lambda: _FakeSmithery(rows))
+
+    use([])
+    return use
+
+
+async def test_a_session_starts_reaching_nothing_but_ours(client, mcp):
+    """The default is ours alone: a connected server is not a reachable one."""
+    mcp([_server("gmail", tools=12), _server("slack", tools=38, requires_auth=False)])
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id)
+
+    body = (await client.get(f"/sessions/{session_id}/tools")).json()
+
+    assert body["used"] == 0
+    assert [s["enabled"] for s in body["servers"]] == [False, False]
+    assert body["budget"] == body["max_tools"] - body["ours"], "the meter is what is left after ours"
+    assert body["ours"] > 0
+
+
+async def test_a_toggle_is_recorded_and_read_back(client, mcp):
+    mcp([_server("gmail", tools=12)])
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id)
+
+    written = await client.put(f"/sessions/{session_id}/tools/gmail", json={"enabled": True})
+
+    assert written.status_code == 200
+    assert written.json()["used"] == 12, "the write answers with the meter it just moved"
+    assert (await client.get(f"/sessions/{session_id}/tools")).json()["used"] == 12
+
+    await client.put(f"/sessions/{session_id}/tools/gmail", json={"enabled": False})
+    assert (await client.get(f"/sessions/{session_id}/tools")).json()["used"] == 0
+
+
+async def test_a_toggle_over_the_cap_is_refused_with_the_numbers(client, mcp):
+    """The 400 that started this card came back from the provider with nothing
+    near the connection that caused it. This one names both sides."""
+    mcp([_server("huge", tools=9000)])
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id)
+
+    refused = await client.put(f"/sessions/{session_id}/tools/huge", json={"enabled": True})
+
+    assert refused.status_code == 409
+    assert refused.json()["code"] == "tool_budget"
+    assert "9000" in refused.json()["message"]
+    assert (await client.get(f"/sessions/{session_id}/tools")).json()["used"] == 0, "and nothing was recorded"
+
+
+async def test_an_unconnected_server_cannot_be_given_to_a_session(client, mcp):
+    mcp([_server("linear", tools=3, connected=False)])
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id)
+
+    refused = await client.put(f"/sessions/{session_id}/tools/linear", json={"enabled": True})
+
+    assert refused.status_code == 409
+    assert refused.json()["code"] == "not_connected"
+
+
+async def test_turning_a_server_off_is_never_refused(client, mcp):
+    """Whatever the numbers say, reducing reach is always allowed."""
+    mcp([_server("gmail", tools=12)])
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id)
+    await client.put(f"/sessions/{session_id}/tools/gmail", json={"enabled": True})
+
+    mcp([_server("gmail", tools=9000)])  # the server grew overnight
+    off = await client.put(f"/sessions/{session_id}/tools/gmail", json={"enabled": False})
+
+    assert off.status_code == 200
+    assert off.json()["used"] == 0
+
+
+async def test_an_unknown_server_is_not_found(client, mcp):
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id)
+
+    assert (await client.put(f"/sessions/{session_id}/tools/nope", json={"enabled": True})).status_code == 404
+
+
+async def test_the_tool_budget_is_scoped_to_the_session_owner(client, mcp):
+    mcp([_server("gmail", tools=12)])
+    theirs = str(uuid.uuid4())
+    _seeded.append(uuid.UUID(theirs))
+    await pool.execute("INSERT INTO users (id) VALUES ($1)", uuid.UUID(theirs))
+    their_session = await _session_for(theirs)
+    await _signed_in(client)
+
+    assert (await client.get(f"/sessions/{their_session}/tools")).status_code == 404
+    assert (await client.put(f"/sessions/{their_session}/tools/gmail", json={"enabled": True})).status_code == 404
+
+
+async def test_the_toggles_are_per_session(client, mcp):
+    """Reach is a property of one session, not of the account."""
+    mcp([_server("gmail", tools=12)])
+    user_id = await _signed_in(client)
+    one, other = await _session_for(user_id), await _session_for(user_id)
+
+    await client.put(f"/sessions/{one}/tools/gmail", json={"enabled": True})
+
+    assert (await client.get(f"/sessions/{one}/tools")).json()["used"] == 12
+    assert (await client.get(f"/sessions/{other}/tools")).json()["used"] == 0
+
+
+# --- the session's live disk (11.4) ------------------------------------------------
+
+
+class _FakeBox:
+    """One awake box, enough of the e2b handle for `browse` and `peek`."""
+
+    class _Entry:
+        def __init__(self, name, path, kind, size):
+            self.name, self.path, self.type, self.size = name, path, kind, size
+
+    class _Files:
+        def __init__(self, blobs):
+            self._blobs = blobs
+
+        def list(self, path):
+            return [
+                _FakeBox._Entry("notes", f"{path}/notes", "dir", 0),
+                _FakeBox._Entry("out.txt", f"{path}/out.txt", "file", 5),
+            ]
+
+        def read(self, path, format=None):
+            if path not in self._blobs:
+                raise FileNotFoundError(path)
+            return self._blobs[path]
+
+    def __init__(self, blobs):
+        self.files = _FakeBox._Files(blobs)
+
+
+@pytest.fixture
+def awake(monkeypatch):
+    """Put a box in the manager's live map for one session, without booting anything."""
+
+    def use(session_id, blobs=None):
+        manager = api.sandbox_manager.manager()
+        # The copy is installed FIRST, so teardown puts back a map this never
+        # touched: the manager is process-wide and outlives the test.
+        live = dict(manager._live)
+        monkeypatch.setattr(manager, "_live", live)
+        live[session_id] = _FakeBox(blobs or {})
+
+    return use
+
+
+async def test_the_disk_lists_only_while_the_box_is_awake(client, awake):
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id)
+
+    parked = await client.get(f"/sessions/{session_id}/fs")
+    assert parked.status_code == 404, "a parked or reaped box has no disk to show"
+
+    awake(session_id)
+    listed = await client.get(f"/sessions/{session_id}/fs", params={"path": "/home/user"})
+
+    assert listed.status_code == 200
+    assert listed.json()["path"] == "/home/user"
+    assert [e["name"] for e in listed.json()["entries"]] == ["notes", "out.txt"]
+    assert [e["is_dir"] for e in listed.json()["entries"]] == [True, False]
+
+
+async def test_the_disk_reads_a_file_and_says_when_it_is_not_text(client, awake):
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id)
+    awake(session_id, {"/home/user/out.txt": b"hello", "/home/user/pic.png": b"\x89PNG\xff\xfe"})
+
+    text = await client.get(f"/sessions/{session_id}/fs/file", params={"path": "/home/user/out.txt"})
+    assert text.status_code == 200
+    assert text.json()["text"] == "hello"
+    assert text.json()["binary"] is False
+    assert text.json()["truncated"] is False
+
+    binary = await client.get(f"/sessions/{session_id}/fs/file", params={"path": "/home/user/pic.png"})
+    assert binary.json()["binary"] is True
+    assert binary.json()["text"] is None
+
+
+async def test_a_long_file_is_cut_short_and_says_so(client, awake, monkeypatch):
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id)
+    awake(session_id, {"/home/user/big.log": b"x" * 100})
+    real = api._cfg
+    monkeypatch.setattr(
+        api, "_cfg", lambda key, default: 10 if key == "sandbox.browse_max_bytes" else real(key, default)
+    )
+
+    body = (await client.get(f"/sessions/{session_id}/fs/file", params={"path": "/home/user/big.log"})).json()
+
+    assert body["text"] == "x" * 10
+    assert body["truncated"] is True
+
+
+async def test_a_missing_path_on_a_live_box_is_not_found(client, awake):
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id)
+    awake(session_id)
+
+    gone = await client.get(f"/sessions/{session_id}/fs/file", params={"path": "/home/user/nope"})
+
+    assert gone.status_code == 404
+
+
+async def test_the_disk_endpoints_are_scoped_to_the_session_owner(client, awake):
+    """Ownership-checked the way the frame stream is."""
+    theirs = str(uuid.uuid4())
+    _seeded.append(uuid.UUID(theirs))
+    await pool.execute("INSERT INTO users (id) VALUES ($1)", uuid.UUID(theirs))
+    their_session = await _session_for(theirs)
+    awake(their_session, {"/home/user/secret": b"theirs"})
+    await _signed_in(client)
+
+    assert (await client.get(f"/sessions/{their_session}/fs")).status_code == 404
+    read = await client.get(f"/sessions/{their_session}/fs/file", params={"path": "/home/user/secret"})
+    assert read.status_code == 404
+
+
 # --- the app is served from the API's own origin ---------------------------------
 
 
@@ -1049,3 +1301,150 @@ async def _new_session() -> str:
         user_id,
     )
     return str(session_id)
+
+
+async def test_a_new_folder_is_durable_before_anything_is_in_it(client, tmp_path):
+    """The folder is in the store the moment it is named, not when it is filled.
+
+    An empty directory has no row of its own — the tree is flat paths — so the
+    sentinel is what survives the round trip through a sandbox.
+    """
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        await _signed_in(client)
+        project_id = (await client.post("/sessions", json={"goal": "do the taxes"})).json()["project_id"]
+
+        made = await client.post(f"/projects/{project_id}/folders", json={"path": "receipts/2026"})
+        listed = (await client.get(f"/projects/{project_id}/files")).json()
+
+        assert made.status_code == 201
+        assert made.json()["path"] == "receipts/2026"
+        assert [f["path"] for f in listed] == ["receipts/2026/.keep"]
+        # And it is a real tree entry, so materialize carries it into the box.
+        assert [e.path for e in await store.read_tree(project_id)] == ["receipts/2026/.keep"]
+    finally:
+        store.use_blobs(None)
+
+
+async def test_a_folder_that_is_already_there_is_refused(client, tmp_path):
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        await _signed_in(client)
+        project_id = (await client.post("/sessions", json={"goal": "do the taxes"})).json()["project_id"]
+        await client.post(f"/projects/{project_id}/folders", json={"path": "receipts"})
+
+        again = await client.post(f"/projects/{project_id}/folders", json={"path": "receipts"})
+
+        assert again.status_code == 409
+        assert again.json()["code"] == "already_exists"
+    finally:
+        store.use_blobs(None)
+
+
+async def test_moving_a_file_moves_the_row_and_leaves_the_blob_alone(client, tmp_path):
+    """A move is a rename of a path, not a rewrite: same row, same bytes."""
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        await _signed_in(client)
+        project_id = (await client.post("/sessions", json={"goal": "do the taxes"})).json()["project_id"]
+        uploaded = (
+            await client.post(
+                f"/projects/{project_id}/files",
+                files={"file": ("receipts.csv", b"date,amount\n2026-08-18,12", "text/csv")},
+            )
+        ).json()
+        before = (await store.read_tree(project_id))[0].content_hash
+
+        moved = await client.post(
+            f"/projects/{project_id}/files/move",
+            json={"from": "receipts.csv", "to": "2026/receipts.csv"},
+        )
+        listed = (await client.get(f"/projects/{project_id}/files")).json()
+
+        assert moved.status_code == 200
+        assert moved.json()["moved"] == [{"from": "receipts.csv", "to": "2026/receipts.csv"}]
+        assert [f["path"] for f in listed] == ["2026/receipts.csv"]
+        # The id survives, which is what lets an open reader follow the file.
+        assert listed[0]["file_id"] == uploaded["file_id"]
+        assert (await store.read_tree(project_id))[0].content_hash == before
+    finally:
+        store.use_blobs(None)
+
+
+async def test_moving_a_folder_takes_everything_under_it(client, tmp_path):
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        await _signed_in(client)
+        project_id = (await client.post("/sessions", json={"goal": "do the taxes"})).json()["project_id"]
+        for path in ("inbox/a.md", "inbox/deep/b.md"):
+            await client.post(
+                f"/projects/{project_id}/files",
+                files={"file": (path.split("/")[-1], b"x", "text/plain")},
+                data={"path": path},
+            )
+
+        moved = await client.post(
+            f"/projects/{project_id}/files/move", json={"from": "inbox", "to": "archive/2026"}
+        )
+        listed = (await client.get(f"/projects/{project_id}/files")).json()
+
+        assert moved.status_code == 200
+        assert [f["path"] for f in listed] == ["archive/2026/a.md", "archive/2026/deep/b.md"]
+    finally:
+        store.use_blobs(None)
+
+
+async def test_a_move_onto_an_occupied_path_is_refused_whole(client, tmp_path):
+    """Nothing moves. A half-moved folder is worse than a refused one."""
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        await _signed_in(client)
+        project_id = (await client.post("/sessions", json={"goal": "do the taxes"})).json()["project_id"]
+        for path in ("a/note.md", "b/note.md"):
+            await client.post(
+                f"/projects/{project_id}/files",
+                files={"file": ("note.md", b"x", "text/plain")},
+                data={"path": path},
+            )
+
+        clash = await client.post(f"/projects/{project_id}/files/move", json={"from": "a", "to": "b"})
+        listed = (await client.get(f"/projects/{project_id}/files")).json()
+
+        assert clash.status_code == 409
+        assert clash.json()["code"] == "move_refused"
+        assert [f["path"] for f in listed] == ["a/note.md", "b/note.md"]
+    finally:
+        store.use_blobs(None)
+
+
+async def test_a_folder_cannot_be_moved_into_itself(client, tmp_path):
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        await _signed_in(client)
+        project_id = (await client.post("/sessions", json={"goal": "do the taxes"})).json()["project_id"]
+        await client.post(
+            f"/projects/{project_id}/files",
+            files={"file": ("note.md", b"x", "text/plain")},
+            data={"path": "inbox/note.md"},
+        )
+
+        eats_itself = await client.post(
+            f"/projects/{project_id}/files/move", json={"from": "inbox", "to": "inbox/inbox"}
+        )
+
+        assert eats_itself.status_code == 409
+    finally:
+        store.use_blobs(None)
+
+
+async def test_moving_a_path_the_project_does_not_have_is_absent(client, tmp_path):
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        await _signed_in(client)
+        project_id = (await client.post("/sessions", json={"goal": "do the taxes"})).json()["project_id"]
+
+        gone = await client.post(f"/projects/{project_id}/files/move", json={"from": "nope.md", "to": "a/nope.md"})
+
+        assert gone.status_code == 404
+    finally:
+        store.use_blobs(None)

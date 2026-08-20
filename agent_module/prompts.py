@@ -4,14 +4,45 @@ The harness builds the opening message list; the loop injects the finish nudge.
 
 The text depends only on the arguments passed in, so the same arguments always
 produce the same prompt. Tool schemas are sent with the request and are not
-described here.
+described here — with one exception, which is the point of `connected_services`:
+WHICH services this session can reach is not visible from the schemas, so a model
+with Slack switched off would otherwise improvise rather than say so. That
+section is generated from the manifest the turn actually shipped, never from the
+toggles the human set, because the tool cap can drop a server the toggles still
+promise.
 """
 
 from __future__ import annotations
 
-from typing import Literal
+from collections.abc import Sequence
+from datetime import datetime
+from typing import Literal, Protocol
 
 Mode = Literal["attended", "unattended"]
+
+
+def clock(when: datetime) -> str:
+    """Format an instant for the model, one way, everywhere.
+
+    Minute resolution and always UTC. Seconds would change the rendered view on
+    every fold for no gain in judgement, and the fold's whole prefix is what the
+    provider caches between hops.
+    """
+    return when.strftime("%Y-%m-%d %H:%M UTC")
+
+
+class Reach(Protocol):
+    """One MCP server's standing in the manifest this turn actually shipped.
+
+    `registry.ServerReach` satisfies it. The prompt is built from THIS and never
+    from the toggles: a server the human enabled and the cap then dropped is
+    still enabled, and a prompt built from toggles would promise it.
+    """
+
+    name: str
+    tools: int
+    enabled: bool
+    shipped: bool
 
 _SHARED = """You are ARK. You do work on the user's behalf by USING TOOLS — reading and \
 writing files, running commands, driving a browser, and calling the services they have \
@@ -108,24 +139,104 @@ it parks the run until they answer, which may be hours.
 """
 
 
-def system_prompt(mode: Mode, *, date: str, goal: str | None = None, memory: str | None = None) -> str:
+def connected_services(reach: Sequence[Reach]) -> str:
+    """Describe the session's reach, from the manifest that was actually built.
+
+    Three lists, because there are three different things to say and they are not
+    interchangeable: what the model may call, what the human has connected and
+    this session was not given, and what the session WAS given and the tool cap
+    left out anyway. Only the second is fixable by the human, and only that one
+    is offered as fixable.
+
+    Returns "" when nothing is connected at all — an empty heading telling a
+    model about services it does not have is prompt spent on nothing.
+    """
+    if not reach:
+        return ""
+
+    shipped = [s for s in reach if s.shipped]
+    off = [s for s in reach if not s.enabled]
+    benched = [s for s in reach if s.enabled and not s.shipped]
+
+    lines = ["\n# Connected services"]
+    if shipped:
+        lines.append("Enabled in this session. Their tools are yours to call, named mcp_*:")
+        lines.extend(f"- {s.name} ({s.tools} tools)" for s in shipped)
+    else:
+        lines.append("No service is enabled in this session. You have your own tools and nothing else.")
+
+    if off:
+        lines.append(
+            "\nConnected to this user's account but NOT enabled here: "
+            + ", ".join(s.name for s in off)
+            + "."
+        )
+    if benched:
+        lines.append(
+            "\nEnabled here but NOT loaded this turn — there was not room for them alongside "
+            "everything else: " + ", ".join(s.name for s in benched) + "."
+        )
+    if off or benched:
+        lines.append(
+            "\nYou cannot reach any of those. If the user asks for one, say plainly that it is not "
+            "enabled in this session and that they can change that from the tools control beside the "
+            "prompt. Do not guess at what it would have said, do not route around it with another "
+            "tool, and never claim to have used it."
+        )
+    return "\n".join(lines) + "\n"
+
+
+_FRESHNESS = """
+# Time and freshness
+It is {now}. This session began on {date}.
+
+Every tool result you are shown is stamped with the moment it was fetched. That
+stamp is a SNAPSHOT of that moment, not a live view: mail arrives, files change,
+pages are edited, and a result from an earlier turn may describe a world that no
+longer exists. You have been asleep between turns and cannot feel how long.
+- A result you fetched THIS turn is current. Trust it and do not fetch it again.
+- Before you ACT on something you read in an EARLIER turn — replying, sending,
+  editing, deleting — re-read it once first.
+- One re-check is enough. Reading the same thing a third time is a loop, not
+  diligence: take the second answer and act.
+"""
+
+
+def system_prompt(
+    mode: Mode,
+    *,
+    date: str,
+    now: str,
+    goal: str | None = None,
+    memory: str | None = None,
+    reach: Sequence[Reach] = (),
+) -> str:
     """Build the system message for one session.
 
     Args:
         mode: selects the finishing section, the only part that differs between
             the two prompts.
         date: the session's own date.
+        now: the current date-time, rebuilt every turn. Required rather than
+            defaulted: a prompt with no clock is the bug this argument exists to
+            fix, and a default would let a caller ship it silently.
         goal: the session's stated goal, when it has one.
         memory: the user's curated memory document, already capped by the caller.
             Absent or empty means there is nothing to carry in, not that memory
             is unavailable — the tools still are.
+        reach: the servers in THIS TURN'S manifest, from `registry.manifest`.
+            Rebuilt every turn, so a toggle flipped between hops changes the
+            prompt on the next one. Never the toggles themselves: see `Reach`.
     """
     parts = [_SHARED, _UNATTENDED if mode == "unattended" else _ATTENDED]
+    services = connected_services(reach)
+    if services:
+        parts.append(services)
     if memory:
         parts.append(f"\n# MEMORY.md\nWhat you know about this user from earlier sessions.\n\n{memory}")
-    parts.append(f"\n# Context\nThe session began on {date}.")
+    parts.append(_FRESHNESS.format(now=now, date=date))
     if goal:
-        parts.append(f"The user's stated goal for this session:\n{goal}")
+        parts.append(f"# Context\nThe user's stated goal for this session:\n{goal}")
     return "\n".join(parts)
 
 

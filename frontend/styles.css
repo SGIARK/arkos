@@ -162,16 +162,21 @@ body {
   position: relative;
   transition: color .2s var(--ease);
 }
+/* The active rule runs the whole label rather than a fixed 26px: at 26px it was
+   shorter than "approvals" and longer than "chat", so it read as a different
+   mark on every entry instead of one. Top and bottom sit inside the label's own
+   11px padding, and the bar is always there — only its colour changes, which is
+   what there is to animate. */
 .rail a::before {
   content: "";
-  position: absolute; left: 0; top: 50%; translate: 0 -50%;
-  width: 2px; height: 0;
-  background: var(--accent);
-  transition: height .22s var(--ease);
+  position: absolute; left: -4px; top: 11px; bottom: 11px;
+  width: 2px;
+  background: transparent;
+  transition: background .22s var(--ease);
 }
 .rail a:hover { color: var(--ink); }
 .rail a.active { color: var(--ink); }
-.rail a.active::before { height: 26px; }
+.rail a.active::before { background: var(--accent); }
 .rail a.alert { color: var(--accent); }
 .rail a.alert::after {
   content: ""; position: absolute; top: 5px; left: 50%; translate: -50% 0;
@@ -233,8 +238,7 @@ main {
   min-height: 0;
 }
 main:has(.lg-view) { overflow: hidden; }
-.view { padding: 46px 56px 64px; max-width: 1320px; }
-.view-wide { max-width: none; }
+.view { padding: 46px 56px 64px; }
 .lg-view { flex: 1; min-height: 0; }
 
 /* page head */
@@ -280,6 +284,19 @@ main:has(.lg-view) { overflow: hidden; }
   font-variant-numeric: tabular-nums;
 }
 .stack { display: flex; flex-direction: column; gap: 12px; }
+
+/* The same cards the desk stacks in its zones, laid out the same way when they
+   have the whole page instead of a third of it: desk-width columns, auto-filled
+   because the number of pending questions is not three. The column gap is the
+   zone's own padding, so the two pages read as one surface. */
+.stack.zoned {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  align-items: start;
+  gap: 12px 34px;
+}
+/* Nothing to tile: the message says so across the page, not in one column. */
+.stack.zoned > .empty { grid-column: 1 / -1; }
 
 /* ----- card ----- */
 .card {
@@ -457,11 +474,11 @@ kbd {
 /* =========================================================
    computer view
    ========================================================= */
-.computer { display: grid; grid-template-columns: 264px 1fr; gap: 0; height: 100%; }
+.computer { position: relative; display: grid; grid-template-columns: 264px 1fr; gap: 0; height: 100%; }
 .cv-files { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
 .cv-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 18px; border-bottom: 1px solid var(--line); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 11px 18px; border-bottom: 1px solid var(--line); flex-shrink: 0;
 }
 .cv-head .path { font-size: 11px; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cv-entries { overflow-y: auto; padding: 8px 0; flex: 1; }
@@ -476,10 +493,11 @@ kbd {
 .cv-entry .nm .g { color: var(--ink-mute); width: 12px; flex-shrink: 0; }
 .cv-entry.dir .nm { color: var(--ink); }
 .cv-entry .sz { font-size: 10px; color: var(--ink-mute); flex-shrink: 0; }
-.cv-read { display: flex; flex-direction: column; min-height: 0; background: var(--paper); }
+.cv-read { position: relative; display: flex; flex-direction: column; min-height: 0; background: var(--paper); }
 .cv-read-head {
-  padding: 14px 22px; border-bottom: 1px solid var(--line); flex-shrink: 0;
-  font-size: 11px; color: var(--ink-mute); display: flex; justify-content: space-between; align-items: center;
+  padding: 11px 22px; border-bottom: 1px solid var(--line); flex-shrink: 0;
+  font-size: 11px; color: var(--ink-mute); display: flex; justify-content: space-between;
+  align-items: center; gap: 14px;
 }
 .cv-read-body {
   flex: 1; overflow: auto; padding: 22px 26px; margin: 0;
@@ -558,7 +576,7 @@ kbd {
    looking glass
    ========================================================= */
 .lg-view { padding: 0; display: flex; flex-direction: column; height: 100%; }
-.lg-ctxline { display: flex; align-items: center; gap: 14px; padding: 0 56px 22px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--ink-soft); flex-wrap: wrap; }
+.lg-ctxline { display: flex; align-items: center; gap: 14px; padding: 18px 56px 22px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--ink-soft); flex-wrap: wrap; }
 .lg-ctxline .path b { color: var(--ink); font-weight: 500; }
 .lg-ctxline .crumb { color: var(--ink-faint); margin: 0 4px; }
 .status-pill { display: inline-flex; align-items: center; gap: 7px; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); border: 1px solid var(--accent-line); background: var(--accent-soft); padding: 4px 10px; border-radius: 100px; }
@@ -616,7 +634,7 @@ kbd {
 .ev-ask .opts { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .ev-ask .opt { font-size: 11px; border: 1px solid var(--accent-line); color: var(--accent); background: var(--surface); padding: 5px 11px; border-radius: 100px; cursor: pointer; transition: all .15s var(--ease); }
 .ev-ask .opt:hover { background: var(--accent); color: var(--surface); border-color: var(--accent); }
-.lg-composer { border-top: 1px solid var(--line); background: var(--surface); display: flex; align-items: center; gap: 12px; padding: 14px 40px; flex-shrink: 0; }
+.lg-composer { position: relative; border-top: 1px solid var(--line); background: var(--surface); display: flex; align-items: center; gap: 12px; padding: 12px 40px; flex-shrink: 0; }
 .lg-composer .prompt { color: var(--accent); font-size: 13px; user-select: none; flex-shrink: 0; }
 .lg-composer input { flex: 1; background: transparent; border: none; outline: none; color: var(--ink); font-family: var(--mono); font-size: 13px; }
 .lg-composer input::placeholder { color: var(--ink-mute); }
@@ -637,7 +655,10 @@ kbd {
 .ctx-tabs .tab-label { position: relative; display: inline-block; padding-bottom: 13px; }
 .ctx-tabs button.active .tab-label::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--accent); }
 .ctx-content { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 0; }
-.dropzone { margin: 14px 18px 0; border: 1px dashed var(--line); border-radius: var(--r); padding: 20px 12px; text-align: center; font-size: 11px; color: var(--ink-mute); font-style: italic; }
+/* `display: block` is the fix, not the margin. This is a <label> wrapping the
+   hidden file input, and an inline box's vertical padding does not grow the line
+   it sits on — so the dashed border bled upward over the last file rows. */
+.dropzone { display: block; margin: 22px 18px 4px; border: 1px dashed var(--line); border-radius: var(--r); padding: 20px 12px; text-align: center; font-size: 11px; color: var(--ink-mute); font-style: italic; }
 .mem-note { margin: 0 18px 12px; font-size: 11.5px; color: var(--ink-soft); line-height: 1.7; padding-bottom: 12px; border-bottom: 1px dashed var(--line-soft); }
 .mem-note .k { display: block; font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-mute); margin-bottom: 5px; }
 
@@ -725,3 +746,205 @@ kbd {
 
 /* Zones scroll on their own once they hold real numbers of things. */
 .zone .stack { max-height: calc(100vh - 300px); overflow-y: auto; padding-right: 2px; }
+
+/* =========================================================
+   the tool budget — composer chip, and the panel behind it (11.4)
+
+   Header and footer are pinned and only the server list scrolls, so the meter
+   is still on screen at the viewport heights where the decision it informs is
+   hardest to make.
+   ========================================================= */
+.tb-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  flex-shrink: 0; cursor: pointer; user-select: none;
+  border: 1px solid var(--line); background: var(--surface);
+  border-radius: var(--r); padding: 5px 9px;
+  font-family: var(--mono);
+  transition: border-color .18s var(--ease), background .18s var(--ease);
+}
+.tb-chip:hover { border-color: var(--ink-faint); }
+.tb-chip.open { border-color: var(--accent-line); background: var(--accent-soft); }
+.tb-chip .k { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-mute); }
+.tb-chip .n { font-size: 11.5px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.tb-chip .caretglyph { font-size: 8px; color: var(--ink-mute); }
+.tb-pip { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: var(--ink-faint); }
+.tb-pip.on { background: var(--accent); }
+.tb-pip.stop { background: var(--stop); }
+
+.tb-scrim { position: absolute; inset: 0; bottom: 100%; z-index: 30; }
+.tb-panel {
+  position: absolute; left: 40px; bottom: calc(100% + 10px); z-index: 40;
+  width: 400px; max-width: calc(100% - 80px);
+  max-height: min(440px, calc(100vh - 200px));
+  display: flex; flex-direction: column;
+  background: var(--surface); border: 1px solid var(--ink-faint);
+  border-radius: 12px; box-shadow: var(--shadow-lift);
+  overflow: hidden;
+  animation: pop .22s var(--ease) both;
+}
+@keyframes pop { from { opacity: 0; transform: translateY(6px); } }
+
+.tb-head { padding: 16px 18px 14px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+.tb-head-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
+.tb-count { font-size: 11.5px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.tb-meter { height: 3px; border-radius: 100px; background: var(--surface-2); overflow: hidden; }
+.tb-fill { height: 100%; border-radius: 100px; background: var(--accent); transition: width .28s var(--ease), background .28s var(--ease); }
+.tb-fill.work { background: var(--work); }
+.tb-fill.stop { background: var(--stop); }
+.tb-note { margin-top: 10px; font-size: 10.5px; color: var(--ink-mute); line-height: 1.6; }
+
+.tb-list { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 0; }
+.tb-empty { padding: 18px; font-size: 11.5px; color: var(--ink-mute); font-style: italic; text-align: center; }
+.tb-row { display: flex; align-items: center; gap: 11px; padding: 9px 18px; cursor: pointer; }
+.tb-row:hover { background: var(--surface-2); }
+/* Refused in the panel: dim, unclickable, and the row says why. No request. */
+.tb-row.blocked { opacity: .5; cursor: default; }
+.tb-row.blocked:hover { background: transparent; }
+.tb-box {
+  width: 13px; height: 13px; border-radius: 3px; flex-shrink: 0;
+  display: grid; place-items: center; font-size: 9px; line-height: 1;
+  color: var(--surface); border: 1px solid var(--ink-faint); background: var(--surface);
+}
+.tb-row.on .tb-box { border-color: var(--accent); background: var(--accent); }
+.tb-name { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.tb-name .nm { font-size: 12.5px; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tb-row.on .tb-name .nm { color: var(--ink); }
+.tb-name .sub { font-size: 10px; color: var(--ink-mute); letter-spacing: .04em; }
+.tb-n { font-size: 10.5px; color: var(--ink-mute); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.tb-row.on .tb-n { color: var(--accent); }
+
+.tb-foot {
+  border-top: 1px solid var(--line); background: var(--surface-2);
+  padding: 11px 18px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.tb-refused { flex: 1; min-width: 0; font-size: 10px; color: var(--stop); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tb-reset {
+  font-size: 10.5px; color: var(--ink-soft); border: 1px solid var(--line);
+  background: var(--surface); padding: 4px 10px; border-radius: 100px;
+  cursor: pointer; flex-shrink: 0; font-family: var(--mono);
+}
+.tb-reset:hover { border-color: var(--ink-faint); color: var(--ink); }
+.tb-reset:disabled { opacity: .5; cursor: default; }
+
+/* =========================================================
+   the browser, as a popout (11.4)
+
+   The 300px panel says a browser is working; it is nowhere near enough to read
+   a page in. The thumbnail is the notice, the popout is the look.
+   ========================================================= */
+.bw-card { margin: 0 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); overflow: hidden; box-shadow: var(--shadow); }
+.bw-chrome { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line-soft); background: var(--surface-2); }
+.bw-where { flex: 1; min-width: 0; font-size: 10px; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bw-fps { font-size: 10px; color: var(--ink-mute); letter-spacing: .1em; text-transform: uppercase; flex-shrink: 0; }
+.bw-expand, .bw-close {
+  flex-shrink: 0; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--ink-mute); font-size: 9px;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer; font-family: var(--mono);
+}
+.bw-expand { width: 20px; height: 20px; }
+.bw-close { width: 24px; height: 24px; border-radius: 50%; font-size: 10px; color: var(--ink-soft); }
+.bw-expand:hover, .bw-close:hover { color: var(--ink); border-color: var(--ink-faint); }
+.bw-shot { cursor: zoom-in; display: grid; place-items: center; background: var(--paper); }
+.bw-shot .frame { width: 100%; display: block; }
+.bw-shot.big { cursor: default; }
+.bw-hatch {
+  aspect-ratio: 16 / 10; width: 100%; display: grid; place-items: center;
+  background-color: var(--paper);
+  background-image: repeating-linear-gradient(135deg, var(--line-soft) 0 6px, var(--paper) 6px 12px);
+}
+.pill-flat {
+  font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--ink-mute); background: var(--surface);
+  border: 1px solid var(--line); border-radius: 100px; padding: 4px 10px;
+}
+.bw-foot { display: flex; align-items: center; justify-content: space-between; padding: 10px 18px 0; font-size: 10px; color: var(--ink-mute); }
+.bw-link { background: none; border: none; font-family: var(--mono); font-size: 10px; color: var(--ink-mute); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; padding: 0; }
+.bw-link:hover { color: var(--ink); }
+
+.bw-over {
+  position: fixed; inset: 0; z-index: 900;
+  display: grid; place-items: center; padding: 48px;
+  background: color-mix(in oklch, var(--paper) 55%, transparent);
+  backdrop-filter: blur(6px) saturate(1.1);
+}
+.bw-big {
+  width: min(1100px, 100%);
+  border: 1px solid var(--ink-faint); border-radius: 14px;
+  background: var(--surface); overflow: hidden;
+  box-shadow: var(--shadow-lift);
+  animation: pop .25s var(--ease) both;
+}
+.bw-big .bw-chrome { padding: 11px 16px; }
+.bw-big .bw-where { font-size: 11px; }
+.bw-big .bw-hatch { aspect-ratio: 16 / 9; }
+
+/* Files land in the store by drop or by picker — the same shelf the session
+   window's panel writes to, since there is only one. */
+.cv-add {
+  font-size: 10.5px; border: 1px solid var(--line); background: var(--surface);
+  color: var(--ink-soft); padding: 3px 10px; border-radius: 6px; cursor: pointer; flex-shrink: 0;
+}
+.cv-add:hover { border-color: var(--ink-faint); color: var(--ink); }
+.cv-acts { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+
+/* Where a drop would land: a floor under the row rather than a box around it,
+   because the target is a directory and the row is only how you point at it. */
+.cv-entry.drop { box-shadow: inset 0 -2px 0 0 var(--accent); }
+/* The row being carried. It stays in place — the tree is the store's and has
+   not changed yet — but it reads as picked up rather than still put down. */
+.cv-entry.lifted { opacity: .45; }
+
+/* Naming a folder that does not exist yet. It is a row in the tree, at the top
+   where a new thing belongs, and it leaves no trace if the name comes back empty. */
+.cv-newdir { display: flex; align-items: center; gap: 9px; padding: 5px 18px; }
+.cv-newdir .g { color: var(--ink-mute); width: 12px; flex-shrink: 0; }
+.cv-newdir input {
+  flex: 1; min-width: 0; background: var(--surface); color: var(--ink);
+  border: 1px solid var(--accent-line); border-radius: 5px; padding: 3px 8px;
+  font-family: inherit; font-size: 12px; outline: none;
+}
+.cv-drop {
+  position: absolute; inset: 12px; z-index: 60; pointer-events: none;
+  border: 1px dashed var(--accent-line); border-radius: 12px;
+  background: var(--accent-soft); display: grid; place-items: center;
+}
+.cv-drop span {
+  font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent);
+  background: var(--surface); border: 1px solid var(--accent-line); border-radius: 100px; padding: 7px 16px;
+}
+
+/* The reader's edit mode (11.4 design). The store is the durable copy, so this
+   is not a scratch buffer: saving upserts the file and a session already
+   holding the project reads it on its next turn. */
+.cv-read-head .path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-read-head .dirty { color: var(--accent); }
+.cv-read-head .acts { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.cv-edit {
+  font-size: 10.5px; border: 1px solid var(--line); background: var(--surface);
+  color: var(--ink-soft); padding: 4px 11px; border-radius: 6px; cursor: pointer; font-family: var(--mono);
+}
+.cv-edit:hover { border-color: var(--ink-faint); color: var(--ink); }
+.cv-revert {
+  font-size: 10.5px; color: var(--ink-mute); cursor: pointer; background: none; border: none;
+  font-family: var(--mono); text-decoration: underline; text-underline-offset: 2px; padding: 0;
+}
+.cv-revert:hover { color: var(--ink); }
+.cv-editor {
+  flex: 1; min-height: 0; resize: none; border: none; outline: none;
+  background: var(--surface); color: var(--ink);
+  font-family: var(--mono); font-size: 12px; line-height: 1.75;
+  padding: 22px 26px;
+}
+.cv-editbar {
+  flex-shrink: 0; border-top: 1px solid var(--line); background: var(--surface);
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 22px; font-size: 10px; color: var(--ink-mute);
+}
+.cv-save {
+  font-size: 11px; background: var(--ink); border: 1px solid var(--ink); color: var(--paper);
+  padding: 6px 14px; border-radius: 6px; cursor: pointer; font-family: var(--mono); flex-shrink: 0;
+}
+.cv-save:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); }
+.cv-save:disabled { opacity: .45; cursor: default; }

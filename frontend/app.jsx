@@ -4,14 +4,21 @@
    The design's frame. `watching` is not in the nav: nothing in the system
    watches a source on a schedule, and a rail entry for a feature that does not
    exist is a promise the product cannot keep. Everything else is here — desk,
-   approvals, computer, looking glass, chat.
+   approvals, files, projects, chat.
 
-   Looking glass is the projects surface and only that. The ambient bar at the
-   bottom talks to the home session, which is the standing conversation; the
-   looking glass hides it, because a session's own composer is in its window.
+   `projects` is the projects surface and only that; it was called "looking
+   glass" until the 11.4 design renamed it to what it shows, and `computer`
+   became `files` for the same reason. The ambient bar at the bottom talks to
+   the home session, which is the standing conversation; projects hides it,
+   because a session's own composer is in its window.
    ========================================================= */
 
-const NAV = ["desk", "approvals", "computer", "looking glass", "chat"];
+const NAV = ["desk", "approvals", "files", "projects", "chat"];
+
+/* The hash a browser may still be holding from before the rename. Landing on
+   the desk because a bookmark says "computer" would be a small betrayal of a
+   link somebody saved. */
+const NAV_ALIAS = { computer: "files", "looking glass": "projects" };
 
 function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem("ark-theme") || "light");
@@ -20,7 +27,8 @@ function App() {
   const [gone, setGone] = useState(false);
   const [view, setView] = useState(() => {
     const hash = decodeURIComponent(location.hash.replace("#", ""));
-    return NAV.includes(hash) ? hash : "chat";
+    const named = NAV_ALIAS[hash] || hash;
+    return NAV.includes(named) ? named : "chat";
   });
   const [settings, setSettings] = useState(false);
   const [error, setError] = useState(null);
@@ -169,15 +177,15 @@ function App() {
   );
 
   const views = {
-    desk: <DeskView onError={onError} pulse={pulse} onOpenSession={(id) => { setJump(id); setView("looking glass"); }} />,
+    desk: <DeskView onError={onError} pulse={pulse} onOpenSession={(id) => { setJump(id); setView("projects"); }} />,
     approvals: <ApprovalsView onError={onError} pulse={pulse} />,
-    computer: <ComputerView onError={onError} />,
-    "looking glass": <LookingGlassView onError={onError} pulse={pulse} onPulse={bump} jump={jump} onJumped={() => setJump(null)} />,
+    files: <ComputerView onError={onError} />,
+    projects: <LookingGlassView onError={onError} pulse={pulse} onPulse={bump} jump={jump} onJumped={() => setJump(null)} />,
     chat: <ChatView sessionId={home} onError={onError} onPulse={bump} />,
   };
 
   const pending = waiting.length;
-  const bare = view === "looking glass";
+  const bare = view === "projects";
 
   return (
     <React.Fragment>

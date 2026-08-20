@@ -213,6 +213,9 @@ code is a bug (see `short_term_turns` in violations).
 llm:
   context_window: 40960        # total in+out the served model accepts
   max_tokens: 8192             # output reserve  -> input budget = window - reserve
+  max_tools: 128               # hard cap on tool SCHEMAS in one request; ours are
+                               # always loaded, so the human's allowance is
+                               # max_tools - ours
   timeout_s: 90                # per model call
   max_retries: 3               # the ONE retry layer
 context:
@@ -261,6 +264,11 @@ a check at create time always sees zero unattended load and never fires. The upl
 route checks size. Over
 quota returns the standard `{code, message, retryable}` error. The
 count-then-act race on the concurrency check is real and unhandled in v1.
+
+`max_tools` is the provider's hard cap on tool schemas in one request, not a
+preference. `assert_coherent` refuses a configuration where `ours >=
+llm.max_tools`: the session's own allowance would be zero and no connected
+service could ever be reached.
 
 `context_window` must match how the SGLang server was actually launched
 (`--context-length`), not the model's theoretical max. Budgets differ per mode,
@@ -321,6 +329,10 @@ chat plumbing. One error shape everywhere: `{code, message, retryable}`.
 | `POST /connections/{server}/connect` | — | `{setup_url}` — mints the id, writes the `pending` row, PUTs to Smithery. Idempotent: reconnect reuses the stored id |
 | `DELETE /connections/{server}` | — | 204 |
 | `GET /oauth/callback/{server}` | Smithery's redirect | HTML that `postMessage`s the opener and closes. Identity from the **cookie**, never a query param |
+| `GET /sessions/{id}/tools` | — | `{max_tools, ours, budget, used, servers:[{server, name, mcp_url, requires_auth, status, tool_count, enabled}]}` — the session window's tool meter. `budget = llm.max_tools - ours`, so it moves on its own when a local tool is added; `used` is the tool count of the servers this session was given. Rows are `GET /connections` plus `enabled` |
+| `PUT /sessions/{id}/tools/{server}` | `{enabled}` | the same document. Refuses `409 not_connected` for a server nobody has authorized, and `409 tool_budget` — with both numbers in the message — for a toggle that would put the manifest over `llm.max_tools`. Turning something OFF is never refused |
+| `GET /sessions/{id}/fs` | `path?` | `{path, entries:[{name, path, is_dir, size}]}` — the session's LIVE sandbox disk, not the store. Ownership-checked like the frame stream, and it never boots a box: a parked or reaped session is `404` |
+| `GET /sessions/{id}/fs/file` | `path` | `{path, size, text, binary, truncated}` — one file from the live disk, on the same terms. Not-UTF-8 says `binary: true` with `text: null`; over `sandbox.browse_max_bytes` comes back cut short with `truncated: true` |
 
 The callback never *blocks* on Smithery: it authenticates by cookie, responds,
 and fires one verification after the response. Verification is idempotent
@@ -334,6 +346,50 @@ to fix, since `connect()` writes before it PUTs. The callback firing is the
 proof OAuth completed, so it is the trigger — read-repair alone would strand a
 connection whose popup closed early, since dispatch never re-verifies and
 revalidation skips unconnected rows.
+
+**A session reaches only what it was given.** Ours are always loaded and never
+counted against the human's allowance; every MCP server is OFF until it is
+toggled into that session, which is what makes an over-cap request impossible
+rather than unlikely. The toggles are `session_tools`, keyed by `mcp_url` for
+the same reason the connection tables are — a `mcp_servers:` config key is an
+in-process label and nothing durable may reference it. The meter the human sees
+is `enabled / (llm.max_tools - ours)`.
+
+**`registry.manifest` is the ONLY builder of a turn's tool list, and it cannot
+overflow.** The cap is applied to the toggles rather than trusted to them: a
+stale toggle set, or a server that grew its tool list overnight, must not be
+able to produce a request the provider rejects outright — which is exactly how
+164 schemas appeared without anyone changing anything. The drop rule is
+specified, not implied: **whole servers only** (never a subset of one server's
+tools — half a server is a model that believes it can post and finds out
+mid-task that it cannot), **most-recently-enabled first**, so a session keeps
+the reach it has been working with. A benched server is a visible fact: a
+`status` event in the transcript and a `tools_benched` row in `system_events`.
+
+**The agent has a clock, and every result says when it was true.** The system
+prompt carries the current date-time, rebuilt every turn, and every tool result
+the fold renders is prefixed `[fetched <when>]` from the event's own `ts`. Both
+are PRESENTATION: `session_events` is byte-identical with or without them, no
+wire shape moves, and no tool schema changes. Without them a model cannot tell a
+week-old inbox read from this morning's, and cannot notice it slept between
+turns. The stamp is absolute, never an age — an age rewrites every result on
+every fold and changes the cached prefix each hop for nothing. The prompt states
+the snapshot rule WITH its termination anchor (results fetched this turn are
+fresh; re-read once before acting on an older one; one re-check is enough), or
+"check it is still true" becomes a loop.
+
+**The per-turn system prompt is generated from the manifest that SHIPPED, never
+from the toggles.** This is not a stylistic preference. A prompt built from
+toggles promises a server the cap quietly dropped, which reintroduces
+prompt-doesn't-match-manifest through the emergency exit. It names what is
+enabled, what is connected but off, and what was benched this turn, so the model
+says "Slack is not enabled in this session" instead of improvising. The manifest
+is therefore built BEFORE the fold — the prompt cannot describe a request that
+has not been decided yet, so `fold(session, reach, now=)` takes it as an
+argument and stays a pure function of (log, config, mode, memory, reach, now).
+`now` is an ARGUMENT for the same reason: the fold reads no hidden clock, so
+"same log ⇒ identical context assembly" still holds, restated as same log AND
+same inputs. A caller comparing two folds passes the same instant to both.
 
 **The home session.** First login creates one ordinary attended session and
 records it as `users.home_session_id`, set once. Nothing else in the system
@@ -462,17 +518,23 @@ ToolSpec{name, description, input_schema, readonly, requires_approval}
 `format_tools_for_system_prompt`, `create_tool_option_class`; deletes `scoped.py`.
 ```
 manifest(user_id) -> list[ToolSpec]
-# ONE manifest — there are no session types (D5). Every session may reach for
-# every hand; lazy provisioning makes an unused tool free.
+# ONE manifest BUILDER — there are no session types (D5). Every session may reach
+# for every hand it has been GIVEN; lazy provisioning makes an unused tool free.
+# What differs between sessions is reach, not kind: same builder, same rules,
+# different toggles (11.5).
 #   control : finish_task · request_approval · ask · todo_write · read_result
 #   world   : list_projects · get_project · list_sessions · get_session · list_files
 #   memory  : save_memory · search_memory · read_memory · update_memory
 #   sandbox : run_command · read_file · write_file · edit_file · list_dir · grep · glob
 #   browser : browser_task
-#   MCP     : whatever the user connected, exposed as mcp_{name}
+#   MCP     : whatever the SESSION was given, exposed as mcp_{name}
 # Ours (~20) are authored here and always loaded. MCP tools are namespaced
 # mcp_* (stripped on dispatch, so a remote read_file cannot shadow ours) and are
-# the ONLY ones deferred when the schema budget is tight (load_tools fetches).
+# the ONLY ones deferred when the schema budget is tight.
+# ONE manifest builder, and it cannot overflow: registry.manifest(user_id,
+# mcp=, session_id=) -> Manifest{specs, servers, ours, budget, used}. No
+# session_id means no toggles means ours alone. See "A session reaches only what
+# it was given" above for the drop rule.
 ```
 
 **Tool layout — folder per tool.** Each tool owns its schema, its description
@@ -748,7 +810,7 @@ on concurrently running sessions. None of this exists in prod until it does —
 | `test_retry_budget_bounded` | ≤3 attempts, bounded wall clock; background no-retry |
 | `test_append_ordering_under_concurrency` | concurrent api and loop appends; an SSE reader never skips a seq |
 | `test_resume_verify_on_wake` | dangling call → interrupted; no silent re-execution |
-| `test_event_replay_deterministic` | same log ⇒ identical context assembly, ladder included: a log over the input budget folds to a view under it, and folds byte-identically twice |
+| `test_event_replay_deterministic` | same log AND same inputs ⇒ identical context assembly, ladder included: a log over the input budget folds to a view under it, and folds byte-identically twice. `now` and `reach` are inputs, not ambient reads |
 | `test_authz_scoping` | user A cannot read/steer user B's sessions, refs, files |
 
 ---

@@ -145,9 +145,13 @@ const api = {
 
   /* Multipart, so it goes around `request` rather than through it: the browser
      sets its own boundary and a Content-Type we invented would break it. */
-  async upload(projectId, file) {
+  async upload(projectId, file, dir) {
     const form = new FormData();
     form.append("file", file);
+    /* A folder is a path prefix, not a row: the store keeps flat paths and the
+       tree is derived from them, so uploading INTO a directory is uploading a
+       file whose path carries it. Absent, the name alone lands it at the root. */
+    if (dir) form.append("path", `${dir}/${file.name}`);
     const response = await fetch(`${API}/projects/${projectId}/files`, {
       method: "POST",
       credentials: "same-origin",
@@ -160,11 +164,59 @@ const api = {
     return response.json();
   },
 
+  /* Save an edit back to the store. The same multipart endpoint an upload
+     uses, because it is the same operation: `put_file` upserts on
+     (project_id, path), so writing a file that already exists replaces it and
+     write-through puts it in any box already holding the project. */
+  async saveFile(projectId, path, text) {
+    const form = new FormData();
+    form.append("file", new Blob([text], { type: "text/plain" }), path.split("/").pop());
+    form.append("path", path);
+    const response = await fetch(`${API}/projects/${projectId}/files`, {
+      method: "POST",
+      credentials: "same-origin",
+      body: form,
+    });
+    if (!response.ok) {
+      const shape = await response.json().catch(() => ({}));
+      throw new ApiError(shape.code || "save_failed", shape.message || `Could not save ${path}.`);
+    }
+    return response.json();
+  },
+
+  /* A folder is durable the moment it is named: the server writes a zero-byte
+     sentinel inside it, because the tree is flat paths and a directory is not a
+     row. Nothing about it lives only in this tab. */
+  newFolder: (projectId, path) => request("POST", `/projects/${projectId}/folders`, { path }),
+
+  /* Rename or reparent a file or a whole folder. Blobs never move — they are
+     content-addressed — so this is a row edit the server also pushes into any
+     live sandbox, which is what stops a running turn from undoing it. */
+  moveFile: (projectId, from, to) => request("POST", `/projects/${projectId}/files/move`, { from, to }),
+
   /* --- connections ------------------------------------------------------ */
 
   connections: () => request("GET", "/connections"),
   connect: (server) => request("POST", `/connections/${encodeURIComponent(server)}/connect`),
   disconnect: (server) => request("DELETE", `/connections/${encodeURIComponent(server)}`),
+
+  /* --- what one session may reach --------------------------------------- */
+
+  /* The meter and the per-server rows behind the composer's tools chip. The
+     write returns the whole document, so the chip re-renders from what the
+     server now holds rather than from what the click assumed. */
+  sessionTools: (sessionId) => request("GET", `/sessions/${sessionId}/tools`),
+  setSessionTool: (sessionId, server, enabled) =>
+    request("PUT", `/sessions/${sessionId}/tools/${encodeURIComponent(server)}`, { enabled }),
+
+  /* --- the session's live disk ------------------------------------------ */
+
+  /* The sandbox filesystem while the session is awake. Nothing here boots a
+     box: a parked or finished session 404s, which is the honest answer. */
+  sandboxDir: (sessionId, path) =>
+    request("GET", `/sessions/${sessionId}/fs${path ? `?path=${encodeURIComponent(path)}` : ""}`),
+  sandboxFile: (sessionId, path) =>
+    request("GET", `/sessions/${sessionId}/fs/file?path=${encodeURIComponent(path)}`),
 
   /* --- what a human may do ---------------------------------------------- */
 

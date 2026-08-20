@@ -122,7 +122,7 @@ def _with_agent(monkeypatch, **agent_kw):
 
 async def test_browser_task_is_in_the_manifest():
     """The old one was complete and reachable from nothing; that is the card's point."""
-    specs = {s.name: s for s in await registry.manifest(USER)}
+    specs = {s.name: s for s in (await registry.manifest(USER)).specs}
 
     assert "browser_task" in specs
     assert specs["browser_task"].readonly is False, "it acts on the web as the signed-in user"
