@@ -225,11 +225,7 @@ async def _ensure_home_session(user_id: str) -> str:
     if existing is not None:
         return str(existing)
 
-    project_id = await pool.fetchval(
-        "INSERT INTO projects (user_id, title) VALUES ($1, $2) RETURNING id",
-        _uuid(user_id, "user"),
-        "Chat",
-    )
+    project_id = await _new_project(user_id, "Chat")
     session_id = await pool.fetchval(
         """
         INSERT INTO sessions (user_id, project_id, mode, status, title)
@@ -335,11 +331,7 @@ async def create_session(body: dict[str, Any] = JsonBody, user_id: str = Current
         if owned is None:
             raise ApiError(404, "not_found", "No such project.")
     else:
-        project_id = await pool.fetchval(
-            "INSERT INTO projects (user_id, title) VALUES ($1, $2) RETURNING id",
-            _uuid(user_id, "user"),
-            _title(goal),
-        )
+        project_id = await _new_project(user_id, _title(goal))
 
     session_id = await pool.fetchval(
         """
@@ -496,11 +488,7 @@ async def create_project(body: dict[str, Any] = JsonBody, user_id: str = Current
         if not rows:
             raise ApiError(404, "not_found", f"No files under {prefix!r} to start from.")
 
-    project_id = await pool.fetchval(
-        "INSERT INTO projects (user_id, title) VALUES ($1, $2) RETURNING id",
-        _uuid(user_id, "user"),
-        title,
-    )
+    project_id = await _new_project(user_id, title)
     for row in rows:
         await pool.execute(
             "INSERT INTO project_files (project_id, path, content_hash, size, mtime) "
@@ -511,7 +499,8 @@ async def create_project(body: dict[str, Any] = JsonBody, user_id: str = Current
             row["size"],
             row["mtime"],
         )
-    return {"id": str(project_id), "title": title, "files": len(rows)}
+    slug = await pool.fetchval("SELECT slug FROM projects WHERE id = $1", project_id)
+    return {"id": str(project_id), "title": title, "slug": slug, "files": len(rows)}
 
 
 @app.patch("/projects/{project_id}")
@@ -520,17 +509,31 @@ async def rename_project(
     body: dict[str, Any] = JsonBody,
     user_id: str = CurrentUser,
 ) -> dict[str, Any]:
-    """Rename a project. The title is a label; nothing durable is keyed by it."""
+    """Rename a project. The title is a LABEL and nothing durable is keyed by it.
+
+    In particular the folder does not move. `projects.slug` is set once at
+    creation and never follows a rename: `~/projects/<slug>/` is the only
+    durable path the agent has, and renaming it out from under a running session
+    breaks every path the model learned. The two drift apart on purpose.
+    """
     await _owned_project(project_id, user_id)
     title = str(body.get("title") or "").strip()
     if not title:
         raise ApiError(400, "invalid_request", "A project needs a name.")
     row = await pool.fetchrow(
-        "UPDATE projects SET title = $2, updated_at = now() WHERE id = $1 RETURNING id, title, updated_at",
+        "UPDATE projects SET title = $2, updated_at = now() WHERE id = $1 "
+        "RETURNING id, title, slug, updated_at",
         _uuid(project_id, "project"),
         title,
     )
-    return {"id": str(row["id"]), "title": row["title"], "updated_at": row["updated_at"].isoformat()}
+    return {
+        "id": str(row["id"]),
+        "title": row["title"],
+        # Returned so a surface can show where the files actually live once the
+        # two have drifted.
+        "slug": row["slug"],
+        "updated_at": row["updated_at"].isoformat(),
+    }
 
 
 @app.get("/projects/{project_id}/sessions")
@@ -1340,6 +1343,39 @@ def _no_box(session_id: str) -> ApiError:
 
 
 # --- helpers -------------------------------------------------------------------
+
+
+async def _new_project(user_id: str, title: str) -> Any:
+    """Create a project and give it the folder it will keep.
+
+    The slug is set ONCE, here, from the name it was created with, and nothing
+    renames it afterwards: `~/projects/<slug>/` is the only durable path the
+    agent has, and moving it because a label changed breaks every path the model
+    has learned. Uniquified per user because `~/projects/` is a flat namespace —
+    two projects called "notes" cannot share a directory, which was true before
+    the slug was stored and simply unenforced.
+    """
+    base = store.slug(title, "project")
+    async with (await pool.pool()).acquire() as conn, conn.transaction():
+        taken = {
+            r["slug"]
+            for r in await conn.fetch(
+                "SELECT slug FROM projects WHERE user_id = $1 AND (slug = $2 OR slug LIKE $2 || '-%')",
+                _uuid(user_id, "user"),
+                base,
+            )
+        }
+        slug = base
+        n = 2
+        while slug in taken:
+            slug = f"{base}-{n}"
+            n += 1
+        return await conn.fetchval(
+            "INSERT INTO projects (user_id, title, slug) VALUES ($1, $2, $3) RETURNING id",
+            _uuid(user_id, "user"),
+            title,
+            slug,
+        )
 
 
 async def _owned_session(session_id: str, user_id: str) -> Any:

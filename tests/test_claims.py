@@ -80,9 +80,19 @@ async def _user() -> str:
 
 
 async def _project(user_id: str, title: str) -> str:
+    """A project whose FOLDER is named after its title, as `POST /projects` makes it.
+
+    The slug is explicit because the column defaults to a unique fallback rather
+    than deriving one — these tests assert on mount paths, so the folder has to
+    be the one the title implies. `api._new_project` does the same thing with
+    collision handling; this is the shape without it.
+    """
     return str(
         await pool.fetchval(
-            "INSERT INTO projects (user_id, title) VALUES ($1, $2) RETURNING id", uuid.UUID(user_id), title
+            "INSERT INTO projects (user_id, title, slug) VALUES ($1, $2, $3) RETURNING id",
+            uuid.UUID(user_id),
+            title,
+            store.slug(title, "project"),
         )
     )
 

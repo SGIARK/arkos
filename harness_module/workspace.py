@@ -100,7 +100,7 @@ async def claims_for(session_id: str) -> list[Claim]:
     """
     rows = await pool.fetch(
         """
-        SELECT c.project_id, c.subpath, c.mode, p.title
+        SELECT c.project_id, c.subpath, c.mode, p.slug
           FROM session_claims c JOIN projects p ON p.id = c.project_id
          WHERE c.session_id = $1
          ORDER BY c.project_id, c.subpath
@@ -110,7 +110,7 @@ async def claims_for(session_id: str) -> list[Claim]:
     if not rows:
         rows = await pool.fetch(
             """
-            SELECT s.project_id, '/' AS subpath, 'write' AS mode, p.title
+            SELECT s.project_id, '/' AS subpath, 'write' AS mode, p.slug
               FROM sessions s JOIN projects p ON p.id = s.project_id
              WHERE s.id = $1
             """,
@@ -119,7 +119,11 @@ async def claims_for(session_id: str) -> list[Claim]:
     return [
         Claim(
             project_id=str(r["project_id"]),
-            slug=store.slug(r["title"], str(r["project_id"])[:8]),
+            # READ, not derived. This used to be `store.slug(r["title"], ...)`,
+            # recomputed every turn — so renaming a project moved the mount out
+            # from under a running agent, while the prompt promised
+            # `~/projects/<project>/` was the one durable path it had.
+            slug=r["slug"],
             subpath=r["subpath"],
             mode=r["mode"],
         )

@@ -1375,6 +1375,51 @@ async def test_a_rename_to_nothing_is_refused(client):
     assert "keep me" in [p["title"] for p in (await client.get("/projects")).json()]
 
 
+async def test_a_rename_does_not_move_the_agents_folder(client):
+    """The bug this pins: `claims_for` derived the mount from the CURRENT title
+    on every turn, so renaming a project moved `~/projects/<slug>/` out from
+    under a running agent — while the prompt promises that path is durable."""
+    from harness_module import workspace
+
+    user_id = await _signed_in(client)
+    made = (await client.post("/projects", json={"title": "inbox triage"})).json()
+    assert made["slug"] == "inbox-triage"
+    session_id = await _session_for(user_id)
+    await pool.execute(
+        "UPDATE sessions SET project_id = $2 WHERE id = $1", uuid.UUID(session_id), uuid.UUID(made["id"])
+    )
+    before = (await workspace.claims_for(session_id))[0].mount
+
+    renamed = await client.patch(f"/projects/{made['id']}", json={"title": "something else entirely"})
+
+    assert renamed.json()["title"] == "something else entirely"
+    assert renamed.json()["slug"] == "inbox-triage", "the folder keeps the name it was made with"
+    after = (await workspace.claims_for(session_id))[0].mount
+    assert after == before == "/home/user/projects/inbox-triage"
+
+
+async def test_two_projects_cannot_claim_one_folder(client):
+    """`~/projects/` is flat, so the same name twice takes a suffix rather than
+    the same directory — a collision that was live before the slug was stored."""
+    await _signed_in(client)
+
+    first = (await client.post("/projects", json={"title": "notes"})).json()
+    second = (await client.post("/projects", json={"title": "notes"})).json()
+    third = (await client.post("/projects", json={"title": "Notes!"})).json()
+
+    assert first["slug"] == "notes"
+    assert second["slug"] == "notes-2"
+    assert third["slug"] == "notes-3", "the slug rule, not the title, is what collides"
+
+
+async def test_a_name_with_nothing_sluggable_still_gets_a_folder(client):
+    await _signed_in(client)
+
+    made = (await client.post("/projects", json={"title": "!!!"})).json()
+
+    assert made["slug"] == "project"
+
+
 # --- the app is served from the API's own origin ---------------------------------
 
 

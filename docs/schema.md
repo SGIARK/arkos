@@ -28,10 +28,16 @@ users (
 projects (
   id            uuid primary key default gen_random_uuid(),
   user_id       uuid not null references users(id),
-  title         text not null,
+  title         text not null,           -- a LABEL. Renaming changes only this.
+  slug          text not null,           -- the folder: ~/projects/<slug>/, set ONCE
+                                         -- at creation and never moved by a rename,
+                                         -- because it is the only durable path the
+                                         -- agent has. Defaulted uniquely so an
+                                         -- insert that does not care still gets one.
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now()
 )
+create unique index on projects (user_id, slug);  -- ~/projects/ is flat
 
 -- the tree half of the store; the bytes are in object storage (D27)
 project_files (

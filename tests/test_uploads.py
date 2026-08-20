@@ -79,7 +79,10 @@ async def _sign_in(client: AsyncClient, user_id: str) -> None:
 async def _project(user_id: str, title: str = "Taxes") -> str:
     return str(
         await pool.fetchval(
-            "INSERT INTO projects (user_id, title) VALUES ($1, $2) RETURNING id", uuid.UUID(user_id), title
+            "INSERT INTO projects (user_id, title, slug) VALUES ($1, $2, $3) RETURNING id",
+            uuid.UUID(user_id),
+            title,
+            store.slug(title, "project"),
         )
     )
 

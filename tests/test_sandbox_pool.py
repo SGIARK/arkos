@@ -168,7 +168,10 @@ async def _user() -> str:
 async def _project(user_id: str, title: str) -> str:
     return str(
         await pool.fetchval(
-            "INSERT INTO projects (user_id, title) VALUES ($1, $2) RETURNING id", uuid.UUID(user_id), title
+            "INSERT INTO projects (user_id, title, slug) VALUES ($1, $2, $3) RETURNING id",
+            uuid.UUID(user_id),
+            title,
+            store.slug(title, "project"),
         )
     )
 

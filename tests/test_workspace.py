@@ -76,7 +76,10 @@ async def _project(title: str = "Taxes") -> tuple[str, str]:
     await pool.execute("INSERT INTO users (id) VALUES ($1)", user_id)
     _seeded.append(user_id)
     project_id = await pool.fetchval(
-        "INSERT INTO projects (user_id, title) VALUES ($1, $2) RETURNING id", user_id, title
+        "INSERT INTO projects (user_id, title, slug) VALUES ($1, $2, $3) RETURNING id",
+        user_id,
+        title,
+        store.slug(title, "project"),
     )
     session_id = str(
         await pool.fetchval(
