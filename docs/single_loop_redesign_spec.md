@@ -20,7 +20,7 @@ Which question are you asking:
 | What happens at runtime in state X? | `docs/decision_tables.md` |
 | What tables and columns exist? | `docs/schema.md` |
 | Who is allowed to do what? | `docs/auth.md` |
-| What does the user see? | `docs/looking_glass_spec.md` |
+| What does the user see? | the current design export (`designs/new-frontend/`) + Tasks 11.8, 12.1-12.3 |
 | What is still unresolved? | `docs/GAPS_2026-08-06.md` (Tier 2 and 3) |
 
 **Never read `docs/deprecated/`.** It is the architecture this redesign deletes.
@@ -36,14 +36,44 @@ before Task 7 deletes the fallback machinery.
 This document is the why and the build plan.
 
 **Status:** Tasks 0-8, 8.1-8.10, 9, LG-1 (+1.5-1.8) and LG-2 done ·
-Tasks **11.4, 11.5, 11.6 DONE 2026-08-20** (session window + tools popover +
-surface endpoints; backend MCP wiring; clock + tool-result timestamps) ·
-next **11.7.5 → 11.8 → 12.1 → 12.2 → 12.3 → 13**, with **11.7 unsequenced** (P1, the
-approval gate parks on the gated call — a Task 6 defect, no blockers, take it
-early; 11.7.5 added 2026-08-20: the code review's P0 fixes + trim, see
+Tasks **11.4, 11.5, 11.6, 11.7, 11.8.5, 11.8.6, 11.9 DONE 2026-08-20** (session window + tools
+popover + surface endpoints; backend MCP wiring; clock + tool-result timestamps;
+the approval gate parks on the gated call; the plan gate — `propose_plan`, the
+three-answer `plan` park, the stall rule, the split terminal taxonomy and the
+plan card; Stop holds a run instead of killing it; **11.9 — the store rekeyed to
+ONE flat namespace per user, folders derived from paths, projects LINK them**) ·
+next **11.7.5 → 11.8 → 11.8.7 → 11.8.8 → 12.1 → 12.2 → 12.3 → 13** (11.8.8 added
+2026-08-20, the store trim: store.py splits into blobs/memory/tree (the
+loop-bound httpx client flake dies in the split), destructive
+store-side ops 409 against a held folder lease instead of chasing live
+boxes (`move_through` deleted, `write_through` kept), snapshot tables
+dropped; 11.9 was taken OUT OF
+ORDER, ahead of 11.7.5/11.8/11.8.7: the migration is at its cheapest pre-launch
+and it touches nothing 11.8.7 rewrites — that card is stop/resume, this one is
+the store. What 11.8 still owes it: the create modal it edits is the one 11.9
+rebuilt as a multi-pick checklist, so 11.8's delta amends that rather than the
+dropdown it was written against. 11.8.7 added
+2026-08-20: stop simplified to a soft teardown — one cancel path, two
+landings (`done{stopped}` -> idle, mode kept) — deleting 11.8.6's
+flag/registry/backstop/resume-park after first live use raced;
+11.8.5 and 11.8.6 were taken
+out of order: it had no blockers and the Marketplace post-mortem was live.
+Its frontend landed against the CURRENT session window, so 11.8's delta
+inherits the plan lane rather than replacing it; 11.8.6 added 2026-08-20
+from first live use of the plan gate: the run control goes two-stage —
+Stop cancels the in-flight step and parks on a `resume` row with the
+plan's approval standing, Cancel from stopped is the terminal it always
+was — land it before 11.9's store rekey while the approvals code is
+warm; 11.7.5 added 2026-08-20: the code review's P0 fixes + trim, see
 `docs/code_review_2026-08-20.md`; 11.8 added 2026-08-20, delta-only: project
-create + rename, chat removed; 12.1-12.3 added 2026-08-20, split from one
-card against the `sign-up/` export: auth screen + Google OAuth, on-brand
+create + rename, chat removed; 11.8.5 added 2026-08-20 from the
+Marketplace run post-mortem, renumbered from 11.9 same day: the
+`propose_plan` tool + plan gate (play button and model-initiated
+proposals both funnel through it) + stall rule + terminal taxonomy +
+plan card UI, export checked in at `designs/planning-card/`; 11.9 added
+2026-08-20, renumbered from 11.8.5 same day, rewritten same day against
+the `designs/filesystem_revamp/` export and DONE the same day; 12.1-12.3 added 2026-08-20, split from
+one card against the `designs/sign-up/` export: auth screen + Google OAuth, on-brand
 auth emails, buddy rebrand) |
 **Author:** John Wallace | **Last updated:** 2026-08-20
 
@@ -1162,7 +1192,11 @@ manifest. Task 8 states its equivalent explicitly ("register it in the
 manifest"); this card did not, and a card can be completed exactly as written
 while leaving the tool unreachable. Registration is now part of done.
 
-## Tasks 10-11: moved to `docs/looking_glass_spec.md`
+## Tasks 10-11: moved to the Looking Glass spec — since DEPRECATED (2026-08-20)
+All LG tasks are DONE; the spec's design sections were superseded by the
+current design export and the 11.8/12.x cards, so it moved to
+`docs/deprecated/looking_glass_spec.md` as the historical record of the LG
+build. Its living content lives here and in contracts.
 (Looking Glass v1; Projects + Command Center.)
 
 **Sequencing settled 2026-08-18 (owner): LG-1 runs BEFORE Task 9.** After 8.8,
@@ -1183,7 +1217,7 @@ build tooling and polish, not function.
 ## Task 11.4: The new frontend — the designed surface lands, with the endpoints it reads
 **Why (owner, 2026-08-19):** the tool-budget affordance got designed for real —
 a rendered mock in Claude Design, in the existing paper/mono language, checked
-into this repo as `new_frontend/` — and designing it moved the control from
+into this repo as `designs/new-frontend/` — and designing it moved the control from
 "beside where claims render" (11.5's original amendment 2) into the composer,
 where choosing your reach sits next to asking. Implementing that design is
 frontend work plus the endpoints the refreshed surface reads, and leaving all
@@ -1194,7 +1228,7 @@ first; the popover renders real recorded state before 11.5 gives that state
 teeth.
 
 **The design is ground truth (owner, 2026-08-19)** — the export checked in
-under `new-frontend/`; if it and the live Claude Design project ever disagree,
+under `designs/new-frontend/`; if it and the live Claude Design project ever disagree,
 the checked-in copy is what was approved. **Refreshed 2026-08-20:** an earlier
 stale export briefly sat in the repo and was deleted; the current copy is the
 2026-08-20 export, which grew past this card — the full IA (desk landing, five
@@ -1261,12 +1295,12 @@ missing exist, each with its contracts rows in the same commit:
 
 **NOT this card:** pointing the files view at the disk endpoints. LG-2's
 warning stands — a filesystem that dies with the session shown beside one that
-does not wants its own deliberate design pass, and the `new_frontend/` design,
+does not wants its own deliberate design pass, and the `designs/new-frontend/` design,
 broad as it is, does not answer that question. This card supplies the
 endpoints that pass will need.
 Also not this card: everything enforcement — the manifest cap, the per-turn
 prompt, benching, quota coherence are 11.5.
-**Touch:** `new_frontend/` → `frontend/`, `api.py` + contracts (both endpoint
+**Touch:** `designs/new-frontend/` → `frontend/`, `api.py` + contracts (both endpoint
 families), migration, `looking_glass_spec.md` (rename + browser-popout
 amendments) | **P1, 1.5-2d** | **Blockers:** none
 **Test:** the chip shows enabled/allowed and updates when a toggle commits; a
@@ -1311,7 +1345,7 @@ without anyone changing anything.
 **Re-scoped (owner, 2026-08-19): this card is now backend only.** The surface
 and the state it displays moved to Task 11.4 — the composer chip and popover,
 the `GET /sessions/{id}/tools` reads and toggle writes, and the
-`session_tools` migration all land there, against the `new_frontend/` design
+`session_tools` migration all land there, against the `designs/new-frontend/` design
 (which relocated the control from "beside the claims" to the composer;
 amendment 2 below reads accordingly). What remains here is the wiring that
 makes the recorded toggles TRUE for the model: the cap enforced in
@@ -1479,7 +1513,7 @@ ship though the current design export removes them.
 **Done when:** Three deltas against the ACTIVE frontend (which already has
 the five-view nav, desk, approvals, files, projects grid, and session detail
 from 11.4 — none of that is this card), matching the second 2026-08-20
-export under `new-frontend/`:
+export under `designs/new-frontend/`:
 
 1. **Create:** the corner plus and the dashed new-project card open the
    modal — name; "a new directory" (start empty) vs "an existing directory"
@@ -1507,11 +1541,758 @@ surface.
 files view, tools popover); approval-flow mechanics (11.7).
 | **P1, 0.5-1d** | **Blockers:** none.
 
+## Task 11.8.5
+**Status:** DONE 2026-08-20, taken out of order (no blockers). All seven deltas
+landed: `propose_plan` in `PARK_KINDS` (migration `0013_plan_park.sql` adds the
+`plan` kind and the history index), the three-answer respond arm with the
+`plan.md` write and the moved mode flip, the play button reduced to a handoff
+event, the bare-text stall rule, `stalled_progress` + `internal_error`, the
+park-don't-fail principle in contracts, and the plan lane in the session window
+plus the desk's plan card. Pinned by `tests/test_plan_gate.py` and the amended
+`tests/test_loop.py` / `test_api.py` / `test_runner.py`.
+
+A `/code-review high` pass over the diff found nine, all fixed in the same
+commit. Three are worth carrying forward as facts rather than as history: the
+near-cap nudge and the bare-text streak need SEPARATE latches (one flag let the
+streak spend the nudge, and a run that went bare early then bare again on its
+last hop died `max_hops` with no summary); everything that can refuse a plan
+approval has to be checked BEFORE the row is answered, and a start that then
+loses the status race has to REOPEN it, or the plan is stamped approved with
+nothing run and nothing able to approve it again; and a surface must read a
+plan's version from the server, never by counting `propose_plan` calls in
+`recent_events`, because that window is capped.
+
+Amended 2026-08-20 after using it. Four things the export specced that did not
+survive contact: the "changed since v{n-1}" diff is GONE, plumbing and all
+(`previous_args` / `last_ask` off `/attention`) — edits stack, so by v3 the list
+was longer than the plan and said less than the plan does. The revising banner
+and the in-place workshop state went with it: a reply now closes the card, and
+the next plan arrives as a whole new card. `user{source: system}` events are no
+longer RENDERED anywhere — the handoff read as a leaked prompt sitting among the
+human's own messages. And a reply is followed by an unrendered
+`user{source: system}` instruction to propose again, because without it the
+model answered inline and the session went idle with the card gone and nothing
+to approve. The card itself is narrower than the pane, its body scrolls, and the
+✕ moved to the header where a way out is looked for.
+**Title:** The plan gate: unattended runs start from an approved plan, and
+never die confused
+**Problem:** The play arrow hands the model a transcript, not a task. The
+2026-08-20 Marketplace run went unattended with the model's own unanswered
+question as the last event, burned a browser run and five bare-text hops
+greeting nobody, then ended `failed{model_error}` though nothing errored:
+the empty-reply path in `loop.py` shares that label with real API failure
+AND with `_drive`'s catch-all, so a Postgres blip, an OpenAI outage, and a
+model that said nothing are indistinguishable on the pill. Bare text in
+unattended mode loops with nothing injected, so the tail becomes
+consecutive assistant messages and the model degenerates; the prompt
+promises "you will simply be asked to continue" and nothing keeps it; the
+one nudge sits at max_hops-1 and never fired.
+**Done when:** Seven deltas. The gate has two entries — the play button,
+and the model proposing when the transcript already specs the work — and
+both funnel through ONE tool, so there is exactly one way an unattended
+run starts:
+
+1. **The plan tool.** `propose_plan` joins `PARK_KINDS`
+   (`tool_module/tools/control.py`): a park tool the model may call AT ANY
+   TIME, whose args are the plan itself, matching the export's card
+   fields — `goal`, `done_when`, `steps` (the numbered outline the desk's
+   pending card renders), `inputs` (label + note pairs), and `missing`, a
+   list of the open questions the plan still needs answered. (The earlier
+   sketch's `if_blocked` field is gone: the export dropped it and the
+   design wins; "blocked means ask" lives in the standing prompt copy
+   instead.) Calling it parks the session on an approvals row of kind
+   `plan` carrying those args (the 11.7 pattern: consent binds to the
+   artifact, not to prose about it). Each call is a VERSION: re-proposing
+   supersedes the open row and bumps v{n}, and the card diffs the new
+   args against the previous ones for its "changed since v{n-1}" list.
+   Proposing is the model's judgement; deciding is never — it cannot
+   start the run itself. An under-informed plan is still a plan:
+   `missing` is how insufficiency renders INSIDE the card as named
+   questions, so the card doubles as the intake form rather than the
+   model asking in chat prose beside it.
+2. **Answering a plan.** On `/approvals/{id}/respond`, kind `plan` takes
+   three answers. The approve word: the harness writes the approved args
+   to `plan.md` through the store path (what was approved is what is
+   saved, byte for byte), runs `_check_unattended_quota`, flips mode to
+   unattended in the SAME transition that wakes it, and the run begins.
+   The decline word: the park closes, the session stays attended chat.
+   Anything else is workshop feedback: appended as a `user` event, the
+   session wakes attended, the model revises and proposes again — as many
+   rounds as it takes. Kind `plan` joins `approval` and `call` in
+   `_answer_by_message`'s 409, so composer prose never answers it.
+3. **The play button rides the tool.** `POST /sessions/{id}/approve` no
+   longer flips mode. It appends a `user{source: system}` handoff event —
+   draft the plan from this transcript and call `propose_plan`, ALWAYS,
+   even when the transcript is thin or empty: put what you cannot fill in
+   `missing` and leave the fields honest, never ask in prose instead of
+   calling the tool — and starts an ordinary attended turn. So play "off
+   the rip" on a fresh session still yields a plan card, opening as an
+   intake form ("not enough to plan yet: what is the goal? what does done
+   look like?"), and the workshop loop fills it from there. Mode now
+   flips in exactly one place: plan approval. Transition table: the
+   `idle -> running` approve row loses its mode flip;
+   `awaiting_approval -> running` gains one for kind `plan`. Prompt copy
+   (`_SHARED` gains the tool's standing description, `_UNATTENDED`
+   references the plan) updated to match.
+4. **Stall rule.** In unattended mode a bare-text hop is answered, keeping
+   the prompt's promise: the first appends a `user{source: system}`
+   continuation; a second consecutive one gets the finish nudge immediately
+   (the near-cap nudge stays); a third consecutive bare-text hop, or any
+   empty reply, ends the run `done{stalled_progress}`. A tool-calling hop
+   resets the streak.
+5. **Terminal taxonomy.** `done.reason` gains `stalled_progress` and
+   `internal_error`. `model_error` narrows to its name: a real `ModelError`
+   after both retry layers. `_drive`'s catch-all writes `internal_error`.
+   Contracts' event vocabulary, the termination rule, and the transition
+   table's `running -> failed` row amend in the same commit; the status
+   pill renders the new reasons.
+6. **Park, don't fail.** Contracts gains the principle the mechanics above
+   serve: an unattended run ends by `finish_task`, by parking, or by a
+   named budget/stall reason. There is no "confused" terminal.
+7. **The plan card UI, from the export.** Delta against the active
+   frontend, per the checked-in export (see the design note): the
+   composer's run button with its tooltip ("buddy drafts a plan first.
+   nothing runs until you approve it."); the drafting bar with abandon;
+   the open card — version chip, "nothing runs until you approve", the
+   fields above, `missing` rendered as questions, the "update the plan"
+   input ON the card, "approve and run", and the ✕ dismiss; the revising
+   banner ("revising v{n}: {last ask}") and the "changed since v{n-1}"
+   diff with "you asked: {ask}" echoed; the collapsed pinned card once
+   approved (goal line, v{n}, "plan.md saved to the project") and the
+   run-start line ("starting from plan.md v{n}. i will keep everything in
+   {dir}..."); the abandoned state ("plan v{n} dismissed, nothing ran"
+   with "draft again"); the plan status chip with the working directory;
+   and the desk's "waiting on you" list rendering a pending plan with its
+   `steps` and approve/decline. Card actions route to
+   `/approvals/{id}/respond` ("update the plan" = feedback prose,
+   "approve and run" = the approve word, dismiss = the decline word).
+   The export's copy says buddy; until 12.3 lands the implementation
+   substitutes the current name.
+
+**Touch point:** `tool_module/tools/control.py` (`propose_plan`),
+`harness_module/api.py` (`respond_to_approval` kind-`plan` arm,
+`_answer_by_message`, `approve_session`), `harness_module/approvals.py`
+(kind), `agent_module/prompts.py` (tool copy, handoff copy, continuation),
+`agent_module/loop.py` (stall streak, reason split),
+`harness_module/runner.py` (`_drive` catch-all, plan.md write on approve),
+`docs/contracts.md` (reason vocabulary, TERMINATION rule, transition rows,
+park-kind table), frontend (pill labels only).
+**Acceptance test:** pytest: `propose_plan` parks kind `plan` with the
+args on the row; approve writes `plan.md` matching the args, checks the
+unattended quota, and flips mode+status in one conditional UPDATE; prose
+feedback wakes the session attended with the event appended; decline
+closes the park attended; a composer message to a plan-parked session
+409s; play appends the handoff event and does NOT flip mode; unattended
+bare text draws the continuation, then the nudge, then
+`done{stalled_progress}` on the third; an empty reply ends
+`done{stalled_progress}` directly; an exhausted retryable `ModelError`
+still ends `done{model_error}`; a setup failure raised in `_drive` ends
+`done{internal_error}`; attended behavior otherwise byte-identical.
+The card is not done while contracts lags: `docs/contracts.md` must show
+`stalled_progress` and `internal_error` in the `done.reason` vocabulary
+and the `running -> failed` row, kind `plan` in the park/approvals
+machinery, the moved mode flip in the transition table's approve and
+respond rows, and the rewritten TERMINATION rule — grep for
+`stalled_progress` and `propose_plan` in contracts as the cheap check;
+absence of either means the amendment was skipped and the card is open.
+A second `propose_plan` supersedes the open row, bumps the version, and
+the card shows the changed-since diff; a pending plan appears on the
+desk with its steps and approve/decline. Manually, three entries: say
+"sell my keyboard, $40, photos attached" in chat and watch the model
+propose unprompted; press play on an underspecified chat, workshop one
+round on the card's "update the plan" input, approve, observe `plan.md`
+in the project and the run start; press play on a FRESH session with no
+conversation and get a plan card whose `missing` names the gaps, not a
+chat message asking questions.
+**Design note:** the export is checked in at `designs/planning-card/` (2026-08-20,
+drafted on the arkos Claude Design canvas — its `.dc.html` still carries
+the stale "Looking Glass - Tool Budget" title, ignore that; the plan
+states are in it, rendered inline in the projects view alongside the
+rest of the UI). That checked-in export is ground truth for delta 7, per
+the 11.4/11.8 convention.
+**Not this card:** exempting workshop rounds from `max_hops`; re-planning
+mid-run beyond simply calling `propose_plan` again; browser_task's
+structured "blocked on a login" outcome.
+| **P1, 2-2.5d** | **Blockers:** none — the design export is checked in.
+
+**Amendment 2026-08-20** (filesystem revamp, see 11.9 and the
+`designs/filesystem_revamp/` export): "this project's directory" no longer
+exists anywhere on the card. Inputs render one row per linked folder
+("triage/ · linked folder" — five folders, five rows), the goal and
+run-start copy name "its linked folders (triage/, notes/)" rather than
+one directory, and `plan.md` saves into the project's FIRST linked
+folder. Implementation order: this card may ship against the
+pre-revamp single-directory reality; 11.9 carries the copy and target
+change, and the `designs/filesystem_revamp/` export supersedes `designs/planning-card/`
+where the two disagree on the card's folder rows.
+
+## Task 11.8.6
+**Status:** DONE 2026-08-20, backend and frontend. Migration
+`0014_stop_resume.sql` adds kind `resume`; `POST /sessions/{id}/stop` holds a
+turn on it with no `done` and no mode flip; the dispatch wrapper registers each
+call's task so Stop closes exactly those as `cancelled_by_user` (which the loop
+excludes from the attempt cap) and refuses the rest of the hop;
+`harness.stop_grace_s` (45s) degrades a wedged hop to the old full cancel; the
+respond arm and the composer exemption land the three answers. Pinned by
+`tests/test_stop_resume.py`.
+
+**Two things this card touched that it did not list.** `POST /cancel` on a
+parked session never flipped `mode` back to attended — harmless while only
+`running` sessions reached a terminal, and wrong the moment a STOPPED
+(unattended, `awaiting_approval`) session could be cancelled: it stayed recorded
+unattended forever, holding a quota slot for a run nobody was running. Fixed
+here because this card created the path. And `/cancel` now closes an open
+`resume` row, so nothing offers to restart a terminal session.
+
+**The designed frontend landed 2026-08-20** against the canvas pass now checked
+in at `designs/planning-card/` (`Form responses needed (10)`, replacing the 11.8.5
+export). The control has THREE faces, never two at once: `▶ autopilot` when
+nothing is pending, `■ stop` while running, `✕ cancel` while stopped — and on a
+CANCELLED run the first reads `▶ resume` and drafts a continuation rather than a
+fresh v1, which needed `approve_session` widened to accept a terminal status.
+The stopped state adds no surface: an amber `stopped · holding at hop n/m` pill,
+one transcript row ("stopped at step {n}. in-flight calls closed, nothing counts
+against the plan.") with resume and a small red cancel, the plan pin's dot going
+amber and losing its ping, and the composer placeholder becoming "type to
+resume. your note is the next thing ark reads" — typing resumes, and the note
+echoes as a "resumed with your note" line. A spent plan gets a dashed row with
+`draft a continuation` and `dismiss`; a dismissed one gets `draft again` and
+`dismiss`; `dismiss` clears the plan from the surface (per browser, in
+localStorage — the row is a permanent fact and is never deleted) and the control
+reverts to `▶ autopilot`.
+
+**And the overlap is gone.** The whole plan lane moved INSIDE the scrolling
+transcript. It was docked above the composer when 11.8.5 shipped, overlaying the
+conversation; the transcript is the only surface now, and nothing docks or
+floats.
+
+**Title:** Stop, then cancel: the run control is two-stage
+**Problem:** The only control on a run is `POST /sessions/{id}/cancel` —
+`task.cancel()` on the WHOLE turn, `done{cancelled}`, terminal status,
+mode flipped back to attended, plan approval spent. Stopping one slow
+step therefore nukes an approved plan (happened 2026-08-20, the plan
+gate's first day of use). The loop can already survive a single step
+dying — `_envelope_of` maps a cancelled dispatch task to an interrupted
+envelope, `_settle` closes the call, the hop continues — but nothing
+exercises that path; the whole-turn nuke is the only caller of cancel.
+**Done when:** One control with two faces — **Stop while running,
+Cancel while stopped** — and a stopped run that resumes:
+
+1. **Stop (running → stopped).** `POST /sessions/{id}/stop`: the
+   runner's dispatch wrapper registers each in-flight call's task
+   (`asyncio.current_task()` at dispatch entry, per session; `loop.py`
+   stays pure). Stop cancels the registered tasks — each call closes
+   with `error_kind: cancelled_by_user`, which does NOT count toward
+   the per-tool failure streak — refuses any further dispatch this hop
+   the same way, and sets the pause: at the hop boundary the sink parks
+   exactly as 11.7 parks (leases released, box hibernated with
+   `keep_box`, `running -> awaiting_approval`) on an approvals row of
+   kind `resume` ("Run stopped. Resume the plan?"). Mode is UNCHANGED —
+   a park is not a terminal, so the plan's standing approval survives,
+   and the hop budget carries because the fold counts from the last
+   `done` and a park appends none.
+2. **The stopped state, three answers, ZERO new surfaces.** Same
+   three-answer shape on the respond endpoint: the approve word wakes
+   the run unattended, same plan, same budget, picking up where it
+   held; prose wakes it unattended WITH the message appended, so "skip
+   that step, do X instead" is the resume ("errors are model input"
+   applied to the human's stop: the closed call plus the message is
+   what the model reads next hop); the decline word is the hard cancel
+   below. There is NO stopped card. The stop renders as an ordinary
+   inline transcript row ("stopped at step {n}", with resume and
+   cancel as its two small actions) that scrolls away like any row,
+   the plan's inline element carries a stopped badge for the
+   glance-back, and the COMPOSER is the prose input: unlike `call` and `plan`, kind
+   `resume` is EXEMPT from `_answer_by_message`'s 409 — typing into a
+   stopped run resumes it with that message, because the plan's
+   consent already stands and prose here approves nothing new (the
+   exact decline word stays card-action-only, so prose can never
+   accidentally cancel). A park kind is a wire fact, not a UI
+   component: the approvals card family does not grow.
+3. **Cancel (stopped → terminal).** The same button now reads Cancel
+   and drives the EXISTING `awaiting_approval -> cancelled` transition;
+   the resume row closes with it and the plan approval is spent.
+   Resuming after that is play → `propose_plan` v{n+1}, and the handoff
+   copy gains one line: read `plan.md` and the transcript first, and
+   propose a CONTINUATION ("steps 1-3 verified done; resume at 4"), not
+   a fresh plan.
+4. **The backstop.** If the park cannot land — a hung hop never reaches
+   its boundary — the button degrades to the old full cancel after
+   `harness.stop_grace_s`, so a runaway run is still killable.
+   `POST /cancel` survives for that path and for sessions with no live
+   turn; it is no longer the button's first face.
+
+**Touch point:** `harness_module/runner.py` (dispatch-task registry,
+pause flag on the sink, park kind `resume`), `harness_module/api.py`
+(stop endpoint, respond arm for kind `resume`, cancel-from-stopped
+closes the row), `agent_module/loop.py` (`cancelled_by_user` skips the
+failure streak), `harness_module/approvals.py` (kind),
+`agent_module/prompts.py` (the continuation line in the handoff copy),
+`docs/contracts.md` (park-kind table, the stop trigger row for
+`running -> awaiting_approval`, the two-face button fact, the resume
+exemption from the composer 409), frontend (button faces, the inline
+stopped row, the stopped badge on the plan strip; needs a small canvas
+pass first — the current exports have no stop affordance on a running
+step, and that export lands before the frontend delta, per
+convention). The same canvas pass fixes the overlap 11.8.5 shipped:
+the collapsed plan reference stops floating over the transcript and
+becomes an INLINE element in the conversation flow — nearly a chat
+bubble, but more intricate, keeping the card UI it has now — so it
+scrolls with everything else and nothing overlaps content. That
+inline element is where the stopped badge lives. Nothing is docked
+and nothing floats: the transcript is the only surface.
+**Acceptance test:** pytest: stop mid-dispatch closes the open call
+`cancelled_by_user` with no streak increment, parks on kind `resume`
+with mode still unattended and hops preserved; approve resumes and the
+run completes; a composer message to a resume-parked session does NOT
+409 — it resumes with the message in the next fold (while `call` and
+`plan` parks still 409); decline via the row/strip action lands
+`cancelled` and the plan is spent; prose containing the word "decline"
+mid-sentence still resumes (the word acts only as the card action's
+exact answer); a dispatch issued after stop refuses without running;
+the hung-hop path degrades to full cancel after the grace; the
+transition rows amend in contracts (grep for `cancelled_by_user` and
+kind `resume` as the cheap check). Manually, replay today's wound:
+stop a slow browser step — an inline "stopped" row appears and the
+inline plan element badges, nothing overlays the transcript — type
+"skip the browser, do it another way" straight into the composer,
+watch it resume; stop again, hit Cancel on the row, and get exactly
+today's hard stop.
+**Not this card:** aborting the model stream mid-generation (stop takes
+effect at the tool call and hop boundary); rolling back a stopped
+tool's partial effects (interrupted means unknown — the
+verify-before-retry rule stands); the canvas/design export itself.
+| **P1, 1-1.5d** | **Blockers:** 11.8.5 landed (it edits the plan
+gate's respond arm — do it while that code is warm, BEFORE 11.9's
+store rekey).
+
+**Amendment 2026-08-20:** superseded by 11.8.7. First live use raced
+three ways (the backstop nuked a legitimate slow generation, the button
+face raced the 202, stop-during-a-parking-hop had no defined winner),
+and the diagnosis is that this card built a second authority over the
+turn's end. 11.8.7 deletes this card's mechanics; its UI deltas (button
+faces, the inline stopped row, the badge on the inline plan element)
+survive unchanged.
+
+## Task 11.8.7
+**Title:** Stop is cancel with a gentler landing
+**Problem:** 11.8.6 built stop as a second authority over how a turn
+ends — a sink flag, a dispatch-task registry, a boundary wait, a
+wall-clock backstop, a `resume` park — all coordinating with a loop
+that runs on event time. Every coordination point was a race, and first
+live use found three of them in one afternoon. The complexity is the
+bug; no patch fixes it. Meanwhile the one teardown path the harness has
+always had (cancel) is immediate, race-free, and already closes every
+open call on the way down.
+**Done when:** Stop rides that one path, and 11.8.6's machinery is
+DELETED, not repaired:
+
+1. **One teardown, two landings.** `_cancelling` generalizes to a
+   per-session teardown intent (`stopped` or `cancelled`), set by the
+   endpoint, read where the ending is recorded. Both faces signal the
+   turn identically (`task.cancel()`). Cancel lands as it always has:
+   `done{cancelled}`, terminal, box reaped, mode handed back to
+   attended. Stop lands gently: `done{stopped}`, `running -> idle`,
+   mode KEPT, plan approval untouched, leases released, box HIBERNATED
+   (`keep_box`), in-flight calls closed by the existing interrupted
+   synthesis. Immediate — no boundary wait, no window, no timer.
+   `loop.py` is expected to need nothing: the teardown reason is chosen
+   in `_ending`, and the generator's own `done{cancelled}` is not
+   consumed on this path today (verify, don't assume).
+2. **Resume is code that already exists.** An idle session starts on a
+   message — and the mode was kept, so the run resumes UNATTENDED with
+   the user's words in the fold, which is the resume-with-guidance
+   behavior, free. The inline row's Resume action is a plain start.
+   Hops re-budget from zero: every `done` resets, no special case. No
+   approvals row, no kind, no respond arm, no composer exception.
+3. **The delete list** (the card's real payoff — each of these is a
+   race retired): kind `resume` and `park_stopped`; `request_stop`,
+   `_stopping`, the `_dispatching` registry, `_stopped_envelope`, and
+   `guarded`'s refusal branch; `_arm_stop_backstop`, `_force_stop`,
+   `harness.stop_grace_s`, and the degrade contract;
+   `cancelled_by_user` and its streak exemption (the streak is
+   per-turn state and a stop ends the turn — it protected nothing);
+   the composer-409 exemption and `_answer_by_message`'s resume arm;
+   the stop-vs-park collision rule (no window exists to collide in).
+4. **Facts are injected, never discovered.** The handoff event carries
+   the plan state itself — plan.md's content when it exists, "no plan
+   exists yet" when it does not — and the "read plan.md FIRST" sentence
+   is deleted from the prompt copy. Contracts records the principle:
+   a fact the harness knows is injected into the transcript, never
+   left for the model to discover by tool call (that discovery was a
+   guaranteed FileNotFound after every declined plan).
+5. **Contracts, in the same commit:** `done.reason` gains `stopped`,
+   NON-terminal like `turn_end`; new row `running -> idle` via
+   `done{stopped}`, mode untouched, with idle+unattended defined as "a
+   stopped run — a message or start resumes it unattended"; the 11.8.6
+   rows come OUT (park kind `resume`, the stop trigger for
+   `running -> awaiting_approval`, the degrade, `cancelled_by_user`);
+   direct-write terminals (the no-sink `_ending` path) also hand mode
+   back to attended, closing the pre-existing gap where cancelling an
+   idle unattended session left `mode=unattended` on a terminal row;
+   and the button-face rule: faces key off STATUS from the lifecycle
+   stream, never off an endpoint's 202.
+
+**Touch point:** `harness_module/runner.py` (`stop()` becomes the soft
+variant of `cancel()`; `_ending`/`_finish` take the landing; the
+machinery deleted), `harness_module/api.py` (stop endpoint simplified;
+resume arm and 409 exemption deleted), `agent_module/prompts.py` (plan
+state injected; read-first sentence deleted), `docs/contracts.md` (the
+rows above), frontend (Resume action = start; face rule; everything
+else survives 11.8.6 as shipped).
+**Acceptance test:** `grep -rn "request_stop\|park_stopped\|_force_stop\|
+stop_grace_s\|cancelled_by_user\|_stopped_envelope" harness_module
+agent_module tool_module` returns NOTHING — the delete list is the
+test. pytest: stop mid-hop lands `idle` with `done{stopped}`, mode
+unattended, calls closed interrupted, box hibernated; a message to that
+session resumes unattended with the message in the fold; plain start
+resumes without one; cancel from stopped lands `cancelled` with mode
+attended; a direct-write cancel of an idle unattended session also
+lands mode attended; a fresh replan transcript contains NO read of
+plan.md (the handoff event carries the plan state); suite green.
+Manually: stop a slow browser step — instant hold, plan intact — type
+"skip the browser, do it another way", watch it resume unattended;
+stop again, press Cancel, terminal.
+**Not this card:** salvaging the partial generation a stop discards; a
+pause that preserves hop budget (every done resets); any UI redesign —
+11.8.6's inline row, badge, and faces ship as they are.
+| **P1, 0.5-1d — mostly deletion** | **Blockers:** none. 11.9 is in
+flight on the store; this touches runner/api/prompts only — coordinate
+the merge, land whichever is ready first.
+
+## Task 11.8.8
+**Title:** The store trim: one idea per file, prevention over
+synchronization
+**Problem:** The filesystem harness post-11.9 is architecturally sound
+— store knows nothing of sandboxes, workspace is the only bridge,
+leases is 83 clean lines — but the mass sits in two places. `store.py`
+is three modules wearing one filename (blob backends ~250 lines
+including a hand-rolled Supabase client, the tree ~380, memory ~160
+that is explicitly not a filesystem and never mounted). And
+`workspace.py` carries live-box coherency protocols — `move_through`,
+`_live_boxes`, the stale-session accounting — that chase a moving
+cache with remote `mv`/`rm` so a flush does not undo a store-side move;
+`move_through`'s own docstring is a confession. The subsystem's
+scariest path exists to synchronize what a lease check could simply
+prevent.
+**Done when:** Three deltas, all trims:
+
+1. **Split `store.py` by idea.** `blobs.py` (the `Blobs` protocol,
+   `FilesystemBlobs`, `SupabaseBlobs`, `put_blob`/`get_blob`/
+   `missing_blobs`, `build_tar`), `memory.py` (notes, the curated
+   core, FTS search, the advisory lock), and `store.py` keeps the tree
+   alone (read/commit/move/folders/paths/sentinel). Mechanical, zero
+   behavior change — with ONE exception, folded in because this is its
+   natural home: `blobs.py` owns the HTTP client's lifecycle
+   (lifespan-managed or per-running-loop, old client closed on swap),
+   which retires the loop-bound `httpx.AsyncClient` flake from the
+   11.7.5 list ("Event loop is closed" in test_approvals/test_api).
+   The model client's identical shape (`model_module/client.py`)
+   is fixed the same way in the same commit, or the flake just moves.
+2. **Prevention over synchronization.** A DESTRUCTIVE store-side
+   operation (move, delete) touching a folder whose write lease is
+   held returns 409 "in use by a running session" — one lease check
+   (`leases.holder`) at the endpoints — instead of being propagated
+   into live boxes. DELETE: `move_through`, the stale-session
+   accounting, and `_live_boxes`'s only remaining callers shrink to
+   one. KEEP: `write_through`, alone — additive, safe, and it serves
+   the real flow of uploading files into a folder an agent is
+   actively working in. `workspace.py` becomes a single-purpose
+   transfer engine (materialize/flush/seal), which is the module the
+   docstring already describes.
+3. **Drop the snapshot tables.** 11.7.5 removed the capability;
+   0015 dutifully rekeyed the dormant data. Pre-launch the tables are
+   empty, and carrying correctly-migrated tables for a feature that
+   does not exist is maintenance on a ghost. `project_snapshots` and
+   `snapshot_files` drop by migration; when snapshots return they get
+   designed against the folder store natively, and git remembers the
+   DDL.
+
+Folded-in small fix: `unique_folder` is check-then-act, so two
+projects created concurrently can pick the same name and both succeed
+silently — take the advisory-lock or retry-on-conflict route while in
+the file.
+Explicitly NOT trimmed, on purpose and recorded so nobody "simplifies"
+them later: the seal/nonce machinery (the only thing between a
+replaced box and a flush that commits an empty tree), the
+hash-sweep-both-directions design, and `DIR_SENTINEL` — all earned.
+**Touch point:** `harness_module/store.py` → `blobs.py` + `memory.py`
++ `store.py`, `model_module/client.py` (client lifecycle),
+`harness_module/workspace.py` (deletions), `harness_module/api.py`
+(lease check on move/delete endpoints; import paths), `db/migrations`
+(snapshot drop), `docs/contracts.md` (the 409 rule on destructive ops
+against a leased folder; the module map), tests (imports, the two
+flaky files pinned green).
+**Acceptance test:** `grep -rn "move_through\|_live_boxes" --include
+"*.py" | grep -v write_through` finds only `write_through`'s own use;
+`test_approvals` and `test_api` pass 20 consecutive runs with no
+"Event loop is closed"; a move against a folder whose lease is held
+409s and the same move succeeds after release; `project_snapshots`
+does not exist in the schema; each new module's imports go one way
+(blobs ← store ← workspace, memory standing alone); suite green;
+production line count before/after in the commit message, and it went
+DOWN.
+**Not this card:** merge-aware flush (replace-subtree stands); folder
+rename; blob GC (orphans still just cost storage); snapshots'
+eventual return.
+| **P2, 1d — mostly deletion and file moves** | **Blockers:** 11.9
+landed (it did, 2026-08-20 — this trims the code 11.9 left).
+
+## Task 11.9 — DONE 2026-08-20
+**Title:** Folders are the filesystem; projects link to them
+**Problem:** The Files tab groups its dropdowns by project TITLE, so
+renaming a project renames the filesystem's headers — though the schema
+says otherwise: `projects.title` is "a LABEL. Renaming changes only
+this," `projects.slug` is the folder, set once and never moved by a
+rename, and `session_claims` already mounts several trees into one
+session. The backend separates folder from project; the frontend fuses
+them, the create modal offers a single directory choice, and nothing
+surfaces inheritance at all.
+**Done when:** Six deltas, per the `designs/filesystem_revamp/` export (design
+note below). The model, stated once because everything below follows
+from it: **the store is ONE flat namespace per user, and a folder is a
+top-level path segment in it — derived from the files, never a row and
+never a project.** A project OWNS no folder; it LINKS folders, as many
+as it wants (`project.folders` is a list in the export), and a folder
+exists exactly as long as files exist under it. There is no "this
+project's directory" anywhere.
+
+1. **The store rekeys to the user.** `project_files
+   {project_id, path, …}` becomes `files {user_id, path, content_hash,
+   size, mtime}`, unique on `(user_id, path)`; the folder is
+   `path.split('/')[0]`, computed, uniquely named per user by
+   construction. The links live in `project_folders {project_id, folder
+   text}`. Migration in `db/migrations` carries every existing row to
+   `{user_id, slug + '/' + path}`; `project_snapshots`/`snapshot_files`
+   rekey the same way in the same migration or are explicitly parked in
+   it — not left referencing a table that no longer exists. Claims
+   rekey to folders (`session_claims` names `(folder, subpath, mode)`),
+   write leases key `folder:{user_id}:{name}` so two projects writing
+   DIFFERENT folders never contend, `workspace.materialize`/`flush`
+   walk folder prefixes, and the sandbox mounts each linked folder at
+   `~/store/<folder>/` — the prompt's durable-path section moves with
+   it. Deleting a project deletes its links and nothing else; files are
+   never orphaned because they were never owned. `projects.slug` stops
+   meaning "the folder" and survives only as the default NAME for the
+   folder the none-case below creates. And the home session stops
+   minting a shadow project — a project existed only to hold a
+   directory, no directory is held, so the Chat ▸ chatter orphan is
+   not cleaned up, it is unmade.
+2. **The Files tab is the store itself.** Root folders (`triage/`,
+   `notes/`, …) are the header dropdowns — the store's top-level
+   segments, never project titles, and the project picker at the top is
+   GONE. Renaming a project cannot touch this view; a folder appears
+   the moment a file lands under a new first segment.
+3. **Projects link folders at spawn.** The 11.8 create modal's
+   directory step becomes a multi-pick checklist of store folders, each
+   with its file count; the footer previews the outcome ("links:
+   triage/, notes/" vs "makes: ski-trip/"). Picking none creates a
+   folder named after the project (an empty prefix reserved in the
+   store), which then appears in the Files tab as a normal folder like
+   any other. Links are recorded in `project_folders` (contracts row
+   lands with the `POST /projects` change) and every session spawned in
+   the project receives them, all write, through `_record_claims`.
+   `plan.md` (11.8.5) saves into the project's FIRST linked folder.
+4. **Working files is the linked folders.** The session's working-files
+   pane renders one expandable dropdown per linked folder, the same
+   component as the Files tab; clicking a file jumps to it in the files
+   view. The session header's directory path chips are DELETED — where
+   work lands is said by the plan card and this pane, not the header.
+5. **Links grow after creation.** A `+ link` control in the
+   working-files header opens a picker of store folders not yet linked
+   (with file counts); one click toggles the link (`POST
+   /projects/{id}/folders` or equivalent, contracts row with it). The
+   UI shows the new folder immediately; the AGENT sees it from the next
+   session, because claims are fixed per session — recorded as a fact,
+   not discovered as a surprise.
+6. **Drag-and-drop, same green as the Files tab.** Working files takes
+   drops with the identical treatment: hovering a folder or its files
+   puts the green insertion bar under the drop point, the dashed zone
+   flips green and names the target ("drop into triage/"), and the file
+   lands in that folder — a path write in the one store, no new move
+   semantics.
+
+Facts recorded in contracts with this card: a folder is a derived
+top-level path segment — it exists iff files exist under it, its name is
+unique per user by construction, and no table holds it; projects own no
+folder, they link folders, and the none-case folder is itself just
+linked; claims are fixed per session, so a link added mid-session
+reaches the agent at the NEXT session while the UI shows it at once;
+write leases are per folder; the agent's durable paths are
+`~/store/<folder>/`, one mount per linked folder.
+**Touch point:** `db/migrations` + `docs/schema.md` (`files`,
+`project_folders`, snapshots rekey), `harness_module/store.py`,
+`workspace.py`, `leases.py` (folder keys), `session_claims` +
+`_record_claims`, `harness_module/api.py` (`POST /projects` takes
+links; the link endpoint; home-session minting removed),
+`agent_module/prompts.py` (durable-path copy), `frontend/views.jsx`
+(files view, working files), `lookingglass.jsx` (modal checklist,
+session header chips), `components.jsx` (shared folder dropdown, green
+drop treatment), `docs/contracts.md` (endpoint rows, the facts above).
+**Acceptance test:** Migration first: existing trees land at
+`{user_id, slug/path}` byte-identical through the blob store, and
+snapshots either follow or the migration names their parking. Rename a
+project and the Files tab headers do not change. Create a project
+linking two existing folders: working files shows exactly two dropdowns
+rendering identically to the Files tab, and a session spawned in it
+holds two folder claims. Create a project linking nothing: one fresh
+empty folder named after it appears in the Files tab. `+ link` a third
+folder: the pane shows it at once, the running session's claims are
+unchanged, the next session's include it. Two sessions in different
+projects write different folders CONCURRENTLY (the per-folder lease);
+the same folder serializes. Approve a plan: `plan.md` lands in the
+first linked folder, and the sandbox sees `~/store/<folder>/`. Clicking
+a file in working files lands on it in the files view; a drop shows the
+green insertion bar and target label and the file lands in that folder;
+no directory chips render in the session header; no home-session
+project is minted on a fresh account. pytest pins `POST /projects` with
+links → folder claims, the link endpoint → `project_folders` row +
+next-session claims, and grep contracts for `project_folders` AND
+`files (user_id, path)` as the amendment check.
+**Design note:** the UI for every delta above is in the
+`designs/filesystem_revamp/` export (2026-08-20, same canvas as `designs/planning-card/`
+— a lot changed: store-rooted Files tab, modal checklist with counts and
+outcome footer, working files with `+ link` and the green drop
+treatment, the decluttered session header, and the plan card's inputs
+listing each linked folder as its own row). That checked-in export is
+ground truth, per the 11.4/11.8 convention. The export's `support.js`
+is also the data-model reference: `project.folders` is a list, and the
+folder choices derive from `path.split('/')[0]` over one flat store —
+the schema above implements that model rather than emulating it on
+project-scoped trees. Ignore the export's stale metadata: the
+`.dc.html` still carries the "Looking Glass - Tool Budget" title and
+its `github.md` still describes the 08-19 tool-budget sync — the canvas
+content is what was re-drafted, not those headers.
+**Not this card** (as written — see the landing note: the export was
+re-drafted mid-build and rename came IN): folder rename (under this
+schema a path-prefix rewrite, cheap, but still its own card); unlinking
+a folder from a project; exposing per-folder read mode (claims support it; links ship
+write-only); new move semantics; blob GC.
+| **P1, 2-3d — the store rekey is most of it; do the migration + store/
+workspace/claims/leases first and the UI second, in that order within
+the card** | **Blockers:** 11.8 (the modal and views it edits); the
+plan-card copy it touches assumes 11.8.5. Do this PRE-LAUNCH: the
+migration is at its cheapest while there is no live user data (12.1 is
+still open).
+
+**Landed 2026-08-20**, in that order, and ahead of its blocker rather
+than behind it — 11.8 had not started, and waiting would have meant
+building the create modal twice. What shipped, and the three places it
+went past what the card wrote down:
+
+* `db/migrations/0015_user_store.sql` — `files (user_id, path)` unique,
+  backfilled from `project_files` at `slug || '/' || path` (the path each
+  row was already mounted at, so nothing moved), `project_folders`
+  backfilled one link per project, `session_claims` rekeyed to
+  `(folder, subpath, mode)`, `project:` leases dropped, snapshot paths
+  rekeyed with everything else, and **`project_files` DROPPED** — a
+  second table still saying a project owns files is a second path for
+  code to grow back into.
+* `store.py` is user-keyed throughout and grew `folders`, `folder_of`,
+  `unique_folder` and `in_folder`; `workspace.Claim` is
+  `(user_id, folder, subpath, mode)` mounting at `~/store/<folder>/`,
+  where a mounted path is the store path with the mount root in front of
+  it; `lease_key` is `folder:{user}:{name}`.
+* The surface split in two, which the card implied and did not spell
+  out: `/files`, `/files/{id}`, `/files/move`, `/folders` are the STORE
+  (what the Files tab draws), and `GET /projects/{id}/files` is that same
+  listing narrowed to what one project links (what working files draws).
+  `POST /projects/{id}/files` and its siblings are gone; `seed_from` went
+  with them, because copying rows between two project trees has nothing
+  left to copy.
+* **Beyond the card, deliberately.** (1) `session_claims.ord` — the card
+  says `plan.md` goes to the FIRST linked folder, and nothing recorded an
+  order; alphabetical would have made "first" depend on the folder's
+  name. (2) `POST /files` REFUSES a path with no folder segment, and
+  `move_path` refuses a top-level folder outright — the first keeps
+  "every file is in exactly one folder" total rather than nearly true,
+  the second stops the generic move endpoint from shipping the folder
+  rename this card explicitly excludes. (3) The system prompt now NAMES
+  the folders a session holds (`prompts.mounted_folders`, threaded
+  through `fold`): with several mounts possible, "the project directory"
+  stopped being something the model could infer, and the unattended
+  prompt points at `plan.md` in the first of them.
+* **Rename came in, and the card's exclusion is what moved.** The
+  `designs/filesystem_revamp/` export was RE-DRAFTED during the build (the
+  directory lost its `(8)` suffix, and the canvas grew
+  `fsRenaming`/`renamedFiles`/`renamedDirs`): every row of the Files tab
+  is now double-click-to-rename, files and directories alike, and the
+  mock's own handler rewrites `projects[].folders` when a top-level
+  folder is renamed. The export is ground truth per the 11.4/11.8
+  convention, so `POST /files/rename` shipped: paths, links and claims in
+  ONE transaction; refused onto a taken NAME (renaming `triage` onto
+  `notes` would otherwise merge two folders whenever their files happened
+  not to clash, silently and with no way back); and refused
+  `409 folder_busy` while a live box has the folder mounted — the runner
+  holds that session's claims and manifest in MEMORY, so a box left at
+  `~/store/<old>/` would flush its work back under the old name and lose
+  the turn. A file or a nested directory renames freely under a running
+  session; only the top-level name moves a mount.
+* **The orphan was unmade in the DATA too, not only in the code.** Not
+  minting a shadow project leaves every account made before the deploy
+  still holding one, so the migration unmakes them: a project is deleted
+  only when it is the home session's own, holds no files, and no other
+  session ever ran in it, and the session's `project_id` is cleared
+  first (the FK is NO ACTION). The same pass stopped linking a folder
+  that is not there — the backfill linked every project's slug,
+  including empty ones, which put `project_folders` rows against folders
+  no file lives under: an empty pane, a claim that mounts nothing, and a
+  name the folder picker can never show, since the picker is derived
+  from the files. An empty project links nothing until `+ link` gives
+  it something.
+* **The header is the PROJECT's name, and only that.** The window's
+  context line carried `project ▸ session`, where the project half fell
+  back to the session's own title when there was none — so the home chat
+  read `Chat ▸ Chat`, the same name twice with a crumb between them
+  promising a container that does not exist. The session half is gone
+  (it repeated the first line of the transcript below it), and the name
+  now comes from the SNAPSHOT (`project_title`, new on
+  `GET /sessions/{id}`) rather than from the grid's navigation state,
+  which a window opened from the desk does not have. The hop meter and
+  the status pill stay.
+* **Delete and undo (2026-08-21), from the export's next re-draft.** The
+  canvas moved to `designs/filesystem_revamp/` and grew a per-row `✕`
+  that arms into the word `delete?` on the first click, plus a
+  "deleted X — undo" bar under the rows. Built as migration 0016:
+  deleting moves rows to `deleted_files` (with `deleted_links` for the
+  links the same gesture dropped) rather than flagging them in `files`,
+  because a `deleted_at` flag would sit in the way of every tree read,
+  of `put_file`'s upsert, and of the index that makes folder names
+  unique. Blobs are never collected, so undo restores the SAME content
+  under the SAME id. Deleting the last file under a folder takes the
+  folder and unlinks it, and undo relinks it — one click removed them
+  for one reason, so one click brings them back. Undo names a BATCH, so
+  it restores what that click took rather than whatever was deleted most
+  recently, and refuses to overwrite anything put there since.
+* **Dragging a directory to the EDGE moves it out**, becoming a
+  top-level folder. My first pass refused every drop on the edge, which
+  was too blunt: a folder IS a top-level path segment, so promoting a
+  directory to the first position is how one is made. A file there is
+  still refused — it would be its own folder holding nothing — and
+  file-or-directory is decided by the rows inside the transaction, not
+  by the string. The zone names which will happen before the drop.
+* **One rule for all three restructurings.** Delete, undo and a
+  top-level rename share `_folder_is_free`: refused `409 folder_busy`
+  while a live box has that folder mounted, because the runner holds
+  that session's claims and manifest in memory and no HTTP handler can
+  correct the disk.
+* **One tree, two scopes.** The Files tab and the working-files pane are
+  the same `FileTree` component with the same powers — open, drag to
+  move, drop to upload, double-click to rename — differing only in which
+  rows they load and what a click does. They were two components with two
+  different sets of abilities, which is the only reason a file could be
+  renamed in one pane and not the other.
+* Tests: `tests/test_folders.py` is the card's acceptance list end to
+  end; `test_store`, `test_store_schema`, `test_workspace`,
+  `test_claims`, `test_uploads`, `test_api`, `test_plan_gate`,
+  `test_sandbox_pool`, `test_world_tools`, `test_memory` and
+  `test_prompts` moved with the model.
+
 ## Task 12.1
 **Title:** Build the auth screen: sign-up and Google OAuth
 **Problem:** The only way in is `signInWithPassword` against accounts nobody
 can create — no sign-up, no OAuth — and the sign-in screen is a bare form
-where the design (`sign-up/`, 2026-08-20 export, ground truth) specs a full
+where the design (`designs/sign-up/`, 2026-08-20 export, ground truth) specs a full
 pre-app auth surface.
 **Done when:** The auth screen matches the export — marketing panel left,
 auth card right with sign-up mode (name, username, password → "create

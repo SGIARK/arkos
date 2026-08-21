@@ -29,6 +29,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
+from agent_module import prompts
 from agent_module.events import TodoEvent, UserEvent
 from config_module.loader import cfg as _cfg
 from config_module.loader import config
@@ -214,10 +215,18 @@ async def _ensure_home_session(user_id: str) -> str:
     """Give a user their standing chat, once.
 
     The app opens this session by default, which is the whole of what makes it
-    home: the row is an ordinary attended session in an ordinary project, free
-    to sit idle forever or run like any other. Created here because first login
-    is the only moment that knows a user is new, and guarded by
-    `home_session_id IS NULL` so a second login never makes a second one.
+    home: the row is an ordinary attended session, free to sit idle forever or
+    run like any other. Created here because first login is the only moment that
+    knows a user is new, and guarded by `home_session_id IS NULL` so a second
+    login never makes a second one.
+
+    It has NO PROJECT (11.9). It used to mint one called "Chat", because a
+    project was the only way to hold a directory and a session needed a
+    directory. No project holds a directory now — folders are the store's and
+    projects link them — so the shadow project is not cleaned up, it is unmade.
+    A chat that has not been given work has nothing durable to write into, which
+    is the truth about it: asking it for work makes a project, and that is when
+    a folder appears.
     """
     existing = await pool.fetchval(
         "SELECT home_session_id FROM users WHERE id = $1", _uuid(user_id, "user")
@@ -225,15 +234,13 @@ async def _ensure_home_session(user_id: str) -> str:
     if existing is not None:
         return str(existing)
 
-    project_id = await _new_project(user_id, "Chat")
     session_id = await pool.fetchval(
         """
         INSERT INTO sessions (user_id, project_id, mode, status, title)
-        VALUES ($1, $2, 'attended', 'idle', 'Chat')
+        VALUES ($1, NULL, 'attended', 'idle', 'Chat')
         RETURNING id
         """,
         _uuid(user_id, "user"),
-        project_id,
     )
     # Conditional, so two first logins racing leave one session as home and the
     # other as an ordinary empty one rather than overwriting each other.
@@ -311,10 +318,12 @@ async def create_session(body: dict[str, Any] = JsonBody, user_id: str = Current
     A session is created attended, so only the new-session rate quota applies
     here; the unattended concurrency quota is checked on approve.
 
-    `claims` names what the session may see, as `[{project_id, subpath?,
-    mode?}]`. Absent, it gets a write claim on its own project. The set is fixed
-    here for the session's life: deciding it up front is what lets the leases be
-    taken in one go rather than acquired into a deadlock halfway through.
+    `claims` names what the session may see, as `[{folder, subpath?, mode?}]`.
+    Absent, it gets a write claim on every folder its project links. The set is
+    fixed here for the session's life: deciding it up front is what lets the
+    leases be taken in one go rather than acquired into a deadlock halfway
+    through, and it is why a folder linked later reaches the agent at the next
+    session rather than under this one.
     """
     goal = str(body.get("goal") or "").strip()
     if not goal:
@@ -331,7 +340,11 @@ async def create_session(body: dict[str, Any] = JsonBody, user_id: str = Current
         if owned is None:
             raise ApiError(404, "not_found", "No such project.")
     else:
+        # A session asked for with no project is a new piece of work, so it gets
+        # a project and the project gets a folder to keep the work in. The home
+        # chat is the other case and gets neither: nobody asked it for anything.
         project_id = await _new_project(user_id, _title(goal))
+        await _link_folder(project_id, await _make_folder(user_id, store.slug(_title(goal), "project")))
 
     session_id = await pool.fetchval(
         """
@@ -402,11 +415,34 @@ async def get_session(session_id: str, user_id: str = CurrentUser) -> dict[str, 
     """Return the session and the tail of its transcript, for a just-opened view."""
     row = await _owned_session(session_id, user_id)
     events = await slog.recent_events(session_id, limit=int(_cfg("harness.snapshot_events", 200)))
+    # Read ONCE. `folders` is a projection of the claims, and asking for them
+    # twice is two queries that can disagree with each other.
+    claims = await _claims_of(session_id)
     return {
         **_session_core(row),
         "project_id": str(row["project_id"]) if row["project_id"] else None,
+        # The project's LABEL, so the window's header reads the same however it
+        # was opened. It used to come from the grid's navigation state, which is
+        # absent when a session is opened from the desk — and the header then
+        # fell back to the session's own title.
+        "project_title": await pool.fetchval(
+            "SELECT title FROM projects WHERE id = $1", _uuid(row["project_id"], "project")
+        )
+        if row["project_id"]
+        else None,
+        # The FOLDERS this session writes, in link order — where the work
+        # actually lands. Not `project_slug`: a project links folders rather than
+        # owning one, so there is no single directory to name, and the session
+        # header stopped drawing directory chips when there could be several
+        # (11.9). The pane and the plan card say where work goes.
+        "folders": [claim["folder"] for claim in claims],
+        # The session's newest plan, so the collapsed card an approved run pins
+        # is exact. Counting `propose_plan` calls in `recent_events` was the
+        # alternative and it drifts: that window is capped, so a long session
+        # renders a version the server does not agree with, or none at all.
+        "plan": await _latest_plan(session_id),
         # What this session may see and write, fixed at creation.
-        "claims": await _claims_of(session_id),
+        "claims": claims,
         "recent_events": [_wire(e) for e in events],
     }
 
@@ -444,49 +480,85 @@ async def list_projects(user_id: str = CurrentUser) -> list[dict[str, Any]]:
 async def create_project(body: dict[str, Any] = JsonBody, user_id: str = CurrentUser) -> dict[str, Any]:
     """Make a project deliberately, rather than as a side effect of starting a session.
 
-    Optionally seeded from a directory that already exists in another of the
-    caller's projects. Seeding COPIES TREE ROWS, not bytes: blobs are addressed
-    by the sha256 of their content, so the same file in two projects is one blob
-    and the copy costs a row each. Nothing is moved and the source is untouched —
-    two projects holding the same file is the normal state of a content-addressed
-    store, not a special case.
+    `folders` is what it LINKS: any number of folders that already exist in the
+    caller's store, by name. A project owns no folder and never did anything to
+    the files under one — linking is a fact about which work reads and writes
+    where, and unlinking would leave every file exactly where it is.
+
+    Picking none is the none-case, and it is not "no files": a folder named
+    after the project is made for it (uniquified, because folder names are
+    unique per user) and linked, so it appears in the Files tab as an ordinary
+    folder like any other. It is kept alive by a sentinel, which is how any
+    named-but-unfilled folder exists.
+
+    This replaced `seed_from`, which COPIED tree rows from one project's
+    directory into another's. There is one store now, so the copy has nothing to
+    do: pointing two projects at the same folder is linking it twice, and the
+    file is one file rather than two rows with one blob under them.
     """
     title = str(body.get("title") or "").strip()
     if not title:
         raise ApiError(400, "invalid_request", "A project needs a name.")
 
-    seed = body.get("seed_from")
-    rows: list[Any] = []
-    if seed is not None:
-        if not isinstance(seed, dict):
-            raise ApiError(400, "invalid_request", "seed_from is {project_id, path}.")
-        await _owned_project(str(seed.get("project_id") or ""), user_id)
-        try:
-            prefix = store.safe_path(str(seed.get("path") or "")).rstrip("/")
-        except ValueError as e:
-            raise ApiError(400, "invalid_request", str(e)) from e
-        rows = await pool.fetch(
-            "SELECT path, content_hash, size, mtime FROM project_files "
-            "WHERE project_id = $1 AND (path = $2 OR path LIKE $2 || '/%')",
-            _uuid(str(seed["project_id"]), "project"),
-            prefix,
-        )
-        if not rows:
-            raise ApiError(404, "not_found", f"No files under {prefix!r} to start from.")
+    asked = body.get("folders")
+    if asked is not None and not isinstance(asked, list):
+        raise ApiError(400, "invalid_request", "folders is a list of folder names.")
+    wanted = [str(name).strip().strip("/") for name in (asked or []) if str(name).strip().strip("/")]
 
     project_id = await _new_project(user_id, title)
-    for row in rows:
-        await pool.execute(
-            "INSERT INTO project_files (project_id, path, content_hash, size, mtime) "
-            "VALUES ($1, $2, $3, $4, $5) ON CONFLICT (project_id, path) DO NOTHING",
-            project_id,
-            row["path"],
-            row["content_hash"],
-            row["size"],
-            row["mtime"],
-        )
-    slug = await pool.fetchval("SELECT slug FROM projects WHERE id = $1", project_id)
-    return {"id": str(project_id), "title": title, "slug": slug, "files": len(rows)}
+    if wanted:
+        existing = {f.name for f in await store.folders(user_id)}
+        unknown = [name for name in wanted if name not in existing]
+        if unknown:
+            raise ApiError(404, "not_found", f"No such folder: {', '.join(sorted(unknown))}.")
+        linked = wanted
+    else:
+        linked = [await _make_folder(user_id, store.slug(title, "project"))]
+
+    for folder in linked:
+        await _link_folder(project_id, folder)
+
+    # Sentinels are excluded for the same reason `store.folders` excludes them:
+    # a folder that has been named and not filled holds nothing, and reporting
+    # the file that keeps it alive as content is reporting a file nobody put
+    # there.
+    files = await pool.fetchval(
+        """
+        SELECT count(*) FROM files
+         WHERE user_id = $1
+           AND split_part(path, '/', 1) = ANY($2::text[])
+           AND path NOT LIKE '%/' || $3
+        """,
+        _uuid(user_id, "user"),
+        linked,
+        store.DIR_SENTINEL,
+    )
+    return {"id": str(project_id), "title": title, "folders": linked, "files": int(files)}
+
+
+@app.post("/projects/{project_id}/folders", status_code=201)
+async def link_project_folder(
+    project_id: str,
+    body: dict[str, Any] = JsonBody,
+    user_id: str = CurrentUser,
+) -> dict[str, Any]:
+    """Link one more store folder to this project.
+
+    The UI shows it at once and the AGENT sees it from the NEXT session, because
+    claims are fixed for a session's life (`workspace.claims_for`). That is not a
+    lag to be papered over: a folder appearing under a run mid-hop is a mount and
+    a lease the model was never told about, and a fact recorded at session start
+    is one it can be told. Linking twice is the same link.
+    """
+    await _owned_project(project_id, user_id)
+    folder = str(body.get("folder") or "").strip().strip("/")
+    if not folder:
+        raise ApiError(400, "invalid_request", "A link names a folder.")
+    if folder not in {f.name for f in await store.folders(user_id)}:
+        raise ApiError(404, "not_found", f"No such folder: {folder}.")
+    await _link_folder(project_id, folder)
+    await _touch_project(project_id)
+    return {"id": project_id, "folders": await _folders_of(project_id)}
 
 
 @app.patch("/projects/{project_id}")
@@ -497,10 +569,11 @@ async def rename_project(
 ) -> dict[str, Any]:
     """Rename a project. The title is a LABEL and nothing durable is keyed by it.
 
-    In particular the folder does not move. `projects.slug` is set once at
-    creation and never follows a rename: `~/projects/<slug>/` is the only
-    durable path the agent has, and renaming it out from under a running session
-    breaks every path the model learned. The two drift apart on purpose.
+    No folder moves, and now there is nothing a rename could even reach for: a
+    project LINKS folders and the folders are the store's, derived from the
+    paths of files that exist. The Files tab's headers are those segments, so
+    renaming a project cannot change one — which is the bug this replaced, where
+    the headers were project titles and a rename renamed the filesystem.
     """
     await _owned_project(project_id, user_id)
     title = str(body.get("title") or "").strip()
@@ -508,16 +581,16 @@ async def rename_project(
         raise ApiError(400, "invalid_request", "A project needs a name.")
     row = await pool.fetchrow(
         "UPDATE projects SET title = $2, updated_at = now() WHERE id = $1 "
-        "RETURNING id, title, slug, updated_at",
+        "RETURNING id, title, updated_at",
         _uuid(project_id, "project"),
         title,
     )
     return {
         "id": str(row["id"]),
         "title": row["title"],
-        # Returned so a surface can show where the files actually live once the
-        # two have drifted.
-        "slug": row["slug"],
+        # The links, so a surface can show where the work actually lands. The
+        # rename did not touch them and cannot.
+        "folders": await _folders_of(project_id),
         "updated_at": row["updated_at"].isoformat(),
     }
 
@@ -574,6 +647,10 @@ async def attention(
 
     Approvals and asks are the same row and the same wait; what differs is the
     answer, so the caller is told `kind` and nothing else branches here.
+
+    A `plan` row carries one field the others do not: `version`, which is a fact
+    about the session's plan HISTORY rather than about this row. It is read in
+    one extra query, and only when a plan is actually waiting.
     """
     if project_id is not None:
         await _owned_project(project_id, user_id)
@@ -612,118 +689,75 @@ async def attention(
             "tool_name": r["tool_name"],
             "tool_args": json.loads(r["tool_args"]) if isinstance(r["tool_args"], str) else r["tool_args"],
             "created_at": r["created_at"].isoformat(),
+            **(await _plan_context(str(r["session_id"])) if r["kind"] == "plan" else {}),
         }
         for r in rows
     ]
 
 
-@app.get("/projects/{project_id}/files")
-async def list_project_files(project_id: str, user_id: str = CurrentUser) -> list[dict[str, Any]]:
-    """List a project's files from the tree. No sandbox is woken to answer this."""
-    await _owned_project(project_id, user_id)
-    rows = await pool.fetch(
-        "SELECT id, path, size, mtime FROM project_files WHERE project_id = $1 ORDER BY path",
-        _uuid(project_id, "project"),
-    )
-    return [
-        {
-            "file_id": str(r["id"]),
-            "path": r["path"],
-            "name": posixpath.basename(r["path"]),
-            "size": r["size"],
-            "mtime": r["mtime"].isoformat(),
-        }
-        for r in rows
-    ]
+async def _plan_context(session_id: str) -> dict[str, Any]:
+    """Which version of this session's plan the open row is.
 
+    The version of a plan IS its position in the session's history — there is no
+    counter column, because a counter that disagreed with the rows would be a
+    second source of truth for the same fact.
 
-@app.get("/projects/{project_id}/files/{file_id}")
-async def read_project_file(project_id: str, file_id: str, user_id: str = CurrentUser) -> dict[str, Any]:
-    """One file's contents, read from the store without waking anything.
-
-    The computer view is a filesystem you can read, and listing rows is only
-    half of that. Text is returned decoded; anything that is not UTF-8 says so
-    rather than arriving as mojibake, because a reader pane that renders a PNG
-    as characters is worse than one that admits it cannot.
+    The previous version's args and the reply that produced this one were sent
+    too, for a "changed since v{n-1}" list on the card. They are not any more:
+    edits stack, so by v3 the list was longer than the plan and said less. A
+    reply is answered by a whole new plan, and the plan is what the human reads.
     """
-    await _owned_project(project_id, user_id)
-    row = await pool.fetchrow(
-        "SELECT path, content_hash, size, mtime FROM project_files WHERE id = $1 AND project_id = $2",
-        _uuid(file_id, "file"),
-        _uuid(project_id, "project"),
-    )
-    if row is None:
-        raise ApiError(404, "not_found", "No such file.")
+    history = await approvals.plan_history(session_id)
+    return {"version": len(history)} if history else {}
 
-    blob = await store.get_blob(row["content_hash"])
-    if blob is None:
-        raise ApiError(410, "blob_missing", "The store no longer holds this file's contents.")
 
-    try:
-        text = blob.decode()
-    except UnicodeDecodeError:
-        return {
-            "path": row["path"],
-            "size": row["size"],
-            "mtime": row["mtime"].isoformat(),
-            "text": None,
-            "binary": True,
-        }
+async def _latest_plan(session_id: str) -> dict[str, Any] | None:
+    """The session's newest plan and what became of it, or None if it has none.
+
+    `answer` is the row's verbatim decision — `approve`, `decline`, `superseded`,
+    or the feedback that was sent — so a surface can tell an approved plan from
+    a dismissed one without a second request.
+    """
+    history = await approvals.plan_history(session_id)
+    if not history:
+        return None
+    newest = history[-1]
     return {
-        "path": row["path"],
-        "size": row["size"],
-        "mtime": row["mtime"].isoformat(),
-        "text": text,
-        "binary": False,
+        "approval_id": newest.id,
+        "version": len(history),
+        "goal": (newest.tool_args or {}).get("goal"),
+        "answer": newest.answer,
     }
 
 
-@app.post("/projects/{project_id}/files", status_code=201)
-async def upload_project_file(
-    project_id: str,
-    file: UploadFile = UploadedFile,
-    path: str | None = UploadedPath,
-    user_id: str = CurrentUser,
-) -> dict[str, Any]:
-    """Put a file in the project's store, and in any box already holding it.
+# --- the store ------------------------------------------------------------------
+#
+# ONE flat namespace per user, and a folder is a top-level segment of it. These
+# routes are the store itself; the project-scoped one below is a VIEW of it,
+# narrowed to what one project links.
 
-    The store is where the file lands. A running session with this project
-    materialized is written through, so it reads the upload the same turn; every
-    other session gets it at its next materialize.
+
+@app.get("/folders")
+async def list_folders(user_id: str = CurrentUser) -> list[dict[str, Any]]:
+    """Every folder in the caller's store, with how many files are under it.
+
+    What the create modal's checklist and the `+ link` picker read. There is no
+    folders table to query: this is the first segment of every path the user
+    has, grouped — which is why a folder cannot be stale, and why one appears
+    the moment a file lands under a new first segment.
     """
-    await _owned_project(project_id, user_id)
-    try:
-        stored_path = store.safe_path(path or file.filename or "")
-    except ValueError as e:
-        raise ApiError(400, "invalid_request", str(e)) from e
-
-    content = await _read_within_quota(file)
-    stored = await store.put_file(project_id, stored_path, content)
-    await _touch_project(project_id)
-    await workspace.write_through(sandbox_manager.manager(), project_id, stored_path, content)
-
-    return {
-        "file_id": stored.id,
-        "name": posixpath.basename(stored_path),
-        "path": stored_path,
-        "size": stored.entry.size,
-    }
+    return [{"name": f.name, "files": f.files} for f in await store.folders(user_id)]
 
 
-@app.post("/projects/{project_id}/folders", status_code=201)
-async def create_project_folder(
-    project_id: str,
-    body: dict[str, Any] = JsonBody,
-    user_id: str = CurrentUser,
-) -> dict[str, Any]:
+@app.post("/folders", status_code=201)
+async def create_folder(body: dict[str, Any] = JsonBody, user_id: str = CurrentUser) -> dict[str, Any]:
     """Make a folder durable the moment it is named.
 
-    A directory is not a row — the tree is flat paths — so what lands is a
-    zero-byte sentinel inside it. Holding the folder in the browser until a file
-    arrived would put the truth in two places, and the first reload would
-    disagree with one of them.
+    A folder is not a row — it is a path segment — so what lands is a zero-byte
+    sentinel inside it. Holding the folder in the browser until a file arrived
+    would put the truth in two places, and the first reload would disagree with
+    one of them.
     """
-    await _owned_project(project_id, user_id)
     try:
         folder = store.safe_path(str(body.get("path") or ""))
     except ValueError as e:
@@ -734,36 +768,106 @@ async def create_project_folder(
         )
 
     taken = await pool.fetchval(
-        "SELECT 1 FROM project_files WHERE project_id = $1 AND (path = $2 OR path LIKE $3) LIMIT 1",
-        _uuid(project_id, "project"),
+        "SELECT 1 FROM files WHERE user_id = $1 AND (path = $2 OR path LIKE $3) LIMIT 1",
+        _uuid(user_id, "user"),
         folder,
         f"{folder}/%",
     )
     if taken:
-        raise ApiError(409, "already_exists", f"{folder} is already in this project.")
+        raise ApiError(409, "already_exists", f"{folder} is already in the store.")
 
     sentinel = store.dir_sentinel(folder)
-    await store.put_file(project_id, sentinel, b"")
-    await _touch_project(project_id)
-    await workspace.write_through(sandbox_manager.manager(), project_id, sentinel, b"")
+    await store.put_file(user_id, sentinel, b"")
+    await workspace.write_through(sandbox_manager.manager(), user_id, sentinel, b"")
     return {"path": folder, "sentinel": sentinel}
 
 
-@app.post("/projects/{project_id}/files/move")
-async def move_project_file(
-    project_id: str,
-    body: dict[str, Any] = JsonBody,
+@app.get("/files")
+async def list_files(user_id: str = CurrentUser) -> list[dict[str, Any]]:
+    """The caller's whole store, as tree rows. No sandbox is woken to answer this."""
+    rows = await pool.fetch(
+        "SELECT id, path, size, mtime FROM files WHERE user_id = $1 ORDER BY path",
+        _uuid(user_id, "user"),
+    )
+    return [_file_row(r) for r in rows]
+
+
+@app.get("/files/{file_id}")
+async def read_file(file_id: str, user_id: str = CurrentUser) -> dict[str, Any]:
+    """One file's contents, read from the store without waking anything.
+
+    Text is returned decoded; anything that is not UTF-8 says so rather than
+    arriving as mojibake, because a reader pane that renders a PNG as characters
+    is worse than one that admits it cannot.
+    """
+    row = await pool.fetchrow(
+        "SELECT path, content_hash, size, mtime FROM files WHERE id = $1 AND user_id = $2",
+        _uuid(file_id, "file"),
+        _uuid(user_id, "user"),
+    )
+    if row is None:
+        raise ApiError(404, "not_found", "No such file.")
+
+    blob = await store.get_blob(row["content_hash"])
+    if blob is None:
+        raise ApiError(410, "blob_missing", "The store no longer holds this file's contents.")
+
+    common = {"path": row["path"], "size": row["size"], "mtime": row["mtime"].isoformat()}
+    try:
+        return {**common, "text": blob.decode(), "binary": False}
+    except UnicodeDecodeError:
+        return {**common, "text": None, "binary": True}
+
+
+@app.post("/files", status_code=201)
+async def upload_file(
+    file: UploadFile = UploadedFile,
+    path: str | None = UploadedPath,
     user_id: str = CurrentUser,
 ) -> dict[str, Any]:
-    """Move a file or a whole folder inside the project: store first, boxes after.
+    """Put a file in the store, and in any box already holding its folder.
+
+    The store is where the file lands, so it exists whether or not anything is
+    awake. A running session whose claim covers the path is written through and
+    reads it the same turn; every other session gets it at its next materialize.
+
+    A path is REQUIRED to name a folder, because every file in the store is in
+    one: the folder is the first segment, so a bare filename would be its own
+    folder holding nothing.
+    """
+    try:
+        stored_path = store.in_folder(store.safe_path(path or file.filename or ""))
+    except ValueError as e:
+        raise ApiError(400, "invalid_request", str(e)) from e
+
+    content = await _read_within_quota(file)
+    stored = await store.put_file(user_id, stored_path, content)
+    await _touch_linked_projects(user_id, store.folder_of(stored_path))
+    await workspace.write_through(sandbox_manager.manager(), user_id, stored_path, content)
+
+    return {
+        "file_id": stored.id,
+        "name": posixpath.basename(stored_path),
+        "path": stored_path,
+        "folder": store.folder_of(stored_path),
+        "size": stored.entry.size,
+    }
+
+
+@app.post("/files/move")
+async def move_file(body: dict[str, Any] = JsonBody, user_id: str = CurrentUser) -> dict[str, Any]:
+    """Move a file or a whole subtree inside the store: store first, boxes after.
 
     The store is the record and moves in one transaction. A live box is a cache
     and is corrected immediately after, because flush commits what is on disk —
     a box left holding the old path would put it back and delete the new one
     when the turn ends, undoing the move without saying so. Sessions whose box
     refused come back as `stale_sessions` rather than being swallowed.
+
+    Moving BETWEEN folders is an ordinary move now: one namespace, a row edit,
+    no copy. Moving a FOLDER is refused — that is a rename of the thing claims
+    and mounts are keyed by, and it is its own card.
     """
-    await _owned_project(project_id, user_id)
     try:
         src = store.safe_path(str(body.get("from") or ""))
         dst = store.safe_path(str(body.get("to") or ""))
@@ -771,7 +875,7 @@ async def move_project_file(
         raise ApiError(400, "invalid_request", str(e)) from e
 
     try:
-        moves = await store.move_path(project_id, src, dst)
+        moves = await store.move_path(user_id, src, dst)
     except store.MissingPath as e:
         raise ApiError(404, "not_found", str(e)) from e
     except store.StoreError as e:
@@ -780,14 +884,14 @@ async def move_project_file(
     if not moves:
         return {"from": src, "to": dst, "moved": [], "stale_sessions": []}
 
-    await _touch_project(project_id)
-    _, stale = await workspace.move_through(sandbox_manager.manager(), project_id, moves)
+    for folder in {store.folder_of(src), store.folder_of(dst)}:
+        await _touch_linked_projects(user_id, folder)
+    _, stale = await workspace.move_through(sandbox_manager.manager(), user_id, moves)
     if stale:
         system_log.record(
             "workspace.move_stale",
             level="error",
             user_id=user_id,
-            project_id=project_id,
             sessions=stale,
             moved=len(moves),
         )
@@ -797,6 +901,189 @@ async def move_project_file(
         "moved": [{"from": was, "to": now} for was, now in moves],
         "stale_sessions": stale,
     }
+
+
+@app.post("/files/rename")
+async def rename_file(body: dict[str, Any] = JsonBody, user_id: str = CurrentUser) -> dict[str, Any]:
+    """Rename anything in the store: a file, a directory, or a top-level folder.
+
+    A rename changes what a thing is CALLED and not where it is, so `name` is a
+    name — a `/` in it is refused rather than quietly making this a move, which
+    has its own route and its own rules.
+
+    Renaming a top-level FOLDER carries the projects that link it and the claims
+    that mount it along with the paths, in one transaction. It is refused
+    (`409 folder_busy`) while a live box has that folder materialized: the
+    session's claims and its manifest live in the runner's memory as well as in
+    the database, so a box left at `~/store/<old>/` would flush its work back
+    under the old name and resurrect the folder — losing everything written
+    since it was materialized. Stopping the run first is the answer, and saying
+    so is better than a rename that half-happens.
+
+    Nothing else is disturbed: blobs are content-addressed and immutable, so not
+    one byte is re-uploaded, and every open reader keeps its `file_id`.
+    """
+    try:
+        path = store.safe_path(str(body.get("path") or ""))
+    except ValueError as e:
+        raise ApiError(400, "invalid_request", str(e)) from e
+    name = str(body.get("name") or "")
+
+    try:
+        destination = store.renamed_to(path, name)
+    except ValueError as e:
+        raise ApiError(400, "invalid_request", f"{str(e)} — a rename takes a name, not a path.") from e
+
+    if "/" not in path:
+        await _folder_is_free(user_id, path)
+
+    try:
+        moves = await store.rename_path(user_id, path, name)
+    except store.MissingPath as e:
+        raise ApiError(404, "not_found", str(e)) from e
+    except store.StoreError as e:
+        raise ApiError(409, "already_exists", str(e)) from e
+
+    if not moves:
+        return {"from": path, "to": destination, "moved": [], "stale_sessions": []}
+
+    for folder in {store.folder_of(path), store.folder_of(destination)}:
+        await _touch_linked_projects(user_id, folder)
+
+    # A nested rename is a move as far as a live box is concerned, and the boxes
+    # holding it are corrected in this same request for the reason every move is:
+    # flush commits what is on disk, so a box left on the old path would put it
+    # back. A top-level rename never reaches here with a live box — it was
+    # refused above.
+    _, stale = await workspace.move_through(sandbox_manager.manager(), user_id, moves)
+    if stale:
+        system_log.record(
+            "workspace.rename_stale", level="error", user_id=user_id, sessions=stale, moved=len(moves)
+        )
+    return {
+        "from": path,
+        "to": destination,
+        "moved": [{"from": was, "to": now} for was, now in moves],
+        "stale_sessions": stale,
+    }
+
+
+async def _folder_is_free(user_id: str, folder: str) -> None:
+    """Refuse to restructure a folder a run currently has on its disk.
+
+    The same rule delete, undo and a folder rename all need, for the same
+    reason: the runner holds that session's claims and its manifest in MEMORY,
+    so nothing here can correct the box. A box that still has the files would
+    put them back at its next flush, and a box that lost them would commit the
+    loss. Stopping the run first is the answer, and saying so beats a change
+    that half-happens.
+    """
+    busy = await workspace.boxes_holding(user_id, folder)
+    if busy:
+        raise ApiError(
+            409,
+            "folder_busy",
+            f"{folder}/ is mounted in {len(busy)} running session(s). Stop them and try again after.",
+        )
+
+
+@app.delete("/files")
+async def delete_file(body: dict[str, Any] = JsonBody, user_id: str = CurrentUser) -> dict[str, Any]:
+    """Delete a file or a whole subtree, and hand back the way to take it back.
+
+    The rows go; the BLOBS do not, because they are content-addressed,
+    immutable and never collected. Undo is therefore exact — the same content
+    under the same id — rather than a best effort.
+
+    A folder exists exactly as long as a file exists under it, so a delete that
+    empties one takes the folder with it, and the project links that named it go
+    into the same batch so they come back together. `folders` in the response is
+    what ceased to exist, which is what a surface has to stop drawing.
+    """
+    try:
+        path = store.safe_path(str(body.get("path") or ""))
+    except ValueError as e:
+        raise ApiError(400, "invalid_request", str(e)) from e
+
+    await _folder_is_free(user_id, store.folder_of(path))
+    try:
+        gone = await store.delete_path(user_id, path)
+    except store.MissingPath as e:
+        raise ApiError(404, "not_found", str(e)) from e
+
+    await _touch_linked_projects(user_id, store.folder_of(path))
+    return {
+        "path": gone.path,
+        "batch": gone.batch,
+        "files": gone.files,
+        "unlinked": gone.unlinked,
+        "folders": list(gone.folders),
+    }
+
+
+@app.post("/files/undo")
+async def undo_delete(body: dict[str, Any] = JsonBody, user_id: str = CurrentUser) -> dict[str, Any]:
+    """Put back exactly what one delete removed, links included.
+
+    `batch` names the gesture, so undo restores what that click took and not
+    whatever happened to be deleted most recently. `409` when something has
+    since been put at one of those paths: it was put there afterwards and is not
+    this batch's to overwrite.
+    """
+    batch = str(body.get("batch") or "").strip()
+    try:
+        as_uuid(batch)
+    except ValueError as e:
+        raise ApiError(404, "not_found", "There is nothing to undo.") from e
+
+    restored = await pool.fetchval(
+        "SELECT path FROM deleted_files WHERE user_id = $1 AND batch = $2 LIMIT 1",
+        _uuid(user_id, "user"),
+        _uuid(batch, "batch"),
+    )
+    if restored is None:
+        raise ApiError(404, "not_found", "There is nothing to undo.")
+    await _folder_is_free(user_id, store.folder_of(restored))
+
+    try:
+        back = await store.undo_delete(user_id, batch)
+    except store.MissingPath as e:
+        raise ApiError(404, "not_found", str(e)) from e
+    except store.StoreError as e:
+        raise ApiError(409, "already_exists", str(e)) from e
+
+    for folder in back.folders:
+        await _touch_linked_projects(user_id, folder)
+    return {
+        "path": back.path,
+        "files": back.files,
+        "relinked": back.unlinked,
+        "folders": list(back.folders),
+    }
+
+
+@app.get("/projects/{project_id}/files")
+async def list_project_files(project_id: str, user_id: str = CurrentUser) -> list[dict[str, Any]]:
+    """The files under this project's linked folders — the working-files pane.
+
+    A VIEW of the store, not a tree of its own: the rows are `files` rows and
+    the paths are store paths, so clicking one in the pane and finding it in the
+    Files tab is the same file at the same path rather than two listings that
+    have to agree.
+    """
+    await _owned_project(project_id, user_id)
+    rows = await pool.fetch(
+        """
+        SELECT f.id, f.path, f.size, f.mtime
+          FROM files f
+         WHERE f.user_id = $1
+           AND split_part(f.path, '/', 1) IN (SELECT folder FROM project_folders WHERE project_id = $2)
+         ORDER BY f.path
+        """,
+        _uuid(user_id, "user"),
+        _uuid(project_id, "project"),
+    )
+    return [_file_row(r) for r in rows]
 
 
 @app.post("/sessions/{session_id}/messages", status_code=202)
@@ -833,9 +1120,9 @@ async def respond_to_approval(
     body: dict[str, Any] = JsonBody,
     user_id: str = CurrentUser,
 ) -> dict[str, Any]:
-    """Answer an open question, or decide a gated call, and wake the session.
+    """Answer an open question, decide a gated call, or answer a plan.
 
-    The two kinds are answered differently because they mean different things.
+    The kinds are answered differently because they mean different things.
     A question (`ask`, `approval`) takes prose, which is appended as a `user`
     event for the model to read. A `call` takes exactly `approve` or `decline`:
     it is a decision about a tool call that is still open in the transcript, and
@@ -843,6 +1130,12 @@ async def respond_to_approval(
     a user message for a call — the model was not asked a question, and telling
     it "approve" as though the human had spoken would be a second, false record
     of what happened.
+
+    A `plan` takes THREE answers, because a plan is replied to and a call is
+    not. The approve word saves the approved args as `plan.md` and starts the
+    unattended run; the decline word closes the park and leaves an attended
+    chat; anything else is a reply, which closes this plan and asks for the next
+    one. This is the only place a session's mode flips to unattended.
     """
     text = str(body.get("answer") or "").strip()
     if not text:
@@ -862,6 +1155,11 @@ async def respond_to_approval(
                 f'{{"answer": "{approvals.APPROVE}"}} or {{"answer": "{approvals.DECLINE}"}}.',
             )
 
+    if approval.is_plan:
+        return await _answer_plan(approval, text, user_id)
+    if approval.is_resume:
+        return await _answer_resume(approval, text, user_id)
+
     # The UPDATE matches on answered_at IS NULL, so two people answering at once
     # produce one wake.
     answered = await approvals.answer(approval_id, text)
@@ -874,32 +1172,187 @@ async def respond_to_approval(
     return {"accepted": True, "session_id": answered.session_id, "started": started}
 
 
+async def _answer_resume(approval: approvals.Approval, text: str, user_id: str) -> dict[str, Any]:
+    """Resume a stopped run, steer it, or cancel it for real.
+
+    The same three-answer shape as a plan, and the same reason: what a human
+    does to a held run is not one bit. The approve word picks the run up where
+    it held — same plan, same mode, same hop budget, because the hold wrote no
+    terminal. Prose resumes it too, WITH the message appended: "skip that step,
+    do X instead" is the resume, and the model reads it beside the call it just
+    saw closed. The decline word is the hard cancel the button used to be, and
+    it is the only thing here that spends the plan.
+    """
+    verdict = text.strip().lower()
+
+    if verdict == approvals.DECLINE:
+        answered = await approvals.answer(approval.id, approvals.DECLINE)
+        if answered is None:
+            raise ApiError(409, "already_answered", "That run has already been answered.")
+        cancelled = await runner.cancel(answered.session_id)
+        return {"accepted": True, "session_id": answered.session_id, "cancelled": cancelled}
+
+    # `approve` is bare consent to carry on and appends nothing. Anything else is
+    # steering, and the human said it, so it lands as their turn.
+    steer = None if verdict == approvals.APPROVE else text
+    answered = await approvals.answer(approval.id, approvals.APPROVE if steer is None else text)
+    if answered is None:
+        raise ApiError(409, "already_answered", "That run has already been answered.")
+    if steer is not None:
+        await _append(answered.session_id, UserEvent(text=steer, source="human"))
+    # No `mode`: the hold never moved it, so the plan's approval still stands.
+    started = await runner.start(answered.session_id, reason="resumed")
+    return {"accepted": True, "session_id": answered.session_id, "started": started}
+
+
+async def _answer_plan(approval: approvals.Approval, text: str, user_id: str) -> dict[str, Any]:
+    """Approve, decline or workshop a proposed plan.
+
+    The quota is checked BEFORE the row is answered: a user at their unattended
+    limit should get a 429 and keep their plan, not lose it to an approval that
+    then cannot start anything.
+    """
+    verdict = text.strip().lower()
+    args = approval.tool_args or {}
+    row = await _owned_session(approval.session_id, user_id)
+    decision = verdict in (approvals.APPROVE, approvals.DECLINE)
+    # The two words are stored NORMALIZED, so the row says what was decided
+    # rather than how it was typed: "Approve" starting a run while the row read
+    # unapproved would make the consent table disagree with what happened, on
+    # the one table whose entire job is binding consent. Feedback is prose and
+    # is stored exactly as written.
+    recorded = verdict if decision else text
+
+    if verdict == approvals.APPROVE:
+        if await runner.plan_folder(approval.session_id) is None:
+            # The prompt tells an unattended run its plan is `plan.md` at the
+            # root of its first linked folder. A session that claims no folder
+            # has nowhere to write it, and starting anyway would make that
+            # promise a lie. Checked BEFORE the row is answered, like the quota.
+            raise ApiError(
+                409, "no_folder", "A plan is saved in a folder, and this session was given none."
+            )
+        if row["mode"] != "unattended":
+            # Sessions are created attended and the play button no longer flips
+            # the mode, so this is the only point at which a user's unattended
+            # load grows — and it does not grow at all when the session
+            # proposing is already unattended, which is why that case is exempt
+            # rather than counting itself and refusing at a limit of one.
+            await _check_unattended_quota(user_id)
+
+    answered = await approvals.answer(approval.id, recorded)
+    if answered is None:
+        raise ApiError(409, "already_answered", "That plan has already been answered.")
+
+    if verdict == approvals.APPROVE:
+        version = len(await approvals.plan_history(answered.session_id))
+        # What was approved is what is saved. Written before the run starts, so
+        # the first materialize copies it into the box with everything else.
+        await runner.save_plan(answered.session_id, args, version)
+        # Mode and status move in ONE conditional UPDATE, inside `start`.
+        started = await runner.start(answered.session_id, mode="unattended", reason="plan_approved")
+        if not started:
+            # The session moved under us. Put the card back rather than leaving a
+            # plan stamped approved that nothing ran and nothing can approve
+            # again — the human's only other recourse being to get the whole plan
+            # proposed afresh.
+            logger.warning("session %s: an approved plan could not start it", answered.session_id)
+            await approvals.reopen(answered.id)
+            raise ApiError(409, "not_idle", "The session moved before the plan could start it.")
+        return {"accepted": True, "session_id": answered.session_id, "started": True, "mode": "unattended"}
+
+    if verdict == approvals.DECLINE:
+        # Nothing ran and nothing is owed to the model: the park simply closes
+        # and the session goes back to being a chat.
+        await lifecycle.transition(answered.session_id, "awaiting_approval", "idle", "plan_declined")
+        return {"accepted": True, "session_id": answered.session_id, "started": False, "mode": "attended"}
+
+    # A reply. It lands as the human's own turn — they typed it — followed by the
+    # instruction that makes it produce a PLAN rather than a paragraph. Without
+    # that second event the model reads the reply, answers it inline, and the
+    # session goes idle with the card gone and nothing to approve: the run the
+    # human was setting up quietly stops existing.
+    await _append(answered.session_id, UserEvent(text=text, source="human"))
+    await _append(answered.session_id, UserEvent(text=prompts.plan_reply(), source="system"))
+    started = await runner.start(answered.session_id, reason="plan_reply")
+    return {"accepted": True, "session_id": answered.session_id, "started": started, "mode": "attended"}
+
+
 @app.post("/sessions/{session_id}/approve", status_code=202)
 async def approve_session(session_id: str, user_id: str = CurrentUser) -> dict[str, Any]:
-    """Hand a session over to run unattended, and start it.
+    """Ask for a plan for this session. It does NOT start an unattended run.
 
-    The session keeps its id and its transcript. From here the unattended
-    budgets apply and `finish_task` is its only terminal step.
+    The button used to flip the mode here and hand the model a transcript, which
+    is not a task: the 2026-08-20 Marketplace run went unattended with the
+    model's own unanswered question as the last event and burned its budget
+    greeting nobody. Now pressing it appends a `user{source: system}` handoff and
+    starts an ORDINARY ATTENDED TURN, whose job is to call `propose_plan`.
+
+    So the mode flips in exactly one place — approving that plan — and both
+    entries to an unattended run, this button and the model proposing off its own
+    judgement, are the same tool and the same card. Pressed on a session with no
+    conversation at all, this still yields a plan card: the handoff copy forbids
+    asking in prose, so the gaps arrive as `missing` and the card opens as the
+    intake form.
     """
     row = await _owned_session(session_id, user_id)
     if row["mode"] == "unattended":
         raise ApiError(409, "already_unattended", "This session is already running unattended.")
-    if row["status"] not in ("idle", "pending"):
+    # A TERMINAL session is a legal starting point, and it is the important one:
+    # pressing this on a cancelled run is how a continuation gets drafted. The
+    # handoff copy tells the model to read plan.md and the transcript and resume
+    # from what is verifiably done rather than planning the work twice. The
+    # `terminal -> running` reopen already exists for exactly this.
+    if row["status"] not in ("idle", "pending") and row["status"] not in lifecycle.TERMINAL:
         raise ApiError(409, "not_idle", f"A session in {row['status']!r} cannot be handed over.")
 
-    # Sessions are created attended, so this is the only point at which a
-    # user's unattended load grows.
-    await _check_unattended_quota(user_id)
-
-    started = await runner.start(session_id, mode="unattended", reason="approved")
+    await _append(session_id, UserEvent(text=prompts.plan_handoff(), source="system"))
+    started = await runner.start(session_id, reason="plan_requested")
     if not started:
+        # A 202 with started:false would leave the surface waiting on a plan that
+        # nothing is drafting, and the handoff instruction sitting in the
+        # transcript with no hop to read it — the exact shape this card exists to
+        # remove. The event stays: the next turn this session runs will read it
+        # and propose, which is what was asked for.
         raise ApiError(409, "not_idle", "The session moved before it could be started.")
-    return {"accepted": True, "mode": "unattended"}
+    return {"accepted": True, "started": True, "mode": "attended"}
+
+
+@app.post("/sessions/{session_id}/stop", status_code=202)
+async def stop_session(session_id: str, user_id: str = CurrentUser) -> dict[str, Any]:
+    """Hold a running turn, without ending it.
+
+    The run control has two faces and this is the first: **Stop while running,
+    Cancel while stopped.** Stop closes the calls in flight as
+    `cancelled_by_user`, refuses the rest of the hop, and parks on a `resume`
+    row at the hop boundary — no `done`, no terminal, and NO MODE FLIP, so the
+    plan the run was approved from is still approved and resuming costs nothing.
+
+    Cancel was the only control before this, and it is `task.cancel()` on the
+    whole turn: one slow step stopped, one approved plan spent. That is now the
+    second face, and the fallback here when there is no live turn to hold.
+
+    `stopped: false` means the turn is not running in this process, so the
+    caller should cancel instead.
+    """
+    row = await _owned_session(session_id, user_id)
+    if row["status"] != "running":
+        raise ApiError(409, "not_running", f"A session in {row['status']!r} is not running.")
+    return {"accepted": True, "stopped": await runner.stop(session_id)}
 
 
 @app.post("/sessions/{session_id}/cancel", status_code=202)
 async def cancel_session(session_id: str, user_id: str = CurrentUser) -> dict[str, Any]:
+    """End a run for good. The second face of the button, and the backstop.
+
+    A stopped session is cancelled from here too, and its `resume` row closes
+    with it: leaving the row open would put a card in front of a human offering
+    to resume a session that is already terminal.
+    """
     await _owned_session(session_id, user_id)
+    for open_row in await approvals.open_for(session_id):
+        if open_row.is_resume:
+            await approvals.answer(open_row.id, approvals.DECLINE)
     return {"cancelled": await runner.cancel(session_id)}
 
 
@@ -1330,10 +1783,71 @@ async def _touch_project(project_id: str) -> None:
 
     Separate from `lifecycle.touch_project`, which takes a connection and a
     SESSION id because it runs inside the transaction that moves a session. This
-    one is for the file routes, which have a project id and no transaction to
-    join.
+    one is for the routes that have a project id and no transaction to join.
     """
     await pool.execute("UPDATE projects SET updated_at = now() WHERE id = $1", _uuid(project_id, "project"))
+
+
+async def _touch_linked_projects(user_id: str, folder: str) -> None:
+    """Mark every project that links this folder as changed.
+
+    A file route no longer knows which project it is acting for, because it is
+    not acting for one: it writes to the store, and a project is whatever links
+    the folder the write landed in. Nought, one or several — the grid's "when"
+    is about work, and work is what a linked folder holds.
+    """
+    await pool.execute(
+        """
+        UPDATE projects SET updated_at = now()
+         WHERE user_id = $1
+           AND id IN (SELECT project_id FROM project_folders WHERE folder = $2)
+        """,
+        _uuid(user_id, "user"),
+        folder,
+    )
+
+
+def _file_row(row: Any) -> dict[str, Any]:
+    """One tree row on the wire. `path` is the full store path, folder included."""
+    return {
+        "file_id": str(row["id"]),
+        "path": row["path"],
+        "name": posixpath.basename(row["path"]),
+        "folder": store.folder_of(row["path"]),
+        "size": row["size"],
+        "mtime": row["mtime"].isoformat(),
+    }
+
+
+async def _folders_of(project_id: str) -> list[str]:
+    """The folders a project links, in the order they were linked."""
+    rows = await pool.fetch(
+        "SELECT folder FROM project_folders WHERE project_id = $1 ORDER BY created_at, folder",
+        _uuid(project_id, "project"),
+    )
+    return [r["folder"] for r in rows]
+
+
+async def _link_folder(project_id: str, folder: str) -> None:
+    """Record one link. Linking twice is the same link."""
+    await pool.execute(
+        "INSERT INTO project_folders (project_id, folder) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        _uuid(project_id, "project"),
+        folder,
+    )
+
+
+async def _make_folder(user_id: str, base: str) -> str:
+    """Reserve a new, empty folder named after `base` and return the name it got.
+
+    The none-case of creating a project. A folder exists exactly as long as a
+    file exists under it, so reserving one IS writing the sentinel — the same
+    zero-byte file that keeps any named-but-unfilled folder alive, riding
+    materialize and flush like everything else.
+    """
+    name = await store.unique_folder(user_id, base)
+    await store.put_file(user_id, store.dir_sentinel(name), b"")
+    return name
 
 
 def _session_core(row: Any) -> dict[str, Any]:
@@ -1358,36 +1872,20 @@ def _session_core(row: Any) -> dict[str, Any]:
 
 
 async def _new_project(user_id: str, title: str) -> Any:
-    """Create a project and give it the folder it will keep.
+    """Create a project row. It links no folder yet; the caller does that.
 
-    The slug is set ONCE, here, from the name it was created with, and nothing
-    renames it afterwards: `~/projects/<slug>/` is the only durable path the
-    agent has, and moving it because a label changed breaks every path the model
-    has learned. Uniquified per user because `~/projects/` is a flat namespace —
-    two projects called "notes" cannot share a directory, which was true before
-    the slug was stored and simply unenforced.
+    `slug` survives as nothing but the default NAME for the folder the none-case
+    makes, and it is no longer uniquified here: folder names are unique per
+    user because they are segments of unique paths, and `store.unique_folder`
+    resolves a collision against the folders that actually exist rather than
+    against a column that stopped describing them.
     """
-    base = store.slug(title, "project")
-    async with (await pool.pool()).acquire() as conn, conn.transaction():
-        taken = {
-            r["slug"]
-            for r in await conn.fetch(
-                "SELECT slug FROM projects WHERE user_id = $1 AND (slug = $2 OR slug LIKE $2 || '-%')",
-                _uuid(user_id, "user"),
-                base,
-            )
-        }
-        slug = base
-        n = 2
-        while slug in taken:
-            slug = f"{base}-{n}"
-            n += 1
-        return await conn.fetchval(
-            "INSERT INTO projects (user_id, title, slug) VALUES ($1, $2, $3) RETURNING id",
-            _uuid(user_id, "user"),
-            title,
-            slug,
-        )
+    return await pool.fetchval(
+        "INSERT INTO projects (user_id, title, slug) VALUES ($1, $2, $3) RETURNING id",
+        _uuid(user_id, "user"),
+        title,
+        store.slug(title, "project"),
+    )
 
 
 async def _owned_session(session_id: str, user_id: str) -> Any:
@@ -1462,6 +1960,13 @@ async def _check_rate_quota(user_id: str) -> None:
         raise ApiError(429, "quota_exceeded", f"{limit} new sessions an hour is the limit.", retryable=True)
 
 
+# What a composer message is refused with, per park kind. `ask` and `resume` are
+# absent on purpose: they are the two parks a typed message legitimately
+# answers — one because it asked a question, the other because the consent it
+# holds on was given already.
+_WAITING_ON = {"call": "a tool call", "approval": "an approval", "plan": "a plan"}
+
+
 async def _answer_by_message(session_id: str, text: str) -> dict[str, Any]:
     """Route a composer message sent to a parked session.
 
@@ -1475,10 +1980,23 @@ async def _answer_by_message(session_id: str, text: str) -> dict[str, Any]:
     "sounds good, go ahead" typed in the composer would have silently declined a
     call the human never saw, which undoes the whole point of binding consent to
     the call.
+
+    A `plan` is refused for the same reason and one more: the card's own input is
+    where a reply becomes the next version, and "yes do that" typed in the
+    composer would read as a reply rather than as the approval it meant.
+
+    A `resume` is the one park a typed message DOES answer, and it is not an
+    exception to the rule — it is the rule. The consent that park waits on is
+    the plan, and the plan is already approved; prose here approves nothing new,
+    it steers a run the human already said yes to. So typing "skip the browser,
+    do it another way" into a stopped run resumes it with that message, which is
+    the whole point of stopping rather than cancelling. The decline word cannot
+    reach this path at all — cancelling is a card action — so a message that
+    happens to contain it still resumes.
     """
     open_questions = await approvals.open_for(session_id)
-    if open_questions and open_questions[0].kind in ("approval", "call"):
-        waiting = "a tool call" if open_questions[0].kind == "call" else "an approval"
+    if open_questions and open_questions[0].kind in _WAITING_ON:
+        waiting = _WAITING_ON[open_questions[0].kind]
         raise ApiError(
             409,
             "awaiting_approval",
@@ -1492,59 +2010,63 @@ async def _answer_by_message(session_id: str, text: str) -> dict[str, Any]:
     return {"accepted": True, "started": started}
 
 
-async def _record_claims(session_id: str, project_id: str, declared: Any, user_id: str) -> None:
-    """Record what this session may touch, fixed for its life.
+async def _record_claims(session_id: str, project_id: Any, declared: Any, user_id: str) -> None:
+    """Record which FOLDERS this session may touch, fixed for its life.
 
-    Absent, it gets a write claim on its own project, so a caller that knows
-    nothing about claims behaves as it did before they existed.
+    Absent, it claims every folder its project links, all write — which is what
+    "every session spawned in the project receives them" means, and why a link
+    added later reaches the agent at the NEXT session: this runs once, at
+    creation, and nothing rewrites it.
+
+    A session with no project claims nothing and mounts nothing. That is the
+    home chat, and it is honest: there is no folder it was given.
     """
-    claims = declared if isinstance(declared, list) and declared else [{"project_id": project_id}]
-    rows = []
-    for claim in claims:
-        if not isinstance(claim, dict):
-            raise ApiError(400, "invalid_request", "Each claim is an object with a project_id.")
-        target = str(claim.get("project_id") or project_id)
-        mode = str(claim.get("mode") or "write")
-        if mode not in ("read", "write"):
-            raise ApiError(400, "invalid_request", f"A claim is read or write, not {mode!r}.")
-        owned = await pool.fetchval(
-            "SELECT id FROM projects WHERE id = $1 AND user_id = $2",
-            _uuid(target, "project"),
-            _uuid(user_id, "user"),
-        )
-        if owned is None:
-            raise ApiError(404, "not_found", "No such project.")
-        rows.append((_uuid(target, "project"), str(claim.get("subpath") or "/"), mode))
+    rows: list[tuple[str, str, str]] = []
+    if isinstance(declared, list) and declared:
+        known = {f.name for f in await store.folders(user_id)}
+        for claim in declared:
+            if not isinstance(claim, dict):
+                raise ApiError(400, "invalid_request", "Each claim is an object with a folder.")
+            folder = str(claim.get("folder") or "").strip().strip("/")
+            if not folder:
+                raise ApiError(400, "invalid_request", "Each claim names a folder.")
+            if folder not in known:
+                raise ApiError(404, "not_found", f"No such folder: {folder}.")
+            mode = str(claim.get("mode") or "write")
+            if mode not in ("read", "write"):
+                raise ApiError(400, "invalid_request", f"A claim is read or write, not {mode!r}.")
+            rows.append((folder, str(claim.get("subpath") or "/"), mode))
+    elif project_id is not None:
+        rows = [(folder, "/", "write") for folder in await _folders_of(str(project_id))]
 
-    for project, subpath, mode in rows:
+    # `ord` is the order they were GIVEN, which for the default case is the order
+    # the project linked them. It is an explicit column rather than a timestamp
+    # because the answer has to be stable: `plan.md` goes to the FIRST folder,
+    # and "first" cannot depend on how close together two inserts landed.
+    for position, (folder, subpath, mode) in enumerate(rows):
         await pool.execute(
             """
-            INSERT INTO session_claims (session_id, project_id, subpath, mode)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (session_id, project_id, subpath) DO UPDATE SET mode = EXCLUDED.mode
+            INSERT INTO session_claims (session_id, folder, subpath, mode, ord)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (session_id, folder, subpath)
+            DO UPDATE SET mode = EXCLUDED.mode, ord = EXCLUDED.ord
             """,
             _uuid(session_id, "session"),
-            project,
+            folder,
             subpath,
             mode,
+            position,
         )
 
 
 async def _claims_of(session_id: str) -> list[dict[str, Any]]:
-    """The session's claims, for the window to render."""
+    """The session's claims, for the window to render. Folders, in claim order."""
     rows = await pool.fetch(
-        """
-        SELECT c.project_id, c.subpath, c.mode, p.title
-          FROM session_claims c JOIN projects p ON p.id = c.project_id
-         WHERE c.session_id = $1
-         ORDER BY c.project_id, c.subpath
-        """,
+        "SELECT folder, subpath, mode FROM session_claims WHERE session_id = $1 "
+        "ORDER BY ord, folder, subpath",
         _uuid(session_id, "session"),
     )
-    return [
-        {"project_id": str(r["project_id"]), "title": r["title"], "subpath": r["subpath"], "mode": r["mode"]}
-        for r in rows
-    ]
+    return [{"folder": r["folder"], "subpath": r["subpath"], "mode": r["mode"]} for r in rows]
 
 
 async def _check_unattended_quota(user_id: str) -> None:

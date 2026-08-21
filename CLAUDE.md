@@ -60,9 +60,18 @@ call, never to prose about it. Answering is `approve`/`decline`, and approving
 runs that exact call once through normal dispatch, latched by `consumed_at`.
 Never re-run a consumed-but-unclosed call: repair it as interrupted.
 
-**The design lives at `new_frontend/`** — the checked-in copy of the Claude
-Design project 11.4 was built from. Where it and `frontend/` disagree, the
-design wins and `frontend/` is amended, not the other way round.
+**The designs live under `designs/`** — checked-in copies of the Claude Design
+project, one directory per canvas (`new-frontend/` is the 11.4 frame,
+`planning-card/`, `filesystem_revamp/`, `settings-usage/`, `sign-up/`). Where a
+design and `frontend/` disagree, the design wins and `frontend/` is amended, not
+the other way round.
+
+**An export is re-drafted in place, so check its date before trusting a
+reading.** `designs/filesystem_revamp/` gained rename mid-build on 2026-08-20
+and delete plus undo on 2026-08-21, each time overwriting the same file — a
+card's "not this card" list can be overtaken by the canvas it was written
+against. The exports were at the repo root until 2026-08-21 and are now only
+under `designs/`; a path without that prefix is a stale pointer.
 
 Coding standards still need the rewrite Task 7 promised. Until then: ruff, type
 hints on every signature, `async def` for anything that awaits, no blocking IO in

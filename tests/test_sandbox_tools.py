@@ -258,10 +258,10 @@ async def test_a_home_relative_path_is_expanded_by_the_box_not_by_us(sandbox):
     """`~` is a shell feature and quoting says "no shell features here", so the
     tilde used to reach grep as a literal directory name. It is handed to the
     box's own $HOME instead — nothing here assumes /home/user."""
-    await _run("grep", {"pattern": "timeout", "path": "~/projects/chat/arkos"}, _ctx())
+    await _run("grep", {"pattern": "timeout", "path": "~/store/triage/arkos"}, _ctx())
 
     command = sandbox.commands[-1]
-    assert '"$HOME"/projects/chat/arkos' in command
+    assert '"$HOME"/store/triage/arkos' in command
     assert "/home/user" not in command, "the home directory is the box's to decide"
 
 

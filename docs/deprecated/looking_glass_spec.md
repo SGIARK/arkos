@@ -1,3 +1,15 @@
+# DEPRECATED 2026-08-20 (owner)
+
+Every LG task (LG-1, 1.5-1.8, LG-2) is DONE and this spec's design sections
+no longer describe the product: the chat-first landing became the desk, the
+right-panel canvas became the browser popout, chat was removed entirely
+(12.3), and ark is renamed buddy. What the user sees is specced by the
+current Claude Design export (`new-frontend/`) and the active cards in
+`docs/single_loop_redesign_spec.md` (11.8, 12.1-12.3). contracts.md remains
+law. This file is kept as the historical record of the LG build only.
+
+---
+
 # Looking Glass — Product Spec
 
 Companion to `docs/single_loop_redesign_spec.md` (build plan) and

@@ -57,6 +57,7 @@ async def _db(tmp_path):
     yield
     store.use_blobs(None)
     await pool.execute("DELETE FROM sessions WHERE user_id = ANY($1::uuid[])", _seeded)
+    await pool.execute("DELETE FROM files WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM projects WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM users WHERE id = ANY($1::uuid[])", _seeded)
     _seeded.clear()
@@ -328,12 +329,15 @@ async def test_a_session_claiming_everything_still_has_no_memory_in_its_box():
     assert await sandbox_manager.claim_slot(session_id)
     await store.append_note(user_id, "the most sensitive distillate in the system")
     await store.update_memory(user_id, "# Memory\n")
-    await store.commit_tree(project_id, [store.FileContent(path="a.txt", content=b"1")])
+    await store.commit_tree(
+        user_id,
+        [store.FileContent(path="taxes/a.txt", content=b"1"), store.FileContent(path="taxes-ro/b.txt", content=b"2")],
+    )
     sandbox = _sweeping(FakeSandbox())
 
     claims = [
-        workspace.Claim(project_id=project_id, slug="taxes"),
-        workspace.Claim(project_id=project_id, slug="taxes-ro", mode="read"),
+        workspace.Claim(user_id=user_id, folder="taxes"),
+        workspace.Claim(user_id=user_id, folder="taxes-ro", mode="read"),
     ]
     await workspace.materialize(sandbox, session_id, claims)
 

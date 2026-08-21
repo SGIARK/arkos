@@ -23,6 +23,12 @@ harness:
   terminal_retry_s: 2
   terminal_retry_max_s: 60
   terminal_retry_max: 8
+  # Stop holds a run at its next hop boundary. A hop that never reaches one —
+  # a wedged tool, a stuck stream — would leave the button doing nothing, so
+  # after this many seconds the stop degrades to the old full cancel. Long
+  # enough that a slow-but-live step finishes its hop; short enough that a
+  # runaway run is still killable by the same button press.
+  stop_grace_s: 45
 
 context:
   # Fraction of the input budget (llm.context_window - llm.max_tokens) at which
@@ -33,8 +39,9 @@ context:
 
 store:
   # Where the agent's files live. Bytes are content-addressed under
-  # {prefix}/blobs/{hh}/{sha256}; the tree is rows in project_files. The sandbox
-  # disk is a cache of this, not the other way round.
+  # {prefix}/blobs/{hh}/{sha256}; the tree is rows in `files`, ONE flat namespace
+  # per user, where a folder is the first segment of a path. The sandbox disk is
+  # a cache of this, not the other way round.
   #
   # supabase   -- a Storage bucket, over its REST API. Needs SUPABASE_URL and
   #               SUPABASE_SERVICE_KEY in the environment, and the bucket below.

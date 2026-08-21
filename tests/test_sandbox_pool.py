@@ -105,6 +105,7 @@ async def boxes(tmp_path, monkeypatch):
     runner._cancelling.clear()
     await asyncio.sleep(0)
     await pool.execute("DELETE FROM sessions WHERE user_id = ANY($1::uuid[])", _seeded)
+    await pool.execute("DELETE FROM files WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM projects WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM users WHERE id = ANY($1::uuid[])", _seeded)
     _seeded.clear()
@@ -166,14 +167,19 @@ async def _user() -> str:
 
 
 async def _project(user_id: str, title: str) -> str:
-    return str(
-        await pool.fetchval(
-            "INSERT INTO projects (user_id, title, slug) VALUES ($1, $2, $3) RETURNING id",
-            uuid.UUID(user_id),
-            title,
-            store.slug(title, "project"),
-        )
+    """A project linking the folder its title implies, as `POST /projects` makes one."""
+    project_id = await pool.fetchval(
+        "INSERT INTO projects (user_id, title, slug) VALUES ($1, $2, $3) RETURNING id",
+        uuid.UUID(user_id),
+        title,
+        store.slug(title, "project"),
     )
+    await pool.execute(
+        "INSERT INTO project_folders (project_id, folder) VALUES ($1, $2)",
+        project_id,
+        store.slug(title, "project"),
+    )
+    return str(project_id)
 
 
 async def _session(
@@ -191,11 +197,11 @@ async def _session(
     return session_id
 
 
-async def _claim(session_id: str, project_id: str, mode: str = "write") -> None:
+async def _claim(session_id: str, folder: str, mode: str = "write") -> None:
     await pool.execute(
-        "INSERT INTO session_claims (session_id, project_id, subpath, mode) VALUES ($1, $2, '/', $3)",
+        "INSERT INTO session_claims (session_id, folder, subpath, mode) VALUES ($1, $2, '/', $3)",
         uuid.UUID(session_id),
-        uuid.UUID(project_id),
+        folder,
         mode,
     )
 
@@ -229,12 +235,11 @@ async def test_two_sessions_of_one_user_run_at_once_and_flush_to_their_own_store
     user_id = await _user()
     first_project = await _project(user_id, "One")
     second_project = await _project(user_id, "Two")
-    await store.commit_tree(first_project, [_file("a.txt", "one")])
-    await store.commit_tree(second_project, [_file("b.txt", "two")])
+    await store.commit_tree(user_id, [_file("one/a.txt", "one"), _file("two/b.txt", "two")])
     first = await _session(user_id, first_project, text="one")
     second = await _session(user_id, second_project, text="two")
-    await _claim(first, first_project)
-    await _claim(second, second_project)
+    await _claim(first, "one")
+    await _claim(second, "two")
 
     def write_into_my_mount(messages: list[dict]) -> str:
         slug = next(m["content"] for m in messages if m.get("role") == "user")
@@ -244,13 +249,13 @@ async def test_two_sessions_of_one_user_run_at_once_and_flush_to_their_own_store
 
     await asyncio.gather(_drive(first), _drive(second))
 
-    first_tree = {e.path for e in await store.read_tree(first_project)}
-    second_tree = {e.path for e in await store.read_tree(second_project)}
-    assert first_tree == {"a.txt", "mine.txt"}
-    assert second_tree == {"b.txt", "mine.txt"}
-    for project, slug in ((first_project, "one"), (second_project, "two")):
-        entry = next(e for e in await store.read_tree(project) if e.path == "mine.txt")
-        assert await store.get_blob(entry.content_hash) == f"hello from {slug}".encode()
+    assert {e.path for e in await store.read_tree(user_id, "one")} == {"one/a.txt", "one/mine.txt"}
+    assert {e.path for e in await store.read_tree(user_id, "two")} == {"two/b.txt", "two/mine.txt"}
+    for folder in ("one", "two"):
+        entry = next(
+            e for e in await store.read_tree(user_id, folder) if e.path == f"{folder}/mine.txt"
+        )
+        assert await store.get_blob(entry.content_hash) == f"hello from {folder}".encode()
     assert sorted(boxes.reaped) == sorted([first, second])
     assert await _slots(user_id) == 0
 
@@ -258,7 +263,7 @@ async def test_two_sessions_of_one_user_run_at_once_and_flush_to_their_own_store
 async def test_a_session_holds_one_slot_while_it_runs_and_none_after(boxes, model, patient):
     user_id = await _user()
     project_id = await _project(user_id, "Solo")
-    await store.commit_tree(project_id, [_file("a.txt", "1")])
+    await store.commit_tree(user_id, [_file("solo/a.txt", "1")])
     session_id = await _session(user_id, project_id)
 
     held: list[int] = []
@@ -286,7 +291,7 @@ async def test_a_session_over_the_cap_waits_and_says_so(boxes, model, impatient,
     monkeypatch.setattr(sandbox_manager, "max_per_user", lambda: 1)
     user_id = await _user()
     project_id = await _project(user_id, "Busy")
-    await store.commit_tree(project_id, [_file("a.txt", "1")])
+    await store.commit_tree(user_id, [_file("busy/a.txt", "1")])
     holder = await _session(user_id, project_id, status="running")
     assert await sandbox_manager.claim_slot(holder)
 
@@ -310,7 +315,7 @@ async def test_a_waiting_session_proceeds_when_a_box_frees(boxes, model, patient
     monkeypatch.setattr(sandbox_manager, "max_per_user", lambda: 1)
     user_id = await _user()
     project_id = await _project(user_id, "Contended")
-    await store.commit_tree(project_id, [_file("a.txt", "1")])
+    await store.commit_tree(user_id, [_file("contended/a.txt", "1")])
     holder = await _session(user_id, project_id, status="running")
     assert await sandbox_manager.claim_slot(holder)
 
@@ -382,7 +387,7 @@ async def test_a_box_is_not_reaped_before_its_flush_lands(boxes, model, patient,
     """The disk is the only copy of an edit until the commit lands."""
     user_id = await _user()
     project_id = await _project(user_id, "Fragile")
-    await store.commit_tree(project_id, [_file("a.txt", "1")])
+    await store.commit_tree(user_id, [_file("fragile/a.txt", "1")])
     session_id = await _session(user_id, project_id)
     model("true")
 
@@ -402,7 +407,7 @@ async def test_a_box_is_not_reaped_before_its_flush_lands(boxes, model, patient,
 async def test_a_flush_that_lands_is_followed_by_the_reap(boxes, model, patient, monkeypatch):
     user_id = await _user()
     project_id = await _project(user_id, "Ordered")
-    await store.commit_tree(project_id, [_file("a.txt", "1")])
+    await store.commit_tree(user_id, [_file("ordered/a.txt", "1")])
     session_id = await _session(user_id, project_id)
     model("true")
 
@@ -429,15 +434,15 @@ async def test_a_box_that_dies_mid_run_takes_neither_the_tree_nor_the_slot(boxes
     """The sentinel refuses the flush, so the session keeps its box and the store keeps its tree."""
     user_id = await _user()
     project_id = await _project(user_id, "Fragile")
-    await store.commit_tree(project_id, [_file("a.txt", "committed")])
+    await store.commit_tree(user_id, [_file("fragile/a.txt", "committed")])
     session_id = await _session(user_id, project_id)
     model("die")
 
     with contextlib.suppress(Exception):
         await _drive(session_id)
 
-    tree = await store.read_tree(project_id)
-    assert [e.path for e in tree] == ["a.txt"]
+    tree = await store.read_tree(user_id)
+    assert [e.path for e in tree] == ["fragile/a.txt"]
     assert await store.get_blob(tree[0].content_hash) == b"committed"
     assert boxes.reaped == [], "the box was reaped though its flush never landed"
     assert await _slots(user_id) == 1
@@ -558,7 +563,7 @@ async def test_a_park_pauses_the_box_and_keeps_its_slot(boxes, model, patient, m
     """A parked session is not acting, but it is not over: the box waits with it."""
     user_id = await _user()
     project_id = await _project(user_id, "Waiting")
-    await store.commit_tree(project_id, [_file("a.txt", "1")])
+    await store.commit_tree(user_id, [_file("waiting/a.txt", "1")])
     session_id = await _session(user_id, project_id)
 
     hops = [

@@ -44,6 +44,41 @@ class Reach(Protocol):
     enabled: bool
     shipped: bool
 
+
+class Mount(Protocol):
+    """One folder this session was given, and how it may be used.
+
+    `workspace.Claim` satisfies it. Which folders are on the disk is not visible
+    from the tool schemas either, and unlike a service there is no way to ask:
+    the model would have to `ls` for it. Since 11.9 a session may hold SEVERAL,
+    so "the project directory" is not an answer it can infer any more.
+    """
+
+    folder: str
+    mode: str
+
+
+def mounted_folders(mounts: Sequence[Mount]) -> str:
+    """Name the durable directories this session holds, in claim order.
+
+    Order matters and is not cosmetic: `plan.md` is written into the FIRST
+    writable one, and the unattended prompt tells the model to read it there.
+
+    Returns "" when the session holds none — a heading over an empty list would
+    read as a filesystem the model has and cannot find.
+    """
+    if not mounts:
+        return ""
+    lines = ["\n# Your durable folders"]
+    lines.append(
+        "These are on the disk at the paths below and are saved back when the session ends. "
+        "Nothing outside them survives."
+    )
+    for mount in mounts:
+        note = "read and write" if mount.mode == "write" else "READ ONLY — edits here are discarded"
+        lines.append(f"- ~/store/{mount.folder}/ — {note}")
+    return "\n".join(lines) + "\n"
+
 _SHARED = """You are ARK. You do work on the user's behalf by USING TOOLS — reading and \
 writing files, running commands, driving a browser, and calling the services they have \
 connected. You act; you do not merely describe what could be done.
@@ -80,12 +115,29 @@ this session and destroyed after it. It is not the user's machine and they canno
 - You have sudo and a network connection. If something you need is not installed, install it:
   `sudo apt-get update && sudo apt-get install -y <package>`. Never tell the user to install
   something for you, and never abandon a task because a tool is missing — that is yours to fix.
-- ~/projects/<project>/ is the ONLY durable path. One such directory already exists for each
-  project this session claimed: it was copied in when the session took the computer and is saved
+- ~/store/<folder>/ is the ONLY durable path. One such directory already exists for each
+  folder this session was given: it was copied in when the session took the computer and is saved
   back when the session finishes, so edits inside it are real and outlive the box.
 - Everything else is scratch and dies with the box — INCLUDING any new directory you create under
-  ~/projects itself. A clone, a download or a build you want kept goes INSIDE an existing project
-  directory, not beside one. Nothing warns you: work in the wrong place simply disappears.
+  ~/store itself. A folder is durable because files already live under it, not because you made a
+  directory there. A clone, a download or a build you want kept goes INSIDE one of the folders you
+  were given, not beside it. Nothing warns you: work in the wrong place simply disappears.
+
+# Running unattended
+An unattended run starts from an APPROVED PLAN and no other way. `propose_plan` is
+how you offer one: goal, done_when, steps, the inputs you already have, and `missing`
+— every question the plan still needs answered.
+- Propose one WITHOUT BEING ASKED as soon as the conversation has specified real work
+  ("sell my keyboard, $40, photos attached"). Proposing is your judgement; starting is
+  never yours — the human approves, and their approval is what begins the run.
+- If you are asked to draft a plan, call the tool. ALWAYS. A thin transcript is not a
+  reason to reply in prose instead: put what you cannot fill in `missing`, leave the
+  other fields honest, and let the card be the form they answer.
+- Blocked means ASK, on the card: an open question belongs in `missing`, not in a
+  paragraph beside the plan.
+- Calling it again REPLACES your last plan with a new version, whole: send every field,
+  never a patch. That is how you answer anything the human says about a plan — they see
+  the new plan, not a note about what changed, so a written reply reaches nobody.
 
 # Safety
 - These are the user's files, accounts and money. request_approval BEFORE anything
@@ -129,13 +181,22 @@ it can be answered. Prefer the tool whenever acting on a guess would be expensiv
 """
 
 _UNATTENDED = """
+# Your plan
+This run was approved from a plan, and that plan is `plan.md` at the root of the first
+folder listed above THAT YOU CAN WRITE TO — `~/store/<folder>/plan.md`. A read-only
+folder never holds it, because nothing could have written it there.
+It is what the human agreed to: read it first, work to its steps, and treat its
+"done when" as the definition of finished. Anything it rules out is out, and work that
+would go beyond it is a new plan to propose, not a liberty to take.
+
 # Finishing
 Nobody is watching this run. Text alone is NOT an exit: if you stop calling tools you
-will simply be asked to continue, and you will burn the budget you need. A run ends
-exactly one way — call finish_task with a summary of what you did and what you verified.
-If you cannot finish, still call finish_task and say plainly what blocked you and what
-you tried. Use ask only when you are genuinely blocked on something only the user knows;
-it parks the run until they answer, which may be hours.
+will be told to continue, then told to finish, and then the run ends as stalled with
+the work half done. A run ends exactly one way — call finish_task with a summary of
+what you did and what you verified. If you cannot finish, still call finish_task and
+say plainly what blocked you and what you tried. Use ask only when you are genuinely
+blocked on something only the user knows; it parks the run until they answer, which may
+be hours.
 """
 
 
@@ -210,6 +271,7 @@ def system_prompt(
     goal: str | None = None,
     memory: str | None = None,
     reach: Sequence[Reach] = (),
+    mounts: Sequence[Mount] = (),
 ) -> str:
     """Build the system message for one session.
 
@@ -227,8 +289,13 @@ def system_prompt(
         reach: the servers in THIS TURN'S manifest, from `registry.manifest`.
             Rebuilt every turn, so a toggle flipped between hops changes the
             prompt on the next one. Never the toggles themselves: see `Reach`.
+        mounts: the folders this session claimed, in claim order. Fixed for the
+            session's life, so unlike `reach` this is the same every hop.
     """
     parts = [_SHARED, _UNATTENDED if mode == "unattended" else _ATTENDED]
+    folders = mounted_folders(mounts)
+    if folders:
+        parts.append(folders)
     services = connected_services(reach)
     if services:
         parts.append(services)
@@ -238,6 +305,65 @@ def system_prompt(
     if goal:
         parts.append(f"# Context\nThe user's stated goal for this session:\n{goal}")
     return "\n".join(parts)
+
+
+def plan_handoff() -> str:
+    """The `user{source: system}` event the play button appends.
+
+    The button used to flip the mode and hand the model a transcript. Now it asks
+    for a plan, because a transcript is not a task: the 2026-08-20 Marketplace run
+    went unattended with the model's own unanswered question as the last event.
+
+    Written to be unrefusable. A thin or empty transcript is the case this exists
+    for — the card opens as an intake form, and prose asking the same questions
+    beside it would be the failure, not the answer.
+    """
+    return (
+        "The human pressed run. Draft the plan for this run from what this conversation "
+        "already says, and call propose_plan with it — ALWAYS, even if this conversation "
+        "is thin or empty. Do not ask your questions here: whatever you cannot fill in, "
+        "put in `missing` as a question, and leave every other field honest rather than "
+        "invented. Nothing starts until they approve it. "
+        "If a run has already happened here, read plan.md and the transcript above FIRST "
+        "and propose a CONTINUATION, not a fresh start: say what is verifiably done and "
+        "resume from there — \"steps 1-3 verified done; resume at 4\" — rather than "
+        "planning work they have already paid for again."
+    )
+
+
+def plan_reply() -> str:
+    """The instruction that follows a reply typed on the plan card.
+
+    Appended as `user{source: system}` behind the human's own message, and never
+    rendered: it is the harness talking to the model, not a turn.
+
+    It exists because answering in prose is the tempting move and the wrong one.
+    The card closed when they hit send, so a paragraph leaves the session idle
+    with nothing to approve and the run they were setting up quietly gone. The
+    only reply that reaches them is a new plan.
+    """
+    return (
+        "That was typed on the plan card, which has now closed. Fold it into the plan and call "
+        "propose_plan again with the WHOLE revised plan — every field, not a patch, and not a "
+        "description of what you changed. Do not answer in prose: this session has nothing to "
+        "approve until the tool is called, so a written reply ends the run they were starting. "
+        "If their message raises something you still cannot fill in, put it in `missing` as a "
+        "question and propose anyway."
+    )
+
+
+def continue_nudge(finish_tool: str) -> str:
+    """The answer an unattended bare-text hop gets, keeping the prompt's promise.
+
+    The prompt says a hop that stops calling tools "will simply be asked to
+    continue". Before 11.8.5 nothing did: the hop looped with nothing injected,
+    the tail became consecutive assistant messages, and the model degenerated.
+    """
+    return (
+        "Nobody is reading that — this run is unattended. Carry on with the next step "
+        f"by calling a tool, or call {finish_tool} with what you did and what blocked you. "
+        "Text alone is not an exit."
+    )
 
 
 def finish_nudge(finish_tool: str, hops_left: int) -> str:

@@ -24,6 +24,11 @@ ErrorKind = Literal[
     "timeout",
     "upstream_error",
     "interrupted",
+    # A human pressed Stop while this call was in flight, or after it. Distinct
+    # from `interrupted`, which means the process died and the outcome is
+    # unknown: here somebody decided, and the loop must not read that decision
+    # as the tool failing (11.8.6).
+    "cancelled_by_user",
 ]
 
 # Retrying these may work; the rest are the caller's problem to fix.

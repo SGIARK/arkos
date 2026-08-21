@@ -112,13 +112,13 @@ async def test_one_session_cannot_release_anothers_lease():
 async def test_release_all_frees_every_resource_a_session_holds():
     session_id = await _session()
     browser = leases.key("browser", str(uuid.uuid4()))
-    project = f"project:{uuid.uuid4()}"
+    folder = f"folder:{uuid.uuid4()}:triage"
     await leases.acquire(browser, session_id, 60)
-    await leases.acquire(project, session_id, 60)
+    await leases.acquire(folder, session_id, 60)
 
     assert await leases.release_all(session_id) == 2
     assert await leases.holder(browser) is None
-    assert await leases.holder(project) is None
+    assert await leases.holder(folder) is None
 
 
 async def test_a_lease_is_dropped_with_its_session():

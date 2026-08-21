@@ -52,6 +52,10 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset(
         ("idle", "running"),  # a human sends a message, or approves
         ("idle", "cancelled"),
         ("awaiting_approval", "running"),  # the respond endpoint wakes it
+        # A declined plan: the park closes and nothing runs. The only answer that
+        # ends a park without waking the session, because it is the only one with
+        # nothing for the model to read.
+        ("awaiting_approval", "idle"),
         ("awaiting_approval", "cancelled"),
         # A human restarts a finished session, or types into it. Nothing auto-resumes.
         ("completed", "running"),

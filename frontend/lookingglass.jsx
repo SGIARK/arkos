@@ -19,7 +19,7 @@ function pcStatus(status) {
   return "ok";
 }
 
-function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJumped }) {
+function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJumped, onOpenFile }) {
   const [projects, setProjects] = useState(null);
   // From App, which reads it once per pulse for every surface that shows it.
   const waiting = pending || [];
@@ -107,12 +107,17 @@ function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJ
 
   if (openSession) {
     return (
+      /* Keyed by the session: every piece of local state in there — the plan
+         lane's drafting flag, the resume note, the dismissed version — is about
+         ONE session, and reusing the instance across two carried it over. */
       <SessionDetail
+        key={openSession}
         sessionId={openSession}
         project={openProject}
         onBack={() => setOpenSession(null)}
         onError={onError}
         onPulse={onPulse}
+        onOpenFile={onOpenFile}
       />
     );
   }
@@ -217,7 +222,6 @@ function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJ
 
       {making && (
         <NewProject
-          projects={projects || []}
           onError={onError}
           onClose={() => setMaking(false)}
           onMade={async (project) => {
@@ -235,59 +239,65 @@ function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJ
 
 /* The new-project modal.
 
-   Two ways to start, and they differ in exactly one thing: whether the project
-   begins empty or holding files that already exist. Seeding COPIES TREE ROWS,
-   not bytes — the store is content-addressed, so the same file in two projects
-   is one blob and the source is untouched.
+   Two ways to start, and they differ in what the project LINKS: folders that
+   already exist in the store, or a fresh one named after the project. A project
+   owns no folder either way — linking is a fact about which work reads and
+   writes where, and the none-case folder is itself just linked (11.9).
 
-   The directory choices are derived from the projects already listed rather
-   than from a dedicated endpoint: there are a handful of projects, their file
-   lists are one request each, and a fourth route for a dropdown is a route to
-   maintain forever. */
-function NewProject({ projects, onClose, onMade, onError }) {
+   The choices come from `GET /folders`, which is the store's top-level segments
+   grouped with their file counts. Not from the projects: a folder nothing links
+   is still a folder, and deriving the list from projects would hide exactly the
+   folders a new project is most likely to want. */
+function NewProject({ onClose, onMade, onError }) {
   const [name, setName] = useState("");
   const [mode, setMode] = useState("new");
-  const [dirs, setDirs] = useState(null);
-  const [dir, setDir] = useState("");
+  const [folders, setFolders] = useState(null);
+  const [picked, setPicked] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
 
   useEscape(true, onClose);
 
   // Only when asked for: a person starting an empty project should not pay for
-  // a file listing of every project they own.
+  // a listing they are not going to read.
   useEffect(() => {
-    if (mode !== "existing" || dirs !== null) return;
+    if (mode !== "existing" || folders !== null) return;
     let dead = false;
-    (async () => {
-      const found = [];
-      for (const p of projects) {
-        try {
-          for (const f of await api.files(p.id)) {
-            const at = f.path.lastIndexOf("/");
-            if (at > 0) found.push({ project_id: p.id, path: f.path.slice(0, at), label: `${p.title} / ${f.path.slice(0, at)}` });
-          }
-        } catch (e) {
-          /* one unreadable project is not a broken dropdown */
-        }
-      }
-      if (dead) return;
-      const seen = new Set();
-      const unique = found.filter((d) => !seen.has(d.label) && seen.add(d.label));
-      setDirs(unique);
-      if (unique.length) setDir(unique[0].label);
-    })();
-    return () => { dead = true; };
-  }, [mode, dirs, projects]);
+    api
+      .folders()
+      .then((list) => !dead && setFolders(list))
+      .catch((e) => !dead && onError(e));
+    return () => {
+      dead = true;
+    };
+  }, [mode, folders, onError]);
+
+  const toggle = (folder) =>
+    setPicked((current) => {
+      const next = new Set(current);
+      if (next.has(folder)) next.delete(folder);
+      else next.add(folder);
+      return next;
+    });
 
   const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "untitled";
-  const chosen = (dirs || []).find((d) => d.label === dir);
-  const ready = !!name.trim() && !busy && (mode === "new" || !!chosen);
+  const linking = mode === "existing";
+  const chosen = [...picked];
+  const ready = !!name.trim() && !busy && (!linking || chosen.length > 0);
+
+  /* The footer previews the OUTCOME, because the two modes do different things
+     and the difference is the whole choice: one points at files that exist, the
+     other makes a folder that does not. */
+  const preview = linking
+    ? chosen.length
+      ? "links: " + chosen.map((f) => f + "/").join(", ")
+      : "pick at least one folder"
+    : "makes: " + slug + "/";
 
   const create = async () => {
     if (!ready) return;
     setBusy(true);
     try {
-      onMade(await api.createProject(name.trim(), mode === "existing" && chosen ? chosen : null));
+      onMade(await api.createProject(name.trim(), linking ? chosen : null));
     } catch (e) {
       setBusy(false);
       onError(e);
@@ -319,29 +329,39 @@ function NewProject({ projects, onClose, onMade, onError }) {
               <span className="np-radio" />
               <span className="np-copy">
                 <span className="t">a new directory</span>
-                <span className="s">start empty — sessions and drops fill it</span>
+                <span className="s">a folder named after the project, starting empty</span>
               </span>
             </div>
-            <div className={"np-pick" + (mode === "existing" ? " on" : "")} onClick={() => setMode("existing")}>
+            <div className={"np-pick" + (linking ? " on" : "")} onClick={() => setMode("existing")}>
               <span className="np-radio" />
               <span className="np-copy">
                 <span className="t">an existing directory</span>
-                <span className="s">point at files already in the store</span>
-                {mode === "existing" && (
-                  <select value={dir} onClick={(e) => e.stopPropagation()} onChange={(e) => setDir(e.target.value)}>
-                    {dirs === null && <option>reading…</option>}
-                    {dirs !== null && !dirs.length && <option value="">no directories yet</option>}
-                    {(dirs || []).map((d) => (
-                      <option key={d.label} value={d.label}>{d.label}</option>
+                <span className="s">link folders already in the store</span>
+                {linking && (
+                  <div className="np-list" onClick={(e) => e.stopPropagation()}>
+                    {folders === null && <span className="np-none">reading…</span>}
+                    {folders !== null && !folders.length && (
+                      <span className="np-none">no folders yet — start a new one</span>
+                    )}
+                    {(folders || []).map((f) => (
+                      <span
+                        key={f.name}
+                        className={"np-choice" + (picked.has(f.name) ? " on" : "")}
+                        onClick={() => toggle(f.name)}
+                      >
+                        <span className="np-box">{picked.has(f.name) ? "✓" : ""}</span>
+                        <span className="nm">{f.name}/</span>
+                        <span className="n">{f.files} files</span>
+                      </span>
                     ))}
-                  </select>
+                  </div>
                 )}
               </span>
             </div>
           </div>
         </div>
         <div className="np-foot">
-          <span className="np-preview">{slug}/</span>
+          <span className="np-preview">{preview}</span>
           <span className="np-acts">
             <button className="np-cancel" onClick={onClose}>cancel</button>
             <button className="np-go" disabled={!ready} onClick={create}>
@@ -354,11 +374,23 @@ function NewProject({ projects, onClose, onMade, onError }) {
   );
 }
 
-/* One session, live. The same component renders the home chat's window and any
-   project session — they are the same thing (D5). */
-function SessionDetail({ sessionId, project, onBack, onError, onPulse }) {
+/* One session, live. Every session is the same kind of thing (D5), so this is
+   the only window there is — reached from a project, or from the desk's running
+   list, and since 11.9 a session need not belong to a project at all. */
+function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFile }) {
   const stream = useStream(sessionId, onError, onPulse);
-  const { session, events, pending, questions, todo, browserUrl, browserLabel, send, refreshQuestions } = stream;
+  const {
+    session,
+    events,
+    pending,
+    questions,
+    todo,
+    browserUrl,
+    browserLabel,
+    send,
+    refreshQuestions,
+    refreshSession,
+  } = stream;
   const [text, setText] = useState("");
   const [tab, setTab] = useState(() => localStorage.getItem("ark-canvas") || "files");
   // Renaming the project from its own session header: the same gesture as on
@@ -367,13 +399,54 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse }) {
   const [headText, setHeadText] = useState("");
   const tail = useRef(null);
 
+  /* The plan lane. Two pieces of local state, and each is a thing the server
+     genuinely does not know:
+       drafting  — the play button was pressed, or a reply was sent, and the
+                   turn drafting the next plan is in flight. There is no plan
+                   row to read yet.
+       dismissed — a dismissed plan, kept visible as "nothing ran" until the
+                   next thing happens. The row is closed; only this window
+                   cares.
+     The open plan itself is NOT held here. It is `questions`, and it is on
+     screen exactly while the server says a plan is waiting: replying closes the
+     row, the card goes with it, and the next plan arrives as a new card. */
+  const [drafting, setDrafting] = useState(false);
+  // The last note that resumed a held run, echoed beside the plan so the reason
+  // the run picked back up is visible next to what it picked up.
+  const [resumeNote, setResumeNote] = useState("");
+  // The plan approved in THIS window. The snapshot's `plan` is the same fact
+  // from the server and is what survives a reload, but it was read before the
+  // approval, so the pinned card would not appear until then without this.
+  const [approvedHere, setApprovedHere] = useState(null);
+  /* Dismissing a finished plan clears it from THIS surface and nothing else:
+     the row is a permanent fact and is never deleted. Kept per browser rather
+     than in memory, because a reload resurrecting a plan you dismissed reads as
+     the dismissal not having worked. */
+  const dismissKey = `ark-plan-dismissed-${sessionId}`;
+  const [dismissedVersion, setDismissedVersion] = useState(() => {
+    const stored = Number(localStorage.getItem(dismissKey));
+    return Number.isFinite(stored) && stored > 0 ? stored : 0;
+  });
+  const dismissPlan = (version) => {
+    localStorage.setItem(dismissKey, String(version || 1));
+    setDismissedVersion(version || 1);
+    setApprovedHere(null);
+    setResumeNote("");
+  };
+
+  /* Renaming the project from its own window. Keyed off the SNAPSHOT's ids
+     rather than the grid's navigation state, so it works in a window opened
+     from the desk — where there is no `project` prop at all — and the header
+     re-reads the name from the server rather than from a mutated prop. */
   const commitHeadRename = async () => {
     const title = headText.trim();
     setHeadRename(false);
-    if (!project || !title || title === project.title) return;
+    const id = session && session.project_id;
+    if (!id || !title || title === projectTitle) return;
     try {
-      await api.renameProject(project.id, title);
-      project.title = title;
+      await api.renameProject(id, title);
+      if (project) project.title = title;
+      refreshSession();
       if (onPulse) onPulse();
     } catch (e) {
       onError(e);
@@ -383,6 +456,27 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse }) {
   useEffect(() => {
     localStorage.setItem("ark-canvas", tab);
   }, [tab]);
+
+  /* The lane's bookkeeping, all of it driven by rows arriving rather than by
+     timers: a plan appearing ends the drafting, and a session that stops
+     running ends it whatever else happened. */
+  const openPlan = questions.find((q) => q.kind === "plan") || null;
+  // A held run. It is a park like any other on the wire, and the surface it gets
+  // is one transcript row plus the second face of the run button.
+  const heldRun = questions.find((q) => q.kind === "resume") || null;
+  useEffect(() => {
+    if (openPlan) {
+      setDrafting(false);
+      setApprovedHere(null);
+      setResumeNote("");
+    }
+  }, [openPlan]);
+  useEffect(() => {
+    // A turn that ended without a plan: the model answered in prose instead of
+    // proposing. The spinner stops and the play button comes back rather than
+    // waiting on something nothing is drafting.
+    if (session && session.status !== "running") setDrafting(false);
+  }, [session && session.status]);
   useEffect(() => {
     if (tail.current) tail.current.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [events.length, pending.length]);
@@ -390,6 +484,61 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse }) {
   if (!session) return <div className="lg-view"><div className="projects-grid"><Empty>opening…</Empty></div></div>;
 
   const running = session.status === "running";
+  const unattended = session.mode === "unattended";
+  // Where an approved plan lands: the FIRST folder this session writes.
+  const planFolder = (session.folders || [])[0] || null;
+  /* The snapshot first, the navigation state second: a window opened from the
+     desk has no `project` prop, and the header should not depend on how you
+     got here. Null for a session with no project — the home chat is one. */
+  const projectTitle = session.project_title || (project && project.title) || null;
+  /* No directory chips in the header (11.9). A session may hold SEVERAL linked
+     folders, so one chip was never going to be right, and where work lands is
+     said by the plan card and the working-files pane — the two places that show
+     it in full rather than in a slot that fits one. */
+
+  // The open plan row, and the session's newest plan whatever became of it.
+  const planCard = openPlan;
+  /* Everything below reads the server's `plan` — its `answer` is what became of
+     it — with one local override for the approval made in THIS window, which the
+     snapshot was read before. Dismissing hides whatever version was dismissed. */
+  const serverPlan = session.plan && session.plan.version > dismissedVersion ? session.plan : null;
+  const approvedPlan = approvedHere || (serverPlan && serverPlan.answer === "approve" ? serverPlan : null);
+  const abandonedPlan = serverPlan && serverPlan.answer === "decline" ? serverPlan : null;
+
+  /* The faces of a plan that has been decided. `held` is a live park;
+     `cancelled` is a spent one, and it is the only place the run button becomes
+     "resume" — pressing it drafts a CONTINUATION rather than a fresh v1. */
+  const held = !!heldRun;
+  const cancelled = !!approvedPlan && session.status === "cancelled";
+  // The pin outlives the run: an approved plan that finished still says where
+  // it was saved. It goes only when the plan is dismissed.
+  const showPin = !!approvedPlan;
+  const stopStep = session.hops_used || 1;
+  /* ▶ is offered when nothing is pending on the human and nothing is in flight:
+     an idle session, a finished one, a dismissed plan, or a cancelled run
+     (where it reads "resume"). A held run has its own two faces instead. */
+  const showRun = !planCard && !drafting && !held && !running && !unattended;
+
+  const cancelHeld = () =>
+    api
+      .answer(heldRun.approval_id, "decline")
+      .then(() => {
+        refreshQuestions();
+        refreshSession();
+        if (onPulse) onPulse();
+      })
+      .catch(onError);
+
+  const resumeHeld = () =>
+    api
+      .answer(heldRun.approval_id, "approve")
+      .then(() => {
+        setResumeNote("");
+        refreshQuestions();
+        refreshSession();
+        if (onPulse) onPulse();
+      })
+      .catch(onError);
 
   return (
     <div className="lg-view">
@@ -399,49 +548,116 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse }) {
             ← projects
           </button>
         )}
+        {/* THE PROJECT'S NAME, and nothing else. The session's own title was a
+            second crumb here and it earned none of the room: it repeated the
+            first line of the transcript underneath it, and where it did not —
+            a session with no project — the fallback printed the SAME name
+            twice, "Chat ▸ Chat", with a crumb between them promising a
+            container that does not exist. A session with no project shows no
+            name here rather than an invented one; the transcript says what it
+            is. The title comes from the SNAPSHOT, so the header reads the same
+            whether the window was opened from the grid or from the desk. */}
         <span className="path">
-          {headRename ? (
-            <input
-              className="pc-rename"
-              value={headText}
-              autoFocus
-              spellCheck={false}
-              onChange={(e) => setHeadText(e.target.value)}
-              onBlur={commitHeadRename}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") commitHeadRename();
-                if (e.key === "Escape") setHeadRename(false);
-              }}
-            />
+          {projectTitle &&
+            (headRename ? (
+              <input
+                className="pc-rename"
+                value={headText}
+                autoFocus
+                spellCheck={false}
+                onChange={(e) => setHeadText(e.target.value)}
+                onBlur={commitHeadRename}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitHeadRename();
+                  if (e.key === "Escape") setHeadRename(false);
+                }}
+              />
+            ) : (
+              <b
+                onDoubleClick={() => (setHeadText(projectTitle), setHeadRename(true))}
+                title="double-click to rename"
+                style={{ cursor: "text" }}
+              >
+                {projectTitle}
+              </b>
+            ))}
+        </span>
+        <span className={"status-pill" + (held ? " held" : "")}>
+          {held ? (
+            <span className="square" />
           ) : (
-            <b
-              onDoubleClick={() => project && (setHeadText(project.title), setHeadRename(true))}
-              title={project ? "double-click to rename" : undefined}
-              style={project ? { cursor: "text" } : undefined}
-            >
-              {(project && project.title) || session.title || "session"}
-            </b>
+            <span className={"dot " + (running ? "live" : session.status === "awaiting_approval" ? "work" : "")} />
           )}
-          <span className="crumb">▸</span>
-          {session.title || "untitled session"}
+          {held ? "stopped" : statusLabel(session.status, session.terminal_reason)}
         </span>
-        <span className="status-pill">
-          <span className={"dot " + (running ? "live" : session.status === "awaiting_approval" ? "work" : "")} />
-          {statusLabel(session.status, session.terminal_reason)}
-        </span>
-        <span className="lg-budget">
-          hop {session.hops_used}/{session.hops_max}
-        </span>
+        {!held && (
+          <span className="lg-budget">
+            hop {session.hops_used}/{session.hops_max}
+          </span>
+        )}
+        {held && (
+          <span className="lg-budget">holding at hop {session.hops_used}/{session.hops_max}</span>
+        )}
+        {(drafting || planCard) && (
+          <span className="plan-chip">
+            <Spinner />
+            {planCard ? "plan awaiting approval" : "drafting a plan"}
+          </span>
+        )}
         <span className="grow" />
         <div className="lg-ctrls">
-          {session.mode === "attended" && session.status === "idle" && (
-            <button className="icon-round" title="let it run unattended" onClick={() => api.approve(sessionId).catch(onError)}>
-              ▶
+          {/* The run control has three faces and never two at once.
+
+              ▶ asks for a PLAN — it does not hand the session over, which is
+              what its tooltip promises and what the endpoint does. On a
+              CANCELLED run it reads "resume" and drafts a continuation instead
+              of a fresh v1: same request, different starting point, because the
+              handoff tells the model to read plan.md and the transcript first.
+
+              ■ stop holds a running turn. ✕ cancel is the second press and the
+              only one that spends the plan. Before 11.8.6 the first press was
+              the only press. */}
+          {showRun && (
+            <button
+              className="run-btn"
+              title={
+                cancelled
+                  ? "ark reads plan.md and the transcript, then proposes a continuation for your approval."
+                  : "ark drafts a plan first. nothing runs until you approve it."
+              }
+              onClick={() => {
+                setDrafting(true);
+                api.approve(sessionId).catch((e) => {
+                  setDrafting(false);
+                  onError(e);
+                });
+              }}
+            >
+              <span className="glyph">▶</span>
+              {cancelled ? "resume" : "autopilot"}
             </button>
           )}
           {running && (
-            <button className="icon-round danger" title="cancel" onClick={() => api.cancel(sessionId).catch(onError)}>
-              ✕
+            <button
+              className="stop-btn"
+              title={
+                "stops at the hop boundary. in-flight calls close as cancelled and count against " +
+                "nothing; the plan's approval stands. if the run hangs, this becomes a hard cancel " +
+                "after a grace period."
+              }
+              onClick={() => api.stop(sessionId).catch(() => api.cancel(sessionId).catch(onError))}
+            >
+              <span className="square" />
+              stop
+            </button>
+          )}
+          {held && (
+            <button
+              className="cancel-btn"
+              title="ends the run for good and spends the plan's approval. resuming later means a new plan."
+              onClick={() => cancelHeld()}
+            >
+              ✕ cancel
             </button>
           )}
         </div>
@@ -453,16 +669,161 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse }) {
             {grouped(events).map((event) => (
               <StreamEvent key={event.seq} event={event} />
             ))}
-            {/* Answered where it was asked, not in a separate tray. */}
-            {questions.map((q) => (
-              <AskBlock key={q.approval_id} item={q} onAnswered={refreshQuestions} onError={onError} />
-            ))}
+            {/* Answered where it was asked, not in a separate tray — except a
+                plan, which is not a question and does not answer like one: it
+                gets the lane below. */}
+            {questions
+              .filter((q) => q.kind !== "plan")
+              .map((q) => (
+                <AskBlock
+                  key={q.approval_id}
+                  item={q}
+                  hopLabel={session.hops_used}
+                  onAnswered={refreshQuestions}
+                  onError={onError}
+                />
+              ))}
             {pending.map((p) => (
               <div className="ev-block ev-user pending" key={p.id}>
                 <span className="who">you</span>
                 <div className="said">{p.text}</div>
               </div>
             ))}
+            {/* ---- the plan lane. Six faces, never two at once: drafting,
+                    the open card, the running plan, a held run, a spent one, a
+                    dismissed one. It lives INSIDE the transcript and scrolls
+                    with it — a docked strip overlaid the conversation, and the
+                    transcript is meant to be the only surface. ---- */}
+            {drafting && !planCard && (
+              <div className="plan-drafting">
+                <Spinner />
+                <span>ark is drafting {cancelled ? "a continuation" : "a plan"} for this run</span>
+                <span className="grow" />
+                <button className="link" onClick={() => api.cancel(sessionId).catch(onError)}>
+                  cancel
+                </button>
+              </div>
+            )}
+
+            {planCard && (
+              <PlanCard
+                key={planCard.approval_id}
+                item={planCard}
+                onError={onError}
+                onAnswered={(outcome) => {
+                  if (outcome === "approved") {
+                    setApprovedHere({
+                      version: planCard.version || 1,
+                      goal: (planCard.tool_args || {}).goal,
+                      answer: "approve",
+                    });
+                  }
+                  // A reply wakes the session to propose again, so the lane goes
+                  // straight back to drafting rather than blanking until the
+                  // next card lands.
+                  if (outcome === "replied") setDrafting(true);
+                  refreshQuestions();
+                  refreshSession();
+                  if (onPulse) onPulse();
+                }}
+              />
+            )}
+
+            {/* The approved plan, collapsed to one line and the file it became.
+                `plan.md` is not a phrase here — the run really does start from
+                it. Held, the dot goes amber and stops pinging: a stopped run is
+                alive, and it should not look like one that is working. */}
+            {showPin && (
+              <div className={"plan-pinned" + (held ? " held" : "")}>
+                <span className="pin-dot" />
+                <span className="goal">{approvedPlan.goal}</span>
+                <span className="ver">v{approvedPlan.version}</span>
+                {/* The real file, at its real path — the run starts from it, so
+                    the chip opens it rather than naming it. It lands in the
+                    session's FIRST linked folder (11.9), which is the first
+                    one the session claimed. */}
+                <span
+                  className={"file" + (planFolder && onOpenFile ? " open" : "")}
+                  title={planFolder ? `${planFolder}/plan.md` : "plan.md"}
+                  onClick={() => planFolder && onOpenFile && onOpenFile(`${planFolder}/plan.md`)}
+                >
+                  plan.md
+                </span>
+                <span className="state">
+                  {held ? "stopped" : planFolder ? `saved in ${planFolder}/` : "saved to the store"}
+                </span>
+              </div>
+            )}
+
+            {/* Why the run picked back up, next to what it picked up. */}
+            {!held && resumeNote && showPin && (
+              <div className="plan-resumed">
+                <span className="lede">resumed with your note</span>
+                <span className="said">"{resumeNote}"</span>
+              </div>
+            )}
+
+            {held && (
+              <div className="plan-stopped">
+                <span className="square" />
+                <span className="said">
+                  stopped at step {stopStep}. in-flight calls closed, nothing counts against the plan.
+                </span>
+                <button className="go" onClick={resumeHeld}>
+                  resume
+                </button>
+                <button className="link danger" onClick={cancelHeld}>
+                  cancel
+                </button>
+              </div>
+            )}
+
+            {cancelled && (
+              <div className="plan-spent">
+                <span className="said">
+                  run cancelled at step {stopStep}. the plan's approval is spent.
+                </span>
+                <span className="grow" />
+                <button
+                  className="link"
+                  onClick={() => {
+                    setDrafting(true);
+                    api.approve(sessionId).catch((e) => {
+                      setDrafting(false);
+                      onError(e);
+                    });
+                  }}
+                >
+                  draft a continuation
+                </button>
+                <button className="link mute" onClick={() => dismissPlan(approvedPlan.version)}>
+                  dismiss
+                </button>
+              </div>
+            )}
+
+            {abandonedPlan && !planCard && !drafting && (
+              <div className="plan-spent">
+                <span className="said">plan v{abandonedPlan.version} dismissed, nothing ran</span>
+                <span className="grow" />
+                <button
+                  className="link"
+                  onClick={() => {
+                    setDrafting(true);
+                    api.approve(sessionId).catch((e) => {
+                      setDrafting(false);
+                      onError(e);
+                    });
+                  }}
+                >
+                  draft again
+                </button>
+                <button className="link mute" onClick={() => dismissPlan(abandonedPlan.version)}>
+                  dismiss
+                </button>
+              </div>
+            )}
+
             <div ref={tail} />
           </div>
 
@@ -470,10 +831,14 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse }) {
             className="lg-composer"
             onSubmit={(e) => {
               e.preventDefault();
-              if (text.trim()) {
-                send(text.trim());
-                setText("");
-              }
+              const said = text.trim();
+              if (!said) return;
+              // A held run resumes on what is typed here — kind `resume` is the
+              // one park the composer may answer — and the note is the next
+              // thing the model reads, so it is worth saying that it landed.
+              if (held) setResumeNote(said);
+              send(said);
+              setText("");
             }}
           >
             <SessionTools sessionId={sessionId} onError={onError} />
@@ -481,7 +846,11 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse }) {
             <input
               value={text}
               onChange={(e) => setText(e.target.value)}
-              placeholder="suggest or steer this session…"
+              /* A stopped run resumes on what is typed here — kind `resume` is
+                 exempt from the composer's 409, because the plan it holds on is
+                 already approved. Saying so is the difference between a held run
+                 and a dead one. */
+              placeholder={held ? "type to resume. your note is the next thing ark reads" : "suggest or steer this session…"}
               spellCheck={false}
               autoComplete="off"
             />
@@ -518,7 +887,12 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse }) {
           </div>
 
           {tab === "files" ? (
-            <FilesCanvas projectId={session.project_id} onError={onError} />
+            <FilesCanvas
+              projectId={session.project_id}
+              folders={session.folders || []}
+              onError={onError}
+              onOpenFile={onOpenFile}
+            />
           ) : (
             <BrowserCanvas url={browserUrl} label={browserLabel} />
           )}
@@ -701,49 +1075,53 @@ function SessionTools({ sessionId, onError }) {
   );
 }
 
-/* The project's durable files: uploaded here, mounted into the sandbox when a
-   session takes its box, readable without waking anything.
+/* WORKING FILES: the folders this project links, and nothing else.
 
-   The SAME tree the files view draws — `asTree` and `Branch`, directories
-   closed until asked for. A project that has had a repository cloned into it is
-   thousands of paths, and rendering them flat turned a 300px panel into a
-   scroll through somebody else's `.git/objects`. The tree was written for
-   exactly that and there is no reason for this panel to have its own idea of
-   what a file list looks like. */
-function FilesCanvas({ projectId, onError }) {
-  const [files, setFiles] = useState(null);
+   The SAME `FileTree` the Files tab draws, with the same powers — open, drag to
+   move, drop to upload, double-click to rename. The two are scopes on one
+   store, not two filesystems, so a file renamed here is renamed there, and a
+   path clicked here is the path the tab lands on.
+
+   What is local to this pane is the LINKING. `+ link` adds a folder the project
+   does not yet link; the pane shows it at once and the AGENT sees it from the
+   NEXT session, because claims are fixed for a session's life. That is stated
+   on the control rather than hidden — a folder appearing under a running agent
+   mid-hop would be a mount and a lease it was never told about. */
+function FilesCanvas({ projectId, folders, onError, onOpenFile }) {
+  const [linked, setLinked] = useState(folders || []);
+  const [linking, setLinking] = useState(false);
+  const [choices, setChoices] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [selected, setSelected] = useState(null);
-  // Closed by default: what you came to look at is never the hundredth row.
-  const [open, setOpen] = useState(() => new Set());
-
-  const toggle = (path) =>
-    setOpen((current) => {
-      const next = new Set(current);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
-    });
-
-  const load = useCallback(async () => {
-    if (!projectId) return;
-    try {
-      setFiles(await api.files(projectId));
-    } catch (e) {
-      onError(e);
-    }
-  }, [projectId, onError]);
+  // Bumped when a link lands, so the tree re-reads with the new folder in it.
+  const [pulse, setPulse] = useState(0);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    setLinked(folders || []);
+  }, [folders]);
 
-  const send = async (list) => {
-    if (!projectId || !list || !list.length) return;
+  const load = useCallback(() => api.files(projectId), [projectId, pulse]);
+
+  // Only when the picker is opened: a listing nobody asked for is a request
+  // spent on a control that is shut.
+  useEffect(() => {
+    if (!linking) return;
+    let dead = false;
+    api
+      .folders()
+      .then((list) => !dead && setChoices(list))
+      .catch((e) => !dead && onError(e));
+    return () => {
+      dead = true;
+    };
+  }, [linking, onError]);
+
+  const link = async (folder) => {
+    if (linked.includes(folder)) return;
     setBusy(true);
     try {
-      for (const file of list) await api.upload(projectId, file);
-      await load();
+      const body = await api.linkFolder(projectId, folder);
+      setLinked(body.folders);
+      setPulse((n) => n + 1);
     } catch (e) {
       onError(e);
     } finally {
@@ -753,31 +1131,51 @@ function FilesCanvas({ projectId, onError }) {
 
   if (!projectId) return <div className="ctx-content"><div className="dropzone">this session has no project</div></div>;
 
-  return (
-    <div
-      className="ctx-content"
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={(e) => {
-        e.preventDefault();
-        send(e.dataTransfer.files);
-      }}
-    >
-      {files === null && <div className="cv-entry loading">reading…</div>}
-      {files !== null && files.length > 0 && (
-        <Branch
-          node={asTree(files)}
-          path=""
-          depth={0}
-          open={open}
-          onToggle={toggle}
-          onRead={(file) => setSelected(file.path)}
-          selected={selected}
-        />
+  const unlinked = (choices || []).filter((f) => !linked.includes(f.name));
+
+  const header = () => (
+    <React.Fragment>
+      <div className="wf-head">
+        <span className="kicker">linked folders</span>
+        <button
+          className={"wf-link" + (linking ? " on" : "")}
+          title="link another folder from the store"
+          onClick={() => setLinking((was) => !was)}
+        >
+          + link
+        </button>
+      </div>
+      {linking && (
+        <div className="wf-picker">
+          {choices === null && <span className="wf-none">reading…</span>}
+          {choices !== null && !unlinked.length && (
+            <span className="wf-none">every folder in the store is already linked</span>
+          )}
+          {unlinked.map((f) => (
+            <span key={f.name} className="wf-choice" onClick={() => !busy && link(f.name)}>
+              <span className="np-box" />
+              <span className="nm">{f.name}/</span>
+              <span className="n">{f.files} files</span>
+            </span>
+          ))}
+          <span className="wf-note">a folder linked now reaches the agent at the next session</span>
+        </div>
       )}
-      <label className="dropzone">
-        {busy ? "uploading…" : "drop files into this project"}
-        <input type="file" multiple hidden onChange={(e) => send(e.target.files)} />
-      </label>
+    </React.Fragment>
+  );
+
+  return (
+    <div className="ctx-content ctx-tree">
+      <FileTree
+        load={load}
+        onOpen={(file) => onOpenFile && onOpenFile(file.path)}
+        onError={onError}
+        header={header}
+        zoneIdle={{
+          label: "drop files into a linked folder",
+          empty: "this project links no folder yet",
+        }}
+      />
     </div>
   );
 }

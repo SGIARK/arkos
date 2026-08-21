@@ -56,12 +56,17 @@ appends a `user` event and wakes at the cursor — it never back-fills a
 | `finish_task` errors, has bad args, or is at its attempt cap | unattended | closed as a failed `tool_result`, run CONTINUES; completion comes from the result, never the call |
 | malformed tool args | any | `tool_result{invalid_args}`, one free repair round trip per turn (not charged as a hop), then charged like any hop |
 | a tool fails `per_tool_attempts` times in a row | any | further calls closed `upstream_error` without dispatch; a success at any point clears the streak |
-| empty completion (no text, no calls) | any | `done{model_error}`; looping on nothing just spends the budget |
+| empty completion (no text, no calls) | any | `done{stalled_progress}`; nothing errored and there is nothing to continue from, so looping on it just spends the budget |
 | `finish_reason: length` with no calls | any | `done{context_overflow}` |
 | `request_approval` / `ask` | any | close the tool_call with its result FIRST, then park → `awaiting_approval`, exit loop. The answer arrives later as a `user` event, not as this call's result |
+| a human presses Stop | any | calls in flight close `cancelled_by_user`, the rest of the hop is refused the same way, and the turn holds at the next hop boundary on a `resume` row — no `done`, no mode flip, hops preserved. A terminal reached in the same hop wins instead |
+| `propose_plan` | any | same park shape, kind `plan`, and the row carries the plan itself. The answer is not read by the model at all unless it is feedback: approve writes `plan.md` and wakes the session UNATTENDED, decline closes the park to `idle`, anything else is a REPLY — the human's `user` event plus an unrendered `user{source:system}` instruction — and wakes it attended to propose again |
 | `todo_write` | any | replace the current list (latest-wins); emit `todo` event; older todo results drop out of the view |
 | text only | attended | `done{turn_end}` → `idle` (non-terminal: no `terminal_reason`, no `ended_at`) |
-| text only | unattended | append, inject nudge, loop |
+| text only, 1st in a row | unattended | append, inject the CONTINUATION as `user{source:system}`, loop |
+| text only, 2nd in a row | unattended | append, inject the finish nudge immediately, loop |
+| text only, 3rd in a row | unattended | `done{stalled_progress}` — told to continue, told to finish, still only text |
+| any tool call | unattended | the bare-text streak resets to zero |
 | text only, budget exhausted | unattended | `done{max_hops}` |
 
 ## 2b. Mode — attended vs unattended (one session, two phases)
@@ -69,7 +74,12 @@ appends a `user` event and wakes at the cursor — it never back-fills a
 | Event | Mode after | Effect |
 |---|---|---|
 | session created, human present | attended | turn-taking; ends its turn → `idle` |
-| human approves the plan / says go | **unattended** | `finish_task` now required; budgets + wall-clock apply; runs without you |
+| human presses play | attended (UNCHANGED) | appends a `user{source:system}` handoff and starts an ordinary attended turn, whose job is to call `propose_plan`. It does not hand the session over |
+| human approves a proposed plan | **unattended** | the ONE mode flip: `plan.md` is written from the approved args, the quota is checked, and mode + status move in the same conditional UPDATE. `finish_task` now required; budgets + wall-clock apply; runs without you |
+| human declines a proposed plan | attended (unchanged) | the park closes → `idle`; nothing ran |
+| human presses Stop on a run | unattended (UNCHANGED) | the hold: `running -> awaiting_approval` on kind `resume`. The plan stays approved and the hop budget carries, because no `done` was written |
+| human resumes a stopped run | unattended (unchanged) | approve word, prose in the card, or prose in the COMPOSER — all three resume; prose lands as a `user` event the next hop reads |
+| human cancels a stopped run | attended | the second press: `awaiting_approval -> cancelled`, the resume row closes, and the plan's approval is spent |
 | `done{...}` on an unattended run | attended | terminal status per the lifecycle table; `mode` flips back in the SAME update |
 | human sends a message while unattended | unattended (unchanged) | steering: appends as a user event, reaches the stream immediately, and is carried into the running turn at the top of the next hop (LG-1.8). Never mid-hop: the current tool call finishes first |
 
@@ -86,6 +96,11 @@ session. Same termination rule (D15), evaluated against `mode`.
 | `auth_required` | — | append with the setup URL in content, continue |
 | needs approval, none given | — | `invalid_args` naming `request_approval`; the gate cannot park from inside dispatch, so the model asks and the session parks on THAT call. Never "declined": nobody was asked |
 | `interrupted` | — | never returned by a tool; only synthesized on wake |
+| `cancelled_by_user` | — | never returned by a tool either; synthesized by the dispatch wrapper when a human presses Stop. Closes the call, and is the ONE failure kind that does NOT count toward the attempt cap |
+
+A run that does not know what to do next PARKS — on a question, an approval or
+a plan — rather than failing. There is no "confused" terminal: an unattended run
+ends by `finish_task`, by parking, or by a named budget or stall reason.
 
 ## 4. Model call failed
 
@@ -114,11 +129,13 @@ session. Same termination rule (D15), evaluated against `mode`.
 | `pending` / `idle` / `awaiting_approval` | harness writes `cancelled` directly (no loop to signal) |
 | terminal | no-op |
 
-## 7. Resource leases (browser, project) and the sandbox pool
+## 7. Resource leases (browser, store folder) and the sandbox pool
 
-The browser is leased per user and a project is leased per write claim. The
-sandbox is not leased: a box belongs to one session, and what is shared is
-capacity.
+The browser is leased per user (`browser:{user}`) and a store FOLDER is leased
+per write claim (`folder:{user}:{name}`, 11.9), so two projects writing
+different folders never wait on each other and two sessions writing the same
+folder do. The sandbox is not leased: a box belongs to one session, and what is
+shared is capacity.
 
 | Condition | Action |
 |---|---|

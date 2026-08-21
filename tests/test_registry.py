@@ -274,9 +274,12 @@ async def test_the_bound_dispatch_satisfies_the_loop(monkeypatch):
 
 
 def test_park_tools_are_named_not_hardcoded():
-    from tool_module.tools.control import PARK_TOOLS
+    from tool_module.tools.control import PARK_KINDS, PARK_TOOLS
 
-    assert {"ask", "request_approval"} == PARK_TOOLS
+    assert {"ask", "request_approval", "propose_plan"} == PARK_TOOLS
+    # The kind is what the approvals row is written with, so it is part of the
+    # name, not an implementation detail of the runner.
+    assert PARK_KINDS["propose_plan"] == "plan"
 
 
 # --- the approval gate is not bypassable by the mcp branch --------------------

@@ -12,10 +12,14 @@ about its own contents that is not verified: both directions hash the files on
 disk and compare against the tree, so a stale or tampered record cannot decide
 what is transferred, kept or deleted.
 
-Claimed project subtrees are the only thing this module mounts. The user's
-memory region is a different table in the store and nothing here reads it, so
-memory does not reach a box today. Whether it ever should is D30, open: this is
-the default posture, not a rule the code is built around.
+Claimed FOLDERS are the only thing this module mounts, one mount per folder at
+`~/store/<folder>/` (11.9). A folder is a top-level segment of the user's one
+flat store, so a mounted path IS a store path with the mount root in front of
+it, and no project id appears anywhere in here: a project links folders, it does
+not own them. The user's memory region is a different table in the store and
+nothing here reads it, so memory does not reach a box today. Whether it ever
+should is D30, open: this is the default posture, not a rule the code is built
+around.
 
 A flush may only commit against a workspace that proves it was materialized.
 `materialize` leaves a sentinel in the box and records its nonce against the
@@ -45,8 +49,10 @@ from harness_module import store
 
 logger = logging.getLogger(__name__)
 
-# Where claimed projects appear inside the sandbox.
-MOUNT_ROOT = "/home/user/projects"
+# Where claimed folders appear inside the sandbox. A mounted path is
+# `MOUNT_ROOT + "/" + <store path>`, so `~/store/triage/notes.md` is exactly the
+# store's `triage/notes.md` and the model reads one namespace, not two.
+MOUNT_ROOT = "/home/user/store"
 
 # The sentinel, outside MOUNT_ROOT so no sweep of the claimed mounts can see it.
 SENTINEL = "/home/user/.ark/materialized.json"
@@ -57,16 +63,38 @@ _FLUSH_TAR = "/tmp/arkos-flush.tar"
 
 @dataclass(frozen=True, slots=True)
 class Claim:
-    """One project subtree a session may see, and where it is mounted."""
+    """One folder, or part of one, that a session may see — and where it is mounted.
 
-    project_id: str
-    slug: str
+    `user_id` rides along because the store and the lease are both keyed by user:
+    a folder name means nothing without whose store it is a folder in.
+    """
+
+    user_id: str
+    folder: str
     subpath: str = "/"
     mode: str = "write"
 
     @property
+    def prefix(self) -> str:
+        """What this claim covers, as a store path prefix."""
+        within = (self.subpath or "/").strip("/")
+        return f"{self.folder}/{within}" if within else self.folder
+
+    @property
     def mount(self) -> str:
-        return posixpath.join(MOUNT_ROOT, self.slug)
+        """The folder's directory in the box: `~/store/<folder>/`."""
+        return posixpath.join(MOUNT_ROOT, self.folder)
+
+    @property
+    def mounted_prefix(self) -> str:
+        """Where this claim's own subtree sits in the box.
+
+        The same as `mount` for a whole-folder claim, which is nearly all of
+        them; narrower for a subpath claim, and that is the point — a sweep of
+        the whole mount would carry files the claim does not cover into a commit
+        that replaces them.
+        """
+        return posixpath.join(MOUNT_ROOT, self.prefix)
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,35 +123,38 @@ class SandboxIO(Protocol):
 async def claims_for(session_id: str) -> list[Claim]:
     """What a session may see, in the order it was declared.
 
-    A session with no declared claims gets a write claim on its own project,
-    which is what every session created before claims existed had in effect.
+    Claims are FIXED for a session's life, so a folder linked to the project
+    mid-run reaches the agent at the NEXT session and not this one — recorded as
+    a fact rather than discovered as a surprise. A session with no declared
+    claims falls back to a write claim on each folder its project links, which
+    is what `_record_claims` would have written for it.
     """
     rows = await pool.fetch(
         """
-        SELECT c.project_id, c.subpath, c.mode, p.slug
-          FROM session_claims c JOIN projects p ON p.id = c.project_id
+        SELECT c.folder, c.subpath, c.mode, s.user_id
+          FROM session_claims c JOIN sessions s ON s.id = c.session_id
          WHERE c.session_id = $1
-         ORDER BY c.project_id, c.subpath
+         ORDER BY c.ord, c.folder, c.subpath
         """,
         _uuid(session_id),
     )
     if not rows:
         rows = await pool.fetch(
             """
-            SELECT s.project_id, '/' AS subpath, 'write' AS mode, p.slug
-              FROM sessions s JOIN projects p ON p.id = s.project_id
+            SELECT f.folder, '/' AS subpath, 'write' AS mode, s.user_id
+              FROM sessions s JOIN project_folders f ON f.project_id = s.project_id
              WHERE s.id = $1
+             ORDER BY f.created_at, f.folder
             """,
             _uuid(session_id),
         )
     return [
         Claim(
-            project_id=str(r["project_id"]),
-            # READ, not derived. This used to be `store.slug(r["title"], ...)`,
-            # recomputed every turn — so renaming a project moved the mount out
-            # from under a running agent, while the prompt promised
-            # `~/projects/<project>/` was the one durable path it had.
-            slug=r["slug"],
+            user_id=str(r["user_id"]),
+            # READ, not derived. A folder name is a segment of paths that exist;
+            # nothing recomputes it from a title, which is what used to move a
+            # mount out from under a running agent when a project was renamed.
+            folder=r["folder"],
             subpath=r["subpath"],
             mode=r["mode"],
         )
@@ -132,17 +163,22 @@ async def claims_for(session_id: str) -> list[Claim]:
 
 
 def lease_key(claim: Claim) -> str | None:
-    """The project lease this claim takes, or None. A read claim takes none.
+    """The folder lease this claim takes, or None. A read claim takes none.
+
+    Per FOLDER, not per project (11.9): two projects writing different folders
+    have nothing to contend over, and two sessions writing the SAME folder still
+    serialize even though they belong to different projects. Keying it by
+    project was only ever right while a project owned one directory.
 
     The rule lives here alone. `runner` re-derived it inline while this function
-    sat beside it, which is two places for one answer about who may write to a
-    project — and the kind of pair that drifts silently.
+    sat beside it, which is two places for one answer about who may write where
+    — and the kind of pair that drifts silently.
     """
-    return f"project:{claim.project_id}" if claim.mode == "write" else None
+    return f"folder:{claim.user_id}:{claim.folder}" if claim.mode == "write" else None
 
 
 def lease_keys(claims: list[Claim]) -> list[str]:
-    """The project leases a claim set takes."""
+    """The folder leases a claim set takes."""
     return [key for c in claims if (key := lease_key(c))]
 
 
@@ -156,12 +192,11 @@ async def materialize(sandbox: SandboxIO, session_id: str, claims: list[Claim]) 
     sandbox slept, which would otherwise be resurrected by the next flush.
     """
     wanted: dict[str, str] = {}
-    contents: dict[str, tuple[str, str]] = {}
     for claim in claims:
-        for entry in await store.read_tree(claim.project_id, claim.subpath):
-            mounted = posixpath.join(claim.mount, entry.path)
-            wanted[mounted] = entry.content_hash
-            contents[mounted] = (claim.project_id, entry.content_hash)
+        for entry in await store.read_tree(claim.user_id, claim.prefix):
+            # The store path IS the mounted path, under the mount root: the
+            # folder segment it already carries is the directory it lands in.
+            wanted[posixpath.join(MOUNT_ROOT, entry.path)] = entry.content_hash
 
     # What is actually on disk, by hash. The sandbox's own record of what it
     # holds is not consulted: it is stale the moment a flush commits, and a
@@ -172,7 +207,7 @@ async def materialize(sandbox: SandboxIO, session_id: str, claims: list[Claim]) 
 
     payload: list[tuple[str, bytes]] = []
     for path in sorted(stale):
-        _, content_hash = contents[path]
+        content_hash = wanted[path]
         blob = await store.get_blob(content_hash)
         if blob is None:
             # The tree names a blob the store does not hold. Skipping it beats
@@ -230,7 +265,7 @@ async def _seal(sandbox: SandboxIO, session_id: str, claims: list[Claim], manife
     payload = {
         "nonce": nonce,
         "tree_hash": _tree_hash(manifest),
-        "claims": [{"project_id": c.project_id, "subpath": c.subpath, "mount": c.mount} for c in claims],
+        "claims": [{"folder": c.folder, "subpath": c.subpath, "mount": c.mount} for c in claims],
     }
     await sandbox.write_file(session_id, SENTINEL, json.dumps(payload))
     recorded = await pool.execute(
@@ -313,8 +348,8 @@ async def flush(
     if manifest is None:
         manifest = {}
         for claim in claims:
-            for entry in await store.read_tree(claim.project_id, claim.subpath):
-                manifest[posixpath.join(claim.mount, entry.path)] = entry.content_hash
+            for entry in await store.read_tree(claim.user_id, claim.prefix):
+                manifest[posixpath.join(MOUNT_ROOT, entry.path)] = entry.content_hash
     changed = sorted(path for path, digest in current.items() if manifest.get(path) != digest)
 
     contents: dict[str, bytes] = await _read_out(sandbox, session_id, changed) if changed else {}
@@ -323,26 +358,28 @@ async def flush(
     uploaded = 0
     discarded: list[str] = []
     for claim in claims:
-        under = {p: h for p, h in current.items() if p.startswith(claim.mount + "/")}
+        under = {p: h for p, h in current.items() if p.startswith(claim.mounted_prefix + "/")}
         if claim.mode != "write":
             # Measured against what the store holds now, not against what was
             # materialized: a file uploaded mid-run and written through is not an
             # edit being dropped, and saying it was would be a false alarm.
             stored = {
-                posixpath.join(claim.mount, e.path): e.content_hash
-                for e in await store.read_tree(claim.project_id, claim.subpath)
+                posixpath.join(MOUNT_ROOT, e.path): e.content_hash
+                for e in await store.read_tree(claim.user_id, claim.prefix)
             }
             discarded.extend(sorted(p for p, digest in under.items() if stored.get(p) != digest))
             continue
 
         # Sizes for files whose bytes were never read back come from the tree
         # they were materialized from.
-        previous = {e.path: e for e in await store.read_tree(claim.project_id, claim.subpath)}
+        previous = {e.path: e for e in await store.read_tree(claim.user_id, claim.prefix)}
         now = datetime.now(UTC)
 
         entries: list[store.TreeEntry] = []
         for path, digest in sorted(under.items()):
-            relative = posixpath.relpath(path, claim.mount)
+            # Back to a store path: strip the mount root and the folder segment
+            # is right there where it always was.
+            relative = posixpath.relpath(path, MOUNT_ROOT)
             body = contents.get(path)
             if body is not None:
                 entries.append(
@@ -372,7 +409,7 @@ async def flush(
 
             entries.append(known)
 
-        await store.commit_entries(claim.project_id, entries, claim.subpath)
+        await store.commit_entries(claim.user_id, entries, claim.prefix)
         committed += len(entries)
 
     if discarded:
@@ -383,7 +420,7 @@ async def flush(
 
 async def _sweep(sandbox: SandboxIO, session_id: str, claims: list[Claim]) -> dict[str, str]:
     """Hash every file under the claimed mounts, in one command."""
-    mounts = " ".join(shlex.quote(c.mount) for c in claims)
+    mounts = " ".join(shlex.quote(c.mounted_prefix) for c in claims)
     if not mounts:
         return {}
     result = await sandbox.exec(
@@ -428,8 +465,8 @@ async def _remove(sandbox: SandboxIO, session_id: str, paths: tuple[str, ...]) -
 
 
 
-async def _live_boxes(project_id: str) -> list[str]:
-    """The sessions whose box is awake and holding this project's owner's work."""
+async def _live_boxes(user_id: str) -> list[str]:
+    """The sessions whose box is awake and holding some of this user's work."""
     rows = await pool.fetch(
         """
         SELECT p.session_id
@@ -439,18 +476,35 @@ async def _live_boxes(project_id: str) -> list[str]:
            AND p.sandbox_id IS NOT NULL
            AND p.expires_at > now()
            AND s.status = 'running'
-           AND s.user_id = (SELECT user_id FROM projects WHERE id = $1)
+           AND s.user_id = $1
         """,
-        _uuid(project_id),
+        _uuid(user_id),
     )
     return [str(r["session_id"]) for r in rows]
 
 
+async def boxes_holding(user_id: str, folder: str) -> list[str]:
+    """The live boxes that have this folder mounted right now.
+
+    A folder rename moves the mount, and a box materialized at the old path
+    would flush its work back under the old name — resurrecting the folder the
+    rename just removed, and losing everything written since. So the rename asks
+    this first and refuses rather than trying to correct a box mid-turn: the
+    session's claims and its manifest are in the runner's memory, not only in
+    the database, and there is no way to reach those from here.
+    """
+    holding: list[str] = []
+    for session_id in await _live_boxes(user_id):
+        if any(c.folder == folder for c in await claims_for(session_id)):
+            holding.append(session_id)
+    return holding
+
+
 async def move_through(
-    sandbox: SandboxIO, project_id: str, moves: Sequence[tuple[str, str]]
+    sandbox: SandboxIO, user_id: str, moves: Sequence[tuple[str, str]]
 ) -> tuple[list[str], list[str]]:
     """
-    Apply a store-side move to every live box that has this project materialized.
+    Apply a store-side move to every live box that has the moved paths mounted.
 
     This is not the courtesy that `write_through` is. A flush commits what is ON
     DISK under the claim, so a box still holding the old path would put it back
@@ -466,48 +520,42 @@ async def move_through(
 
     moved: list[str] = []
     stale: list[str] = []
-    for session_id in await _live_boxes(project_id):
-        for claim in await claims_for(session_id):
-            if claim.project_id != project_id:
-                continue
-            # Only what this claim mounted. A move that leaves the claim is a
-            # removal as far as this box is concerned, and one that arrives from
-            # outside it waits for the next materialize.
-            steps: list[str] = []
-            for was, now in moves:
-                had, wants = store.covers(claim.subpath, was), store.covers(claim.subpath, now)
-                src = posixpath.join(claim.mount, was)
-                if had and wants:
-                    dst = posixpath.join(claim.mount, now)
-                    steps.append(
-                        f"mkdir -p {shlex.quote(posixpath.dirname(dst))} && mv -f {shlex.quote(src)} {shlex.quote(dst)}"
-                    )
-                elif had:
-                    steps.append(f"rm -f {shlex.quote(src)}")
-            if not steps:
-                # This claim mounts none of it; another claim of the same
-                # project still might.
-                continue
-            try:
-                result = await sandbox.exec(session_id, " && ".join(steps))
-            except Exception:  # noqa: BLE001 - reported to the caller, never raised at the user
-                logger.exception("could not move files in the box of session %s", session_id)
-                stale.append(session_id)
+    for session_id in await _live_boxes(user_id):
+        # Only what this session mounted. A move that leaves every claim is a
+        # removal as far as this box is concerned, and one that arrives from
+        # outside them waits for the next materialize.
+        claims = await claims_for(session_id)
+        steps: list[str] = []
+        for was, now in moves:
+            had = any(store.covers(c.prefix, was) for c in claims)
+            wants = any(store.covers(c.prefix, now) for c in claims)
+            src = posixpath.join(MOUNT_ROOT, was)
+            if had and wants:
+                dst = posixpath.join(MOUNT_ROOT, now)
+                steps.append(
+                    f"mkdir -p {shlex.quote(posixpath.dirname(dst))} && mv -f {shlex.quote(src)} {shlex.quote(dst)}"
+                )
+            elif had:
+                steps.append(f"rm -f {shlex.quote(src)}")
+        if not steps:
+            continue
+        try:
+            result = await sandbox.exec(session_id, " && ".join(steps))
+        except Exception:  # noqa: BLE001 - reported to the caller, never raised at the user
+            logger.exception("could not move files in the box of session %s", session_id)
+            stale.append(session_id)
+        else:
+            if result["exit_code"] == 0:
+                moved.append(session_id)
             else:
-                if result["exit_code"] == 0:
-                    moved.append(session_id)
-                else:
-                    logger.error(
-                        "session %s: the box refused the move: %s", session_id, result["stderr"][:200]
-                    )
-                    stale.append(session_id)
-            break
+                logger.error("session %s: the box refused the move: %s", session_id, result["stderr"][:200])
+                stale.append(session_id)
     return moved, stale
 
 
-async def write_through(sandbox: SandboxIO, project_id: str, path: str, content: bytes) -> list[str]:
+async def write_through(sandbox: SandboxIO, user_id: str, path: str, content: bytes) -> list[str]:
     """
-    Put an uploaded file into every live box that has this project materialized.
+    Put an uploaded file into every live box that has its folder materialized.
 
     A box is written to only if the file falls inside a claim it mounted; every
     other box needs nothing, because the store has the file and the next
@@ -518,28 +566,13 @@ async def write_through(sandbox: SandboxIO, project_id: str, path: str, content:
     Returns:
         The sessions whose box now has the file.
     """
-    rows = await pool.fetch(
-        """
-        SELECT p.session_id
-          FROM session_sandboxes p
-          JOIN sessions s ON s.id = p.session_id
-         WHERE p.workspace_nonce IS NOT NULL
-           AND p.sandbox_id IS NOT NULL
-           AND p.expires_at > now()
-           AND s.status = 'running'
-           AND s.user_id = (SELECT user_id FROM projects WHERE id = $1)
-        """,
-        _uuid(project_id),
-    )
-
     written: list[str] = []
-    for row in rows:
-        session_id = str(row["session_id"])
+    for session_id in await _live_boxes(user_id):
         for claim in await claims_for(session_id):
-            if claim.project_id != project_id or not store.covers(claim.subpath, path):
+            if not store.covers(claim.prefix, path):
                 continue
             try:
-                await sandbox.write_file(session_id, posixpath.join(claim.mount, path), content)
+                await sandbox.write_file(session_id, posixpath.join(MOUNT_ROOT, path), content)
             except Exception:  # noqa: BLE001 - the store has the file; the box is a cache
                 logger.exception("could not write %s through to the box of session %s", path, session_id)
             else:

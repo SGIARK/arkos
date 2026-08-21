@@ -67,6 +67,101 @@ class RequestApproval:
         return ok(f"Approval requested: {args['action']}\nThe run is paused until a human answers.")
 
 
+class ProposePlan:
+    """The one door into an unattended run.
+
+    Two things funnel through this tool: the play button (which hands the model
+    a `user{source: system}` instruction to draft one) and the model's own
+    judgement that the transcript already specs the work. There is no third way
+    to start unattended, because deciding is never the model's: it proposes, a
+    human approves, and the approval is what flips the mode.
+
+    The args ARE the plan. They are stored on the approvals row, and on approve
+    the harness writes them to `plan.md` — so what the human read is what the
+    run starts from, the same binding `call` rows give a gated tool call.
+    """
+
+    spec = ToolSpec(
+        name="propose_plan",
+        description=(
+            "Propose a plan for an unattended run, and park until a human answers it. Call this "
+            "whenever the work is big enough to run on its own, or the moment you are asked to "
+            "draft one. The arguments are the plan the human reads and approves; approving writes "
+            "them to plan.md and starts the run, so write them for them, not for you. "
+            "An under-informed plan is still a plan: never refuse to call this because you do not "
+            "know enough, and never ask your questions in prose instead. Put every open question "
+            "in `missing` and leave the other fields honest — the card is the form they answer."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "One sentence: what this run is for."},
+                "done_when": {
+                    "type": "string",
+                    "description": "How the human will know it finished. Observable, not aspirational.",
+                },
+                "steps": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "The outline, in order. One line each.",
+                },
+                "inputs": {
+                    "type": "array",
+                    "description": "What you already have. Each item: {label, note}.",
+                },
+                "missing": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "The open questions this plan still needs answered, as questions. Empty "
+                        "only when you genuinely have everything."
+                    ),
+                },
+            },
+            "required": ["goal", "done_when", "steps"],
+        },
+    )
+
+    def validate(self, args: dict[str, Any], ctx: ToolContext) -> str | None:
+        if not str(args.get("goal") or "").strip():
+            return "A plan needs a goal: one sentence saying what this run is for."
+        if not str(args.get("done_when") or "").strip():
+            return "A plan needs done_when: how the human will know it finished."
+        steps = args.get("steps")
+        if not isinstance(steps, list) or not steps:
+            return "steps must be a non-empty list of strings, in order."
+        if any(not isinstance(s, str) or not s.strip() for s in steps):
+            return "Every step must be a non-empty string."
+        for field in ("missing",):
+            value = args.get(field)
+            if value is not None and (
+                not isinstance(value, list) or any(not isinstance(v, str) for v in value)
+            ):
+                return f"{field} must be a list of strings."
+        inputs = args.get("inputs")
+        if inputs is not None:
+            if not isinstance(inputs, list):
+                return "inputs must be a list of {label, note} objects."
+            for i, item in enumerate(inputs):
+                if not isinstance(item, dict) or not str(item.get("label") or "").strip():
+                    return f"inputs[{i}] needs a 'label'."
+        return None
+
+    async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
+        # Closes the call so the session can park on it. The human's decision
+        # arrives through /approvals/{id}/respond, never as this call's result.
+        missing = [m for m in (args.get("missing") or []) if str(m).strip()]
+        tail = (
+            f" It names {len(missing)} open question(s), which the human answers on the card."
+            if missing
+            else ""
+        )
+        return ok(
+            f"Plan proposed: {args['goal']}\n"
+            f"The run is paused until a human approves it, asks for a change, or dismisses it.{tail}"
+        )
+
+
 class TodoWrite:
     spec = ToolSpec(
         name="todo_write",
@@ -137,7 +232,11 @@ class ReadResult:
 # The runner parks the session after one of these returns, taking the park kind
 # from this map. Each call is closed by its own result first: a transcript with
 # an open tool_call cannot be folded back into messages.
-PARK_KINDS: dict[str, str] = {Ask.spec.name: "ask", RequestApproval.spec.name: "approval"}
+PARK_KINDS: dict[str, str] = {
+    Ask.spec.name: "ask",
+    RequestApproval.spec.name: "approval",
+    ProposePlan.spec.name: "plan",
+}
 PARK_TOOLS = frozenset(PARK_KINDS)
 
-TOOLS = [FinishTask(), Ask(), RequestApproval(), TodoWrite(), ReadResult()]
+TOOLS = [FinishTask(), Ask(), RequestApproval(), ProposePlan(), TodoWrite(), ReadResult()]

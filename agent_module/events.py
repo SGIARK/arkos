@@ -28,14 +28,31 @@ DoneReason = Literal[
     "completed",
     "max_hops",
     "wall_clock",
+    # The model produced no work: an empty reply, or a third consecutive
+    # bare-text hop after the continuation and the finish nudge. Split out of
+    # `model_error` in 11.8.5, because nothing errored.
+    "stalled_progress",
     "model_error",
+    # The harness failed, not the model: `_drive`'s catch-all, or a loop that
+    # ended with no `done`. Also split out of `model_error` in 11.8.5.
+    "internal_error",
     "context_overflow",
     "cancelled",
     "interrupted",
 ]
 
 TERMINAL_REASONS: frozenset[str] = frozenset(
-    {"completed", "max_hops", "wall_clock", "model_error", "context_overflow", "cancelled", "interrupted"}
+    {
+        "completed",
+        "max_hops",
+        "wall_clock",
+        "stalled_progress",
+        "model_error",
+        "internal_error",
+        "context_overflow",
+        "cancelled",
+        "interrupted",
+    }
 )
 
 

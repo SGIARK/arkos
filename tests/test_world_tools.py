@@ -23,6 +23,7 @@ async def _db():
     await require_db()
     yield
     await pool.execute("DELETE FROM sessions WHERE user_id = ANY($1::uuid[])", _seeded)
+    await pool.execute("DELETE FROM files WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM projects WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM users WHERE id = ANY($1::uuid[])", _seeded)
     _seeded.clear()
@@ -138,14 +139,30 @@ async def test_get_session_carries_the_tail_of_the_transcript():
     assert [e["kind"] for e in body["recent_events"]] == ["user", "content"]
 
 
-async def test_list_files_reports_an_empty_project_plainly():
+async def test_list_files_reports_an_empty_store_plainly():
     user_id = await _user()
-    project_id = await _project(user_id)
 
-    result = await _run("list_files", {"project_id": project_id}, user_id)
+    result = await _run("list_files", {}, user_id)
 
     assert result.ok
-    assert "No files" in result.content
+    assert "empty" in result.content
+
+
+async def test_list_files_lists_the_store_and_narrows_to_one_folder():
+    """Paths carry their folder, because the folder IS the first segment."""
+    user_id = await _user()
+    for path in ("triage/a.md", "notes/b.md"):
+        await pool.execute(
+            "INSERT INTO files (user_id, path, content_hash, size) VALUES ($1, $2, $3, $4)",
+            uuid.UUID(user_id), path, "0" * 64, 10,
+        )
+
+    everything = await _run("list_files", {}, user_id)
+    narrowed = await _run("list_files", {"folder": "triage"}, user_id)
+
+    assert "triage/a.md" in everything.content and "notes/b.md" in everything.content
+    assert "triage/a.md" in narrowed.content
+    assert "notes/b.md" not in narrowed.content
 
 
 # --- and they read nothing else ------------------------------------------------
@@ -179,17 +196,17 @@ async def test_listing_never_crosses_users():
 
 
 async def test_another_users_files_are_invisible():
+    """The store is keyed by user, so there is no id to pass that would reach theirs."""
     mine, theirs = await _user(), await _user()
-    their_project = await _project(theirs)
     await pool.execute(
-        "INSERT INTO project_files (project_id, path, content_hash, size) VALUES ($1, $2, $3, $4)",
-        uuid.UUID(their_project),
-        "payroll.csv",
+        "INSERT INTO files (user_id, path, content_hash, size) VALUES ($1, $2, $3, $4)",
+        uuid.UUID(theirs),
+        "payroll/payroll.csv",
         "0" * 64,
         10,
     )
 
-    result = await _run("list_files", {"project_id": their_project}, mine)
+    result = await _run("list_files", {"folder": "payroll"}, mine)
 
     assert "payroll.csv" not in result.content
 

@@ -29,8 +29,17 @@ _seeded: list[uuid.UUID] = []
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _db(monkeypatch):
+async def _db(monkeypatch, tmp_path):
     await require_db()
+
+    # Blobs on disk, for the WHOLE module rather than per test. Since 11.9,
+    # making a project reserves its folder by writing the `.keep` sentinel, so a
+    # test that creates one writes bytes even when it is not about files — and
+    # `SupabaseBlobs` caches one httpx client, which pytest-asyncio then hands a
+    # closed event loop from the next test. The per-test `use_blobs` calls below
+    # stay: they say which tests are about the store, and installing the same
+    # backend twice is free.
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
 
     # The loop is out of scope here, so start is stubbed and no turn runs.
     started: list[str] = []
@@ -45,7 +54,10 @@ async def _db(monkeypatch):
     api.started = started
     api.start_calls = start_calls
     yield
+    store.use_blobs(None)
     await pool.execute("DELETE FROM sessions WHERE user_id = ANY($1::uuid[])", _seeded)
+    await pool.execute("DELETE FROM files WHERE user_id = ANY($1::uuid[])", _seeded)
+    await pool.execute("DELETE FROM deleted_files WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM projects WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM users WHERE id = ANY($1::uuid[])", _seeded)
     _seeded.clear()
@@ -236,6 +248,10 @@ async def test_creating_a_session_opens_a_project_and_starts_the_turn(client):
     )
     assert (row["status"], row["mode"]) == ("pending", "attended"), "a new session is created attended"
     assert str(row["project_id"]) == body["project_id"]
+    # Asked for with no project, so it gets one, and the project gets a folder
+    # to keep the work in.
+    snapshot = (await client.get(f"/sessions/{body['session_id']}")).json()
+    assert snapshot["folders"] == ["file-my-taxes"]
 
     kinds = [e.event.kind for e in await slog.get_events(body["session_id"])]
     assert kinds == ["user", "todo"], "the goal is the first message; steps seed the todo list"
@@ -332,19 +348,32 @@ async def test_a_composer_message_to_a_park_with_no_open_question_wakes_it(clien
 # --- the handoff ----------------------------------------------------------------
 
 
-async def test_approving_flips_the_mode_and_starts_the_run(client):
-    """Approving asks for the unattended mode and starts the run on the same session."""
+async def test_play_asks_for_a_plan_and_does_not_flip_the_mode(client):
+    """The play button hands the model a TASK, not a transcript (11.8.5).
+
+    It used to flip the mode here and start an unattended run off whatever the
+    conversation happened to end on. Now it appends the handoff and starts an
+    ordinary attended turn whose job is to call `propose_plan`; the mode moves in
+    exactly one place, and that is approving the plan that turn produces.
+    """
     user_id = await _signed_in(client)
     session_id = await _session_for(user_id, status="idle", mode="attended")
 
     response = await client.post(f"/sessions/{session_id}/approve")
 
     assert response.status_code == 202
-    assert response.json()["mode"] == "unattended"
+    assert response.json()["mode"] == "attended"
+    assert response.json()["started"] is True
     assert session_id in api.started
-    # The endpoint asks for the flip; test_runner pins that start applies it atomically.
-    assert api.start_calls[-1]["mode"] == "unattended"
-    assert api.start_calls[-1]["reason"] == "approved"
+    assert "mode" not in api.start_calls[-1], "the play button no longer moves the mode"
+    assert api.start_calls[-1]["reason"] == "plan_requested"
+
+    events = [e.event for e in await slog.get_events(session_id)]
+    assert [e.kind for e in events] == ["user"]
+    assert events[0].source == "system"
+    assert "propose_plan" in events[0].text
+    row = await pool.fetchrow("SELECT mode FROM sessions WHERE id = $1", uuid.UUID(session_id))
+    assert row["mode"] == "attended"
 
 
 async def test_a_running_session_cannot_be_handed_over(client):
@@ -367,30 +396,23 @@ async def test_approving_twice_is_refused(client):
     assert response.json()["code"] == "already_unattended"
 
 
-async def test_the_unattended_quota_binds_where_it_can_fire(client, monkeypatch):
-    """The unattended quota is counted at approval, and a refusal leaves the row unchanged."""
+async def test_the_unattended_quota_does_not_bind_at_play(client, monkeypatch):
+    """Drafting a plan is an attended turn, so it costs nothing against the cap.
+
+    The quota moved to the one place a session's unattended load actually grows —
+    approving a plan — and `test_plan_gate` pins it there. Charging it here would
+    refuse to even DRAFT a plan for someone at their limit.
+    """
     user_id = await _signed_in(client)
     monkeypatch.setattr(api, "_cfg", lambda key, default: 1 if key == "quotas.max_unattended_sessions" else default)
     await _session_for(user_id, status="running", mode="unattended")
-    blocked = await _session_for(user_id, status="idle", mode="attended")
-
-    response = await client.post(f"/sessions/{blocked}/approve")
-
-    assert response.status_code == 429
-    assert response.json()["code"] == "quota_exceeded"
-    row = await pool.fetchrow("SELECT mode, status FROM sessions WHERE id = $1", uuid.UUID(blocked))
-    assert (row["mode"], row["status"]) == ("attended", "idle"), "the refusal changed nothing"
-
-
-async def test_an_attended_session_does_not_consume_the_unattended_quota(client, monkeypatch):
-    user_id = await _signed_in(client)
-    monkeypatch.setattr(api, "_cfg", lambda key, default: 1 if key == "quotas.max_unattended_sessions" else default)
-    await _session_for(user_id, status="running", mode="attended")
     mine = await _session_for(user_id, status="idle", mode="attended")
 
     response = await client.post(f"/sessions/{mine}/approve")
 
     assert response.status_code == 202
+    row = await pool.fetchrow("SELECT mode FROM sessions WHERE id = $1", uuid.UUID(mine))
+    assert row["mode"] == "attended"
 
 
 async def test_another_users_session_cannot_be_approved(client):
@@ -416,8 +438,9 @@ async def test_projects_roll_up_to_one_dot_each(client):
 
     body = (await client.get("/projects")).json()
 
-    # "Chat" is the home session's project, in the grid like any other (LG-1.7).
-    assert [p["title"] for p in body] == ["Taxes", "Chat"]
+    # Only "Taxes": the home session mints no project any more (11.9), so a
+    # fresh account's grid holds exactly what was made deliberately.
+    assert [p["title"] for p in body] == ["Taxes"]
     assert body[0]["status_rollup"] == "awaiting_approval", "the most urgent thing in the project wins the dot"
 
 
@@ -612,7 +635,7 @@ async def test_first_sign_in_creates_exactly_one_home_session(client):
         "SELECT status, mode, project_id FROM sessions WHERE id = $1", uuid.UUID(me["home_session_id"])
     )
     assert (row["status"], row["mode"]) == ("idle", "attended"), "home is an ordinary session"
-    assert row["project_id"] is not None, "the home session has a project like any other"
+    assert row["project_id"] is None, "the home session minted a shadow project"
     assert await pool.fetchval("SELECT count(*) FROM sessions WHERE user_id = $1", uuid.UUID(user_id)) == 1
 
 
@@ -629,18 +652,18 @@ async def test_signing_in_again_lands_in_the_same_home_session(client):
     assert await pool.fetchval("SELECT count(*) FROM sessions WHERE user_id = $1", uuid.UUID(user_id)) == 1
 
 
-async def test_the_home_sessions_project_is_in_the_grid_like_any_other(client):
+async def test_a_fresh_account_owns_no_project_and_no_folder(client):
+    """A project existed only to hold a directory. No directory is held, so the
+    home chat's shadow project is not cleaned up — it is unmade (11.9)."""
     user_id = str(uuid.uuid4())
     _seeded.append(uuid.UUID(user_id))
     await _sign_in_as(client, user_id)
-    home = (await client.get("/auth/me")).json()["home_session_id"]
 
     projects = (await client.get("/projects")).json()
+    folders = (await client.get("/folders")).json()
 
-    home_project = await pool.fetchval(
-        "SELECT project_id FROM sessions WHERE id = $1", uuid.UUID(home)
-    )
-    assert str(home_project) in [p["id"] for p in projects]
+    assert projects == []
+    assert folders == []
 
 
 async def test_one_question_shows_at_all_three_scopes_and_resolves_from_any(client):
@@ -692,22 +715,29 @@ async def test_an_uploaded_file_is_in_the_project_and_in_the_next_sandbox(client
     """The card's end-to-end: upload a file, a session reads it from its box."""
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     try:
-        await _signed_in(client)
+        user_id = await _signed_in(client)
         created = (await client.post("/sessions", json={"goal": "do the taxes"})).json()
         project_id = created["project_id"]
 
         uploaded = await client.post(
-            f"/projects/{project_id}/files",
+            "/files",
             files={"file": ("receipts.csv", b"date,amount\n2026-08-18,12", "text/csv")},
+            data={"path": "do-the-taxes/receipts.csv"},
         )
         listed = (await client.get(f"/projects/{project_id}/files")).json()
 
         assert uploaded.status_code == 201
-        assert [f["path"] for f in listed] == ["receipts.csv"]
+        # The `.keep` rides along: it is a real row, which is what makes the
+        # folder exist before anything is in it. Surfaces filter it; the wire
+        # does not, because materialize and flush carry files and only files.
+        assert [f["path"] for f in listed] == [
+            "do-the-taxes/.keep",
+            "do-the-taxes/receipts.csv",
+        ]
 
         # And it is what materialize would put in the box.
-        tree = await store.read_tree(project_id)
-        assert await store.get_blob(tree[0].content_hash) == b"date,amount\n2026-08-18,12"
+        entry = next(e for e in await store.read_tree(user_id) if e.path.endswith("receipts.csv"))
+        assert await store.get_blob(entry.content_hash) == b"date,amount\n2026-08-18,12"
     finally:
         store.use_blobs(None)
 
@@ -717,18 +747,18 @@ async def test_a_file_reads_back_out_of_the_store(client, tmp_path):
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     try:
         await _signed_in(client)
-        created = (await client.post("/sessions", json={"goal": "taxes"})).json()
-        project_id = created["project_id"]
+        await client.post("/sessions", json={"goal": "taxes"})
         uploaded = (
             await client.post(
-                f"/projects/{project_id}/files",
+                "/files",
                 files={"file": ("notes.md", b"# Notes\n\nline two", "text/markdown")},
+                data={"path": "taxes/notes.md"},
             )
         ).json()
 
-        body = (await client.get(f"/projects/{project_id}/files/{uploaded['file_id']}")).json()
+        body = (await client.get(f"/files/{uploaded['file_id']}")).json()
 
-        assert body["path"] == "notes.md"
+        assert body["path"] == "taxes/notes.md"
         assert body["text"] == "# Notes\n\nline two"
         assert body["binary"] is False
     finally:
@@ -739,16 +769,16 @@ async def test_a_file_that_is_not_text_says_so_rather_than_mangling_itself(clien
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     try:
         await _signed_in(client)
-        created = (await client.post("/sessions", json={"goal": "pictures"})).json()
-        project_id = created["project_id"]
+        await client.post("/sessions", json={"goal": "pictures"})
         uploaded = (
             await client.post(
-                f"/projects/{project_id}/files",
+                "/files",
                 files={"file": ("logo.png", b"\x89PNG\r\n\x1a\n\xff\xfe", "image/png")},
+                data={"path": "pictures/logo.png"},
             )
         ).json()
 
-        body = (await client.get(f"/projects/{project_id}/files/{uploaded['file_id']}")).json()
+        body = (await client.get(f"/files/{uploaded['file_id']}")).json()
 
         assert body["binary"] is True
         assert body["text"] is None
@@ -756,18 +786,20 @@ async def test_a_file_that_is_not_text_says_so_rather_than_mangling_itself(clien
         store.use_blobs(None)
 
 
-async def test_another_users_file_cannot_be_read(client):
-    theirs = str(uuid.uuid4())
-    _seeded.append(uuid.UUID(theirs))
-    await pool.execute("INSERT INTO users (id) VALUES ($1)", uuid.UUID(theirs))
-    their_project = await pool.fetchval(
-        "INSERT INTO projects (user_id, title) VALUES ($1, 'Theirs') RETURNING id", uuid.UUID(theirs)
-    )
-    await _signed_in(client)
+async def test_another_users_file_cannot_be_read(client, tmp_path):
+    """The store is keyed by user, so the read is scoped by the same key it is stored under."""
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        theirs = str(uuid.uuid4())
+        _seeded.append(uuid.UUID(theirs))
+        await pool.execute("INSERT INTO users (id) VALUES ($1)", uuid.UUID(theirs))
+        their_file = await store.put_file(theirs, "secret/a.txt", b"peek")
+        await _signed_in(client)
 
-    response = await client.get(f"/projects/{their_project}/files/{uuid.uuid4()}")
-
-    assert response.status_code == 404
+        assert (await client.get(f"/files/{their_file.id}")).status_code == 404
+        assert (await client.get(f"/files/{uuid.uuid4()}")).status_code == 404
+    finally:
+        store.use_blobs(None)
 
 
 # --- signing in -------------------------------------------------------------------
@@ -800,8 +832,9 @@ async def test_authz_scoping(client):
     assert (await client.post(f"/sessions/{their_session}/messages", json={"text": "hi"})).status_code == 404
     assert (await client.post(f"/sessions/{their_session}/cancel")).status_code == 404
     assert (await client.get(f"/results/{their_ref}")).status_code == 404
-    # Only their own: the home session's project is here, theirs is not.
-    assert [p["title"] for p in (await client.get("/projects")).json()] == ["Chat"]
+    # Only their own — and this account has made none, since the home session
+    # mints no project (11.9). Theirs is not here either way.
+    assert [p["title"] for p in (await client.get("/projects")).json()] == []
 
 
 async def test_a_result_is_readable_by_its_owner_and_pages(client):
@@ -1268,18 +1301,23 @@ async def test_the_disk_endpoints_are_scoped_to_the_session_owner(client, awake)
 # --- projects made and renamed deliberately (11.8) ---------------------------------
 
 
-async def test_a_project_can_be_created_on_its_own(client):
-    """Until now a project existed only as a side effect of starting a session."""
-    await _signed_in(client)
+async def test_a_project_created_with_no_links_makes_a_folder_of_its_own(client, tmp_path):
+    """The none-case is not "no files": a folder named after it appears in the store."""
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        await _signed_in(client)
 
-    made = await client.post("/projects", json={"title": "weekend reading"})
+        made = await client.post("/projects", json={"title": "weekend reading"})
 
-    assert made.status_code == 201
-    assert made.json()["title"] == "weekend reading"
-    assert made.json()["files"] == 0
-    # Not `== [...]`: first login makes the home session's own project (LG-1.7),
-    # so a fresh account already owns one.
-    assert "weekend reading" in [p["title"] for p in (await client.get("/projects")).json()]
+        assert made.status_code == 201
+        assert made.json()["title"] == "weekend reading"
+        assert made.json()["folders"] == ["weekend-reading"]
+        assert made.json()["files"] == 0, "the sentinel is structure, not content"
+        assert "weekend reading" in [p["title"] for p in (await client.get("/projects")).json()]
+        # And it is an ordinary folder in the Files tab like any other.
+        assert (await client.get("/folders")).json() == [{"name": "weekend-reading", "files": 0}]
+    finally:
+        store.use_blobs(None)
 
 
 async def test_a_project_needs_a_name(client):
@@ -1289,58 +1327,113 @@ async def test_a_project_needs_a_name(client):
     assert (await client.post("/projects", json={})).status_code == 400
 
 
-async def test_seeding_copies_the_tree_and_leaves_the_source_alone(client):
-    """Blobs are content-addressed, so this costs a row per file and no bytes."""
-    user_id = await _signed_in(client)
-    source = str(await pool.fetchval(
-        "INSERT INTO projects (user_id, title) VALUES ($1, 'source') RETURNING id", uuid.UUID(user_id)
-    ))
-    for path in ("notes/a.md", "notes/deep/b.md", "elsewhere/c.md"):
-        await pool.execute(
-            "INSERT INTO project_files (project_id, path, content_hash, size, mtime) "
-            "VALUES ($1, $2, $3, $4, now())",
-            uuid.UUID(source), path, "h" * 64, 10,
-        )
+async def test_a_project_links_folders_that_already_exist(client, tmp_path):
+    """Linking replaced seeding: one store, so pointing at files beats copying rows."""
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        user_id = await _signed_in(client)
+        for path in ("notes/a.md", "notes/deep/b.md", "elsewhere/c.md"):
+            await store.put_file(user_id, path, b"x" * 10)
 
-    made = await client.post(
-        "/projects", json={"title": "notes copy", "seed_from": {"project_id": source, "path": "notes"}}
-    )
+        made = await client.post("/projects", json={"title": "reading", "folders": ["notes"]})
 
-    assert made.status_code == 201
-    assert made.json()["files"] == 2, "the directory and its children, not the sibling"
-    copied = await client.get(f"/projects/{made.json()['id']}/files")
-    assert sorted(f["path"] for f in copied.json()) == ["notes/a.md", "notes/deep/b.md"]
-    still = await client.get(f"/projects/{source}/files")
-    assert len(still.json()) == 3, "the source is untouched"
+        assert made.status_code == 201
+        assert made.json()["folders"] == ["notes"]
+        assert made.json()["files"] == 2, "the folder and its children, not the sibling"
+        linked = await client.get(f"/projects/{made.json()['id']}/files")
+        assert sorted(f["path"] for f in linked.json()) == ["notes/a.md", "notes/deep/b.md"]
+        # Nothing was copied and nothing moved: it is the same one file.
+        assert len((await client.get("/files")).json()) == 3
+    finally:
+        store.use_blobs(None)
 
 
-async def test_seeding_from_an_empty_directory_is_not_found(client):
-    user_id = await _signed_in(client)
-    source = str(await pool.fetchval(
-        "INSERT INTO projects (user_id, title) VALUES ($1, 'source') RETURNING id", uuid.UUID(user_id)
-    ))
+async def test_two_projects_may_link_the_same_folder(client, tmp_path):
+    """A project owns no folder, so there is nothing to take from the other one."""
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        user_id = await _signed_in(client)
+        await store.put_file(user_id, "triage/a.md", b"1")
 
-    made = await client.post(
-        "/projects", json={"title": "x", "seed_from": {"project_id": source, "path": "nothing"}}
-    )
+        first = (await client.post("/projects", json={"title": "one", "folders": ["triage"]})).json()
+        second = (await client.post("/projects", json={"title": "two", "folders": ["triage"]})).json()
 
-    assert made.status_code == 404
+        assert first["folders"] == second["folders"] == ["triage"]
+        assert [f["path"] for f in (await client.get(f"/projects/{second['id']}/files")).json()] == [
+            "triage/a.md"
+        ]
+    finally:
+        store.use_blobs(None)
 
 
-async def test_seeding_from_someone_elses_project_is_not_found(client):
-    theirs = str(uuid.uuid4())
-    _seeded.append(uuid.UUID(theirs))
-    await pool.execute("INSERT INTO users (id) VALUES ($1)", uuid.UUID(theirs))
-    their_project = str(await pool.fetchval(
-        "INSERT INTO projects (user_id, title) VALUES ($1, 'theirs') RETURNING id", uuid.UUID(theirs)
-    ))
+async def test_linking_a_folder_that_is_not_in_the_store_is_not_found(client):
     await _signed_in(client)
 
-    made = await client.post(
-        "/projects", json={"title": "x", "seed_from": {"project_id": their_project, "path": "notes"}}
-    )
+    made = await client.post("/projects", json={"title": "x", "folders": ["nothing"]})
 
     assert made.status_code == 404
+
+
+async def test_another_users_folder_is_not_a_folder_here(client, tmp_path):
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        theirs = str(uuid.uuid4())
+        _seeded.append(uuid.UUID(theirs))
+        await pool.execute("INSERT INTO users (id) VALUES ($1)", uuid.UUID(theirs))
+        await store.put_file(theirs, "private/a.md", b"1")
+        await _signed_in(client)
+
+        made = await client.post("/projects", json={"title": "x", "folders": ["private"]})
+
+        assert made.status_code == 404
+    finally:
+        store.use_blobs(None)
+
+
+async def test_a_folder_linked_after_creation_reaches_the_next_session_not_this_one(client, tmp_path):
+    """The UI shows it at once; claims are fixed per session, so the agent sees it next."""
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        from harness_module import workspace
+
+        user_id = await _signed_in(client)
+        await store.put_file(user_id, "triage/a.md", b"1")
+        await store.put_file(user_id, "notes/b.md", b"2")
+        made = (await client.post("/projects", json={"title": "work", "folders": ["triage"]})).json()
+        running = (
+            await client.post("/sessions", json={"goal": "start", "project_id": made["id"]})
+        ).json()["session_id"]
+
+        linked = await client.post(f"/projects/{made['id']}/folders", json={"folder": "notes"})
+
+        assert linked.status_code == 201
+        assert linked.json()["folders"] == ["triage", "notes"]
+        assert await pool.fetchval(
+            "SELECT count(*) FROM project_folders WHERE project_id = $1", uuid.UUID(made["id"])
+        ) == 2
+        assert [c.folder for c in await workspace.claims_for(running)] == ["triage"]
+
+        later = (
+            await client.post("/sessions", json={"goal": "again", "project_id": made["id"]})
+        ).json()["session_id"]
+        assert sorted(c.folder for c in await workspace.claims_for(later)) == ["notes", "triage"]
+    finally:
+        store.use_blobs(None)
+
+
+async def test_linking_the_same_folder_twice_is_one_link(client, tmp_path):
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        user_id = await _signed_in(client)
+        await store.put_file(user_id, "triage/a.md", b"1")
+        made = (await client.post("/projects", json={"title": "work", "folders": ["triage"]})).json()
+
+        again = await client.post(f"/projects/{made['id']}/folders", json={"folder": "triage"})
+
+        assert again.status_code == 201
+        assert again.json()["folders"] == ["triage"]
+    finally:
+        store.use_blobs(None)
 
 
 async def test_a_project_can_be_renamed(client):
@@ -1375,49 +1468,61 @@ async def test_a_rename_to_nothing_is_refused(client):
     assert "keep me" in [p["title"] for p in (await client.get("/projects")).json()]
 
 
-async def test_a_rename_does_not_move_the_agents_folder(client):
-    """The bug this pins: `claims_for` derived the mount from the CURRENT title
-    on every turn, so renaming a project moved `~/projects/<slug>/` out from
-    under a running agent — while the prompt promises that path is durable."""
-    from harness_module import workspace
+async def test_a_rename_touches_no_folder_and_no_mount(client, tmp_path):
+    """The bug this pins: the Files tab grouped by project TITLE, so renaming a
+    project renamed the filesystem's headers. Folders are store segments now and
+    a rename cannot reach one."""
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        from harness_module import workspace
 
-    user_id = await _signed_in(client)
-    made = (await client.post("/projects", json={"title": "inbox triage"})).json()
-    assert made["slug"] == "inbox-triage"
-    session_id = await _session_for(user_id)
-    await pool.execute(
-        "UPDATE sessions SET project_id = $2 WHERE id = $1", uuid.UUID(session_id), uuid.UUID(made["id"])
-    )
-    before = (await workspace.claims_for(session_id))[0].mount
+        await _signed_in(client)
+        made = (await client.post("/projects", json={"title": "inbox triage"})).json()
+        assert made["folders"] == ["inbox-triage"]
+        session_id = (
+            await client.post("/sessions", json={"goal": "go", "project_id": made["id"]})
+        ).json()["session_id"]
+        before = (await workspace.claims_for(session_id))[0].mount
+        headers = (await client.get("/folders")).json()
 
-    renamed = await client.patch(f"/projects/{made['id']}", json={"title": "something else entirely"})
+        renamed = await client.patch(f"/projects/{made['id']}", json={"title": "something else entirely"})
 
-    assert renamed.json()["title"] == "something else entirely"
-    assert renamed.json()["slug"] == "inbox-triage", "the folder keeps the name it was made with"
-    after = (await workspace.claims_for(session_id))[0].mount
-    assert after == before == "/home/user/projects/inbox-triage"
-
-
-async def test_two_projects_cannot_claim_one_folder(client):
-    """`~/projects/` is flat, so the same name twice takes a suffix rather than
-    the same directory — a collision that was live before the slug was stored."""
-    await _signed_in(client)
-
-    first = (await client.post("/projects", json={"title": "notes"})).json()
-    second = (await client.post("/projects", json={"title": "notes"})).json()
-    third = (await client.post("/projects", json={"title": "Notes!"})).json()
-
-    assert first["slug"] == "notes"
-    assert second["slug"] == "notes-2"
-    assert third["slug"] == "notes-3", "the slug rule, not the title, is what collides"
+        assert renamed.json()["title"] == "something else entirely"
+        assert renamed.json()["folders"] == ["inbox-triage"], "the link did not follow the label"
+        after = (await workspace.claims_for(session_id))[0].mount
+        assert after == before == "/home/user/store/inbox-triage"
+        assert (await client.get("/folders")).json() == headers, "a rename moved the store's headers"
+    finally:
+        store.use_blobs(None)
 
 
-async def test_a_name_with_nothing_sluggable_still_gets_a_folder(client):
-    await _signed_in(client)
+async def test_two_projects_named_the_same_do_not_share_one_folder(client, tmp_path):
+    """Folder names are unique per user because they are segments of unique paths."""
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        await _signed_in(client)
 
-    made = (await client.post("/projects", json={"title": "!!!"})).json()
+        first = (await client.post("/projects", json={"title": "notes"})).json()
+        second = (await client.post("/projects", json={"title": "notes"})).json()
+        third = (await client.post("/projects", json={"title": "Notes!"})).json()
 
-    assert made["slug"] == "project"
+        assert first["folders"] == ["notes"]
+        assert second["folders"] == ["notes-2"]
+        assert third["folders"] == ["notes-3"], "the folder rule, not the title, is what collides"
+    finally:
+        store.use_blobs(None)
+
+
+async def test_a_name_with_nothing_sluggable_still_gets_a_folder(client, tmp_path):
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        await _signed_in(client)
+
+        made = (await client.post("/projects", json={"title": "!!!"})).json()
+
+        assert made["folders"] == ["project"]
+    finally:
+        store.use_blobs(None)
 
 
 # --- the app is served from the API's own origin ---------------------------------
@@ -1461,22 +1566,23 @@ async def _new_session() -> str:
 async def test_a_new_folder_is_durable_before_anything_is_in_it(client, tmp_path):
     """The folder is in the store the moment it is named, not when it is filled.
 
-    An empty directory has no row of its own — the tree is flat paths — so the
-    sentinel is what survives the round trip through a sandbox.
+    A folder is a path segment and has no row of its own, so the sentinel is
+    what makes it exist — and what survives the round trip through a sandbox.
     """
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     try:
-        await _signed_in(client)
-        project_id = (await client.post("/sessions", json={"goal": "do the taxes"})).json()["project_id"]
+        user_id = await _signed_in(client)
 
-        made = await client.post(f"/projects/{project_id}/folders", json={"path": "receipts/2026"})
-        listed = (await client.get(f"/projects/{project_id}/files")).json()
+        made = await client.post("/folders", json={"path": "receipts/2026"})
+        listed = (await client.get("/files")).json()
 
         assert made.status_code == 201
         assert made.json()["path"] == "receipts/2026"
         assert [f["path"] for f in listed] == ["receipts/2026/.keep"]
-        # And it is a real tree entry, so materialize carries it into the box.
-        assert [e.path for e in await store.read_tree(project_id)] == ["receipts/2026/.keep"]
+        # It is a real tree entry, so materialize carries it into the box.
+        assert [e.path for e in await store.read_tree(user_id)] == ["receipts/2026/.keep"]
+        # And its TOP segment is the folder, which is what the Files tab heads with.
+        assert (await client.get("/folders")).json() == [{"name": "receipts", "files": 0}]
     finally:
         store.use_blobs(None)
 
@@ -1485,13 +1591,30 @@ async def test_a_folder_that_is_already_there_is_refused(client, tmp_path):
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     try:
         await _signed_in(client)
-        project_id = (await client.post("/sessions", json={"goal": "do the taxes"})).json()["project_id"]
-        await client.post(f"/projects/{project_id}/folders", json={"path": "receipts"})
+        await client.post("/folders", json={"path": "receipts"})
 
-        again = await client.post(f"/projects/{project_id}/folders", json={"path": "receipts"})
+        again = await client.post("/folders", json={"path": "receipts"})
 
         assert again.status_code == 409
         assert again.json()["code"] == "already_exists"
+    finally:
+        store.use_blobs(None)
+
+
+async def test_a_folder_appears_the_moment_a_file_lands_under_a_new_first_segment(client, tmp_path):
+    """Nothing declares a folder into being: it is derived, so it cannot lag."""
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        await _signed_in(client)
+        assert (await client.get("/folders")).json() == []
+
+        await client.post(
+            "/files",
+            files={"file": ("a.md", b"x", "text/plain")},
+            data={"path": "ski-trip/a.md"},
+        )
+
+        assert (await client.get("/folders")).json() == [{"name": "ski-trip", "files": 1}]
     finally:
         store.use_blobs(None)
 
@@ -1500,51 +1623,94 @@ async def test_moving_a_file_moves_the_row_and_leaves_the_blob_alone(client, tmp
     """A move is a rename of a path, not a rewrite: same row, same bytes."""
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     try:
-        await _signed_in(client)
-        project_id = (await client.post("/sessions", json={"goal": "do the taxes"})).json()["project_id"]
+        user_id = await _signed_in(client)
         uploaded = (
             await client.post(
-                f"/projects/{project_id}/files",
+                "/files",
                 files={"file": ("receipts.csv", b"date,amount\n2026-08-18,12", "text/csv")},
+                data={"path": "taxes/receipts.csv"},
             )
         ).json()
-        before = (await store.read_tree(project_id))[0].content_hash
+        before = (await store.read_tree(user_id))[0].content_hash
 
         moved = await client.post(
-            f"/projects/{project_id}/files/move",
-            json={"from": "receipts.csv", "to": "2026/receipts.csv"},
+            "/files/move",
+            json={"from": "taxes/receipts.csv", "to": "taxes/2026/receipts.csv"},
         )
-        listed = (await client.get(f"/projects/{project_id}/files")).json()
+        listed = (await client.get("/files")).json()
 
         assert moved.status_code == 200
-        assert moved.json()["moved"] == [{"from": "receipts.csv", "to": "2026/receipts.csv"}]
-        assert [f["path"] for f in listed] == ["2026/receipts.csv"]
+        assert moved.json()["moved"] == [
+            {"from": "taxes/receipts.csv", "to": "taxes/2026/receipts.csv"}
+        ]
+        assert [f["path"] for f in listed] == ["taxes/2026/receipts.csv"]
         # The id survives, which is what lets an open reader follow the file.
         assert listed[0]["file_id"] == uploaded["file_id"]
-        assert (await store.read_tree(project_id))[0].content_hash == before
+        assert (await store.read_tree(user_id))[0].content_hash == before
     finally:
         store.use_blobs(None)
 
 
-async def test_moving_a_folder_takes_everything_under_it(client, tmp_path):
+async def test_moving_between_folders_is_an_ordinary_move(client, tmp_path):
+    """One namespace: what used to need a copy between two projects is a row edit."""
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     try:
         await _signed_in(client)
-        project_id = (await client.post("/sessions", json={"goal": "do the taxes"})).json()["project_id"]
-        for path in ("inbox/a.md", "inbox/deep/b.md"):
+        await client.post(
+            "/files", files={"file": ("a.md", b"x", "text/plain")}, data={"path": "triage/a.md"}
+        )
+        await client.post("/folders", json={"path": "archive"})
+
+        moved = await client.post("/files/move", json={"from": "triage/a.md", "to": "archive/a.md"})
+
+        assert moved.status_code == 200
+        assert [f["path"] for f in (await client.get("/files")).json()] == [
+            "archive/.keep",
+            "archive/a.md",
+        ]
+    finally:
+        store.use_blobs(None)
+
+
+async def test_moving_a_directory_takes_everything_under_it(client, tmp_path):
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        await _signed_in(client)
+        for path in ("mail/inbox/a.md", "mail/inbox/deep/b.md"):
             await client.post(
-                f"/projects/{project_id}/files",
+                "/files",
                 files={"file": (path.split("/")[-1], b"x", "text/plain")},
                 data={"path": path},
             )
 
         moved = await client.post(
-            f"/projects/{project_id}/files/move", json={"from": "inbox", "to": "archive/2026"}
+            "/files/move", json={"from": "mail/inbox", "to": "mail/archive/2026"}
         )
-        listed = (await client.get(f"/projects/{project_id}/files")).json()
+        listed = (await client.get("/files")).json()
 
         assert moved.status_code == 200
-        assert [f["path"] for f in listed] == ["archive/2026/a.md", "archive/2026/deep/b.md"]
+        assert [f["path"] for f in listed] == [
+            "mail/archive/2026/a.md",
+            "mail/archive/2026/deep/b.md",
+        ]
+    finally:
+        store.use_blobs(None)
+
+
+async def test_renaming_a_folder_is_refused_here(client, tmp_path):
+    """It moves what claims and mounts are keyed by, so it is its own card."""
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    try:
+        await _signed_in(client)
+        await client.post(
+            "/files", files={"file": ("a.md", b"x", "text/plain")}, data={"path": "triage/a.md"}
+        )
+
+        refused = await client.post("/files/move", json={"from": "triage", "to": "sorted"})
+
+        assert refused.status_code == 409
+        assert refused.json()["code"] == "move_refused"
+        assert [f["path"] for f in (await client.get("/files")).json()] == ["triage/a.md"]
     finally:
         store.use_blobs(None)
 
@@ -1554,37 +1720,33 @@ async def test_a_move_onto_an_occupied_path_is_refused_whole(client, tmp_path):
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     try:
         await _signed_in(client)
-        project_id = (await client.post("/sessions", json={"goal": "do the taxes"})).json()["project_id"]
-        for path in ("a/note.md", "b/note.md"):
+        for path in ("mail/a/note.md", "mail/b/note.md"):
             await client.post(
-                f"/projects/{project_id}/files",
-                files={"file": ("note.md", b"x", "text/plain")},
-                data={"path": path},
+                "/files", files={"file": ("note.md", b"x", "text/plain")}, data={"path": path}
             )
 
-        clash = await client.post(f"/projects/{project_id}/files/move", json={"from": "a", "to": "b"})
-        listed = (await client.get(f"/projects/{project_id}/files")).json()
+        clash = await client.post("/files/move", json={"from": "mail/a", "to": "mail/b"})
+        listed = (await client.get("/files")).json()
 
         assert clash.status_code == 409
         assert clash.json()["code"] == "move_refused"
-        assert [f["path"] for f in listed] == ["a/note.md", "b/note.md"]
+        assert [f["path"] for f in listed] == ["mail/a/note.md", "mail/b/note.md"]
     finally:
         store.use_blobs(None)
 
 
-async def test_a_folder_cannot_be_moved_into_itself(client, tmp_path):
+async def test_a_directory_cannot_be_moved_into_itself(client, tmp_path):
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     try:
         await _signed_in(client)
-        project_id = (await client.post("/sessions", json={"goal": "do the taxes"})).json()["project_id"]
         await client.post(
-            f"/projects/{project_id}/files",
+            "/files",
             files={"file": ("note.md", b"x", "text/plain")},
-            data={"path": "inbox/note.md"},
+            data={"path": "mail/inbox/note.md"},
         )
 
         eats_itself = await client.post(
-            f"/projects/{project_id}/files/move", json={"from": "inbox", "to": "inbox/inbox"}
+            "/files/move", json={"from": "mail/inbox", "to": "mail/inbox/inbox"}
         )
 
         assert eats_itself.status_code == 409
@@ -1592,13 +1754,12 @@ async def test_a_folder_cannot_be_moved_into_itself(client, tmp_path):
         store.use_blobs(None)
 
 
-async def test_moving_a_path_the_project_does_not_have_is_absent(client, tmp_path):
+async def test_moving_a_path_the_store_does_not_have_is_absent(client, tmp_path):
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     try:
         await _signed_in(client)
-        project_id = (await client.post("/sessions", json={"goal": "do the taxes"})).json()["project_id"]
 
-        gone = await client.post(f"/projects/{project_id}/files/move", json={"from": "nope.md", "to": "a/nope.md"})
+        gone = await client.post("/files/move", json={"from": "a/nope.md", "to": "a/deep/nope.md"})
 
         assert gone.status_code == 404
     finally:

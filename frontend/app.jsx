@@ -3,8 +3,8 @@
 
    The design's frame. `watching` is not in the nav: nothing in the system
    watches a source on a schedule, and a rail entry for a feature that does not
-   exist is a promise the product cannot keep. Everything else is here — desk,
-   approvals, files, projects, chat.
+   exist is a promise the product cannot keep. The nav is the whole surface —
+   desk, approvals, files, projects.
 
    `projects` is the projects surface and only that; it was called "looking
    glass" until the 11.4 design renamed it to what it shows, and `computer`
@@ -12,9 +12,10 @@
 
    Chat and the ambient bar are GONE (11.8): the design export removed them, and
    a session's own composer is where you talk to a session. The home session
-   (LG-1.7) still exists backend-side and now has no surface at all — the
-   buddy's return or retirement is a future card, and the orphan is recorded in
-   the spec rather than left to be discovered.
+   (LG-1.7) still exists backend-side and has no surface at all — the buddy's
+   return or retirement is a future card. 11.9 finished taking the furniture out
+   from under it: it holds no project, claims no folder, and the window's header
+   no longer invents a name for the container it does not have.
    ========================================================= */
 
 const NAV = ["desk", "approvals", "files", "projects"];
@@ -44,6 +45,9 @@ function App() {
   const [waiting, setWaiting] = useState(null);
   // A session opened from somewhere other than the grid — the desk, say.
   const [jump, setJump] = useState(null);
+  // A file the working-files pane asked the Files tab to land on. Same store,
+  // same path: the pane and the tab are two views of one namespace (11.9).
+  const [openFile, setOpenFile] = useState(null);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -109,8 +113,21 @@ function App() {
   const views = {
     desk: <DeskView onError={onError} waiting={waiting} onOpenSession={(id) => { setJump(id); setView("projects"); }} />,
     approvals: <ApprovalsView onError={onError} waiting={waiting} onResolved={bump} />,
-    files: <ComputerView onError={onError} />,
-    projects: <LookingGlassView onError={onError} pulse={pulse} waiting={waiting} onPulse={bump} jump={jump} onJumped={() => setJump(null)} />,
+    files: <ComputerView onError={onError} jumpTo={openFile} onJumped={() => setOpenFile(null)} />,
+    projects: (
+      <LookingGlassView
+        onError={onError}
+        pulse={pulse}
+        waiting={waiting}
+        onPulse={bump}
+        jump={jump}
+        onJumped={() => setJump(null)}
+        onOpenFile={(path) => {
+          setOpenFile(path);
+          setView("files");
+        }}
+      />
+    ),
   };
 
   const pending = (waiting || []).length;

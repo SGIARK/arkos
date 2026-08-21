@@ -1,7 +1,9 @@
 """Uploading and browsing files without booting a computer.
 
-The store is where an upload lands; a running session that already has the
-project materialized is written through so it reads the file the same turn.
+The store is the USER'S, one flat namespace, and an upload names a path inside a
+folder of it (11.9). A running session whose claim covers that path is written
+through, so it reads the file the same turn.
+
 Runs against a real Postgres; the boxes are fakes.
 """
 
@@ -47,6 +49,7 @@ async def boxes(tmp_path, monkeypatch):
     runner._cancelling.clear()
     await asyncio.sleep(0)
     await pool.execute("DELETE FROM sessions WHERE user_id = ANY($1::uuid[])", _seeded)
+    await pool.execute("DELETE FROM files WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM projects WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM users WHERE id = ANY($1::uuid[])", _seeded)
     _seeded.clear()
@@ -77,14 +80,19 @@ async def _sign_in(client: AsyncClient, user_id: str) -> None:
 
 
 async def _project(user_id: str, title: str = "Taxes") -> str:
-    return str(
-        await pool.fetchval(
-            "INSERT INTO projects (user_id, title, slug) VALUES ($1, $2, $3) RETURNING id",
-            uuid.UUID(user_id),
-            title,
-            store.slug(title, "project"),
-        )
+    """A project linking the folder its title implies, as `POST /projects` makes one."""
+    project_id = await pool.fetchval(
+        "INSERT INTO projects (user_id, title, slug) VALUES ($1, $2, $3) RETURNING id",
+        uuid.UUID(user_id),
+        title,
+        store.slug(title, "project"),
     )
+    await pool.execute(
+        "INSERT INTO project_folders (project_id, folder) VALUES ($1, $2)",
+        project_id,
+        store.slug(title, "project"),
+    )
+    return str(project_id)
 
 
 async def _session(user_id: str, project_id: str, status: str = "idle", text: str = "go") -> str:
@@ -100,9 +108,9 @@ async def _session(user_id: str, project_id: str, status: str = "idle", text: st
     return session_id
 
 
-def _upload(name: str, body: bytes, path: str | None = None) -> dict:
-    files = {"file": (name, body, "application/octet-stream")}
-    return {"files": files, "data": {"path": path}} if path else {"files": files}
+def _upload(name: str, body: bytes, path: str) -> dict:
+    """An upload always names a path, because every file in the store is in a folder."""
+    return {"files": {"file": (name, body, "application/octet-stream")}, "data": {"path": path}}
 
 
 async def _signed(client: AsyncClient) -> str:
@@ -118,16 +126,20 @@ async def test_an_upload_lands_in_the_store_and_lists_immediately(client, boxes)
     user_id = await _signed(client)
     project_id = await _project(user_id)
 
-    created = await client.post(f"/projects/{project_id}/files", **_upload("notes.md", b"hello"))
-    listing = await client.get(f"/projects/{project_id}/files")
+    created = await client.post("/files", **_upload("notes.md", b"hello", path="taxes/notes.md"))
+    listing = await client.get("/files")
+    linked = await client.get(f"/projects/{project_id}/files")
 
     assert created.status_code == 201
     body = created.json()
     assert body["name"] == "notes.md"
+    assert body["folder"] == "taxes"
     assert body["size"] == 5
     assert uuid.UUID(body["file_id"])
-    assert [f["path"] for f in listing.json()] == ["notes.md"]
-    entry = (await store.read_tree(project_id))[0]
+    assert [f["path"] for f in listing.json()] == ["taxes/notes.md"]
+    # The same file, seen through the project that links the folder it is in.
+    assert [f["path"] for f in linked.json()] == ["taxes/notes.md"]
+    entry = (await store.read_tree(user_id))[0]
     assert await store.get_blob(entry.content_hash) == b"hello"
     assert boxes.boxes == {}, "browsing booted a computer"
 
@@ -135,11 +147,11 @@ async def test_an_upload_lands_in_the_store_and_lists_immediately(client, boxes)
 async def test_an_upload_to_a_cold_project_is_there_at_the_next_materialize(client, boxes):
     user_id = await _signed(client)
     project_id = await _project(user_id, "Cold")
-    await client.post(f"/projects/{project_id}/files", **_upload("report.txt", b"quarterly"))
+    await client.post("/files", **_upload("report.txt", b"quarterly", path="cold/report.txt"))
     session_id = await _session(user_id, project_id)
     assert await runner.sandbox_manager.claim_slot(session_id)
 
-    claim = workspace.Claim(project_id=project_id, slug="cold")
+    claim = workspace.Claim(user_id=user_id, folder="cold")
     await workspace.materialize(boxes, session_id, [claim])
 
     assert boxes.box(session_id).files[f"{workspace.MOUNT_ROOT}/cold/report.txt"] == b"quarterly"
@@ -147,25 +159,26 @@ async def test_an_upload_to_a_cold_project_is_there_at_the_next_materialize(clie
 
 async def test_a_subdirectory_path_is_kept(client):
     user_id = await _signed(client)
-    project_id = await _project(user_id)
+    await _project(user_id)
 
     created = await client.post(
-        f"/projects/{project_id}/files", **_upload("q3.csv", b"1,2,3", path="data/2026/q3.csv")
+        "/files", **_upload("q3.csv", b"1,2,3", path="taxes/data/2026/q3.csv")
     )
 
-    assert created.json()["path"] == "data/2026/q3.csv"
+    assert created.json()["path"] == "taxes/data/2026/q3.csv"
     assert created.json()["name"] == "q3.csv"
-    assert [e.path for e in await store.read_tree(project_id)] == ["data/2026/q3.csv"]
+    assert created.json()["folder"] == "taxes"
+    assert [e.path for e in await store.read_tree(user_id)] == ["taxes/data/2026/q3.csv"]
 
 
 async def test_re_uploading_a_path_replaces_it(client):
     user_id = await _signed(client)
-    project_id = await _project(user_id)
-    await client.post(f"/projects/{project_id}/files", **_upload("a.txt", b"first"))
+    await _project(user_id)
+    await client.post("/files", **_upload("a.txt", b"first", path="taxes/a.txt"))
 
-    await client.post(f"/projects/{project_id}/files", **_upload("a.txt", b"second"))
+    await client.post("/files", **_upload("a.txt", b"second", path="taxes/a.txt"))
 
-    tree = await store.read_tree(project_id)
+    tree = await store.read_tree(user_id)
     assert len(tree) == 1
     assert await store.get_blob(tree[0].content_hash) == b"second"
 
@@ -175,10 +188,12 @@ async def test_re_uploading_a_path_replaces_it(client):
 
 async def test_an_oversized_upload_is_refused_in_the_standard_shape(client, monkeypatch):
     user_id = await _signed(client)
-    project_id = await _project(user_id)
+    await _project(user_id)
     monkeypatch.setattr(api, "_cfg", lambda key, default: 1 if key == "quotas.upload_max_mb" else default)
 
-    response = await client.post(f"/projects/{project_id}/files", **_upload("big.bin", b"x" * (2 * 1024 * 1024)))
+    response = await client.post(
+        "/files", **_upload("big.bin", b"x" * (2 * 1024 * 1024), path="taxes/big.bin")
+    )
 
     assert response.status_code == 413
     assert response.json() == {
@@ -186,43 +201,56 @@ async def test_an_oversized_upload_is_refused_in_the_standard_shape(client, monk
         "message": "1 MB is the limit for one file.",
         "retryable": False,
     }
-    assert await store.read_tree(project_id) == [], "a refused upload still wrote a row"
+    assert await store.read_tree(user_id) == [], "a refused upload still wrote a row"
 
 
-async def test_a_path_that_climbs_out_of_the_project_is_refused(client):
+async def test_a_path_that_climbs_out_of_the_store_is_refused(client):
     user_id = await _signed(client)
-    project_id = await _project(user_id)
+    await _project(user_id)
 
     response = await client.post(
-        f"/projects/{project_id}/files", **_upload("passwd", b"root", path="../../etc/passwd")
+        "/files", **_upload("passwd", b"root", path="../../etc/passwd")
     )
 
     assert response.status_code == 400
     assert response.json()["code"] == "invalid_request"
 
 
-async def test_another_users_project_reads_as_absent(client):
-    theirs = await _project(await _user(), "Secret")
+async def test_a_file_with_no_folder_is_refused(client):
+    """Every file in the store is in a folder: a top-level one would be its own."""
     await _signed(client)
 
-    upload = await client.post(f"/projects/{theirs}/files", **_upload("mine.txt", b"peek"))
-    listing = await client.get(f"/projects/{theirs}/files")
+    response = await client.post("/files", **_upload("loose.txt", b"nowhere", path="loose.txt"))
 
-    assert upload.status_code == 404
-    assert listing.status_code == 404
+    assert response.status_code == 400
+    assert response.json()["code"] == "invalid_request"
+
+
+async def test_the_store_is_the_callers_own_and_nobody_elses(client):
+    """No project id is involved: the store is keyed by user, so scoping is total."""
+    theirs_user = await _user()
+    await store.put_file(theirs_user, "secret/a.txt", b"peek")
+    theirs = await _project(theirs_user, "Secret")
+    await _signed(client)
+
+    listing = await client.get("/files")
+    linked = await client.get(f"/projects/{theirs}/files")
+
+    assert listing.json() == []
+    assert linked.status_code == 404
 
 
 async def test_an_empty_file_is_content_like_any_other(client):
     """A `.gitkeep` is a file. Zero bytes hash and store like any other content."""
     user_id = await _signed(client)
-    project_id = await _project(user_id)
+    await _project(user_id)
 
-    response = await client.post(f"/projects/{project_id}/files", **_upload(".gitkeep", b""))
+    response = await client.post("/files", **_upload(".gitkeep", b"", path="taxes/.gitkeep"))
 
     assert response.status_code == 201
     assert response.json()["size"] == 0
-    entry = (await store.read_tree(project_id))[0]
-    assert entry.path == ".gitkeep"
+    entry = (await store.read_tree(user_id))[0]
+    assert entry.path == "taxes/.gitkeep"
     assert await store.get_blob(entry.content_hash) == b""
 
 
@@ -233,7 +261,7 @@ async def test_listing_a_hundred_file_project_boots_nothing(client, boxes):
     user_id = await _signed(client)
     project_id = await _project(user_id, "Big")
     await store.commit_tree(
-        project_id, [store.FileContent(path=f"f{i:03}.txt", content=b"x") for i in range(100)]
+        user_id, [store.FileContent(path=f"big/f{i:03}.txt", content=b"x") for i in range(100)]
     )
 
     listing = await client.get(f"/projects/{project_id}/files")
@@ -258,7 +286,7 @@ async def test_a_running_session_reads_an_upload_the_same_turn(client, boxes, pa
     """The write-through: the box already holds the project, so it holds the file too."""
     user_id = await _signed(client)
     project_id = await _project(user_id, "Live")
-    await store.commit_tree(project_id, [store.FileContent(path="a.txt", content=b"1")])
+    await store.commit_tree(user_id, [store.FileContent(path="live/a.txt", content=b"1")])
     session_id = await _session(user_id, project_id)
 
     uploaded_then_read: list[bytes] = []
@@ -268,7 +296,7 @@ async def test_a_running_session_reads_an_upload_the_same_turn(client, boxes, pa
         if command == "upload-and-read":
             # Mid-turn, from outside the session: the box is live and materialized.
             response = await client.post(
-                f"/projects/{project_id}/files", **_upload("dropped.txt", b"from the composer")
+                "/files", **_upload("dropped.txt", b"from the composer", path="live/dropped.txt")
             )
             assert response.status_code == 201
             uploaded_then_read.append(boxes.box(session).files[f"{workspace.MOUNT_ROOT}/live/dropped.txt"])
@@ -301,17 +329,17 @@ async def test_a_running_session_reads_an_upload_the_same_turn(client, boxes, pa
 
     assert uploaded_then_read == [b"from the composer"]
     # And the session's flush kept it, since the store and the box agree.
-    tree = {e.path for e in await store.read_tree(project_id)}
-    assert tree == {"a.txt", "dropped.txt"}
+    tree = {e.path for e in await store.read_tree(user_id)}
+    assert tree == {"live/a.txt", "live/dropped.txt"}
 
 
-async def test_an_upload_to_a_project_no_box_holds_writes_through_to_nothing(client, boxes):
+async def test_an_upload_to_a_folder_no_box_holds_writes_through_to_nothing(client, boxes):
     user_id = await _signed(client)
     project_id = await _project(user_id, "Nobody")
     idle_session = await _session(user_id, project_id)
     assert await runner.sandbox_manager.claim_slot(idle_session)
 
-    await client.post(f"/projects/{project_id}/files", **_upload("a.txt", b"1"))
+    await client.post("/files", **_upload("a.txt", b"1", path="nobody/a.txt"))
 
     assert boxes.boxes == {}, "an upload woke a box that had materialized nothing"
 
@@ -320,13 +348,13 @@ async def test_a_read_claim_that_is_written_through_reports_no_discarded_edits(c
     """An uploaded file is in the store, so a read claim is losing nothing by not committing it."""
     user_id = await _signed(client)
     project_id = await _project(user_id, "Reference")
-    await store.commit_tree(project_id, [store.FileContent(path="a.txt", content=b"1")])
+    await store.commit_tree(user_id, [store.FileContent(path="reference/a.txt", content=b"1")])
     session_id = await _session(user_id, project_id)
     assert await runner.sandbox_manager.claim_slot(session_id)
-    claim = workspace.Claim(project_id=project_id, slug="reference", mode="read")
+    claim = workspace.Claim(user_id=user_id, folder="reference", mode="read")
     manifest = (await workspace.materialize(boxes, session_id, [claim])).manifest
 
-    await client.post(f"/projects/{project_id}/files", **_upload("added.txt", b"uploaded"))
+    await client.post("/files", **_upload("added.txt", b"uploaded", path="reference/added.txt"))
     boxes.box(session_id).files[f"{workspace.MOUNT_ROOT}/reference/added.txt"] = b"uploaded"
     flushed = await workspace.flush(boxes, session_id, [claim], manifest)
 
@@ -342,16 +370,16 @@ async def test_an_upload_over_a_file_the_session_is_editing_fails_the_stale_edit
     """
     user_id = await _signed(client)
     project_id = await _project(user_id, "Live")
-    await store.commit_tree(project_id, [store.FileContent(path="a.txt", content=b"materialized\n")])
+    await store.commit_tree(user_id, [store.FileContent(path="live/a.txt", content=b"materialized\n")])
     session_id = await _session(user_id, project_id, status="running")
     assert await runner.sandbox_manager.claim_slot(session_id)
-    await workspace.materialize(boxes, session_id, [workspace.Claim(project_id=project_id, slug="live")])
+    await workspace.materialize(boxes, session_id, [workspace.Claim(user_id=user_id, folder="live")])
     mounted = f"{workspace.MOUNT_ROOT}/live/a.txt"
     ctx = ToolContext(user_id=user_id, session_id=session_id)
     await registry.dispatch("read_file", {"path": mounted}, ctx)
 
     # The human uploads over the file between the model's read and its edit.
-    await client.post(f"/projects/{project_id}/files", **_upload("a.txt", b"from the composer\n"))
+    await client.post("/files", **_upload("a.txt", b"from the composer\n", path="live/a.txt"))
 
     stale = await registry.dispatch(
         "edit_file", {"path": mounted, "old_string": "materialized", "new_string": "edited"}, ctx

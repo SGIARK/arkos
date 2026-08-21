@@ -473,7 +473,8 @@ kbd {
   padding: 11px 18px; border-bottom: 1px solid var(--line); flex-shrink: 0;
 }
 .cv-head .path { font-size: 11px; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cv-entries { overflow-y: auto; padding: 8px 0; flex: 1; }
+/* `.cv-entries` is gone: the shared tree owns its own scroll (`.ft-rows`), so
+   the column around it only has to give it height. */
 .cv-entry {
   display: flex; align-items: center; gap: 10px; justify-content: space-between;
   padding: 6px 18px; cursor: pointer; font-size: 12px; color: var(--ink-soft);
@@ -481,10 +482,50 @@ kbd {
 }
 .cv-entry:hover { background: var(--surface-2); color: var(--ink); }
 .cv-entry.sel { background: var(--accent-soft); color: var(--ink); }
-.cv-entry .nm { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.cv-entry .nm { display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1; }
+.cv-entry .nm .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Renaming in place: the row becomes the field, so the name never leaves the
+   spot it is read in. Same border as the new-folder input, because it is the
+   same act — naming a thing in the tree. */
+.cv-rename {
+  flex: 1; min-width: 0; background: var(--surface); color: var(--ink);
+  border: 1px solid var(--accent-line); border-radius: 5px; padding: 2px 7px;
+  font-family: inherit; font-size: 12px; outline: none;
+}
 .cv-entry .nm .g { color: var(--ink-mute); width: 12px; flex-shrink: 0; }
 .cv-entry.dir .nm { color: var(--ink); }
 .cv-entry .sz { font-size: 10px; color: var(--ink-mute); flex-shrink: 0; }
+.cv-entry .meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+/* Delete: invisible until the row is hovered, so a list of files is a list of
+   files and not a row of buttons. It ARMS on the first click — the glyph
+   becomes the word — because a modal for every file is a modal nobody reads,
+   and the second click is the same gesture again rather than a dialog to
+   dismiss. Armed, it stays visible even when the pointer leaves. */
+.fsdel {
+  min-width: 16px; height: 16px; display: inline-flex; align-items: center;
+  justify-content: center; line-height: 1; font-size: 9px; color: var(--ink-faint);
+  padding: 0 3px; border-radius: 4px; cursor: pointer; opacity: 0;
+  transition: opacity .12s var(--ease);
+}
+.cv-entry:hover .fsdel { opacity: 1; }
+.fsdel:hover { background: var(--line); color: var(--stop); }
+.fsdel.armed { opacity: 1; font-size: 10px; color: var(--stop); }
+
+/* The undo bar sits under the rows, where the thing that vanished was — not a
+   toast in a corner that times out before it is read. */
+.ft-undo {
+  margin: 10px 18px 0; display: flex; align-items: center; gap: 9px;
+  border: 1px dashed var(--line); border-radius: 6px; padding: 7px 10px;
+  font-size: 11px; color: var(--ink-mute);
+}
+.ft-undo .what { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ft-undo button {
+  flex-shrink: 0; background: none; border: none; font-family: var(--mono);
+  font-size: 11px; color: var(--accent); cursor: pointer;
+  text-decoration: underline; text-underline-offset: 2px; padding: 0;
+}
+.ft-undo button:disabled { opacity: .5; cursor: default; }
 .cv-read { position: relative; display: flex; flex-direction: column; min-height: 0; background: var(--paper); }
 .cv-read-head {
   padding: 11px 22px; border-bottom: 1px solid var(--line); flex-shrink: 0;
@@ -650,10 +691,54 @@ kbd {
 .ctx-tabs .tab-label { position: relative; display: inline-block; padding-bottom: 13px; }
 .ctx-tabs button.active .tab-label::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--accent); }
 .ctx-content { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 0; }
+/* Holding the file tree, the column stops scrolling itself: the tree scrolls
+   its own rows and keeps its header and drop zone in place, exactly as in the
+   Files tab. Two scrollbars for one list is what sharing the component fixes. */
+.ctx-content.ctx-tree { overflow: hidden; display: flex; flex-direction: column; padding: 16px 0 0; }
 /* `display: block` is the fix, not the margin. This is a <label> wrapping the
    hidden file input, and an inline box's vertical padding does not grow the line
    it sits on — so the dashed border bled upward over the last file rows. */
-.dropzone { display: block; margin: 22px 18px 4px; border: 1px dashed var(--line); border-radius: var(--r); padding: 20px 12px; text-align: center; font-size: 11px; color: var(--ink-mute); font-style: italic; }
+.dropzone { display: block; margin: 22px 18px 4px; border: 1px dashed var(--line); border-radius: var(--r); padding: 20px 12px; text-align: center; font-size: 11px; color: var(--ink-mute); font-style: italic; cursor: pointer; }
+/* The same green the Files tab uses, and it NAMES the target: a drop that says
+   only "drop here" is a file landing somewhere the person did not choose. */
+.dropzone.over { border-color: var(--accent-line); color: var(--accent); background: var(--accent-soft); }
+
+/* ONE file tree, in both scopes (11.9). The column it sits in differs — a full
+   pane in the Files tab, 300px beside a transcript — so the tree fills what it
+   is given and only its rows scroll. */
+.ft { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.ft-rows { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 0; }
+
+/* working files — the project's linked folders (11.9) */
+.wf-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 4px 18px 10px;
+}
+.wf-link {
+  font-size: 10.5px; border: 1px solid var(--line); background: var(--surface);
+  color: var(--ink-soft); padding: 3px 10px; border-radius: 6px; cursor: pointer;
+  font-family: var(--mono);
+}
+.wf-link:hover { border-color: var(--ink-faint); color: var(--ink); }
+.wf-link.on { border-color: var(--accent-line); background: var(--accent-soft); color: var(--ink); }
+.wf-picker {
+  margin: 0 18px 10px; border: 1px solid var(--accent-line); border-radius: var(--r);
+  background: var(--surface); overflow: hidden; display: flex; flex-direction: column;
+}
+.wf-choice {
+  display: flex; align-items: center; gap: 9px; font-size: 12px; padding: 8px 11px;
+  cursor: pointer; color: var(--ink-soft);
+}
+.wf-choice:hover { background: var(--surface-2); color: var(--ink); }
+.wf-choice .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-choice .n { font-size: 10px; color: var(--ink-mute); flex-shrink: 0; }
+.wf-none { font-size: 11px; color: var(--ink-faint); font-style: italic; padding: 8px 11px; }
+/* Said on the control, not hidden: claims are fixed per session, so this is a
+   fact about when the agent sees it rather than a lag to apologise for. */
+.wf-note {
+  font-size: 10px; color: var(--ink-mute); padding: 7px 11px;
+  border-top: 1px solid var(--line-soft); background: var(--surface-2); line-height: 1.5;
+}
 .mem-note { margin: 0 18px 12px; font-size: 11.5px; color: var(--ink-soft); line-height: 1.7; padding-bottom: 12px; border-bottom: 1px dashed var(--line-soft); }
 .mem-note .k { display: block; font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-mute); margin-bottom: 5px; }
 
@@ -733,12 +818,9 @@ kbd {
 
 /* The computer's file list, driven by the store rather than a mock tree. */
 .cv-entry.loading { font-style: italic; color: var(--ink-mute); }
-.cv-project { padding: 10px 18px; border-bottom: 1px solid var(--line); }
-.cv-project select {
-  width: 100%; background: var(--surface); color: var(--ink);
-  border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
-  font-family: var(--mono); font-size: 11.5px; outline: none;
-}
+/* The project picker that used to head this panel is GONE (11.9): the Files tab
+   is the STORE, its headers are the store's top-level segments, and a project
+   is not a scope you look at files through. */
 .cv-binary { padding: 22px 26px; font-size: 12px; color: var(--ink-mute); font-style: italic; }
 
 /* Zones scroll on their own once they hold real numbers of things. */
@@ -906,6 +988,10 @@ kbd {
   font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent);
   background: var(--surface); border: 1px solid var(--accent-line); border-radius: 100px; padding: 7px 16px;
 }
+/* Aimed at nothing. Green promises a landing, so a drop with no folder under it
+   must not wear it — the top level is not a destination. */
+.cv-drop.nowhere { border-color: var(--line); background: transparent; }
+.cv-drop.nowhere span { color: var(--ink-mute); border-color: var(--line); }
 
 /* The reader's edit mode (11.4 design). The store is the durable copy, so this
    is not a scratch buffer: saving upserts the file and a session already
@@ -1023,11 +1109,25 @@ kbd {
 .np-copy { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 0; }
 .np-copy .t { font-size: 12.5px; color: var(--ink); }
 .np-copy .s { font-size: 11px; color: var(--ink-mute); line-height: 1.5; }
-.np-copy select {
-  width: 100%; margin-top: 4px; background: var(--surface); border: 1px solid var(--line);
-  border-radius: 6px; padding: 7px 9px; font-family: var(--mono); font-size: 12px;
-  color: var(--ink); outline: none;
+/* The directory step is a CHECKLIST, not a dropdown: a project links as many
+   folders as it wants, and each row carries the count that makes the choice
+   informed (11.9). */
+.np-list { display: flex; flex-direction: column; gap: 5px; margin-top: 4px; }
+.np-none { font-size: 11px; color: var(--ink-faint); font-style: italic; }
+.np-choice {
+  display: flex; align-items: center; gap: 9px; font-size: 12px; color: var(--ink);
+  border: 1px solid var(--line); background: var(--surface); border-radius: 6px;
+  padding: 7px 9px; cursor: pointer;
 }
+.np-choice:hover { border-color: var(--ink-faint); }
+.np-choice .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.np-choice .n { font-size: 10px; color: var(--ink-mute); flex-shrink: 0; }
+.np-box {
+  width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; display: grid;
+  place-items: center; font-size: 8px; line-height: 1; color: var(--paper);
+  border: 1px solid var(--ink-faint); background: var(--surface);
+}
+.np-choice.on .np-box { border-color: var(--accent); background: var(--accent); }
 .np-foot {
   border-top: 1px solid var(--line); background: var(--surface-2); padding: 12px 20px;
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -1045,3 +1145,176 @@ kbd {
 }
 .np-go:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); }
 .np-go:disabled { opacity: .45; cursor: default; }
+
+/* =========================================================
+   the plan lane (11.8.5, reworked 11.8.6 against planning-card/)
+
+   An unattended run starts from an approved plan, so the surface that starts
+   one lives where the run does — INSIDE the transcript, scrolling with it.
+   It was a strip docked above the composer at first, which overlaid the
+   conversation; the transcript is meant to be the only surface, and nothing
+   here is docked or floats.
+
+   Six faces, never two at once: drafting, the open card, the running plan, a
+   held run, a spent one, a dismissed one. Measures come from the export.
+   Colours do not: every one is a token, so the lane follows the theme rather
+   than pinning the paper background it was drawn on.
+   ========================================================= */
+
+.run-btn {
+  display: inline-flex; align-items: center; gap: 9px; font-size: 12px; letter-spacing: .04em;
+  border: 1px solid var(--accent); background: var(--accent); color: var(--surface);
+  padding: 8px 18px; border-radius: 100px; cursor: pointer; font-family: var(--mono);
+  box-shadow: 0 1px 2px rgba(28,27,24,.06), 0 8px 22px -12px var(--accent-line);
+  transition: all .18s var(--ease);
+}
+.run-btn:hover { background: var(--ink); border-color: var(--ink); }
+.run-btn .glyph { font-size: 9px; }
+
+/* Stop is quiet and Cancel is not, because one of them is reversible. */
+.stop-btn, .cancel-btn {
+  display: inline-flex; align-items: center; gap: 8px; font-size: 11px; font-family: var(--mono);
+  padding: 5px 13px; border-radius: 100px; cursor: pointer; transition: all .18s var(--ease);
+}
+.stop-btn { border: 1px solid var(--line); background: var(--surface); color: var(--ink-soft); }
+.stop-btn:hover { border-color: var(--ink-faint); color: var(--ink); }
+.cancel-btn { border: 1px solid color-mix(in oklab, var(--stop) 40%, transparent); background: var(--surface); color: var(--stop); }
+.cancel-btn:hover { background: var(--stop); border-color: var(--stop); color: var(--surface); }
+
+/* A stopped run is HELD, not running and not over: a square, not a dot, and it
+   does not ping. */
+.square { width: 8px; height: 8px; border-radius: 1.5px; background: currentColor; flex-shrink: 0; }
+.status-pill.held { color: var(--work); border-color: color-mix(in oklab, var(--work) 35%, transparent); background: color-mix(in oklab, var(--work) 12%, transparent); }
+
+.plan-chip {
+  display: inline-flex; align-items: center; gap: 8px; font-size: 10.5px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--ink-soft); border: 1px solid var(--line);
+  background: var(--surface); padding: 4px 10px; border-radius: 100px;
+}
+.plan-chip .dir { text-transform: none; letter-spacing: 0; color: var(--ink-mute); }
+
+.plan-drafting, .plan-pinned, .plan-spent, .plan-stopped {
+  flex-shrink: 0; max-width: 760px; min-width: 0; display: flex; align-items: center; gap: 12px;
+}
+.plan-drafting {
+  border: 1px solid var(--line); background: var(--surface); border-radius: 9px;
+  padding: 16px 20px; font-size: 12.5px; color: var(--ink-soft);
+}
+.plan-spent {
+  border: 1px dashed var(--line); border-radius: 8px; padding: 10px 16px;
+  font-size: 11.5px; color: var(--ink-mute); font-style: italic; opacity: .85;
+}
+.plan-spent .said { min-width: 0; }
+.link {
+  flex-shrink: 0; font-size: 10.5px; color: var(--ink-soft); background: none; border: none;
+  cursor: pointer; font-family: var(--mono); font-style: normal;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.link:hover { color: var(--ink); }
+.link.mute { color: var(--ink-mute); }
+.link.danger { color: var(--stop); font-size: 11px; padding: 5px 6px; }
+
+.plan-pinned {
+  border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 11px 16px;
+}
+.plan-pinned .pin-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: var(--accent);
+  animation: ping 2.4s var(--ease) infinite;
+}
+.plan-pinned.held .pin-dot { background: var(--work); border-radius: 1.5px; width: 8px; height: 8px; animation: none; }
+.plan-pinned .goal { min-width: 0; font-size: 12px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-pinned .ver { flex-shrink: 0; font-size: 10.5px; color: var(--ink-mute); font-variant-numeric: tabular-nums; }
+.plan-pinned .file { flex-shrink: 0; font-size: 10.5px; color: var(--accent); cursor: default; }
+/* It opens the real file when there is a folder to open it in. */
+.plan-pinned .file.open { cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.plan-pinned .state { flex-shrink: 0; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-mute); }
+.plan-pinned.held .state { color: var(--work); }
+
+.plan-resumed {
+  flex-shrink: 0; max-width: 760px; display: flex; align-items: baseline; gap: 9px;
+  font-size: 11.5px; color: var(--ink-mute);
+}
+.plan-resumed .lede { color: var(--accent); flex-shrink: 0; }
+.plan-resumed .said { font-style: italic; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.plan-stopped {
+  border: 1px solid color-mix(in oklab, var(--work) 35%, transparent);
+  background: var(--surface); border-radius: 8px; padding: 11px 16px;
+  font-size: 12px; color: var(--ink-soft);
+}
+.plan-stopped .square { color: var(--work); }
+.plan-stopped .said { min-width: 0; flex: 1; }
+.plan-stopped .go {
+  flex-shrink: 0; font-size: 11px; border: 1px solid var(--ink); background: var(--ink);
+  color: var(--paper); padding: 5px 13px; border-radius: 6px; cursor: pointer;
+  font-family: var(--mono); transition: all .18s var(--ease);
+}
+.plan-stopped .go:hover { background: var(--accent); border-color: var(--accent); }
+
+.plan-card {
+  flex-shrink: 0; width: 100%; max-width: 620px; min-width: 0;
+  border: 1px solid var(--ink-faint); background: var(--surface);
+  border-radius: 9px; overflow: hidden;
+  box-shadow: 0 1px 2px rgba(28,27,24,.03), 0 16px 40px -26px rgba(28,27,24,.22);
+}
+.plan-card .kicker { font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-mute); }
+.plan-card .grow { flex: 1; }
+
+.pl-head { display: flex; align-items: center; gap: 10px; padding: 12px 12px 12px 20px; border-bottom: 1px solid var(--line-soft); }
+.pl-head .kicker { letter-spacing: .22em; font-weight: 500; }
+.pl-head .ver {
+  font-size: 10px; color: var(--ink-soft); border: 1px solid var(--line); background: var(--surface-2);
+  padding: 2px 8px; border-radius: 100px; font-variant-numeric: tabular-nums;
+}
+.pl-head .mute { font-size: 10.5px; color: var(--ink-mute); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pl-x {
+  flex-shrink: 0; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--line);
+  background: var(--surface); color: var(--ink-mute); font-size: 9px; font-family: var(--mono);
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+  transition: all .15s var(--ease);
+}
+.pl-x:hover:not(:disabled) { border-color: var(--stop); color: var(--stop); }
+.pl-x:disabled { opacity: .4; cursor: default; }
+
+/* The body scrolls; the header and the footer do not. A plan with twelve steps
+   would otherwise push "approve and run" past the bottom of the pane, and the
+   one control the card exists for would be the one you had to hunt for. */
+.pl-body {
+  padding: 18px 20px; display: flex; flex-direction: column; gap: 16px;
+  max-height: min(46vh, 420px); overflow-y: auto; overscroll-behavior: contain;
+}
+.pl-field { display: flex; flex-direction: column; gap: 7px; }
+.pl-field .goal { font-size: 13px; line-height: 1.5; color: var(--ink); overflow-wrap: anywhere; }
+.pl-field .done { font-size: 12px; line-height: 1.6; color: var(--ink-soft); overflow-wrap: anywhere; }
+.pl-steps { margin: 0; padding-left: 20px; font-size: 12px; color: var(--ink-soft); line-height: 1.65; overflow-wrap: anywhere; }
+.pl-inputs { display: flex; flex-direction: column; gap: 6px; }
+.pl-input {
+  display: flex; align-items: center; gap: 9px; font-size: 12px; color: var(--ink); min-width: 0;
+  border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 6px 10px;
+}
+.pl-input .note { font-size: 10.5px; color: var(--ink-mute); flex-shrink: 0; }
+.pl-missing { display: flex; flex-direction: column; gap: 6px; }
+.pl-missing .q { display: flex; align-items: baseline; gap: 9px; font-size: 12px; line-height: 1.55; color: var(--ink-soft); overflow-wrap: anywhere; }
+.pl-missing .mark { color: var(--work); flex-shrink: 0; }
+
+.pl-foot {
+  border-top: 1px solid var(--line-soft); background: var(--surface-2); padding: 11px 14px 11px 20px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+}
+.pl-foot input {
+  flex: 1 1 100%; min-width: 0; background: var(--surface); border: 1px solid var(--line);
+  border-radius: 6px; padding: 7px 10px; font-family: var(--mono); font-size: 12px;
+  color: var(--ink); outline: none;
+}
+.pl-foot input:focus { border-color: var(--accent-line); }
+.pl-foot .btn { flex-shrink: 0; }
+
+/* The desk's "waiting on you" list, when the thing waiting is a plan. */
+.card.approval .plan-brief {
+  margin: 12px 0; border-left: 2px solid var(--accent-line); background: var(--surface-2);
+  border-radius: 0 5px 5px 0; padding: 11px 13px; font-size: 11.5px; color: var(--ink-soft); line-height: 1.7;
+}
+.card.approval .plan-brief .done { margin-bottom: 7px; color: var(--ink); }
+.card.approval .plan-brief ol { margin: 0; padding-left: 18px; }
+.card.approval .plan-brief .missing { margin-top: 9px; font-size: 10.5px; color: var(--work); }
+

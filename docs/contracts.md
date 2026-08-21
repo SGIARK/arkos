@@ -40,7 +40,7 @@ a reader rejoining a long session is exactly the case that exceeds it.
 
 | Event | Why it exists |
 |---|---|
-| `user{text, source}` | the human's text. `source ∈ human \| system` so the nudge and system injections have a home. Without this kind the fold cannot rebuild a user turn and every attended conversation loses half of itself on reload |
+| `user{text, source}` | the human's text. `source ∈ human \| system` so the nudge and system injections have a home. Without this kind the fold cannot rebuild a user turn and every attended conversation loses half of itself on reload. **`source: system` is NEVER RENDERED** — the play button's handoff, the plan-reply instruction, the continuation and the finish nudge are the harness talking to the model, and showing them puts what we send in among the words the human said |
 | `content{text}` | model's text, streamed to the screen as written |
 | `reasoning{text}` | the model's `<think>` output, streamed the same way. Separate from `content` because the FOLD treats them differently: `content` replays into the message list, `reasoning` never does (Qwen3's template strips thinking from prior turns, so replaying it is both wrong and a context tax). Rendered collapsed |
 | `tool_call{id, name, args}` | "→ browser_task" row; `id` pairs it with its result |
@@ -52,12 +52,22 @@ a reader rejoining a long session is exactly the case that exceeds it.
 | `view_transform{rung, dropped_refs[]}` | a context-ladder drop. View-only: the log is never rewritten |
 | `done{reason}` | run over. The only writer of a TERMINAL status from `running` (not the only writer of status: create, lease claim, park, respond, and cancel all move it too) |
 
-`done.reason ∈ turn_end | completed | max_hops | wall_clock | model_error |
-context_overflow | cancelled | interrupted`.
+`done.reason ∈ turn_end | completed | max_hops | wall_clock | stalled_progress |
+model_error | internal_error | context_overflow | cancelled | interrupted`.
 `turn_end` is NON-terminal: it is the attended "I have said my piece" and the only
 trigger for `running -> idle`, leaving `terminal_reason` and `ended_at` NULL.
 `interrupted` is written by the startup sweep for a session the process died
 underneath.
+
+**Each failure reason names ONE thing, and the pill is read by people.**
+`model_error` is a real `ModelError` after both retry layers, and nothing else.
+`stalled_progress` is the model producing no work: an empty reply, or a third
+consecutive bare-text hop in an unattended run after the continuation and the
+finish nudge were both injected. `internal_error` is the harness — a setup
+failure raised in `_drive`'s catch-all, or a loop that ended with no `done`.
+Before 11.8.5 all three were `model_error`, so a Postgres blip, an OpenAI outage
+and a model that said nothing were indistinguishable on the status pill, and the
+2026-08-20 Marketplace run reported `failed{model_error}` though nothing errored.
 Transcript invariant: every `tool_call.id` is closed by exactly one `tool_result.id`
 before any later assistant/terminal event. Abort paths synthesize
 `{ok:false, error_kind:interrupted}`. Events carry a `version` field; readers
@@ -73,12 +83,12 @@ upcast, rows are never rewritten.
 |---|---|
 | `task_events`, `computer_task_events`, `conversation_context` | merge → **`session_events`** `{seq, session_id, kind, version, payload, ts}` — append-only, per-session monotonic `seq` (DB-assigned) |
 | `tasks` → **`sessions`** | one id (a task IS a session); `mode` (attended\|unattended), `status` incl. `idle`, `terminal_reason`, `cursor_seq`, lease cols. Full DDL: `schema.md` |
-| `task_approvals` → **`approvals`** | kept, renamed to match `schema.md` |
+| `task_approvals` → **`approvals`** | kept, renamed to match `schema.md`. FOUR kinds now, and they are not interchangeable: `ask`/`approval` are prose the model reads back; `call` is a gated tool call carrying `(tool_name, tool_args)`; `plan` is a proposed plan carrying the plan itself in `tool_args`; `resume` is a run a human held, and belongs to no tool at all (`tool_call_id` is a synthetic `stop_*` with no matching event, so no call is open across that park) |
 | `user_sandboxes` → **`session_sandboxes`** | rekeyed by session: the box follows the session, and the row is also its slot in the user's pool |
 | `users` | rebuilt, zero rows (Task 0c clears every user). Columns per `schema.md`, not today's table |
 | `computer_tasks` | dropped with the rest of the old chain |
 | `repeat_tasks` | out of scope (watching scrapped) |
-| new | **`system_events`** (operational log: batched, best-effort, pruned 30d); **`result_blobs`** `{ref, session_id, content, created_at}` — full oversized tool outputs, events carry preview+ref; **`projects`**, **`project_files`**, **`user_connections`** `{user_id, mcp_url, connection_id, status, tools_cache, refreshed_at}` — keyed by `(user_id, mcp_url)`; `connection_id` is minted BY US (Smithery accepts a path segment we choose), stored, never recomputed. No `server_name`: config keys are in-process labels, not durable keys. No credentials (they stay behind Smithery). **Write the row first:** mint a UUID, INSERT `status='pending'`, PUT to Smithery, then UPDATE from the response. A crash between mint and PUT leaves a pending row whose id is reused on retry, so the id survives every failure; minting after the PUT strands the old connection holding the user's live OAuth grant, which is the drift D24 exists to kill, just moved to crash-time. **`shared_connections`** `{mcp_url pk, connection_id, status, tools_cache, refreshed_at}` — same rule, no user column, because no-auth servers (Slack's workspace bot token) have no user and `user_connections.user_id` is NOT NULL. |
+| new | **`system_events`** (operational log: batched, best-effort, pruned 30d); **`result_blobs`** `{ref, session_id, content, created_at}` — full oversized tool outputs, events carry preview+ref; **`projects`**, **`files`** `{user_id, path, content_hash, size, mtime}` unique on `(user_id, path)` — ONE flat store per user, replacing `project_files` (11.9; `project_files` is DROPPED, and a folder is `split_part(path,'/',1)`, derived and held by no table); **`project_folders`** `{project_id, folder}` — the links, so deleting a project deletes its links and no files; **`user_connections`** `{user_id, mcp_url, connection_id, status, tools_cache, refreshed_at}` — keyed by `(user_id, mcp_url)`; `connection_id` is minted BY US (Smithery accepts a path segment we choose), stored, never recomputed. No `server_name`: config keys are in-process labels, not durable keys. No credentials (they stay behind Smithery). **Write the row first:** mint a UUID, INSERT `status='pending'`, PUT to Smithery, then UPDATE from the response. A crash between mint and PUT leaves a pending row whose id is reused on retry, so the id survives every failure; minting after the PUT strands the old connection holding the user's live OAuth grant, which is the drift D24 exists to kill, just moved to crash-time. **`shared_connections`** `{mcp_url pk, connection_id, status, tools_cache, refreshed_at}` — same rule, no user column, because no-auth servers (Slack's workspace bot token) have no user and `user_connections.user_id` is NOT NULL. |
 
 ### harness_module (owns control plane — lifecycle sits NEXT TO the agent, never inside it)
 
@@ -105,13 +115,14 @@ Every transition, and its ONE trigger:
 | `pending` | `running` | runner claims the lease |
 | `running` | `idle` | `done{turn_end}` — attended, model stopped calling tools |
 | `idle` | `running` | human sends a message |
-| `idle` | `running` | `POST /sessions/{id}/approve` — also flips `mode` to unattended |
-| `running` | `awaiting_approval` | park tool (`request_approval` / `ask`) |
-| `awaiting_approval` | `running` | respond endpoint wakes it |
+| `idle` | `running` | `POST /sessions/{id}/approve` — asks for a plan. Mode does NOT move here |
+| `running` | `awaiting_approval` | park tool (`request_approval` / `ask` / `propose_plan`), or **`POST /sessions/{id}/stop`** — the hold, kind `resume`. Mode is NOT touched |
+| `awaiting_approval` | `running` | respond endpoint wakes it — **also flips `mode` to unattended when the row is a `plan` and the answer is the approve word.** The only mode flip into unattended there is |
+| `awaiting_approval` | `idle` | a DECLINED plan: the park closes, nothing runs, the session is an attended chat again. The only answer that ends a park without waking the session, because it is the only one with nothing for the model to read |
 | `running` | `completed` | `done{completed}` — also flips `mode` back to attended |
-| `running` | `failed` | `done{max_hops \| wall_clock \| model_error \| context_overflow \| interrupted}` |
+| `running` | `failed` | `done{max_hops \| wall_clock \| stalled_progress \| model_error \| internal_error \| context_overflow \| interrupted}` |
 | `running` | `cancelled` | cancel signals the loop → exits via `done{cancelled}` |
-| `pending`/`idle`/`awaiting_approval` | `cancelled` | cancel written directly (no loop to signal) |
+| `pending`/`idle`/`awaiting_approval` | `cancelled` | cancel written directly (no loop to signal) — **and it flips `mode` back to attended**, the same rule terminals from `running` follow. A cancelled STOPPED run is where that started mattering: the hold leaves the session unattended on purpose, so without the flip it stayed recorded unattended forever, holding a quota slot for a run nobody was running |
 | `completed`/`failed`/`cancelled` | `running` | **human restarts it**, or sends a message on a terminal session. Clears `terminal_reason` and `ended_at` |
 
 **Nothing auto-resumes.** A session the process died underneath becomes
@@ -291,12 +302,26 @@ crosstalk is structurally impossible, not merely prevented.
 
 **`runner.py`** — replaces `task_runner.py` and `computer_module/runner.py`.
 ```
-start(task_id) -> None      # lease-claim, then wake
-wake(task_id) -> None       # fold events from cursor_seq -> messages,
-                            # run run_turn, translate events -> append()+transition()
-cancel(task_id) -> bool
+start(session_id, *, mode=None, reason="woken") -> bool
+                            # transition to running (mode moves in the SAME
+                            # update), then drive one turn in the background
+stop(session_id)  -> bool   # HOLD a live turn: cancel the dispatch tasks in
+                            # flight, refuse the rest of the hop, park on a
+                            # `resume` row at the hop boundary. No done, no
+                            # mode flip. False = no live turn here, cancel instead
+cancel(session_id) -> bool  # END it: task.cancel() on the whole turn, or write
+                            # the terminal directly when nothing is running.
+                            # Flips mode back to attended
+save_plan(session_id, args, version) -> str | None
+                            # the approved plan -> plan.md, through the STORE
+                            # (the box is hibernated while the plan is parked;
+                            # the next materialize carries the file in)
 # verify-on-wake: dangling tool_call -> interrupted result surfaced to the model
 # ("outcome unknown, verify before retrying"); never silently re-executed.
+# The drive loop registers its sink per session so `stop` can reach it. The
+# dispatch wrapper registers each CALL's own task, which is what lets a stop
+# close the calls in flight without cancelling the turn: the loop stays pure and
+# a stopped call comes back to it as an ordinary envelope.
 ```
 
 **`api.py`** — replaces the 4x status-polling endpoints, approvals poll, bespoke
@@ -308,26 +333,33 @@ chat plumbing. One error shape everywhere: `{code, message, retryable}`.
 | `DELETE /auth/session` | — | 204, cookie cleared |
 | `GET /auth/me` | — | `{user_id, email, home_session_id}` — the home session is the chat the app lands in; the page needs it on first render and no other request would carry it |
 | `GET /auth/config` | — | `{supabase_url, anon_key}` — what the sign-in view needs to reach Supabase. Public and unauthenticated: it is how a signed-out browser signs in, and the anon key authorizes nothing on its own |
-| `GET /sessions/{id}` | — | `{title, project_id, status, hops_used/max, recent_events[]}` |
+| `GET /sessions/{id}` | — | `{title, project_id, project_title, folders[], status, mode, hops_used/max, claims[], plan, recent_events[]}` — `project_title` is the LABEL, and it is here so the window's header reads the same however the window was opened; it came from the grid's navigation state before, which a session opened from the desk does not have. — `folders` is what this session WRITES, in claim order, and the first of them is where `plan.md` lands. It replaced `project_slug` in 11.9: a project links folders rather than owning one, so there is no single directory to name, and the session header stopped drawing directory chips when there could be several. `plan` is the session's NEWEST plan (`{approval_id, version, goal, answer}`) or null: the collapsed card an approved run pins needs it, and counting `propose_plan` calls in `recent_events` drifts because that window is capped |
 | `GET /sessions/{id}/events` | `Last-Event-ID?` | SSE of events, `id:<seq>` each |
 | `POST /sessions` | `{goal, steps?, project_id?}` | `{session_id, project_id}` (new project unless given; `steps` seed the todo list) |
 | `POST /sessions/{id}/messages` | `{text}` | 202 — appended as a user event and read at the next hop, including by a turn already running (LG-1.8). Delivery, never interruption: it waits for the current hop to finish, and stopping a run mid-step is `POST /cancel` |
-| `POST /sessions/{id}/cancel` | — | 202 |
-| `POST /approvals/{id}/respond` | `{answer}` | 202 — wakes at cursor. `ask`/`approval` take prose and append a `user` event; `call` takes exactly `approve` or `decline`, appends nothing, and the resumed run executes or closes that call |
+| `POST /sessions/{id}/stop` | — | 202 `{stopped}` — holds a running turn at its next hop boundary on a `resume` row. Writes no `done` and does not touch `mode`, so an approved plan survives it. `409 not_running` for anything else; `stopped: false` means no live turn in this process and the caller should cancel instead |
+| `POST /sessions/{id}/cancel` | — | 202 — ends the run and flips `mode` back to attended. An open `resume` row closes with it, so nothing offers to restart a terminal session |
+| `POST /approvals/{id}/respond` | `{answer}` | 202 — wakes at cursor. `ask`/`approval` take prose and append a `user` event; `call` takes exactly `approve` or `decline`, appends nothing, and the resumed run executes or closes that call; `plan` takes three — the approve word saves `plan.md`, checks the unattended quota and starts the run unattended (**the only mode flip there is**), the decline word closes the park to `idle`, anything else is a REPLY — appended as the human's `user` event plus an unrendered `user{source: system}` instruction to propose again — which wakes the session attended and whose only valid answer is a new plan |
 | `GET /projects` | — | `[{id, title, status_rollup, updated_at}]` |
-| `POST /projects` | `{title, seed_from?:{project_id, path}}` | `{id, title, slug, files}` — a project made deliberately rather than as a side effect of `POST /sessions`. `seed_from` copies TREE ROWS from a directory in another of the caller's projects: blobs are content-addressed, so the same file in two projects is one blob, the copy costs a row each, and the source is untouched |
-| `PATCH /projects/{id}` | `{title}` | `{id, title, slug, updated_at}` — rename, and it changes the TITLE ONLY. `projects.slug` is the folder (`~/projects/<slug>/`), set once at creation and never moved: it is the only durable path the agent has, and renaming it under a running session breaks every path the model learned. The two drift apart on purpose, and `slug` comes back so a surface can show where the files actually are |
-| `GET /attention` | `project_id?` `session_id?` | pending approvals/asks, oldest first, each carrying its session and project. A `call` also carries `tool_name` and `tool_args` — the call itself, so the human decides on it rather than on a description. One query at three scopes — no filter is the Command Center, `project_id` is a project's list, `session_id` is one window — because an approval is a state of the session, not something a surface owns |
+| `POST /projects` | `{title, folders?:[name]}` | `{id, title, folders, files}` — a project made deliberately rather than as a side effect of `POST /sessions`. `folders` are store folders it LINKS, by name; `404 not_found` names any that are not in the caller's store. Picking none makes a folder named after the project (uniquified, kept alive by a sentinel) and links that, so it appears in the Files tab as an ordinary folder. This replaced `seed_from`, which copied tree rows between two project-scoped trees: there is one store now, so pointing two projects at one folder is linking it twice and the file stays one file |
+| `POST /projects/{id}/folders` | `{folder}` | `{id, folders}` — link one more store folder. The UI shows it at once and the AGENT sees it from the NEXT session, because claims are fixed for a session's life. Linking twice is the same link. `404` for a folder that is not in the caller's store |
+| `PATCH /projects/{id}` | `{title}` | `{id, title, folders, updated_at}` — rename, and it changes the TITLE ONLY. There is no longer anything a rename could reach: folders are the store's, derived from the paths of files that exist, and the Files tab's headers are those segments. `folders` comes back so a surface can show where the work actually lands |
+| `GET /attention` | `project_id?` `session_id?` | pending approvals/asks, oldest first, each carrying its session and project. A `call` also carries `tool_name` and `tool_args` — the call itself, so the human decides on it rather than on a description. A `plan` carries the same two (the plan is in `tool_args`) plus `version`, which is a fact about the session's plan history rather than about this row. No diff against the previous version: a reply is answered by a whole new plan. One query at three scopes — no filter is the Command Center, `project_id` is a project's list, `session_id` is one window — because an approval is a state of the session, not something a surface owns |
 | `GET /sessions` | `status?` | `[{session_id, title, status, mode, project_id, project_title, hops_used/max, last_event_at}]` — the user's sessions across every project. The rail asks `?status=running`; the per-project list does not compose into a view that spans tabs |
 | `GET /projects/{id}/sessions` | — | `[{session_id, title, status, mode, hops_used/max, open_questions, last_event_at}]` — how the grid gets from a bubble to a window, most recently active first |
-| `GET /projects/{id}/files` | — | `[{file_id, path, name, size, mtime}]` — tree rows; no sandbox is woken |
-| `GET /projects/{id}/files/{file_id}` | — | `{path, size, mtime, text, binary}` — one file's contents from the store, no sandbox woken. `binary: true` with `text: null` when it is not UTF-8: a reader that renders a PNG as characters is worse than one that says it cannot |
-| `POST /projects/{id}/files` | multipart (`file`, optional `path`) | `{file_id, name, path, size}` |
-| `POST /projects/{id}/folders` | `{path}` | `{path, sentinel}` — a folder is durable when it is NAMED, not when it is filled. The tree is flat paths and a directory is not a row, so what lands is a zero-byte `.keep` inside it: materialize, `_sweep` and flush carry files and only files, so a directory kept as a row of its own would be deleted by the first flush that ran. `409 already_exists` when anything is at that path already |
-| `POST /projects/{id}/files/move` | `{from, to}` | `{from, to, moved:[{from, to}], stale_sessions}` — one file or a whole subtree, in one transaction. **Blobs never move**: they are content-addressed and immutable, so a rename is a row edit and nothing is re-uploaded. Every live box holding a covering claim is corrected in the SAME request, and that is load-bearing rather than polite — flush commits what is on disk, so a box left on the old path would put it back and delete the new one when the turn ended, undoing the move without saying so. A box that refuses comes back in `stale_sessions` and as an `error` in `system_events`, never swallowed. `404` when nothing is at `from`; `409 move_refused` for an occupied destination or a folder moved into itself |
+| `GET /folders` | — | `[{name, files}]` — every folder in the caller's store with its file count. What the create modal's checklist and the `+ link` picker read. There is no folders table: this is the first segment of every path the user has, grouped, which is why a folder cannot be stale and one appears the moment a file lands under a new first segment. The count excludes sentinels |
+| `POST /folders` | `{path}` | `{path, sentinel}` — a folder is durable when it is NAMED, not when it is filled. A folder is a path segment and not a row, so what lands is a zero-byte `.keep` inside it: materialize, `_sweep` and flush carry files and only files, so a directory kept as a row of its own would be deleted by the first flush that ran. `409 already_exists` when anything is at that path already |
+| `GET /files` | — | `[{file_id, path, name, folder, size, mtime}]` — the caller's whole store as tree rows, folder-first paths; no sandbox is woken. What the Files tab draws |
+| `GET /files/{file_id}` | — | `{path, size, mtime, text, binary}` — one file's contents from the store, no sandbox woken. `binary: true` with `text: null` when it is not UTF-8: a reader that renders a PNG as characters is worse than one that says it cannot |
+| `POST /files` | multipart (`file`, `path`) | `{file_id, name, path, folder, size}` — the path is REQUIRED to name a folder: every file in the store is in exactly one, because the folder IS the first segment, so a bare filename would be its own folder holding nothing |
+| `POST /files/move` | `{from, to}` | `{from, to, moved:[{from, to}], stale_sessions}` — one file or a whole subtree, in one transaction, and moving BETWEEN folders is an ordinary move now: one namespace, a row edit, no copy. **Blobs never move**: they are content-addressed and immutable, so a rename is a row edit and nothing is re-uploaded. Every live box holding a covering claim is corrected in the SAME request, and that is load-bearing rather than polite — flush commits what is on disk, so a box left on the old path would put it back and delete the new one when the turn ended, undoing the move without saying so. A box that refuses comes back in `stale_sessions` and as an `error` in `system_events`, never swallowed. `404` when nothing is at `from`; `409 move_refused` for an occupied destination, a directory moved into itself, a TOP-LEVEL FOLDER as the source (that is a rename, and it has its own route), or a FILE sent to the top level — that level holds FOLDERS, so a file there would be its own folder holding nothing. A **DIRECTORY** sent there is legal and is how a folder is made by dragging: `triage/inbox -> inbox` promotes it, which is what "a folder is a top-level path segment" already says. File or directory is decided by the ROWS, inside the transaction, not by the string. The refusals say different things on purpose, and the SOURCE is tested first: `triage -> sorted` is a folder rename, not a file landing at the top level. A promoted directory belongs to no project until something links it — the files never left the store, they left the link |
+| `DELETE /files` | `{path}` | `{path, batch, files, unlinked, folders}` — delete a file or a whole subtree. The rows go and the BLOBS do not: they are content-addressed, immutable and never collected, so undo is a RESTORE — the same content under the same id — rather than a best effort. A delete that empties a folder takes the folder with it, because a folder exists exactly as long as a file exists under it, and the project links that named it go into the same batch so they come back together; `folders` names what stopped existing. `409 folder_busy` while a live box has the folder mounted |
+| `POST /files/undo` | `{batch}` | `{path, files, relinked, folders}` — put back exactly what one delete gesture removed, links included. `batch` names the GESTURE, so undo restores what that click took rather than whatever was deleted most recently. `409 already_exists` when something has since been put at one of those paths — it arrived afterwards and is not this batch's to overwrite. `404` for an unknown batch, one already undone, or one belonging to another user |
+| `POST /files/rename` | `{path, name}` | `{from, to, moved:[{from, to}], stale_sessions}` — rename anything in the store: a file, a directory, or a top-level folder. `name` is a NAME; a `/` in it is `400`, because a rename changes what a thing is CALLED and moving it is the route above. A top-level folder's name is written in THREE places — the paths, the `project_folders` that link it, and the `session_claims` that mount it — and all three move in ONE transaction, so a project never links a folder that no longer exists. `409 already_exists` when the name is taken, and it is the NAME that must be free rather than merely the paths under it: renaming `triage` onto `notes` would otherwise fold two folders into one whenever their files happened not to clash, silently and with no way back. `409 folder_busy` while a live box has that folder materialized — the session's claims and manifest are in the runner's memory as well as the database, so a box left at `~/store/<old>/` would flush its work back under the old name and resurrect the folder, losing the turn; stopping the run first is the answer, and saying so beats a rename that half-happens. A file or a nested directory renames freely under a running session, because only the top-level name moves a mount |
+| `GET /projects/{id}/files` | — | the same rows, narrowed to what this project LINKS — the working-files pane. A view of the store, not a tree of its own: same ids, same paths, so clicking one in the pane and finding it in the Files tab is one file rather than two listings that have to agree |
 | `GET /results/{ref}` | `offset&limit` | blob slice (ownership-checked) |
 | `GET /sessions/{id}/browser/frames` | — | SSE JPEG side-channel (`event: frame`, `{jpeg}` base64), keyed (user, session), ownership-checked, announced by a `status` event, rendered in the canvas panel (not a corner overlay). Nothing is captured while nobody is subscribed |
-| `POST /sessions/{id}/approve` | — | 202 — attended → **unattended**; the run begins |
+| `POST /sessions/{id}/approve` | — | 202 — **asks for a plan; it does not start an unattended run.** Appends a `user{source: system}` handoff ("draft the plan from this transcript and call `propose_plan`, ALWAYS") and starts an ordinary attended turn. Pressed on a fresh session with no conversation it still yields a plan card, opening as an intake form: the gaps arrive in `missing`, never as prose. Accepts `idle`, `pending` **and any TERMINAL status** — on a cancelled run this is the "resume" press, and the handoff makes it a continuation. `409 already_unattended` / `not_idle` (a live run, or a start that lost the status race — a 202 there would leave the handoff in the transcript with no hop to read it) |
 | `GET /connections` | — | `[{server, name, mcp_url, requires_auth, status, tool_count, refreshed_at}]` — `mcp_servers:` joined to `user_connections` + `shared_connections` |
 | `POST /connections/{server}/connect` | — | `{setup_url}` — mints the id, writes the `pending` row, PUTs to Smithery. Idempotent: reconnect reuses the stored id |
 | `DELETE /connections/{server}` | — | 204 |
@@ -396,11 +428,19 @@ same inputs. A caller comparing two folds passes the same instant to both.
 
 **The home session.** First login creates one ordinary attended session and
 records it as `users.home_session_id`, set once. Nothing else in the system
-special-cases it: it has a project, appears in the grid, moves through the
-lifecycle, and may sit idle forever. What makes it home is that the app opens it
-by default, which is a routing fact rather than a state one. It does not count
-against `quotas.new_sessions_per_hour` — the server greeting someone should not
-spend the allowance for what they ask for themselves.
+special-cases it: it moves through the lifecycle like any other and may sit idle
+forever. What makes it home is that the app opens it by default, which is a
+routing fact rather than a state one. It does not count against
+`quotas.new_sessions_per_hour` — the server greeting someone should not spend
+the allowance for what they ask for themselves.
+
+**It has NO PROJECT** (11.9). It used to mint one called "Chat", because a
+project was the only way to hold a directory and a session needed a directory.
+Nothing holds a directory now, so the shadow project is not cleaned up, it is
+unmade — a fresh account owns no project and no folder. The consequence is
+honest rather than hidden: a chat that has not been given work claims nothing,
+mounts nothing, and cannot approve a plan (`409 no_folder`). Asking it for work
+makes a project, and that is when a folder appears.
 
 **Steering reaches the turn it was typed into.** The loop is handed a callback
 once per hop that returns whatever the human has said since it was last asked,
@@ -443,6 +483,121 @@ once.
 answers are prose, delivered as a `user` event, and they close their own call
 before parking. `approvals.attended_auto_approve` (default OFF) is the escape
 hatch, and turning it on means every gated call is a silent yes.
+
+**An unattended run starts from an approved plan, and there is no other door.**
+`propose_plan` is a park tool of kind `plan`: the model may call it at any time,
+its args ARE the plan (`goal`, `done_when`, `steps`, `inputs`, `missing`), and
+the approvals row carries them — consent binds to the plan, never to prose about
+it, exactly as it binds to a gated call. The two entries are the play button
+(`POST /sessions/{id}/approve`, which appends a `user{source: system}` handoff
+and starts an ordinary ATTENDED turn) and the model proposing off its own
+judgement; both funnel through the one tool, so there is exactly one way a run
+begins. Proposing is the model's judgement; deciding never is.
+
+**Kind `plan` takes three answers, and only the first starts anything.** The
+approve word writes the approved args to `plan.md` at the root of the session's
+FIRST linked folder (first LINKED, not first alphabetically — the order folders
+were linked in is the order they were chosen in). A session that claims no
+folder has nowhere durable to put one and is refused `409 no_folder` BEFORE the
+row is answered, so the plan survives. The write goes — through
+the STORE, not the sandbox, because the box is hibernated while the plan is
+parked and the next materialize carries the file in like any other —
+checks the unattended quota, and flips mode and status in the SAME conditional
+UPDATE that wakes the session. The two decision words are stored NORMALIZED, so
+the row says what was decided rather than how it was typed; feedback is prose
+and is stored verbatim. Everything that can refuse an approval is checked
+BEFORE the row is answered — the quota, and a session with no project to write
+`plan.md` into (`409 no_project`) — and a start that then loses the status race
+REOPENS the row, because a plan stamped approved that nothing ran is a plan
+nothing can approve again. The decline word closes the park
+(`awaiting_approval -> idle`) and nothing ran. Anything else is a REPLY, and
+what a reply does is below. `plan` joins `approval` and `call` in the composer's
+409, so prose typed beside the card never answers it.
+
+**Each call is a VERSION, and the newest one is the whole story.** Re-proposing
+supersedes the open row (`answer = 'superseded'`, so it stops waiting on anybody
+without pretending a human decided it) and the new row is v{n}; a plan's version
+IS its position in the session's plan history. **There is no diff against the
+previous version.** `/attention` sent `previous_args` and `last_ask` for a
+"changed since v{n-1}" list and no longer does: edits stack, so by v3 the list
+was longer than the plan and said less than reading the plan does. A reply is
+answered by a whole new plan, and a whole new plan is what a surface renders.
+
+**A reply closes the card and asks for the next plan.** It is appended as the
+human's own `user` event — they typed it — followed by a `user{source: system}`
+instruction to fold it in and call `propose_plan` again with every field. That
+second event is load-bearing: without it the model answers the reply inline, and
+the session goes idle with the card gone and nothing to approve, so the run the
+human was setting up quietly stops existing. **`user{source: system}` events are
+never rendered**: the handoff, this instruction, the continuation and the finish
+nudge are the harness talking to the model, and showing them puts what we send
+in among the words the human said.
+
+An under-informed plan is still a plan: `missing` is how insufficiency renders
+INSIDE the card, as named questions, so the card doubles as the intake form
+rather than the model asking in prose beside it — and a plan proposed after a
+reply fills `missing` again if the reply did not settle everything.
+
+**Park, don't fail.** An unattended run ends by `finish_task`, by parking on a
+question, an approval, a plan or a human's Stop, or by a named budget or stall
+reason. There is no "confused" terminal: a run that does not know what to do
+next asks, and a run that has stopped producing work is named
+`stalled_progress` rather than being reported as an error that did not happen.
+
+**The run control has three faces, and never two at once: `▶` when nothing is
+in flight, `■ stop` while running, `✕ cancel` while stopped.**
+Stop (`POST /sessions/{id}/stop`) cancels the dispatch tasks in flight — each
+call closes with `error_kind: cancelled_by_user`, which does NOT count toward
+the per-tool attempt cap — refuses any further dispatch for the rest of that
+hop, and holds at the hop boundary on a `resume` row: leases released, box
+hibernated, `running -> awaiting_approval`. **No `done` is written and the mode
+is unchanged**, which is the entire point — a park is not a terminal, so the
+plan the run was approved from is still approved, and the hop budget carries
+because the fold counts from the last `done` and a park appends none. Cancel is
+the second press, and the only thing here that spends a plan. `▶` is the third
+face: `autopilot` on a session with no live plan, `resume` on a cancelled one,
+where it drafts a continuation rather than a fresh v1.
+
+Stop takes effect at the tool call and the hop boundary; it does not abort the
+model stream mid-generation. **A hop that never reaches a boundary degrades to
+the full cancel after `harness.stop_grace_s`**, so a wedged run is still
+killable by the same button. `POST /cancel` survives for that path and for
+sessions with no live turn; it is no longer the button's first face.
+
+**Kind `resume` takes the same three answers, and it is the ONE park a composer
+message may answer.** The approve word picks the run up where it held; prose
+resumes it with the message appended, so "skip that step, do X instead" is the
+resume — the closed call plus what the human said is what the model reads next
+hop, which is "errors are model input" applied to a human's stop; the decline
+word is the hard cancel. It is exempt from `_answer_by_message`'s 409 because
+the consent it holds on — the plan — was given already, so prose here approves
+nothing new. `call` and `plan` still refuse: those wait on consent nobody has
+given yet. The decline word is a card action only, so a message that happens to
+contain it still resumes.
+
+**A park kind is a wire fact, not a UI component.** A held run renders as an
+ordinary inline transcript row that scrolls away like any other, the composer is
+its prose input, and the approvals card family does not grow.
+
+**The transcript is the only surface.** Every face of a plan — drafting, the
+open card, the approved plan's one-line pin, a held run, a spent one, a
+dismissed one — lives INSIDE the scrolling transcript and scrolls with it.
+Nothing about a run is docked above the composer or floated over the
+conversation. The plan lane was docked when it first shipped (11.8.5) and
+overlaid the transcript, which is what the 11.8.6 canvas pass fixed.
+
+**Pressing ▶ on a TERMINAL session is legal, and it is the important case.** On
+a cancelled run the control reads "resume" and the same endpoint drafts a
+CONTINUATION: the handoff tells the model to read `plan.md` and the transcript
+first and resume from what is verifiably done, rather than planning work the
+human has already paid for a second time. The `terminal -> running` reopen row
+in the transition table is the mechanism.
+
+`cancelled_by_user` joins the tool error kinds for this. Like `interrupted` it
+is never returned by a tool — the dispatch wrapper synthesizes it — and it
+closes the call so the transcript stays foldable. Unlike every other failure it
+does not count toward the attempt cap: stopping the browser three times must not
+close the browser to the run.
 
 What this replaced: the gate refused with a message naming `request_approval`
 and promised "you may call {name} once they agree" — a promise nothing kept,
@@ -490,7 +645,9 @@ run_turn(messages: list[Message],
 # Per-tool attempts cap 3, then the failure stands. The count is CONSECUTIVE
 # FAILURES, not calls, and a success clears the streak: a tool that recovers is
 # not punished for an earlier bad patch. In-flight calls count against the cap,
-# so a parallel fan-out of five cannot outrun a cap of two.
+# so a parallel fan-out of five cannot outrun a cap of two. ONE failure kind is
+# exempt: `cancelled_by_user`. A human's stop is not the tool failing, and
+# stopping the browser three times must not close the browser to the run.
 # Malformed tool args buy ONE repair round trip per turn, NOT charged as a hop:
 # the hop produced no usable work, and charging it would let bad JSON eat budget
 # the task needs.
@@ -502,8 +659,13 @@ run_turn(messages: list[Message],
 # unbounded ones.
 # TERMINATION (one rule): a run ends when the model stops calling tools AND the
 #   exit is safe. attended -> safe always (the human is the continuation);
-#   unattended -> safe only if finish_task was called. Bare text when unattended
-#   appends, gets ONE low-budget nudge near the cap, and loops.
+#   unattended -> safe only if finish_task was called.
+# UNATTENDED BARE TEXT IS ANSWERED, not looped: the prompt promises the model
+#   "you will simply be asked to continue", so the first bare hop appends a
+#   user{source:system} continuation, a SECOND CONSECUTIVE one draws the finish
+#   nudge immediately, and a third ends the run done{stalled_progress}. An empty
+#   reply ends it directly — there is nothing to continue from. A tool-calling
+#   hop clears the streak. The near-cap nudge still fires on its own schedule.
 # Errors are model input, not control flow; only cancellation propagates.
 # Streaming is structural: client deltas re-yielded as content events
 # immediately; no accumulation step exists (pinned by test).
@@ -606,14 +768,14 @@ That test, not a list, decides future resources.
 | Resource | Shared? | Stateful? | Model |
 |---|---|---|---|
 | sandbox | no (one box per session) | no (the disk is a cache, D27) | **capped**, not leased: `sandbox.max_concurrent_per_user` |
-| project subtree (`project:{id}`) | yes | yes (the tree it writes) | **leased**, one per write claim |
+| store folder (`folder:{user}:{name}`) | yes | yes (the tree it writes) | **leased**, one per write claim |
 | browser (`browser:{user}`) | yes | yes (profile, cookies, logins) | **leased** |
 | MCP via Smithery | yes | no (stateless per call) | no lease, runs free |
 | session log | no (per session) | — | serialized by the appender, a different race |
 
 **The sandbox is capacity, not a lease.** A box belongs to one session and is
 destroyed once that session's last flush lands, so there is nothing to serialize:
-overlapping writes are already ordered by the `project:{id}` claims, and a box is
+overlapping writes are already ordered by the folder claims, and a box is
 never compared to another box, only to the store subtrees its session claimed.
 What `sandbox.max_concurrent_per_user` protects is spend, and a session over the
 cap waits exactly as a lease waiter does. The slot is a row in
@@ -664,9 +826,15 @@ never the sandbox's (D28).
 ```
 put_blob(content) -> sha256          # content-addressed, immutable, write-once
 get_blob(sha256) -> bytes
-read_tree(project_id) -> [TreeEntry{path, content_hash, size, mtime}]
-move_path(project_id, src, dst) -> [(from, to)]   # one file or a subtree; rows only, never blobs
-commit_tree(project_id, entries)     # blobs FIRST, rows LAST, in one transaction
+read_tree(user_id, prefix="/") -> [TreeEntry{path, content_hash, size, mtime}]
+folders(user_id) -> [Folder{name, files}]         # DERIVED: split_part(path,'/',1), grouped
+folder_of(path) -> name                           # the first segment, and that is all a folder is
+unique_folder(user_id, base) -> name              # the none-case, resolved against what exists
+put_file(user_id, path, content) -> StoredFile    # refuses a path with no folder segment
+move_path(user_id, src, dst) -> [(from, to)]      # one file or a subtree; rows only, never blobs.
+                                                  # Refuses a TOP-LEVEL folder: that is a rename of
+                                                  # what claims and mounts are keyed by
+commit_tree(user_id, entries, prefix="/")         # blobs FIRST, rows LAST, in one transaction
 diff_tree(a, b) -> paths that differ by hash
 append_note(user_id, text) -> path   # one file per note; never rewritten
 update_memory(user_id, text)         # replaces MEMORY.md whole, under an advisory lock
@@ -675,11 +843,28 @@ read_notes(user_id) -> [Note{path, text, written_at}]
 search_memory(user_id, query, limit) -> [Hit{path, text, written_at, rank}]
 ```
 
+**The store is ONE FLAT NAMESPACE PER USER, and a folder is a top-level path
+segment in it** (11.9). A folder is DERIVED, never a row: it exists exactly as
+long as a file exists under it, its name is unique per user by construction —
+because `(user_id, path)` is — and no table holds it, so there is nothing to
+orphan, nothing to rename by editing, and nothing that can disagree with the
+files. Every file is in exactly one folder, so a path with no folder segment is
+refused rather than becoming a folder of its own holding nothing. A folder that
+has been named and not filled is kept alive by its `.keep` sentinel, which is
+also how the none-case of creating a project reserves one.
+
+**A project OWNS no folder; it LINKS folders**, as many as it wants
+(`project_folders`), and several projects may link the same one. Deleting a
+project deletes its links and nothing else — files are never orphaned because
+they were never owned. `projects.slug` survives only as the default NAME for
+the folder the none-case creates. There is no "this project's directory"
+anywhere.
+
 **Layout is fixed.** `{prefix}/blobs/{hh}/{sha256}` for bytes;
-`{user}/memory/{MEMORY.md, notes/}` and `{user}/projects/{project-id}/` for the
-tree. Keyed by project id so a rename moves nothing; mounted under the project
-slug, because the model reads paths as context and a mounted name should be
-human.
+`{user}/memory/{MEMORY.md, notes/}` for the memory region. The tree is keyed by
+user and its paths are the folder-first store paths, which are also what the
+model reads: mounted, a store path is the same path with the mount root in
+front of it.
 
 **Blobs first, rows last.** A commit uploads every missing blob before it flips
 tree rows, and flips them in one transaction. A crash between the two leaves the
@@ -732,14 +917,36 @@ turn, because a whole-document rewrite from the capped copy would silently drop
 its tail. The model is the compactor in v1; the background job that will curate
 unattended is later, and needs no entry point the model does not already use.
 
-**Claims are the unit of conflict** (D29). A session declares
-`(project_id, subpath, mode)` at creation. The set is the sole source of which
-leases it takes (`project:{id}` for each write claim) and what appears in its
-sandbox. Nothing unclaimed is mounted. A read claim materializes without a lease
-and its flush is a no-op, with discarded edits logged.
+**Claims are the unit of conflict** (D29), and since 11.9 a claim names a
+FOLDER: `(folder, subpath, mode)`, declared at creation. The set is the sole
+source of which leases it takes and what appears in its sandbox. Nothing
+unclaimed is mounted. A read claim materializes without a lease and its flush is
+a no-op, with discarded edits logged.
+
+**Write leases are per FOLDER**, keyed `folder:{user_id}:{name}`. Two projects
+writing DIFFERENT folders never contend, and two sessions writing the SAME
+folder still serialize even when they belong to different projects — which
+keying it by project could express only while a project held one directory.
+
+**The agent's durable paths are `~/store/<folder>/`, one mount per claimed
+folder.** A mounted path is the store path with the mount root in front of it,
+so the model reads one namespace and not two, and the per-turn system prompt
+NAMES the folders the session holds — with several of them possible, "the
+project directory" is not something it can infer.
+
+**Claims are FIXED for a session's life.** A folder linked to a project
+mid-session reaches the agent at the NEXT session while the UI shows it at once.
+That is recorded as a fact rather than papered over: a folder appearing under a
+running run would be a mount and a lease it was never told about.
+
+**Every session spawned in a project receives its links**, all write, through
+`_record_claims`. A session with no project claims nothing and mounts nothing —
+that is the home chat, and it is why **the home session no longer mints a shadow
+project**. A project existed only to hold a directory; no directory is held, so
+the orphan is not cleaned up, it is unmade.
 
 **An upload lands in the store, and in the boxes already holding it.**
-`POST /projects/{id}/files` writes the blob and the tree row first, so the file
+`POST /files` writes the blob and the tree row first, so the file
 exists whether or not anything is awake. It is then written through to every
 running session whose box has a materialized claim covering that path, so a
 session reads it the same turn; every other session gets it at its next
@@ -750,6 +957,33 @@ stale `old_string` rather than writing over what landed. A write-through that
 fails is logged and nothing more — the store already has the file. An empty file
 is content like any other. `quotas.upload_max_mb` is enforced as the upload is
 read, not after.
+
+**Restructuring a folder a run has mounted is REFUSED, not corrected.** Delete,
+undo and a folder rename all ask the same question first and all answer it the
+same way (`409 folder_busy`): the runner holds a live session's claims and its
+materialized manifest in MEMORY, so nothing in an HTTP handler can correct that
+box. A box that still holds a deleted file would put it back at its next flush;
+a box that lost one would commit the loss. Stopping the run first is the answer,
+and saying so beats a change that half-happens. A file or a nested directory
+RENAMES freely under a running session — only the top-level name moves a mount —
+but a delete does not, because the file itself is on that disk.
+
+**Nothing is destroyed, only unlisted.** Deleted rows move to `deleted_files`
+(with `deleted_links` for the links the same gesture dropped) rather than
+staying in `files` behind a `deleted_at` flag: a flag would sit in the way of
+every tree read, of `put_file`'s `ON CONFLICT (user_id, path)`, and of the
+unique index that makes folder names unique per user. `files` holds live rows
+and only live rows, which is what every other statement already assumes.
+
+**A folder's name lives in three places, and one operation moves all three.**
+The paths (it IS their first segment), the `project_folders` that link it, and
+the `session_claims` that mount it. `POST /files/rename` is that operation and
+the only one: nothing else may write a folder name, which is what keeps
+"derived, never a row" true of a thing that three tables nonetheless spell out.
+
+**What is NOT in 11.9, and is deliberately absent rather than forgotten:**
+unlinking a folder from a project; exposing per-folder read mode (claims support
+it; links ship write-only); and blob GC.
 
 **Snapshots were REMOVED (11.7.5).** `snapshot_project` / `restore_snapshot` /
 `list_snapshots` / `prune_snapshots` had no caller in the tree, and
@@ -803,6 +1037,14 @@ Consumes ONLY the endpoint table + event vocabulary. Types in a hand-maintained
   apply events as deltas.
 - Commands are optimistic: apply locally, reconcile on the event.
 - Renderer switches on `event.type`; unknown types render as a generic row, never crash.
+- **The Files tab and a session's working-files pane are ONE component at two
+  scopes** (11.9): the whole store, and the folders one project links. Same
+  powers in both — open, drag to move, drop to upload, double-click to rename —
+  because they are two views of one namespace and not two filesystems. What a
+  caller supplies is which rows to load and what a click does; everything else
+  is behaviour, and behaviour has one implementation. They were two components
+  with two different sets of abilities, which is the only reason a file could be
+  renamed in one pane and not the other.
 - Product is a subsection: Looking Glass = project-bubble grid (status dot =
   lifecycle rollup: green running, ochre awaiting_approval — approvals AND unanswered asks, red failed, neutral grey idle, gray completed/cancelled)
   → detail stream. Command Center / project attention / in-window pause are the
@@ -844,6 +1086,9 @@ on concurrently running sessions. None of this exists in prod until it does —
 | `test_resume_verify_on_wake` | dangling call → interrupted; no silent re-execution |
 | `test_event_replay_deterministic` | same log AND same inputs ⇒ identical context assembly, ladder included: a log over the input budget folds to a view under it, and folds byte-identically twice. `now` and `reach` are inputs, not ambient reads |
 | `test_authz_scoping` | user A cannot read/steer user B's sessions, refs, files |
+| `test_plan_gate` | one door into an unattended run: `propose_plan` parks kind `plan` with the plan on the row; approve writes `plan.md`, checks the quota and flips mode+status in one update; decline closes the park to `idle`; anything else is a reply that closes the card and asks for the next plan; a composer message 409s; play appends the handoff without flipping mode, and is accepted on a TERMINAL session (the continuation press) |
+| `test_stop_resume` | stop closes the calls in flight `cancelled_by_user` with no streak increment and refuses the rest of the hop; the hold keeps the mode and writes no `done`; approve resumes, prose resumes with the message appended, decline cancels and spends the plan; a composer message answers a `resume` park while `call` and `plan` still 409 |
+| `test_folders_are_the_filesystem` | a folder is a derived top-level segment and no table holds it; renaming one moves its paths, its links and its claims together, is refused onto a taken name, and is refused while a live box holds it; a delete keeps the blobs so undo restores the same content under the same id, takes the folder and its links when it empties one, restores the batch it NAMES, refuses to overwrite what arrived since, and is refused while a live box holds the folder; a project links folders and owns none; `POST /projects` with links → folder claims at spawn, with none → one fresh folder; the link endpoint writes `project_folders` and reaches the NEXT session's claims, not this one's; write leases are per folder, so two projects writing different folders do not contend and the same folder does; `plan.md` lands in the first linked folder; a rename touches no folder; no home-session project is minted |
 
 ---
 

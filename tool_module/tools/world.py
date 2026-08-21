@@ -42,8 +42,9 @@ class ListProjects:
     spec = ToolSpec(
         name="list_projects",
         description=(
-            "List the user's projects, most recently updated first. A project is the "
-            "container a session belongs to; use it to find work you or the user did before."
+            "List the user's projects, most recently updated first. A project is a piece of "
+            "work and the store folders it is linked to; use it to find work you or the user "
+            "did before. It does not own those folders — several projects may link one."
         ),
         input_schema={
             "type": "object",
@@ -56,8 +57,14 @@ class ListProjects:
         rows = await pool.fetch(
             """
             SELECT p.id, p.title, p.created_at, p.updated_at,
-                   count(s.id) AS sessions
-              FROM projects p LEFT JOIN sessions s ON s.project_id = p.id
+                   count(DISTINCT s.id) AS sessions,
+                   -- The folders it links. A project is work plus the folders
+                   -- it reads and writes, and naming them is what tells the
+                   -- model where that work lives.
+                   coalesce(array_agg(DISTINCT f.folder) FILTER (WHERE f.folder IS NOT NULL), '{}') AS folders
+              FROM projects p
+              LEFT JOIN sessions s ON s.project_id = p.id
+              LEFT JOIN project_folders f ON f.project_id = p.id
              WHERE p.user_id = $1
              GROUP BY p.id
              ORDER BY p.updated_at DESC
@@ -100,7 +107,19 @@ class GetProject:
             project_id,
             _MAX_LIMIT,
         )
-        return ok(_render({**dict(project), "sessions": [dict(s) for s in sessions]}))
+        folders = await pool.fetch(
+            "SELECT folder FROM project_folders WHERE project_id = $1 ORDER BY created_at, folder",
+            project_id,
+        )
+        return ok(
+            _render(
+                {
+                    **dict(project),
+                    "folders": [f["folder"] for f in folders],
+                    "sessions": [dict(s) for s in sessions],
+                }
+            )
+        )
 
 
 class ListSessions:
@@ -199,34 +218,34 @@ class ListFiles:
     spec = ToolSpec(
         name="list_files",
         description=(
-            "List a project's files. They are materialized into the sandbox when it starts, "
-            "so read their contents there by path rather than through this tool."
+            "List files in the user's store. Paths start with their folder, and the folders "
+            "this session was given are mounted at ~/store/<folder>/, so read the contents "
+            "there by path rather than through this tool. Pass `folder` to list just one; "
+            "a folder this session does not hold is still listed here and is NOT on the disk."
         ),
         input_schema={
             "type": "object",
-            "properties": {"project_id": {"type": "string"}},
-            "required": ["project_id"],
+            "properties": {"folder": {"type": "string", "description": "One folder, e.g. 'triage'."}},
         },
         readonly=True,
     )
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
-        # project_files has no user column, so ownership is checked in the join.
+        folder = str(args.get("folder") or "").strip().strip("/")
         rows = await pool.fetch(
             """
-            SELECT f.path, f.size, f.mtime
-              FROM project_files f JOIN projects p ON p.id = f.project_id
-             WHERE f.project_id = $1 AND p.user_id = $2
-             ORDER BY f.path
+            SELECT path, size, mtime
+              FROM files
+             WHERE user_id = $1 AND ($2 = '' OR split_part(path, '/', 1) = $2)
+             ORDER BY path
              LIMIT $3
             """,
-            _as_uuid(args["project_id"]),
             _as_uuid(ctx.user_id),
+            folder,
             _MAX_LIMIT,
         )
         if not rows:
-            # An empty project and another user's project read the same.
-            return ok("No files in that project.")
+            return ok(f"No files under {folder}/." if folder else "The store is empty.")
         return ok(_render([dict(r) for r in rows]))
 
 

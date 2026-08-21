@@ -595,6 +595,33 @@ async def test_a_plain_wake_leaves_the_mode_alone(monkeypatch):
 # --- how an unattended run may and may not end ---------------------------------
 
 
+async def test_a_setup_failure_is_an_internal_error_not_a_model_error(monkeypatch):
+    """`_drive`'s catch-all names the harness, because the harness is what failed.
+
+    A Postgres blip, an OpenAI outage and a model that said nothing all wrote
+    `model_error` before 11.8.5, so the status pill could not tell them apart —
+    and the 2026-08-20 Marketplace run reported `failed{model_error}` though
+    nothing had errored.
+    """
+    session_id = await _session(status="idle")
+
+    async def explode(_session):
+        raise RuntimeError("the sandbox would not boot")
+
+    monkeypatch.setattr(runner, "_manifest_for", explode)
+    assert await runner.start(session_id)
+    await _settle(session_id)
+
+    row = await pool.fetchrow(
+        "SELECT status, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id)
+    )
+    events = [e.event for e in await slog.get_events(session_id)]
+
+    assert (row["status"], row["terminal_reason"]) == ("failed", "internal_error")
+    assert [e.reason for e in events if e.kind == "done"] == ["internal_error"]
+
+
+
 # --- steering: a message typed while the turn is running ----------------------------
 
 
@@ -972,12 +999,19 @@ def tiny_window(monkeypatch):
     results and nothing else — a ceiling below the prompt is a view that can
     never come under budget however much it drops. So this number is tuned to
     the prompt's size and has to be retuned whenever the prompt grows: it was
-    ~1313 tokens, and 11.6's freshness block took it to ~1484.
+    ~1313 tokens, 11.6's freshness block took it to ~1484, and 11.8.5's
+    "Running unattended" section took it to ~1735.
+
+    Retuned at 11.8.5 with room to spare rather than to the token: the previous
+    number left the ceiling ~45 tokens above the fully-cleared view, so the next
+    paragraph added to the prompt broke it. `_bulky_log` now shows enough of each
+    result that clearing them all frees ~735 tokens, which is the slack this
+    fixture needs on both sides.
     """
 
     def cfg(key, default):
         return {
-            "llm.context_window": 2800,
+            "llm.context_window": 3280,
             "llm.max_tokens": 400,
             "context.recovery_threshold": 0.8,
             "context.chars_per_token": 4,
@@ -986,8 +1020,13 @@ def tiny_window(monkeypatch):
     monkeypatch.setattr(runner, "_cfg", cfg)
 
 
-async def _bulky_log(session_id: str, results: int = 6, size: int = 900) -> list[str]:
-    """A log of blobbed results, oldest first."""
+async def _bulky_log(session_id: str, results: int = 6, size: int = 1200) -> list[str]:
+    """A log of blobbed results, oldest first.
+
+    The inline preview is deliberately much longer than the "[cleared…]" line
+    that replaces it: that difference IS the headroom rung 1 buys, and a small
+    difference makes `tiny_window` knife-edge on the prompt's length.
+    """
     refs = []
     await slog.append(session_id, UserEvent(text="do the thing"))
     for i in range(results):
@@ -996,7 +1035,7 @@ async def _bulky_log(session_id: str, results: int = 6, size: int = 900) -> list
         await slog.append(session_id, ToolCallEvent(id=f"c{i}", name="grep", args={}))
         await slog.append(
             session_id,
-            ToolResultEvent(id=f"c{i}", ok=True, content="z" * 200, total_chars=size, ref=ref),
+            ToolResultEvent(id=f"c{i}", ok=True, content="z" * 600, total_chars=size, ref=ref),
         )
     return refs
 

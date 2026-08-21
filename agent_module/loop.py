@@ -39,6 +39,18 @@ Mode = Literal["attended", "unattended"]
 # The only tool that ends an unattended run.
 FINISH_TOOL = "finish_task"
 
+# A call the human stopped. It closes like any other failure — the model reads it
+# and routes around it — but it is NOT the tool failing, so it does not spend the
+# per-tool attempt cap. Stopping a slow browser step three times would otherwise
+# close the browser to the run that the human is trying to steer.
+CANCELLED_BY_USER = "cancelled_by_user"
+
+# Consecutive bare-text hops an unattended run may take before it is called
+# stalled. One is answered with a continuation, the second with the finish
+# nudge, and the third ends it: two injections is the whole of what the prompt
+# promises, and a fourth would just be the same hop again.
+_BARE_TEXT_LIMIT = 3
+
 
 
 
@@ -142,7 +154,17 @@ async def run_turn(
     deadline = time.monotonic() + budgets.wall_clock_s
     state = _State(budgets=budgets)
     seen_ids: set[str] = set()
-    nudged = False
+    # The near-cap nudge has its OWN latch. It shares neither its schedule nor
+    # its budget with the bare-text streak below: one fires once, near the hop
+    # cap; the other escalates within a run of silent hops. A single flag let
+    # the streak consume the near-cap nudge, so a run that went bare early and
+    # then bare again on its last hop was never told to finish.
+    near_cap_nudged = False
+    # Consecutive hops that produced text and no tool call. Unattended only: the
+    # prompt promises such a hop will be answered, and before 11.8.5 nothing kept
+    # that promise — the tail became consecutive assistant messages with nothing
+    # in between and the model degenerated. A tool-calling hop clears it.
+    bare_streak = 0
     model_retries = 0
     reattempt = False
 
@@ -199,16 +221,39 @@ async def run_turn(
                         yield DoneEvent(reason="turn_end")
                         return
                     if not hop.text:
-                        # An empty reply leaves nothing to continue from.
-                        yield DoneEvent(reason="model_error")
+                        # An empty reply leaves nothing to continue from. Not a
+                        # model_error: nothing errored, the model said nothing.
+                        yield DoneEvent(reason="stalled_progress")
                         return
-                    if not nudged and hops_used == budgets.max_hops - 1:
-                        nudged = True
-                        nudge = prompts.finish_nudge(FINISH_TOOL, budgets.max_hops - hops_used)
-                        messages.append({"role": "user", "content": nudge})
-                        yield UserEvent(text=nudge, source="system")
+
+                    bare_streak += 1
+                    if bare_streak >= _BARE_TEXT_LIMIT:
+                        # Told to continue, then told to finish, and still only
+                        # text. Ending here is the honest reading and it costs
+                        # the run nothing it was going to use.
+                        yield DoneEvent(reason="stalled_progress")
+                        return
+                    if hops_used < budgets.max_hops:
+                        # Only when a hop remains to read it. Injecting into the
+                        # last one puts an instruction in the transcript that
+                        # nothing ever acted on, which reads as the model having
+                        # ignored it.
+                        near_cap = not near_cap_nudged and hops_used == budgets.max_hops - 1
+                        if bare_streak > 1 or near_cap:
+                            # A second bare hop gets the finish nudge
+                            # immediately; the near-cap nudge still fires on its
+                            # own schedule, and only its own latch moves here.
+                            near_cap_nudged = near_cap_nudged or near_cap
+                            injected = prompts.finish_nudge(FINISH_TOOL, budgets.max_hops - hops_used)
+                        else:
+                            injected = prompts.continue_nudge(FINISH_TOOL)
+                        messages.append({"role": "user", "content": injected})
+                        yield UserEvent(text=injected, source="system")
                     model_retries = 0
                     continue
+
+                # The model is working again, whatever it said last hop.
+                bare_streak = 0
 
                 messages.append(
                     {
@@ -403,7 +448,8 @@ async def _settle(
         state.failures.pop(call.name, None)
         if call.name == FINISH_TOOL:
             state.finished = True
-    else:
+    elif envelope.error_kind != CANCELLED_BY_USER:
+        # A human's stop is not the tool's failure. See CANCELLED_BY_USER.
         state.failures[call.name] = state.failures.get(call.name, 0) + 1
 
     content, total = _cap_view(envelope.content)

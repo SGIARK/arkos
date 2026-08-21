@@ -12,6 +12,7 @@ import json
 import logging
 import posixpath
 import time
+import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -145,7 +146,7 @@ async def fold(
     paired assistant and tool messages, `reasoning` is dropped, and the remaining kinds are
     UI-only.
 
-    The output is a function of (log, config, mode, memory, reach, now) — all arguments,
+    The output is a function of (log, config, mode, memory, reach, mounts, now) — all arguments,
     which is what keeps it deterministic now that the prompt carries a clock. `now`
     defaults to reading one, ONCE, so a fold is internally consistent; a caller that
     needs two folds to compare must pass the same instant to both.
@@ -157,7 +158,12 @@ async def fold(
     now = now or datetime.now(UTC)
     events = await _all_events(session.id)
     memory = _capped_memory(await store.read_memory(session.user_id))
-    messages, hops_used = _assemble(session, events, frozenset(), memory, reach, now)
+    # The folders this session was given. Read here rather than inside
+    # `_assemble` for the same reason memory is: the assembly stays a pure
+    # function of what it is handed, and a caller comparing two folds gets the
+    # same prompt from the same inputs.
+    mounts = await workspace.claims_for(session.id)
+    messages, hops_used = _assemble(session, events, frozenset(), memory, reach, now, mounts)
     last_seq = events[-1].seq if events else 0
 
     # Rung 0 measures the view; rung 1 clears the oldest results holding a blob ref
@@ -171,7 +177,7 @@ async def fold(
     cleared: list[str] = []
     for ref in _clearable_refs(events):
         cleared.append(ref)
-        messages, hops_used = _assemble(session, events, frozenset(cleared), memory, reach, now)
+        messages, hops_used = _assemble(session, events, frozenset(cleared), memory, reach, now, mounts)
         if _estimate_tokens(messages) <= ceiling:
             break
 
@@ -261,6 +267,7 @@ def _assemble(
     memory: str = "",
     reach: Sequence[registry.ServerReach] = (),
     now: datetime | None = None,
+    mounts: Sequence[workspace.Claim] = (),
 ) -> tuple[list[dict[str, Any]], int]:
     """Builds the message list from events, with `cleared` refs reduced to a pointer.
 
@@ -278,6 +285,7 @@ def _assemble(
                 goal=session.goal,
                 memory=memory,
                 reach=reach,
+                mounts=mounts,
             ),
         }
     ]
@@ -400,6 +408,61 @@ def _dumps(args: dict[str, Any]) -> str:
 # --- driving a turn ------------------------------------------------------------
 
 
+# The live sink per session, so `stop` can reach the turn that is running. The
+# task registry alone is not enough: cancelling the task is the old nuke, and
+# what stop needs is the sink's dispatch bookkeeping.
+_sinks: dict[str, _Sink] = {}
+
+
+async def stop(session_id: str) -> bool:
+    """Hold a running turn at its next hop boundary, without ending it.
+
+    Not `cancel`. Cancel kills the whole turn, writes `done{cancelled}`, and
+    flips the mode back to attended — which spends the plan the run was
+    approved from. Stop closes the calls in flight as `cancelled_by_user`,
+    refuses any further dispatch this hop, and lets the hop finish; the drive
+    loop then parks on a `resume` row with the mode untouched.
+
+    Returns:
+        False when no turn of this session is running in this process, which is
+        the caller's cue to fall back to `cancel`.
+    """
+    sink = _sinks.get(session_id)
+    if sink is None or not is_running(session_id):
+        return False
+    cancelled = sink.request_stop()
+    logger.info("session %s: stop requested, %d call(s) in flight", session_id, cancelled)
+    _arm_stop_backstop(session_id)
+    return True
+
+
+# The grace timers in flight, held so the loop does not collect them mid-wait.
+_stop_backstops: set[asyncio.Task[None]] = set()
+
+
+def _arm_stop_backstop(session_id: str) -> None:
+    """Degrade a stop that cannot land into the full cancel it replaced.
+
+    Stop takes effect at a hop boundary, and a hop that never reaches one — a
+    wedged tool, a stream that stopped arriving — would leave the button doing
+    nothing at all. After the grace the old nuke runs, so the same press still
+    kills a runaway run. This is the only path on which stopping spends a plan.
+    """
+    grace = float(_cfg("harness.stop_grace_s", 45))
+    task = asyncio.create_task(_force_stop(session_id, grace), name=f"stopgrace:{session_id}")
+    _stop_backstops.add(task)
+    task.add_done_callback(_stop_backstops.discard)
+
+
+async def _force_stop(session_id: str, grace: float) -> None:
+    await asyncio.sleep(grace)
+    if not is_running(session_id):
+        return
+    logger.warning("session %s: the stop did not reach a hop boundary in %.0fs; cancelling", session_id, grace)
+    system_log.record("stop_degraded", level="warn", session_id=session_id, grace_s=grace)
+    await cancel(session_id)
+
+
 async def start(session_id: str, *, mode: lifecycle.Mode | None = None, reason: str = "woken") -> bool:
     """Moves a session to `running` and drives one turn in the background.
 
@@ -461,7 +524,18 @@ async def cancel(session_id: str) -> bool:
         return False
     # `_ending` appends the done{cancelled} the transcript needs: the fold resets the
     # hop count at a `done`, so a restarted session budgets from zero.
-    return await _ending(session_id, None, "cancelled", expected=session.status)
+    #
+    # The mode goes back with it. Cancelling a STOPPED run is the path that made
+    # this matter: the hold left the session unattended on purpose, so without
+    # this a cancelled one stayed recorded unattended forever — holding a worker
+    # slot in the quota, and lying about a session nobody is running.
+    return await _ending(
+        session_id,
+        None,
+        "cancelled",
+        expected=session.status,
+        mode="attended" if session.mode == "unattended" else None,
+    )
 
 
 async def _drive(session_id: str) -> None:
@@ -475,6 +549,7 @@ async def _drive(session_id: str) -> None:
         if session is None:
             return
         sink = _Sink(session)
+        _sinks[session_id] = sink
 
         # The manifest comes BEFORE the fold: the system prompt names the services
         # this request carries, and it cannot do that until the request is decided.
@@ -529,9 +604,10 @@ async def _drive(session_id: str) -> None:
                 sink.drop_park()
                 await sink.close(event)
                 return
-            if sink.parked and isinstance(event, BudgetEvent):
+            if (sink.parked or sink.stopping) and isinstance(event, BudgetEvent):
                 # A hop boundary: every call of the parking hop has closed, so the
                 # transcript folds cleanly. The loop stops before the next model call.
+                # A stop holds here for the same reason, and takes the same exit.
                 break
             if isinstance(event, DoneEvent):
                 await sink.close(event)
@@ -543,14 +619,21 @@ async def _drive(session_id: str) -> None:
         if sink.parked:
             await sink.park()
             return
+        if sink.stopping:
+            await sink.park_stopped()
+            return
         await sink.close()
     except asyncio.CancelledError:
         await _shielded(_ending(session_id, sink, "cancelled"))
         raise
     except Exception:
+        # Not `model_error`: nothing here is the model. A Postgres blip, a
+        # sandbox that would not boot and an OpenAI outage were one label until
+        # 11.8.5, so the pill could not tell an outage from a bad reply.
         logger.exception("session %s: the turn failed outside the loop", session_id)
-        await _shielded(_ending(session_id, sink, "model_error"))
+        await _shielded(_ending(session_id, sink, "internal_error"))
     finally:
+        _sinks.pop(session_id, None)
         _cancelling.discard(session_id)
 
 
@@ -717,6 +800,7 @@ async def _ending(
     sink: _Sink | None,
     reason: str,
     expected: str = "running",
+    mode: lifecycle.Mode | None = None,
 ) -> bool:
     """Records the end of a run: closes open calls, appends the `done`, moves the status.
 
@@ -732,10 +816,33 @@ async def _ending(
         stored = await slog.append(session_id, DoneEvent(reason=reason))
         stream.publish(session_id, stored)
         # `transition` publishes its own event; this call wants only whether it moved.
-        return await lifecycle.transition(session_id, expected, status, reason) is not None
+        return await lifecycle.transition(session_id, expected, status, reason, mode=mode) is not None
     except Exception:
         logger.exception("session %s: could not record the %s ending", session_id, reason)
         return False
+
+
+# What the human sees on the held row, and what the two card actions answer.
+_STOP_PROMPT = "Run stopped. Resume the plan?"
+
+
+def _stopped_envelope(name: str) -> ResultEnvelope:
+    """The result a call gets when a human stopped the run.
+
+    Written for the model to READ on resume, because that is what happens to it:
+    the closed call plus whatever the human said is the next thing in its
+    context. `cancelled_by_user` keeps it out of the per-tool failure streak —
+    stopping the browser three times must not close the browser to the run.
+    """
+    return ResultEnvelope(
+        ok=False,
+        content=(
+            f"The human stopped the run while {name} was running. Its outcome is unknown: "
+            "check before assuming it did or did not happen. They may say what to do instead."
+        ),
+        error_kind="cancelled_by_user",
+        retryable=False,
+    )
 
 
 # The `error_kind` the gate raises to mean "this call is parked, not failed".
@@ -748,9 +855,89 @@ def _park_prompt(name: str, args: dict[str, Any]) -> str:
     """Returns the text shown to the human, taken from the park tool's arguments."""
     if name == "ask":
         return str(args.get("question") or "").strip() or "(no question given)"
+    if name == "propose_plan":
+        # The prompt is the one-line summary; the card reads the plan itself off
+        # `tool_args`, the same way a gated call's card reads the call.
+        return str(args.get("goal") or "").strip() or "(no goal given)"
     action = str(args.get("action") or "").strip() or "(no action given)"
     detail = str(args.get("detail") or "").strip()
     return f"{action}\n\n{detail}" if detail else action
+
+
+# --- the approved plan ---------------------------------------------------------
+
+# What an approved plan is called. It lands at the root of the session's FIRST
+# linked folder (11.9), because the run's first act is to read it and the model
+# is told that path — and because a project links folders rather than owning
+# one, so "the project root" is not a place any more.
+PLAN_NAME = "plan.md"
+
+
+def plan_markdown(args: dict[str, Any], version: int) -> str:
+    """Render an approved plan as the file the run starts from.
+
+    A pure function of the args that were approved: the human read those fields
+    and nothing else is added, so the file cannot say something the card did
+    not. The model is never asked to write this — a second generation would be a
+    second chance to disagree with what was consented to.
+    """
+    lines = [f"# {str(args.get('goal') or '').strip()}", "", f"_plan v{version}_", ""]
+    done_when = str(args.get("done_when") or "").strip()
+    if done_when:
+        lines += ["## done when", "", done_when, ""]
+    steps = [str(s).strip() for s in (args.get("steps") or []) if str(s).strip()]
+    if steps:
+        lines += ["## steps", ""]
+        lines += [f"{i}. {step}" for i, step in enumerate(steps, 1)]
+        lines.append("")
+    inputs = [i for i in (args.get("inputs") or []) if isinstance(i, dict)]
+    if inputs:
+        lines += ["## inputs", ""]
+        for item in inputs:
+            label = str(item.get("label") or "").strip()
+            note = str(item.get("note") or "").strip()
+            lines.append(f"- {label} — {note}" if note else f"- {label}")
+        lines.append("")
+    missing = [str(m).strip() for m in (args.get("missing") or []) if str(m).strip()]
+    if missing:
+        lines += ["## still open", ""]
+        lines += [f"- {question}" for question in missing]
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+async def plan_folder(session_id: str) -> str | None:
+    """The folder an approved plan is written into: the session's FIRST claim.
+
+    First LINKED, not first alphabetically: the order a project's folders were
+    linked in is the order they were chosen in, and the first is the one the
+    work is about. A session that claims nothing has nowhere durable to put a
+    plan, and saying so before the approval is what keeps the promise "the run
+    starts from plan.md" honest.
+    """
+    claims = await workspace.claims_for(session_id)
+    writable = [c for c in claims if c.mode == "write"]
+    return writable[0].folder if writable else None
+
+
+async def save_plan(session_id: str, args: dict[str, Any], version: int) -> str | None:
+    """Write an approved plan into the session's first linked folder, and return its path.
+
+    Through the store, not the sandbox: the plan is approved while the session is
+    parked, and a parked session's box is hibernated. The next materialize copies
+    the file in like any other, which is what makes "starting from plan.md" true
+    rather than a phrase in the prompt.
+
+    Returns None when the session links no folder to write into.
+    """
+    row = await pool.fetchrow("SELECT user_id FROM sessions WHERE id = $1", _uuid(session_id))
+    folder = await plan_folder(session_id)
+    if row is None or folder is None:
+        logger.warning("session %s: an approved plan has no folder to be saved in", session_id)
+        return None
+    path = f"{folder}/{PLAN_NAME}"
+    await store.put_file(str(row["user_id"]), path, plan_markdown(args, version).encode())
+    return path
 
 
 def _model_options() -> dict[str, Any] | None:
@@ -819,6 +1006,12 @@ class _Sink:
         self._calls: dict[str, tuple[str, dict[str, Any]]] = {}
         # True for exactly one gated call: the one the human approved.
         self._grant_once = False
+        # Dispatches in flight, so Stop can close exactly those and nothing else.
+        # The drive task is NOT among them: cancelling that is the old nuke.
+        self._dispatching: set[asyncio.Task[Any]] = set()
+        # Set by `request_stop`. Read at the hop boundary by the drive loop, and
+        # by `guarded` to refuse anything the model asks for after it.
+        self._stopping = False
         # Set when the park left a call open, so `abort` knows to close it.
         self._gated_call: str | None = None
         # Resource keys this session holds, so a second call skips the database.
@@ -908,9 +1101,11 @@ class _Sink:
 
         The sandbox is this session's own box, so it is capacity rather than a
         lease: the wait is for a free slot in the user's pool. Each write claim
-        leases the project it names, so two sessions touching different projects
-        do not wait on each other. The claimed subtrees are materialized once
-        the box and the leases are held, and nothing unclaimed is put there.
+        leases the FOLDER it names, so two sessions writing different folders do
+        not wait on each other even when they belong to the same project, and
+        two writing the same folder still serialize even when they do not. The
+        claimed folders are materialized once the box and the leases are held,
+        and nothing unclaimed is put there.
 
         Raises:
             ToolUnavailable: a box or a lease did not free up. The model routes
@@ -927,7 +1122,7 @@ class _Sink:
         for claim in claims:
             key = workspace.lease_key(claim)
             if key is not None:
-                await self._acquire(key, claim.slug)
+                await self._acquire(key, f"{claim.folder}/")
 
         materialized = await workspace.materialize(sandbox_manager.manager(), self.session.id, claims)
         self._workspace = (claims, materialized.manifest)
@@ -1134,16 +1329,78 @@ class _Sink:
         await waiting
 
     def write_ahead(self, dispatch: Dispatch, tools: Sequence[ToolSpec]) -> Dispatch:
-        """Wraps dispatch so a non-readonly tool waits for its `tool_call` to be committed."""
+        """Wraps dispatch so a non-readonly tool waits for its `tool_call` to be committed.
+
+        It is also where a call becomes STOPPABLE. Every dispatch registers its
+        own task here on the way in, so Stop can cancel the calls in flight
+        without touching the turn — the loop stays pure and knows nothing about
+        any of it, because a stopped call comes back as an ordinary envelope.
+        """
         readonly = {t.name: t.readonly for t in tools}
 
         async def guarded(name: str, args: dict[str, Any]) -> ResultEnvelope:
-            # An unknown name counts as non-readonly.
-            if not readonly.get(name, False):
-                await self.barrier()
-            return await dispatch(name, args)
+            if self._stopping:
+                # Stop refuses the rest of the hop too. A fan-out of five whose
+                # first two were cancelled must not have the other three start.
+                return _stopped_envelope(name)
+            task = asyncio.current_task()
+            if task is not None:
+                self._dispatching.add(task)
+            try:
+                # An unknown name counts as non-readonly.
+                if not readonly.get(name, False):
+                    await self.barrier()
+                return await dispatch(name, args)
+            except asyncio.CancelledError:
+                if not self._stopping:
+                    # The whole turn is going down; this is not ours to swallow.
+                    raise
+                return _stopped_envelope(name)
+            finally:
+                if task is not None:
+                    self._dispatching.discard(task)
 
         return guarded
+
+    def request_stop(self) -> int:
+        """Close the calls in flight and refuse the rest of the hop.
+
+        Returns:
+            How many in-flight calls were cancelled. Zero is ordinary — the stop
+            may have landed between calls, or mid-generation.
+        """
+        self._stopping = True
+        live = [task for task in self._dispatching if not task.done()]
+        for task in live:
+            task.cancel()
+        return len(live)
+
+    @property
+    def stopping(self) -> bool:
+        """True once a human has pressed Stop on this turn."""
+        return self._stopping
+
+    async def park_stopped(self) -> bool:
+        """Hold the run on a `resume` row, with everything about it preserved.
+
+        The same shape as `park`, and deliberately so: leases released, box
+        hibernated, `running -> awaiting_approval`. What it does NOT do is the
+        part that matters — no `done`, so nothing terminal is written, and no
+        mode flip, so the plan this run was approved from is still approved.
+        The hop budget carries for free: the fold counts hops from the last
+        `done` and a park appends none.
+        """
+        await self._release_leases(keep_box=True)
+        await self._drain()
+        # Synthetic: no tool call parks here, and nothing in the log bears this
+        # id, so `close_dangling` has nothing to find across the hold.
+        call_id = f"stop_{uuid.uuid4().hex[:12]}"
+        approval = await approvals.create(self.session.id, call_id, "resume", _STOP_PROMPT)
+        await self._save_cursor()
+        moved = await lifecycle.transition(self.session.id, "running", "awaiting_approval", "stopped") is not None
+        if moved:
+            logger.info("session %s stopped at hop %s (%s)", self.session.id, self._hops, approval.id)
+        return moved
 
     # --- the writer -------------------------------------------------------------
 
@@ -1314,7 +1571,24 @@ class _Sink:
         await self._release_leases(keep_box=True)
         await self._drain()
         call_id, name, args = self._park
-        if self._gated_call == call_id:
+        kind = PARK_KINDS.get(name)
+        if kind == "plan":
+            # Each proposal is a version, and only the newest is live: the older
+            # row stays for the card's "changed since v{n-1}" diff but stops
+            # waiting on anybody. Superseded before the insert, so the two are
+            # never open at once.
+            superseded = await approvals.supersede_plans(self.session.id)
+            if superseded:
+                logger.info("session %s: plan superseded by a newer proposal", self.session.id)
+            approval = await approvals.create(
+                self.session.id,
+                call_id,
+                "plan",
+                _park_prompt(name, args),
+                tool_name=name,
+                tool_args=args,
+            )
+        elif self._gated_call == call_id:
             # A gated call: the row carries the call itself, and the call is
             # still open in the log for the answer to close.
             approval = await approvals.create(
@@ -1343,7 +1617,7 @@ class _Sink:
         await self._drain()
         if not self._terminal_written:
             logger.error("session %s: the loop ended with no done event", self.session.id)
-            await self._finish(DoneEvent(reason="model_error"))
+            await self._finish(DoneEvent(reason="internal_error"))
 
     async def abort(self, reason: str) -> bool:
         """Ends the run from outside the loop, on the error path. Failures are logged, not raised.

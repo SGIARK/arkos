@@ -88,16 +88,16 @@ function asEvent(raw) {
 }
 
 /* Multipart goes around `request` rather than through it: the browser sets its
-   own boundary, and a Content-Type we invented would break it. */
-async function _postFile(projectId, blob, path, whenItFails) {
+   own boundary, and a Content-Type we invented would break it.
+
+   The path is REQUIRED and carries the folder: the store is one flat namespace
+   per user and every file in it lives in a folder, so there is no root to drop
+   something into. */
+async function _postFile(blob, path, whenItFails) {
   const form = new FormData();
-  if (path) {
-    form.append("file", blob, path.split("/").pop());
-    form.append("path", path);
-  } else {
-    form.append("file", blob);
-  }
-  const response = await fetch(`${API}/projects/${projectId}/files`, {
+  form.append("file", blob, path.split("/").pop());
+  form.append("path", path);
+  const response = await fetch(`${API}/files`, {
     method: "POST",
     credentials: "same-origin",
     body: form,
@@ -147,10 +147,16 @@ const api = {
 
   projects: () => request("GET", "/projects"),
   /* Deliberately, rather than as a side effect of starting a session.
-     `seed_from` copies tree rows from a directory in another project — blobs
-     are content-addressed, so the same file in two projects is one blob. */
-  createProject: (title, seedFrom) =>
-    request("POST", "/projects", seedFrom ? { title, seed_from: seedFrom } : { title }),
+
+     `folders` is what it LINKS — store folders that already exist, by name. A
+     project owns none of them, so linking costs nothing and unlinking would
+     take nothing away. Picking none makes a folder named after the project,
+     which then appears in the Files tab like any other. */
+  createProject: (title, folders) =>
+    request("POST", "/projects", folders && folders.length ? { title, folders } : { title }),
+  /* Link one more folder to a project. The pane shows it at once; the AGENT
+     sees it from the next session, because claims are fixed per session. */
+  linkFolder: (projectId, folder) => request("POST", `/projects/${projectId}/folders`, { folder }),
   renameProject: (projectId, title) => request("PATCH", `/projects/${projectId}`, { title }),
   sessions: (status) => request("GET", status ? `/sessions?status=${encodeURIComponent(status)}` : "/sessions"),
   projectSessions: (projectId) => request("GET", `/projects/${projectId}/sessions`),
@@ -158,8 +164,16 @@ const api = {
     const body = await request("GET", `/sessions/${sessionId}`);
     return { ...body, recent_events: (body.recent_events || []).map(asEvent) };
   },
+  /* The whole store: one flat namespace per user, folder-first paths. What the
+     Files tab draws, and where its headers come from. */
+  storeFiles: () => request("GET", "/files"),
+  /* The store's folders with their file counts — the modal's checklist and the
+     `+ link` picker. Derived from the paths, never a table. */
+  folders: () => request("GET", "/folders"),
+  /* The same rows, narrowed to what one project LINKS: the working-files pane.
+     Same paths, so clicking one lands on it in the Files tab. */
   files: (projectId) => request("GET", `/projects/${projectId}/files`),
-  file: (projectId, fileId) => request("GET", `/projects/${projectId}/files/${fileId}`),
+  file: (fileId) => request("GET", `/files/${fileId}`),
   /* One query at three scopes: nothing is the Command Center, a project is its
      list, a session is one window. */
   attention: (scope) => {
@@ -178,20 +192,36 @@ const api = {
      A folder is a path prefix, not a row: the store keeps flat paths and the
      tree is derived from them, so uploading INTO a directory is uploading a
      file whose path carries it. Absent, the name alone lands it at the root. */
-  upload: (projectId, file, dir) =>
-    _postFile(projectId, file, dir ? `${dir}/${file.name}` : null, `Could not upload ${file.name}.`),
-  saveFile: (projectId, path, text) =>
-    _postFile(projectId, new Blob([text], { type: "text/plain" }), path, `Could not save ${path}.`),
+  upload: (file, dir) =>
+    _postFile(file, dir ? `${dir}/${file.name}` : file.name, `Could not upload ${file.name}.`),
+  saveFile: (path, text) =>
+    _postFile(new Blob([text], { type: "text/plain" }), path, `Could not save ${path}.`),
 
   /* A folder is durable the moment it is named: the server writes a zero-byte
-     sentinel inside it, because the tree is flat paths and a directory is not a
-     row. Nothing about it lives only in this tab. */
-  newFolder: (projectId, path) => request("POST", `/projects/${projectId}/folders`, { path }),
+     sentinel inside it, because a folder is a path segment and not a row.
+     Nothing about it lives only in this tab. */
+  newFolder: (path) => request("POST", "/folders", { path }),
 
-  /* Rename or reparent a file or a whole folder. Blobs never move — they are
-     content-addressed — so this is a row edit the server also pushes into any
-     live sandbox, which is what stops a running turn from undoing it. */
-  moveFile: (projectId, from, to) => request("POST", `/projects/${projectId}/files/move`, { from, to }),
+  /* Rename or reparent a file or a directory inside the store. Blobs never move
+     — they are content-addressed — so this is a row edit the server also pushes
+     into any live sandbox, which is what stops a running turn from undoing it.
+     Moving a top-level FOLDER is refused: that is its own card. */
+  moveFile: (from, to) => request("POST", "/files/move", { from, to }),
+
+  /* Rename anything in the store — a file, a directory, or a top-level folder.
+     `name` is a NAME: a `/` in it is refused rather than quietly making this a
+     move. Renaming a top-level folder carries the projects that link it and the
+     claims that mount it with the paths, and is refused while a running session
+     has it mounted (`409 folder_busy`). */
+  renameFile: (path, name) => request("POST", "/files/rename", { path, name }),
+
+  /* Delete a file or a whole subtree. The rows go and the BLOBS do not — they
+     are content-addressed and never collected — so the `batch` this returns
+     takes it back exactly, the same content under the same id. A delete that
+     empties a folder takes the folder and the project links that named it, and
+     `folders` says which stopped existing. */
+  deleteFile: (path) => request("DELETE", "/files", { path }),
+  undoDelete: (batch) => request("POST", "/files/undo", { batch }),
 
   /* --- connections ------------------------------------------------------ */
 
@@ -226,6 +256,9 @@ const api = {
   send: (sessionId, text) => request("POST", `/sessions/${sessionId}/messages`, { text }),
   answer: (approvalId, answer) => request("POST", `/approvals/${approvalId}/respond`, { answer }),
   approve: (sessionId) => request("POST", `/sessions/${sessionId}/approve`),
+  /* Stop holds a run; cancel ends it. Two calls because they are two different
+     things, and conflating them is what spent an approved plan on a slow step. */
+  stop: (sessionId) => request("POST", `/sessions/${sessionId}/stop`),
   cancel: (sessionId) => request("POST", `/sessions/${sessionId}/cancel`),
 
   /* --- the stream ------------------------------------------------------- */
@@ -297,8 +330,24 @@ function relTime(iso) {
   return Math.floor(s / 86400) + "d ago";
 }
 
+/* Why a run stopped, in words. The vocabulary is `done.reason` and the pill is
+   read by people, so each reason says what actually happened: 11.8.5 split
+   `model_error` into three, and "failed: model_error" for a Postgres blip was
+   exactly the confusion that split fixed. */
+const REASON_LABEL = {
+  stalled_progress: "stalled — no progress",
+  model_error: "the model errored",
+  internal_error: "we errored",
+  max_hops: "out of hops",
+  wall_clock: "out of time",
+  context_overflow: "context full",
+  interrupted: "interrupted",
+};
+
 function statusLabel(status, terminalReason) {
   if (status === "awaiting_approval") return "waiting on you";
-  if (status === "failed" && terminalReason) return "failed: " + terminalReason;
+  if (status === "failed" && terminalReason) {
+    return "failed: " + (REASON_LABEL[terminalReason] || terminalReason.replace(/_/g, " "));
+  }
   return String(status || "").replace("_", " ");
 }

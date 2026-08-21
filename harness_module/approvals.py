@@ -2,12 +2,25 @@
 
 A row is opened when a session parks and closed when a human answers.
 
-Two shapes, and the difference matters. `ask` and `approval` are PROSE: the
+Three shapes, and the differences matter. `ask` and `approval` are PROSE: the
 model asks a question or describes an intention, and the answer comes back as a
 `user` event for it to read. `call` is a GATED TOOL CALL: the session parked
 with that call still open, the row carries the call that will actually run, and
 answering does not talk to the model at all — it either runs that exact call or
 closes it as declined. Consent binds to the call, never to a description of one.
+
+`plan` is the third, and it is an ARTIFACT: `tool_args` is the proposed plan
+itself, and answering it is what starts an unattended run. It takes three
+answers rather than two — the approve word starts the run, the decline word
+closes the park, and anything else is workshop feedback the model reads and
+revises from. Each `propose_plan` call is a VERSION: a new one supersedes the
+open row rather than sitting beside it, so a session never has two live plans.
+
+`resume` is the fourth and it belongs to no tool at all. A human pressed Stop, so
+the run holds at a hop boundary instead of dying: the row is the hold, and its
+three answers are resume / resume-with-a-message / cancel for real. It is the one
+kind a composer message may answer, because the consent it waits on — the plan —
+already stands, and prose here approves nothing new.
 """
 
 from __future__ import annotations
@@ -20,7 +33,7 @@ from typing import Any, Literal
 from db import pool
 from db.ids import as_uuid as _uuid
 
-Kind = Literal["approval", "ask", "call"]
+Kind = Literal["approval", "ask", "call", "plan", "resume"]
 
 _COLUMNS = (
     "id, session_id, tool_call_id, kind, prompt, answer, created_at, answered_at, "
@@ -31,6 +44,12 @@ _COLUMNS = (
 # call is a decision, and it gets a vocabulary of exactly two words.
 APPROVE = "approve"
 DECLINE = "decline"
+
+# Written into `answer` when a newer `propose_plan` replaces an open plan row.
+# It closes the row — a superseded plan is not waiting on anybody, so it leaves
+# `open_for` and `/attention` — without pretending a human decided it. It is not
+# the approve word, so `approved` is False on every path that reads it.
+SUPERSEDED = "superseded"
 
 
 @dataclass(slots=True)
@@ -53,6 +72,16 @@ class Approval:
     def gated_call(self) -> bool:
         """True for a parked tool call, whose answer runs code rather than being read."""
         return self.kind == "call"
+
+    @property
+    def is_resume(self) -> bool:
+        """True for a stopped run waiting to be resumed or cancelled."""
+        return self.kind == "resume"
+
+    @property
+    def is_plan(self) -> bool:
+        """True for a proposed plan, whose `tool_args` are the plan itself."""
+        return self.kind == "plan"
 
     @property
     def approved(self) -> bool:
@@ -147,6 +176,65 @@ async def consume(approval_id: str) -> Approval | None:
         _uuid(approval_id),
     )
     return _row(record) if record else None
+
+
+async def supersede_plans(session_id: str) -> int:
+    """Close any open plan row on this session, because a newer one replaced it.
+
+    Called before writing version n+1. The old row keeps its args — the card
+    diffs the new plan against them — but stops waiting on anybody.
+
+    Returns:
+        How many rows were superseded. Normally 0 or 1.
+    """
+    rows = await pool.fetch(
+        """
+        UPDATE approvals SET answer = $2, answered_at = now()
+         WHERE session_id = $1 AND kind = 'plan' AND answered_at IS NULL
+        RETURNING id
+        """,
+        _uuid(session_id),
+        SUPERSEDED,
+    )
+    return len(rows)
+
+
+async def reopen(approval_id: str) -> Approval | None:
+    """Un-answer a row, because the action its answer authorised did not happen.
+
+    One caller, and it is a compensating action rather than an edit: approving a
+    plan answers the row and THEN starts the run, so a start that loses the
+    status race would otherwise leave a plan stamped answered that can never be
+    approved again — the human's only recourse being to get the model to propose
+    the whole thing afresh. Reopening puts the card back where it was.
+
+    Deliberately NOT usable to reverse a decision a human made: a `call` row is
+    latched by `consumed_at` and is never reopened, because the tool may have run.
+    """
+    record = await pool.fetchrow(
+        f"""
+        UPDATE approvals SET answer = NULL, answered_at = NULL
+         WHERE id = $1 AND kind = 'plan' AND consumed_at IS NULL
+        RETURNING {_COLUMNS}
+        """,
+        _uuid(approval_id),
+    )
+    return _row(record) if record else None
+
+
+async def plan_history(session_id: str) -> list[Approval]:
+    """Every plan this session has proposed, oldest first.
+
+    The version of a row is its 1-based position here, and the row before the
+    newest is what the card diffs against. History rather than a counter column:
+    the versions ARE the rows, and a count that disagreed with them would be a
+    second source of truth for the same fact.
+    """
+    rows = await pool.fetch(
+        f"SELECT {_COLUMNS} FROM approvals WHERE session_id = $1 AND kind = 'plan' ORDER BY created_at, id",
+        _uuid(session_id),
+    )
+    return [_row(r) for r in rows]
 
 
 async def open_for(session_id: str) -> list[Approval]:

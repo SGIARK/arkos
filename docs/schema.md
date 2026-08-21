@@ -29,30 +29,50 @@ projects (
   id            uuid primary key default gen_random_uuid(),
   user_id       uuid not null references users(id),
   title         text not null,           -- a LABEL. Renaming changes only this.
-  slug          text not null,           -- the folder: ~/projects/<slug>/, set ONCE
-                                         -- at creation and never moved by a rename,
-                                         -- because it is the only durable path the
-                                         -- agent has. Defaulted uniquely so an
-                                         -- insert that does not care still gets one.
+  slug          text not null,           -- NOT the folder any more (11.9). It survives
+                                         -- only as the default NAME for the folder a
+                                         -- project created with no links makes for
+                                         -- itself. Defaulted uniquely so an insert
+                                         -- that does not care still gets one.
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now()
 )
-create unique index on projects (user_id, slug);  -- ~/projects/ is flat
 
--- the tree half of the store; the bytes are in object storage (D27)
-project_files (
+-- the tree half of the store; the bytes are in object storage (D27).
+-- ONE FLAT NAMESPACE PER USER (11.9). A FOLDER is split_part(path, '/', 1):
+-- derived, never a row, unique per user because (user_id, path) is, and alive
+-- exactly as long as a file exists under it. Every path has a folder segment;
+-- a file at the top level would be its own folder holding nothing.
+files (
   id            uuid primary key default gen_random_uuid(),
-  project_id    uuid not null references projects(id) on delete cascade,
-  path          text not null,           -- relative to the project root
+  user_id       uuid not null references users(id) on delete cascade,
+  path          text not null,           -- 'triage/receipts/q3.pdf'
   content_hash  text,                    -- sha256; the blob is at
                                          -- {prefix}/blobs/{hh}/{sha256}
   size          bigint not null,
   mtime         timestamptz not null default now(),
   created_at    timestamptz not null default now()
 )
-create unique index on project_files (project_id, path);
+create unique index on files (user_id, path);
+create index on files (user_id, split_part(path, '/', 1));  -- the folder listing
 -- No bytes column and no storage_path: a row names a path and the hash of its
--- content. Two projects holding the same content share one blob.
+-- content. The same content at two paths is one blob.
+-- Replaces `project_files`, which is DROPPED: a project owned a directory, and
+-- fusing "where bytes live" with "a piece of work" is what made renaming a
+-- project rename the filesystem's headers.
+
+-- which folders a project WORKS IN. A project owns none of them; several
+-- projects may link one; deleting a project deletes its links and no files.
+project_folders (
+  project_id  uuid not null references projects(id) on delete cascade,
+  folder      text not null,             -- a top-level segment of the owner's store
+  created_at  timestamptz not null default now(),
+  primary key (project_id, folder)
+)
+create index on project_folders (folder);
+-- No `mode`: links ship write-only. Per-folder read mode is claims' to express.
+-- Order matters: `created_at` is the order they were chosen in, and the FIRST
+-- one is where an approved plan.md lands.
 
 -- a saved copy of a project's tree; the bytes are already immutable
 project_snapshots (
@@ -72,7 +92,39 @@ snapshot_files (
   primary key (snapshot_id, path)
 )
 -- A snapshot costs rows, not bytes. Any future blob GC must walk these as well
--- as project_files, or restoring a snapshot stops working.
+-- as `files`, or restoring a snapshot stops working. The paths were rekeyed
+-- into the user namespace with everything else (migration 0015) so a restore
+-- would write `files` rows; the CAPABILITY is still absent — snapshot_project /
+-- restore_snapshot were removed in 11.7.5 and nothing reads these tables.
+
+-- what a delete removed, and what puts it back. Blobs are never collected, so
+-- the bytes of every row here are still in the store: undo is a restore of the
+-- same content under the same id, not a copy. A tombstone table rather than a
+-- `deleted_at` flag on `files`, so `files` holds live rows and only live rows —
+-- which is what every tree read, `put_file`'s upsert and the unique index that
+-- makes folder names unique per user all already assume.
+deleted_files (
+  id            uuid primary key,        -- the row's OWN id, so undo restores it
+  user_id       uuid not null references users(id) on delete cascade,
+  path          text not null,
+  content_hash  text,
+  size          bigint not null,
+  mtime         timestamptz not null,
+  created_at    timestamptz not null,    -- the file's original one
+  batch         uuid not null,           -- one delete GESTURE; undo takes a batch
+  deleted_at    timestamptz not null default now()
+)
+create index on deleted_files (user_id, batch);
+create index on deleted_files (user_id, deleted_at desc);
+
+-- the links that gesture had to drop, because deleting the last file under a
+-- folder takes the folder, and a project may not link one that is not there
+deleted_links (
+  batch       uuid not null,
+  project_id  uuid not null references projects(id) on delete cascade,
+  folder      text not null,
+  primary key (batch, project_id, folder)
+)
 
 -- the user's memory: the curated core and the notes appended to it (D8 amended)
 memory_files (
@@ -95,14 +147,18 @@ create index on memory_files using gin (tsv);
 -- what a session may see, and what it locks (D29)
 session_claims (
   session_id  uuid not null references sessions(id) on delete cascade,
-  project_id  uuid not null references projects(id) on delete cascade,
+  folder      text not null,             -- a top-level segment of the store (11.9)
   subpath     text not null default '/',
   mode        text not null check (mode in ('read','write')),
-  primary key (session_id, project_id, subpath)
+  primary key (session_id, folder, subpath)
 )
-create index on session_claims (project_id);
--- Declared at session creation and fixed for its life. Write claims take
--- project:{id}; read claims mount without a lease and discard their edits.
+create index on session_claims (folder);
+-- Declared at session creation and FIXED for its life, which is why a folder
+-- linked to the project mid-session reaches the agent at the NEXT session.
+-- Write claims take folder:{user_id}:{name} — per FOLDER, so two projects
+-- writing different folders never contend and the same folder still serializes;
+-- read claims mount without a lease and discard their edits. No project_id: a
+-- claim names where bytes are, and a project is not that.
 
 -- a task IS a session: one row, one id --------------------------------------
 sessions (
@@ -180,11 +236,15 @@ approvals (
   session_id   uuid not null references sessions(id) on delete cascade,
   tool_call_id text not null,             -- stays OPEN across the park; the
                                           -- response event closes it
-  kind         text not null check (kind in ('approval','ask','call')),
+  kind         text not null check (kind in ('approval','ask','call','plan','resume')),
   prompt       text not null,
-  answer       text,           -- prose for ask/approval; 'approve'|'decline' for call
-  tool_name    text,           -- `call` only: the call that runs if approved, so
-  tool_args    jsonb,          -- consent binds to it and not to a description
+  answer       text,           -- prose for ask/approval; 'approve'|'decline' for call;
+                               -- approve|decline|reply prose for plan, or
+                               -- 'superseded' when a newer plan replaced it;
+                               -- approve|decline|steer prose for resume
+  tool_name    text,           -- `call`: the call that runs if approved, so consent
+  tool_args    jsonb,          -- binds to it and not to a description. `plan`: the
+                               -- proposed plan itself, written to plan.md on approve
   consumed_at  timestamptz,    -- the exactly-once latch; consumed-but-open = repair
   created_at   timestamptz not null default now(),
   answered_at  timestamptz
@@ -195,7 +255,7 @@ create unique index on approvals (session_id, tool_call_id) where answered_at is
 
 -- stateful hands ------------------------------------------------------------
 resource_leases (
-  resource_key text primary key,          -- 'browser:{user}' | 'project:{id}'
+  resource_key text primary key,          -- 'browser:{user}' | 'folder:{user}:{name}'
   session_id   uuid not null references sessions(id) on delete cascade,
   acquired_at  timestamptz not null default now(),
   expires_at   timestamptz not null
