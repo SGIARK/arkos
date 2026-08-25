@@ -24,9 +24,27 @@ pytestmark = pytest.mark.asyncio
 GATEWAY = "https://api.arcade.dev/mcp/gw_test"
 
 SERVERS = {
-    "gmail": {"server": "Gmail", "name": "Gmail", "consent_tool": "Gmail_ListEmails"},
-    "google-calendar": {"server": "GoogleCalendar", "name": "Google Calendar"},
-    "linear": {"server": "Linear", "name": "Linear", "auto_approve": ["Linear_GetIssue"]},
+    "gmail": {
+        "server": "Gmail",
+        "name": "Gmail",
+        "provider": "buddy-google",
+        "scopes": ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.send"],
+    },
+    # Shares the Google provider account, and pins its OWN scopes: union is
+    # within a service, never across a provider.
+    "google-calendar": {
+        "server": "GoogleCalendar",
+        "name": "Google Calendar",
+        "provider": "buddy-google",
+        "scopes": ["https://www.googleapis.com/auth/calendar.events"],
+    },
+    # A toolkit that reports no scopes pins none.
+    "linear": {
+        "server": "Linear",
+        "name": "Linear",
+        "provider": "arcade-linear",
+        "auto_approve": ["Linear_GetIssue"],
+    },
 }
 MCP_CFG = {"api_key": "k", "gateway_url": GATEWAY, "search": {"server": "GoogleSearch"}}
 
@@ -67,9 +85,9 @@ class FakeClient:
         self.calls.append((user_id, name))
         return self.result
 
-    async def authorize(self, user_id, tool_name):
-        self.authorized.append((user_id, tool_name))
-        return self.consent.get(prefix_of(tool_name), {"status": "pending", "url": "https://x"})
+    async def authorize_scopes(self, user_id, provider_id, scopes):
+        self.authorized.append((user_id, provider_id, tuple(scopes)))
+        return self.consent.get(provider_id, {"status": "pending", "url": "https://x"})
 
     async def user_connections(self, user_id):
         return list(self.held)
@@ -241,7 +259,7 @@ def _done(value):
 
 
 async def test_a_granted_service_reads_connected_and_offers_no_link():
-    hands = _hands(FakeClient(consent={"Gmail": {"status": "completed", "provider_id": "arcade-google"}}))
+    hands = _hands(FakeClient(consent={"buddy-google": {"status": "completed", "provider_id": "buddy-google"}}))
 
     consent = await hands.consent("alice", "Gmail")
 
@@ -253,10 +271,10 @@ async def test_an_ungranted_service_carries_the_link_and_the_scopes():
     hands = _hands(
         FakeClient(
             consent={
-                "Gmail": {
+                "buddy-google": {
                     "status": "pending",
                     "url": "https://accounts.google.com/o/oauth2/v2/auth?x=1",
-                    "provider_id": "arcade-google",
+                    "provider_id": "buddy-google",
                     "scopes": ["https://www.googleapis.com/auth/gmail.readonly"],
                 }
             }
@@ -270,27 +288,53 @@ async def test_an_ungranted_service_carries_the_link_and_the_scopes():
     assert consent.scopes == ("https://www.googleapis.com/auth/gmail.readonly",)
 
 
-async def test_consent_uses_the_tool_named_in_config():
-    """The consent tool is a measured choice: its scopes must cover the whole app."""
+async def test_consent_asks_the_provider_for_the_pinned_scopes():
+    """Scopes are pinned in config and sent verbatim: one screen, everything on it.
+
+    The old mechanism authorized through one representative tool. The 2026-08-25
+    probe killed it — no single tool carries any service's scope union, so that
+    granted a subset and the rest of the app kept challenging.
+    """
     client = FakeClient()
     hands = _hands(client)
 
     await hands.consent("alice", "Gmail")
 
-    assert client.authorized == [("alice", "Gmail_ListEmails")]
+    assert client.authorized == [
+        ("alice", "buddy-google", ("https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.send"))
+    ]
 
 
-async def test_consent_falls_back_to_a_listed_tool_when_config_names_none():
+async def test_scope_union_is_within_a_service_never_across_a_provider():
+    """Calendar shares Google's account but asks only for Calendar's scopes."""
     client = FakeClient()
     hands = _hands(client)
 
     await hands.consent("alice", "GoogleCalendar")
 
-    assert client.authorized == [("alice", "GoogleCalendar_0")]
+    assert client.authorized == [("alice", "buddy-google", ("https://www.googleapis.com/auth/calendar.events",))]
+
+
+async def test_a_toolkit_with_no_scopes_still_authorizes():
+    """GitHub and Notion report none; their consent is app-level, not scope-shaped."""
+    client = FakeClient()
+    hands = _hands(client)
+
+    await hands.consent("alice", "Linear")
+
+    assert client.authorized == [("alice", "arcade-linear", ())]
+
+
+async def test_a_connector_with_no_provider_in_config_is_refused():
+    """Without the provider account there is nothing to ask, and guessing would bind a grant wrong."""
+    hands = _hands(FakeClient(), servers={"gmail": {"server": "Gmail", "name": "Gmail"}})
+
+    with pytest.raises(ArcadeError, match="provider"):
+        await hands.consent("alice", "Gmail")
 
 
 async def test_authorize_answering_with_neither_a_url_nor_completion_is_an_error():
-    hands = _hands(FakeClient(consent={"Gmail": {"status": "pending"}}))
+    hands = _hands(FakeClient(consent={"buddy-google": {"status": "pending"}}))
 
     with pytest.raises(ArcadeError):
         await hands.consent("alice", "Gmail")

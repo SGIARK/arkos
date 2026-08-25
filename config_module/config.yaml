@@ -206,11 +206,21 @@ mcp_servers:
   # carries — and it is the identity `user_connections` and `session_tools` are
   # keyed by. Renaming a key here changes nothing durable, which is the point.
   #
-  # `consent_tool` names the tool the panel authorizes through. It is a MEASURED
-  # choice, not a favourite: its scopes must cover the whole app, or connecting
-  # grants a subset and the rest of the service keeps challenging. Run
-  # `scripts/probe_arcade.py`, which authorizes every tool and reports which one
-  # covers the union.
+  # `provider` is Arcade's provider account behind the service, and `scopes` is
+  # the PINNED scope list the panel asks consent for — the way every normal OAuth
+  # app hardcodes its scopes. Measured once with `scripts/probe_arcade.py` and
+  # written here; a toolkit bump that adds a scope shows up in the next probe run
+  # and this list gets a one-line edit. The old `consent_tool` mechanism is DEAD
+  # (11.10, amended 2026-08-25): the probe measured that NO single tool covers any
+  # service's scope union, so authorizing through one tool granted a subset and
+  # the rest of the app kept challenging.
+  #
+  # An app whose toolkit reports ZERO scopes (GitHub, Notion) has no list to pin:
+  # permissions there are app-level or chosen inside the consent itself, and any
+  # authorize triggers their single consent. Omit `scopes` for those.
+  #
+  # Scope union is WITHIN a service, never across a provider: connecting Gmail is
+  # one popup carrying Gmail scopes only, even though Calendar shares the account.
   #
   # auto_approve waives the approval prompt: `true` for every tool on the app,
   # or a list for those tools only. Absent, every MCP tool requires approval.
@@ -220,23 +230,58 @@ mcp_servers:
   gmail:
     server: "Gmail"
     name: "Gmail"
+    provider: "buddy-google"
+    scopes:
+      - "https://www.googleapis.com/auth/gmail.compose"
+      - "https://www.googleapis.com/auth/gmail.labels"
+      - "https://www.googleapis.com/auth/gmail.modify"
+      - "https://www.googleapis.com/auth/gmail.readonly"
+      - "https://www.googleapis.com/auth/gmail.send"
+      - "https://www.googleapis.com/auth/userinfo.email"
+      - "https://www.googleapis.com/auth/userinfo.profile"
 
   github:
     server: "Github"
     name: "GitHub"
+    provider: "arcade-github"
+    # No scopes: the GitHub toolkit reports none; its consent is app-level.
 
   linear:
     server: "Linear"
     name: "Linear"
+    provider: "arcade-linear"
+    scopes:
+      - "admin"
+      - "comments:create"
+      - "read"
+      - "write"
 
   outlook:
     server: "MicrosoftOutlookMail"
     name: "Microsoft Outlook Mail"
+    provider: "arcade-microsoft"
+    scopes:
+      - "Mail.Read"
+      - "Mail.Read.Shared"
+      - "Mail.ReadWrite"
+      - "Mail.ReadWrite.Shared"
+      - "Mail.Send"
+      - "Mail.Send.Shared"
+      - "MailboxSettings.Read"
+      - "User.Read"
 
   notion:
     server: "Notion"
     name: "Notion"
+    provider: "arcade-notion"
+    # No scopes: the Notion toolkit reports none; access is picked in the consent.
 
   google-calendar:
     server: "GoogleCalendar"
     name: "Google Calendar"
+    provider: "buddy-google"
+    scopes:
+      - "https://www.googleapis.com/auth/calendar.events"
+      - "https://www.googleapis.com/auth/calendar.readonly"
+      - "https://www.googleapis.com/auth/userinfo.email"
+      - "https://www.googleapis.com/auth/userinfo.profile"

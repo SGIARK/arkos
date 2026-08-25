@@ -52,6 +52,7 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -322,6 +323,34 @@ class ArcadeClient:
         """
         return await self._engine("POST", "/v1/tools/authorize", user_id, {"tool_name": tool_name, "user_id": user_id})
 
+    async def authorize_scopes(
+        self, user_id: str, provider_id: str, scopes: Sequence[str]
+    ) -> dict[str, Any]:
+        """Ask one PROVIDER for an explicit scope list: `{status, url, id, provider_id, scopes}`.
+
+        The consent call the panel uses (11.10, amended 2026-08-25). Asking for a
+        tool's scopes could never cover a service — measured, no single tool
+        covers any app's union — so the scope list is pinned in config and sent
+        here verbatim, and the user sees ONE consent screen carrying all of it.
+
+        Measured 2026-08-25 against the live Engine:
+        * the route is `/v1/auth/authorize`; `/v1/auth/start` is a 404;
+        * it is idempotent per `(user_id, provider_id, scope set)` — the same
+          request returns the same `id` and the same `state`, so a panel that
+          re-reads on every open does not litter Arcade with auth requests;
+        * Arcade prepends `userinfo.email` and `userinfo.profile` to every
+          Google request whether or not they were asked for;
+        * it does NOT validate the scopes. An undeclared scope still mints a
+          url with HTTP 200 and fails later, at the provider's own consent
+          screen. So a green answer here is not proof the OAuth app declares
+          what was asked for.
+        """
+        body = {
+            "user_id": user_id,
+            "auth_requirement": {"provider_id": provider_id, "oauth2": {"scopes": list(scopes)}},
+        }
+        return await self._engine("POST", "/v1/auth/authorize", user_id, body)
+
     async def user_connections(self, user_id: str) -> list[dict[str, Any]]:
         """List this user's provider connections, which is where a revoke finds its id."""
         payload = await self._engine("GET", f"/v1/admin/user_connections?user_id={user_id}", user_id)
@@ -588,59 +617,57 @@ class Arcade:
 
     # ---------- consent, which is also the status read ----------
 
-    async def _consent_tool(self, user_id: str, server: str) -> str:
-        """The tool whose scopes stand for the whole service.
+    def _consent_scopes(self, server: str) -> tuple[str, tuple[str, ...]]:
+        """The provider account and the PINNED scope list for one service.
 
-        Named in config, because it is a MEASURED choice: it must ask for scopes
-        that cover every tool of the app, or connecting from the panel grants a
-        subset and half the service keeps challenging. `scripts/probe_arcade.py`
-        authorizes every tool and reports which one covers the union. Falling
-        back to whatever the gateway lists first keeps the panel working on a
-        newly added app, and says so, rather than refusing to render.
+        Both come from config, because both are measured facts about a toolkit
+        rather than anything discoverable at runtime: `scripts/probe_arcade.py`
+        reports them and the values are written into `mcp_servers`. An app that
+        reports no scopes (GitHub, Notion) pins none, and its consent is
+        whatever the provider shows for the app as a whole.
         """
         found = self._by_server(server)
-        configured = (found[1].get("consent_tool") if found else None) or None
-        if configured:
-            return str(configured)
-
-        grouped = await self.tools_by_server(user_id)
-        tools = grouped.get(server) or []
-        if not tools:
-            raise ArcadeError(f"the gateway offers no tools for {server!r}; check the gateway's app selection")
-        # Passed through as the gateway spells it. The Engine's own examples name
-        # tools `Gmail.ListEmails` while the gateway lists `Gmail_ListEmails`, and
-        # `/v1/tools/authorize` was measured to accept both with identical
-        # answers — so translating between them would be ceremony with a bug in it.
-        chosen = str(tools[0]["name"])
-        logger.warning(
-            "%s has no consent_tool in config; falling back to %s, whose scopes may not cover the app",
-            server,
-            chosen,
-        )
-        return chosen
+        if not found:
+            raise ArcadeError(f"{server!r} is not a configured connector")
+        entry = found[1]
+        provider = str(entry.get("provider") or "").strip()
+        if not provider:
+            raise ArcadeError(
+                f"{server} has no `provider` in config; the panel cannot ask for consent "
+                f"without the Arcade provider account behind the service"
+            )
+        scopes = tuple(str(sc) for sc in (entry.get("scopes") or ()))
+        return provider, scopes
 
     async def consent(self, user_id: str, server: str) -> Consent:
         """Ask Arcade whether this user has granted one service, and get the link if not.
 
         One call answers both questions, which is why it is one call. Arcade
         mints the consent url in response to being asked, so there is no state
-        to read first and no challenge to intercept — and because `authorize`
-        is scope-aware it answers about the SERVICE, where `Arcade_ListApps`
-        would only answer about the provider account behind it.
+        to read first and no challenge to intercept.
+
+        The scopes are PINNED IN CONFIG and sent explicitly (11.10, amended
+        2026-08-25). The older mechanism authorized through one representative
+        tool, which the 2026-08-25 probe killed: no single tool carries any
+        service's scope union, so it granted a subset and the rest of the app
+        kept challenging. Asking the provider for the whole list gets ONE
+        consent screen showing everything as approve/deny.
         """
-        tool = await self._consent_tool(user_id, server)
-        response = await self.client.authorize(user_id, tool)
+        provider, scopes = self._consent_scopes(server)
+        response = await self.client.authorize_scopes(user_id, provider, scopes)
 
         state = str(response.get("status") or "").lower()
         url = response.get("url") or (response.get("authorization") or {}).get("url")
-        provider = response.get("provider_id")
-        scopes = tuple(response.get("scopes") or ())
+        granted = tuple(response.get("scopes") or scopes)
 
         if state == "completed" or (not url and state in ("connected", "authorized")):
-            return Consent(server, CONNECTED, None, provider, scopes)
+            return Consent(server, CONNECTED, None, provider, granted)
         if not url:
-            raise ArcadeError(f"authorize({tool}) returned neither a url nor a completed status: {response}")
-        return Consent(server, conns.PENDING, url, provider, scopes)
+            raise ArcadeError(
+                f"authorize({provider}, {len(scopes)} scopes) returned neither a url "
+                f"nor a completed status: {response}"
+            )
+        return Consent(server, conns.PENDING, url, provider, granted)
 
     async def refresh_status(self, user_id: str) -> dict[str, Consent]:
         """Read every connector's consent state at once, and store what came back.
