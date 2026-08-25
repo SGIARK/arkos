@@ -372,8 +372,14 @@ async def test_bad_max_retries_still_raises_model_error(monkeypatch, bad_value):
     assert completions.calls <= 1
 
 
-def test_client_is_cached_with_the_configured_timeout(monkeypatch):
-    """The bounded wall clock depends on the timeout actually being applied."""
+@pytest.mark.asyncio
+async def test_client_is_cached_with_the_configured_timeout(monkeypatch):
+    """The bounded wall clock depends on the timeout actually being applied.
+
+    Async because the cache is keyed by the RUNNING LOOP: outside one,
+    `get_client` takes its documented no-loop branch and returns an uncached
+    client every call, so a sync test could never see the caching it is about.
+    """
     mc.reset_client()
     monkeypatch.setattr(mc, "_cfg", lambda k, d=None: 12.5 if k == "llm.timeout_s" else _real_cfg(k, d))
 
