@@ -393,20 +393,55 @@ async def test_a_session_given_no_folder_cannot_approve_a_plan(client):
 
 
 @pytest.mark.asyncio
+async def test_the_handoff_carries_the_plan_rather_than_sending_the_model_to_read_it(client):
+    """A fact the harness knows is injected; the model's tools are for the world.
+
+    "read plan.md FIRST" spent a tool call on something already in hand — and
+    after a DECLINED plan it was a guaranteed FileNotFound, because nothing had
+    written the file.
+    """
+    user_id = await _user(client)
+    _, session_id = await _project_session(user_id, status="idle")
+
+    await client.post(f"/sessions/{session_id}/approve")
+    fresh = [e.event for e in await slog.get_events(session_id)][-1]
+
+    assert fresh.source == "system"
+    assert "No plan exists for this session yet" in fresh.text
+    assert "read plan.md" not in fresh.text.lower()
+
+    # Once a run has happened here, the file's CONTENT rides along.
+    await runner.save_plan(session_id, PLAN, 1)
+    await pool.execute("UPDATE sessions SET status = 'idle' WHERE id = $1", uuid.UUID(session_id))
+    await client.post(f"/sessions/{session_id}/approve")
+    again = [e.event for e in await slog.get_events(session_id)][-1]
+
+    assert PLAN["goal"] in again.text, "the plan itself was not injected"
+    assert "CONTINUATION" in again.text
+    assert "read plan.md" not in again.text.lower()
+
+
+@pytest.mark.asyncio
 async def test_play_on_a_cancelled_run_drafts_a_continuation(client):
     """The header's ▶ reads "resume" on a spent plan, and this is what it calls.
 
     `approve_session` refused anything that was not idle or pending, so the one
     press the design asks for — pick a cancelled run back up — 409'd. A terminal
     session is a legal starting point; the `terminal -> running` reopen exists
-    for exactly this, and the handoff copy makes it a CONTINUATION rather than a
+    for exactly this, and the handoff makes it a CONTINUATION rather than a
     fresh v1.
+
+    A run that was cancelled HAS a plan — that is what made it a run — so the
+    handoff carries it. A session cancelled before any plan was approved has
+    nothing to continue from and is told so instead; that case is
+    `test_the_handoff_carries_the_plan_rather_than_sending_the_model_to_read_it`.
     """
     user_id = await _user(client)
     _, session_id = await _project_session(user_id, status="cancelled")
     await pool.execute(
         "UPDATE sessions SET terminal_reason = 'cancelled' WHERE id = $1", uuid.UUID(session_id)
     )
+    await runner.save_plan(session_id, PLAN, 1)
 
     response = await client.post(f"/sessions/{session_id}/approve")
 

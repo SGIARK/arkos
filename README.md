@@ -39,7 +39,7 @@ pip install -r requirements-dev.txt  # dev only
 * `harness_module/` -- control plane: lifecycle, session log, runner, api
 * `agent_module/` -- the one agent loop (`run_turn`) and its event vocabulary
 * `model_module/` -- the one model client (streaming + native tool calling)
-* `tool_module/` -- all hands: envelope, registry, MCP via Smithery, browser, sandbox
+* `tool_module/` -- all hands: envelope, registry, MCP via the Arcade gateway, browser, sandbox
 * `config_module/` -- YAML configuration loader
 * `db/` -- Postgres schema migration and the asyncpg pool
 * `frontend/` -- web UI served at `/app`
@@ -77,7 +77,7 @@ Deploys the app as a Docker container on `ark.mit.edu`:
 7. Rolls back to the previous image automatically if any step fails
 
 **Setup required on `ark.mit.edu` (one-time):**
-1. Create `/home/kshitij/arkos/.env` with `DB_URL`, `SMITHERY_API_KEY`, `SMITHERY_NAMESPACE`, `HF_TOKEN`, etc.
+1. Create `/home/kshitij/arkos/.env` with `DB_URL`, `ARCADE_API_KEY`, `HF_TOKEN`, etc.
 2. Either make the `ghcr.io/sgiark/arkos` package public (GitHub > repo > Packages > package settings), or run once as kshitij:
    ```bash
    echo $GITHUB_TOKEN | docker login ghcr.io -u <your-gh-username> --password-stdin

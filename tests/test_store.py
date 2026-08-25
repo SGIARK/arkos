@@ -14,7 +14,7 @@ import pytest
 import pytest_asyncio
 
 from db import pool
-from harness_module import store
+from harness_module import blobs, store
 from tests.dbgate import require_db
 
 pytestmark = pytest.mark.asyncio
@@ -430,12 +430,12 @@ async def test_the_way_to_a_new_top_level_folder_is_to_make_it_then_move_into_it
 # --- the Supabase backend -------------------------------------------------------------
 
 
-def _supabase(handler) -> store.SupabaseBlobs:
+def _supabase(handler) -> blobs.SupabaseBlobs:
     """A backend wired to a mock transport, so the HTTP contract is tested without a bucket."""
     import httpx
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    return store.SupabaseBlobs("https://ref.supabase.co", "service-key", "files", client=client)
+    return blobs.SupabaseBlobs("https://ref.supabase.co", "service-key", "files", client=client)
 
 
 async def test_an_upload_addresses_the_blob_by_its_hash_and_authenticates():
@@ -453,7 +453,7 @@ async def test_an_upload_addresses_the_blob_by_its_hash_and_authenticates():
     content_hash = store.sha256(b"alpha")
     await _supabase(handler).put(content_hash, b"alpha")
 
-    assert seen["url"] == f"https://ref.supabase.co/storage/v1/object/files/{store.blob_key(content_hash)}"
+    assert seen["url"] == f"https://ref.supabase.co/storage/v1/object/files/{blobs.blob_key(content_hash)}"
     assert seen["auth"] == "Bearer service-key"
     assert seen["apikey"] == "service-key"
     assert seen["body"] == b"alpha"
@@ -513,17 +513,17 @@ async def test_selecting_supabase_without_credentials_fails_loudly(monkeypatch):
     monkeypatch.delenv("SUPABASE_URL", raising=False)
     monkeypatch.delenv("SUPABASE_SECRET_KEY", raising=False)
     monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
-    monkeypatch.setattr(store, "_cfg", lambda key, default: "supabase" if key == "store.backend" else default)
+    monkeypatch.setattr(blobs, "_cfg", lambda key, default: "supabase" if key == "store.backend" else default)
 
     with pytest.raises(store.StoreError, match="SUPABASE_URL"):
-        store._build()
+        blobs._build()
 
 
 async def test_a_secret_api_key_is_preferred_over_the_legacy_service_role(monkeypatch):
     monkeypatch.setenv("SUPABASE_SECRET_KEY", "sb_secret_current")
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "eyJlegacy")
 
-    assert store.secret_key() == "sb_secret_current"
+    assert blobs.secret_key() == "sb_secret_current"
 
 
 async def test_the_legacy_service_role_key_still_works(monkeypatch):
@@ -531,66 +531,66 @@ async def test_the_legacy_service_role_key_still_works(monkeypatch):
     monkeypatch.delenv("SUPABASE_SECRET_KEY", raising=False)
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "eyJlegacy")
 
-    assert store.secret_key() == "eyJlegacy"
+    assert blobs.secret_key() == "eyJlegacy"
 
 
 async def test_an_unknown_backend_is_refused(monkeypatch):
-    monkeypatch.setattr(store, "_cfg", lambda key, default: "carrier-pigeon" if key == "store.backend" else default)
+    monkeypatch.setattr(blobs, "_cfg", lambda key, default: "carrier-pigeon" if key == "store.backend" else default)
 
     with pytest.raises(store.StoreError, match="carrier-pigeon"):
-        store._build()
+        blobs._build()
 
 
 async def test_the_project_url_is_derived_from_a_direct_dsn(monkeypatch):
     """The DSN already carries the project ref, so the URL need not be configured twice."""
     monkeypatch.delenv("SUPABASE_URL", raising=False)
     monkeypatch.setattr(
-        store,
+        blobs,
         "_cfg",
         lambda key, default: "postgresql://postgres:pw@db.abcdefg.supabase.co:5432/postgres"
         if key == "database.url"
         else default,
     )
 
-    assert store.project_url() == "https://abcdefg.supabase.co"
+    assert blobs.project_url() == "https://abcdefg.supabase.co"
 
 
 async def test_the_project_url_is_derived_from_a_pooler_dsn(monkeypatch):
     """The pooler moves the ref into the username."""
     monkeypatch.delenv("SUPABASE_URL", raising=False)
     monkeypatch.setattr(
-        store,
+        blobs,
         "_cfg",
         lambda key, default: "postgresql://postgres.abcdefg:pw@aws-0-eu-west-2.pooler.supabase.com:6543/postgres"
         if key == "database.url"
         else default,
     )
 
-    assert store.project_url() == "https://abcdefg.supabase.co"
+    assert blobs.project_url() == "https://abcdefg.supabase.co"
 
 
 async def test_an_explicit_url_wins_over_the_dsn(monkeypatch):
     monkeypatch.setenv("SUPABASE_URL", "https://storage.example.com/")
     monkeypatch.setattr(
-        store,
+        blobs,
         "_cfg",
         lambda key, default: "postgresql://postgres:pw@db.abcdefg.supabase.co:5432/postgres"
         if key == "database.url"
         else default,
     )
 
-    assert store.project_url() == "https://storage.example.com"
+    assert blobs.project_url() == "https://storage.example.com"
 
 
 async def test_a_non_supabase_dsn_derives_nothing(monkeypatch):
     monkeypatch.delenv("SUPABASE_URL", raising=False)
     monkeypatch.setattr(
-        store,
+        blobs,
         "_cfg",
         lambda key, default: "postgresql://user:pw@localhost:5432/arkos" if key == "database.url" else default,
     )
 
-    assert store.project_url() is None
+    assert blobs.project_url() is None
 
 
 async def test_a_missing_object_reported_as_a_400_is_still_a_miss():

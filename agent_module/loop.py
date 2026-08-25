@@ -39,12 +39,6 @@ Mode = Literal["attended", "unattended"]
 # The only tool that ends an unattended run.
 FINISH_TOOL = "finish_task"
 
-# A call the human stopped. It closes like any other failure — the model reads it
-# and routes around it — but it is NOT the tool failing, so it does not spend the
-# per-tool attempt cap. Stopping a slow browser step three times would otherwise
-# close the browser to the run that the human is trying to steer.
-CANCELLED_BY_USER = "cancelled_by_user"
-
 # Consecutive bare-text hops an unattended run may take before it is called
 # stalled. One is answered with a continuation, the second with the finish
 # nudge, and the third ends it: two injections is the whole of what the prompt
@@ -448,11 +442,10 @@ async def _settle(
         state.failures.pop(call.name, None)
         if call.name == FINISH_TOOL:
             state.finished = True
-    elif envelope.error_kind != CANCELLED_BY_USER:
-        # A human's stop is not the tool's failure. See CANCELLED_BY_USER.
+    else:
         state.failures[call.name] = state.failures.get(call.name, 0) + 1
 
-    content, total = _cap_view(envelope.content)
+    content, total = cap_view(envelope.content)
     ref = envelope.ref
     if total is not None and ref is None and store_blob is not None:
         # The event carries only the preview; the blob holds the rest.
@@ -491,8 +484,13 @@ def _parse_args(raw: str) -> tuple[dict[str, Any], str | None]:
     return parsed, None
 
 
-def _cap_view(content: str) -> tuple[str, int | None]:
-    """Truncate the result to the view cap, returning the original length when it was cut."""
+def cap_view(content: str) -> tuple[str, int | None]:
+    """Truncate the result to the view cap, returning the original length when it was cut.
+
+    PUBLIC because the harness settles calls outside the loop too — an approved
+    gated call, a park's own result — and a second copy of this rule is a second
+    answer to "how big is too big" that drifts the first time the cap moves.
+    """
     cap = int(_cfg("tools.result_view_cap_chars", 4000))
     if len(content) <= cap:
         return content, None

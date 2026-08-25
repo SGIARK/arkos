@@ -28,7 +28,6 @@ harness:
   # after this many seconds the stop degrades to the old full cancel. Long
   # enough that a slow-but-live step finishes its hop; short enough that a
   # runaway run is still killable by the same button press.
-  stop_grace_s: 45
 
 context:
   # Fraction of the input budget (llm.context_window - llm.max_tokens) at which
@@ -172,60 +171,72 @@ sandbox:
                                            # (GET /sessions/{id}/fs/file). Over it the
                                            # response is cut short and says so.
 
-# All MCP traffic flows through Smithery Connect: it hosts the OAuth apps, stores
-# credentials write-only, and refreshes tokens.
-smithery:
-  # How long the repair that runs BEHIND GET /connections may take before it is
-  # abandoned. Nobody waits on it — the list is returned first — so this only
-  # stops a hanging vendor from leaving tasks alive for the life of the process.
-  repair_budget_s: 15
-  api_key: "${SMITHERY_API_KEY}"
-  namespace: "${SMITHERY_NAMESPACE}"     # e.g. "arkos"
-  base_url: "https://api.smithery.ai"
+# All MCP traffic flows through ONE Arcade MCP Gateway. Arcade hosts the OAuth
+# apps, holds the users' grants, and refreshes tokens; this side sends an
+# identity and never holds a credential of the user's.
+mcp:
+  kind: arcade
+  # The gateway, from the Arcade dashboard (project "buddy", auth mode Arcade
+  # Headers, per-tool confirmation OFF — the 11.7 approval gate owns consent).
+  # One url for every app: the tools come back FLAT in a single list, prefixed
+  # by app, so a "server" below is a PREFIX GROUP and not a url of its own.
+  gateway_url: "https://api.arcade.dev/mcp/gw_3IErRNEhqI6uH9fdquWfocoxdcF"
+  api_key: "${ARCADE_API_KEY}"
+  # Arcade's REST API, where authorization lives. Same host and same key as the
+  # gateway; a different surface, because `POST /v1/tools/authorize` is not
+  # something the MCP protocol can express. It is how the settings panel gets a
+  # consent link WITHOUT calling a tool, and how it reads whether a service is
+  # connected — `authorize` is scope-aware, so it answers per service.
+  engine_url: "https://api.arcade.dev"
+  protocol_version: "2025-11-25"   # what the gateway negotiated when this was measured
+
+  # Google Search is OURS, not a connector. SerpAPI-backed, with the key set as
+  # an app-level secret in Arcade's dashboard, so there is no per-user OAuth and
+  # every user's searches share our quota. It rides the gateway wire and belongs
+  # to buddy: always in the manifest, counted in `ours` for the tool meter, and
+  # absent from the session toggles and the settings panel entirely.
+  search:
+    server: "GoogleSearch"
 
 mcp_servers:
-  # requires_auth: true  => Smithery's hosted per-user OAuth flow (the user connects
-  #                         in the settings panel). false => a shared connection.
-  # Add more servers by copying from https://smithery.ai/server/<name>.
+  # THE SIX TOGGLEABLE CONNECTORS, and nothing else.
   #
-  # auto_approve waives the approval prompt: `true` for every tool on the server,
+  # The config key is a label for logs and display. `server` is the Arcade app
+  # prefix — the vendor's own name, which every one of that app's tool names
+  # carries — and it is the identity `user_connections` and `session_tools` are
+  # keyed by. Renaming a key here changes nothing durable, which is the point.
+  #
+  # `consent_tool` names the tool the panel authorizes through. It is a MEASURED
+  # choice, not a favourite: its scopes must cover the whole app, or connecting
+  # grants a subset and the rest of the service keeps challenging. Run
+  # `scripts/probe_arcade.py`, which authorizes every tool and reports which one
+  # covers the union.
+  #
+  # auto_approve waives the approval prompt: `true` for every tool on the app,
   # or a list for those tools only. Absent, every MCP tool requires approval.
   #   auto_approve: true
-  #   auto_approve: [search_issues, get_issue]
-
-  linear:
-    mcp_url: "https://linear.run.tools"
-    requires_auth: true
-    name: "Linear"
-
-  google-calendar:
-    mcp_url: "https://googlecalendar.run.tools"
-    requires_auth: true
-    name: "Google Calendar"
-
-  slack:
-    mcp_url: "https://slack--node2flow.run.tools"
-    requires_auth: false
-    name: "Slack"
-    headers:
-      SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
+  #   auto_approve: [Linear_GetIssue]
 
   gmail:
-    mcp_url: "https://gmail.run.tools"
-    requires_auth: true
+    server: "Gmail"
     name: "Gmail"
 
   github:
-    mcp_url: "https://github.run.tools"
-    requires_auth: true
+    server: "Github"
     name: "GitHub"
 
+  linear:
+    server: "Linear"
+    name: "Linear"
+
+  outlook:
+    server: "MicrosoftOutlookMail"
+    name: "Microsoft Outlook Mail"
+
   notion:
-    mcp_url: "https://notion.run.tools"
-    requires_auth: true
+    server: "Notion"
     name: "Notion"
 
-  parallel-search:
-    mcp_url: "https://search--parallel.run.tools"
-    requires_auth: true
-    name: "Parallel Web Search"
+  google-calendar:
+    server: "GoogleCalendar"
+    name: "Google Calendar"

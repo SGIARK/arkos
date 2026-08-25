@@ -23,12 +23,10 @@ ErrorKind = Literal[
     "auth_required",
     "timeout",
     "upstream_error",
+    # The call did not finish and its outcome is unknown — the process died
+    # under it, or a human tore the turn down. One kind for both, because the
+    # model's job is the same either way: check before assuming it happened.
     "interrupted",
-    # A human pressed Stop while this call was in flight, or after it. Distinct
-    # from `interrupted`, which means the process died and the outcome is
-    # unknown: here somebody decided, and the loop must not read that decision
-    # as the tool failing (11.8.6).
-    "cancelled_by_user",
 ]
 
 # Retrying these may work; the rest are the caller's problem to fix.

@@ -15,7 +15,7 @@ import json
 from typing import Any
 
 from config_module.loader import cfg as _cfg
-from harness_module import store
+from harness_module import memory
 from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, ToolUnavailable, fail, ok
 
 # How much of one hit is shown. A note is short; the core can be long, and a
@@ -72,7 +72,7 @@ class SaveMemory:
                 f"A note is at most {limit} characters and this is {len(text)}. Save the fact, not the transcript.",
             )
 
-        path = await store.append_note(_user(ctx), text)
+        path = await memory.append_note(_user(ctx), text)
         return ok(f"Saved to memory ({path}).")
 
 
@@ -106,7 +106,7 @@ class SearchMemory:
         except (TypeError, ValueError):
             limit = int(_cfg("memory.search_limit", 10))
 
-        hits = await store.search_memory(_user(ctx), query, limit)
+        hits = await memory.search_memory(_user(ctx), query, limit)
         if not hits:
             return ok(f"Nothing in memory matches {query!r}.")
 
@@ -141,7 +141,7 @@ class ReadMemory:
     )
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
-        core = await store.read_memory(_user(ctx))
+        core = await memory.read_memory(_user(ctx))
         _read_core(ctx)["text"] = core
         if not core:
             return ok("Your memory document is empty. Notes you have saved are still searchable.")
@@ -189,7 +189,7 @@ class UpdateMemory:
                 "Curate it down: what earns its place is what you would want to know cold.",
             )
 
-        await store.update_memory(_user(ctx), content)
+        await memory.update_memory(_user(ctx), content)
         # It has been rewritten, so what was read before is no longer the document.
         _read_core(ctx)["text"] = content
         return ok(f"Memory document rewritten ({len(content)} chars).")

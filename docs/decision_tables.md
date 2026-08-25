@@ -59,7 +59,7 @@ appends a `user` event and wakes at the cursor — it never back-fills a
 | empty completion (no text, no calls) | any | `done{stalled_progress}`; nothing errored and there is nothing to continue from, so looping on it just spends the budget |
 | `finish_reason: length` with no calls | any | `done{context_overflow}` |
 | `request_approval` / `ask` | any | close the tool_call with its result FIRST, then park → `awaiting_approval`, exit loop. The answer arrives later as a `user` event, not as this call's result |
-| a human presses Stop | any | calls in flight close `cancelled_by_user`, the rest of the hop is refused the same way, and the turn holds at the next hop boundary on a `resume` row — no `done`, no mode flip, hops preserved. A terminal reached in the same hop wins instead |
+| a human presses Stop | any | the turn is cancelled at once — the same teardown as Cancel — and lands `done{stopped}` -> idle with the mode KEPT and the box hibernated. Calls in flight close `interrupted`, like every other teardown. There is no hop boundary to wait for and nothing to collide with |
 | `propose_plan` | any | same park shape, kind `plan`, and the row carries the plan itself. The answer is not read by the model at all unless it is feedback: approve writes `plan.md` and wakes the session UNATTENDED, decline closes the park to `idle`, anything else is a REPLY — the human's `user` event plus an unrendered `user{source:system}` instruction — and wakes it attended to propose again |
 | `todo_write` | any | replace the current list (latest-wins); emit `todo` event; older todo results drop out of the view |
 | text only | attended | `done{turn_end}` → `idle` (non-terminal: no `terminal_reason`, no `ended_at`) |
@@ -77,9 +77,9 @@ appends a `user` event and wakes at the cursor — it never back-fills a
 | human presses play | attended (UNCHANGED) | appends a `user{source:system}` handoff and starts an ordinary attended turn, whose job is to call `propose_plan`. It does not hand the session over |
 | human approves a proposed plan | **unattended** | the ONE mode flip: `plan.md` is written from the approved args, the quota is checked, and mode + status move in the same conditional UPDATE. `finish_task` now required; budgets + wall-clock apply; runs without you |
 | human declines a proposed plan | attended (unchanged) | the park closes → `idle`; nothing ran |
-| human presses Stop on a run | unattended (UNCHANGED) | the hold: `running -> awaiting_approval` on kind `resume`. The plan stays approved and the hop budget carries, because no `done` was written |
-| human resumes a stopped run | unattended (unchanged) | approve word, prose in the card, or prose in the COMPOSER — all three resume; prose lands as a `user` event the next hop reads |
-| human cancels a stopped run | attended | the second press: `awaiting_approval -> cancelled`, the resume row closes, and the plan's approval is spent |
+| human presses Stop on a run | unattended (UNCHANGED) | `running -> idle` via `done{stopped}`. The plan stays approved because nothing terminal was written and the mode never moved. Hops re-budget from zero, like after any `done` |
+| human resumes a stopped run | unattended (unchanged) | a message (`POST /messages`, words in the fold) or a plain start (`POST /resume`, nothing added). Both are the ordinary idle-session start; the mode is what makes them unattended |
+| human cancels a stopped run | attended | the second press. No live turn, so the terminal is written directly — `idle -> cancelled` — and the mode goes back with it, which is what spends the plan |
 | `done{...}` on an unattended run | attended | terminal status per the lifecycle table; `mode` flips back in the SAME update |
 | human sends a message while unattended | unattended (unchanged) | steering: appends as a user event, reaches the stream immediately, and is carried into the running turn at the top of the next hop (LG-1.8). Never mid-hop: the current tool call finishes first |
 
@@ -95,8 +95,7 @@ session. Same termination rule (D15), evaluated against `mode`.
 | error, retryable | = 3 | append as permanent failure, continue (model must route around it) |
 | `auth_required` | — | append with the setup URL in content, continue |
 | needs approval, none given | — | `invalid_args` naming `request_approval`; the gate cannot park from inside dispatch, so the model asks and the session parks on THAT call. Never "declined": nobody was asked |
-| `interrupted` | — | never returned by a tool; only synthesized on wake |
-| `cancelled_by_user` | — | never returned by a tool either; synthesized by the dispatch wrapper when a human presses Stop. Closes the call, and is the ONE failure kind that does NOT count toward the attempt cap |
+| `interrupted` | — | never returned by a tool; synthesized on wake, and by any teardown that closes a call still in flight — a Stop and a Cancel alike, because from the call's side they are the same event and the model's job is the same: check before assuming it happened |
 
 A run that does not know what to do next PARKS — on a question, an approval or
 a plan — rather than failing. There is no "confused" terminal: an unattended run

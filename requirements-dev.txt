@@ -1,3 +1,12 @@
+# Dev/test tooling ONLY — nothing here ships or runs in production.
+# Install for working on the code: `pip install -r requirements-dev.txt`
+# (pulls in requirements.txt too via the -r line below).
+#
+#   ruff            — the linter CLAUDE.md's standards require
+#   pytest + plugins — the test suite (`pytest`; async, coverage, mocking)
+#   httpx           — test-only HTTP client (FastAPI test requests)
+#
+# The deploy path installs requirements.txt alone.
 -r requirements.txt
 ruff
 pytest

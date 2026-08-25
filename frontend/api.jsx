@@ -225,8 +225,19 @@ const api = {
 
   /* --- connections ------------------------------------------------------ */
 
+  /* One row per connector, each carrying what the next click does: `scopes`,
+     what a connect is about to grant, and `shares_with`, the sibling services a
+     disconnect takes with it because Arcade signs them in through one account.
+     `setup_url` is a live consent link, so the panel can open the popup inside
+     the click rather than after an await, which the browser would block. */
   connections: () => request("GET", "/connections"),
+
+  /* Mints a fresh consent link when the row's has gone stale. Calls no tool and
+     connects nothing: the popup is what connects. */
   connect: (server) => request("POST", `/connections/${encodeURIComponent(server)}/connect`),
+
+  /* Revokes at Arcade and answers with what actually went — which is more than
+     one service whenever they share a sign-in. */
   disconnect: (server) => request("DELETE", `/connections/${encodeURIComponent(server)}`),
 
   /* --- what one session may reach --------------------------------------- */
@@ -256,9 +267,14 @@ const api = {
   send: (sessionId, text) => request("POST", `/sessions/${sessionId}/messages`, { text }),
   answer: (approvalId, answer) => request("POST", `/approvals/${approvalId}/respond`, { answer }),
   approve: (sessionId) => request("POST", `/sessions/${sessionId}/approve`),
-  /* Stop holds a run; cancel ends it. Two calls because they are two different
-     things, and conflating them is what spent an approved plan on a slow step. */
+  /* Stop holds a run; cancel ends it. The same teardown on the server, landing
+     differently: stop leaves the session idle with its mode kept, so the plan
+     still stands, and cancel is terminal and spends it. */
   stop: (sessionId) => request("POST", `/sessions/${sessionId}/stop`),
+  /* Pick a stopped run back up with nothing added. The mode was kept, so an
+     idle unattended session resumes UNATTENDED from its plan. Saying something
+     instead is `send` — the words land in the fold and the run reads them. */
+  resume: (sessionId) => request("POST", `/sessions/${sessionId}/resume`),
   cancel: (sessionId) => request("POST", `/sessions/${sessionId}/cancel`),
 
   /* --- the stream ------------------------------------------------------- */

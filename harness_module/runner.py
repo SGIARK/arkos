@@ -12,7 +12,6 @@ import json
 import logging
 import posixpath
 import time
-import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -31,12 +30,12 @@ from agent_module.events import (
     UserEvent,
     ViewTransformEvent,
 )
-from agent_module.loop import Budgets, Dispatch, run_turn
+from agent_module.loop import Budgets, Dispatch, cap_view, run_turn
 from config_module.loader import cfg as _cfg
 from config_module.loader import config
 from db import pool
 from db.ids import as_uuid as _uuid
-from harness_module import approvals, hands, leases, lifecycle, store, system_log, workspace
+from harness_module import approvals, hands, leases, lifecycle, memory, store, system_log, workspace
 from harness_module import session_log as slog
 from harness_module.stream import stream
 from tool_module import registry
@@ -67,8 +66,11 @@ class Session:
 # The live turn per session. At most one; a second start() is a no-op.
 _running: dict[str, asyncio.Task[None]] = {}
 
-# Sessions already signalled to stop. A second cancel waits for the turn to end.
-_cancelling: set[str] = set()
+# How a signalled turn should LAND: `stopped` or `cancelled`. One teardown path
+# with two endings, rather than two authorities over how a turn ends. Set by the
+# endpoint before the task is cancelled, read where the ending is recorded; a
+# second press of either finds the intent already there and only waits.
+_teardown: dict[str, str] = {}
 
 # Background terminal retries, held so they are not garbage collected.
 _reapers: set[asyncio.Task[None]] = set()
@@ -157,13 +159,15 @@ async def fold(
     """
     now = now or datetime.now(UTC)
     events = await _all_events(session.id)
-    memory = _capped_memory(await store.read_memory(session.user_id))
+    # `core` rather than `memory`: the module is imported under that name, and a
+    # local shadowing it makes the very next call to it a NameError.
+    core = _capped_memory(await memory.read_memory(session.user_id))
     # The folders this session was given. Read here rather than inside
     # `_assemble` for the same reason memory is: the assembly stays a pure
     # function of what it is handed, and a caller comparing two folds gets the
     # same prompt from the same inputs.
     mounts = await workspace.claims_for(session.id)
-    messages, hops_used = _assemble(session, events, frozenset(), memory, reach, now, mounts)
+    messages, hops_used = _assemble(session, events, frozenset(), core, reach, now, mounts)
     last_seq = events[-1].seq if events else 0
 
     # Rung 0 measures the view; rung 1 clears the oldest results holding a blob ref
@@ -177,7 +181,7 @@ async def fold(
     cleared: list[str] = []
     for ref in _clearable_refs(events):
         cleared.append(ref)
-        messages, hops_used = _assemble(session, events, frozenset(cleared), memory, reach, now, mounts)
+        messages, hops_used = _assemble(session, events, frozenset(cleared), core, reach, now, mounts)
         if _estimate_tokens(messages) <= ceiling:
             break
 
@@ -408,59 +412,25 @@ def _dumps(args: dict[str, Any]) -> str:
 # --- driving a turn ------------------------------------------------------------
 
 
-# The live sink per session, so `stop` can reach the turn that is running. The
-# task registry alone is not enough: cancelling the task is the old nuke, and
-# what stop needs is the sink's dispatch bookkeeping.
-_sinks: dict[str, _Sink] = {}
-
-
 async def stop(session_id: str) -> bool:
-    """Hold a running turn at its next hop boundary, without ending it.
+    """Hold a running turn, without ending it. The soft landing of one teardown.
 
-    Not `cancel`. Cancel kills the whole turn, writes `done{cancelled}`, and
-    flips the mode back to attended — which spends the plan the run was
-    approved from. Stop closes the calls in flight as `cancelled_by_user`,
-    refuses any further dispatch this hop, and lets the hop finish; the drive
-    loop then parks on a `resume` row with the mode untouched.
+    Stop and cancel are the SAME path — `task.cancel()` on the turn — and differ
+    only in where it lands. Cancel is terminal: `done{cancelled}`, box reaped,
+    mode handed back to attended. Stop is not: `done{stopped}`, `running ->
+    idle`, mode KEPT, so the plan the run was approved from is still approved
+    and the box is hibernated rather than killed. In-flight calls close through
+    the interrupted synthesis every teardown already runs.
+
+    Immediate. There is no hop boundary to reach, no window to miss, and no
+    grace timer to degrade into a cancel — 11.8.6 built all three and each one
+    was a race with a loop that runs on event time.
 
     Returns:
-        False when no turn of this session is running in this process, which is
-        the caller's cue to fall back to `cancel`.
+        False when no turn of this session is running in this process. There is
+        nothing to hold: an idle or parked session is already not acting.
     """
-    sink = _sinks.get(session_id)
-    if sink is None or not is_running(session_id):
-        return False
-    cancelled = sink.request_stop()
-    logger.info("session %s: stop requested, %d call(s) in flight", session_id, cancelled)
-    _arm_stop_backstop(session_id)
-    return True
-
-
-# The grace timers in flight, held so the loop does not collect them mid-wait.
-_stop_backstops: set[asyncio.Task[None]] = set()
-
-
-def _arm_stop_backstop(session_id: str) -> None:
-    """Degrade a stop that cannot land into the full cancel it replaced.
-
-    Stop takes effect at a hop boundary, and a hop that never reaches one — a
-    wedged tool, a stream that stopped arriving — would leave the button doing
-    nothing at all. After the grace the old nuke runs, so the same press still
-    kills a runaway run. This is the only path on which stopping spends a plan.
-    """
-    grace = float(_cfg("harness.stop_grace_s", 45))
-    task = asyncio.create_task(_force_stop(session_id, grace), name=f"stopgrace:{session_id}")
-    _stop_backstops.add(task)
-    task.add_done_callback(_stop_backstops.discard)
-
-
-async def _force_stop(session_id: str, grace: float) -> None:
-    await asyncio.sleep(grace)
-    if not is_running(session_id):
-        return
-    logger.warning("session %s: the stop did not reach a hop boundary in %.0fs; cancelling", session_id, grace)
-    system_log.record("stop_degraded", level="warn", session_id=session_id, grace_s=grace)
-    await cancel(session_id)
+    return await _teardown_turn(session_id, "stopped")
 
 
 async def start(session_id: str, *, mode: lifecycle.Mode | None = None, reason: str = "woken") -> bool:
@@ -504,19 +474,12 @@ def is_running(session_id: str) -> bool:
 
 
 async def cancel(session_id: str) -> bool:
-    """Stops a session.
+    """End a run for good.
 
-    A live turn is signalled and awaited; a session with no turn here is written straight
-    to `cancelled`.
+    A live turn is signalled and awaited; a session with no turn here is written
+    straight to `cancelled`.
     """
-    task = _running.get(session_id)
-    if task is not None and not task.done():
-        if session_id not in _cancelling:
-            _cancelling.add(session_id)
-            task.cancel()
-        # asyncio.wait reports the task's completion without re-raising its
-        # CancelledError in this caller.
-        await asyncio.wait({task})
+    if await _teardown_turn(session_id, "cancelled"):
         return True
 
     session = await load(session_id)
@@ -538,6 +501,29 @@ async def cancel(session_id: str) -> bool:
     )
 
 
+async def _teardown_turn(session_id: str, intent: str) -> bool:
+    """Signal the live turn and wait for it to land as `intent`.
+
+    Returns:
+        False when there is no live turn here — the caller decides what that
+        means. Stop has nothing to hold; cancel writes the terminal directly.
+    """
+    task = _running.get(session_id)
+    if task is None or task.done():
+        return False
+    if session_id not in _teardown:
+        # First press wins the landing. A cancel after a stop finds `stopped`
+        # already recorded and does not fight it: the turn is coming down either
+        # way, and cancelling a session that has landed idle is a second, plain
+        # cancel with no turn to signal.
+        _teardown[session_id] = intent
+        task.cancel()
+    # asyncio.wait reports the task's completion without re-raising its
+    # CancelledError in this caller.
+    await asyncio.wait({task})
+    return True
+
+
 async def _drive(session_id: str) -> None:
     """Runs one turn to its end.
 
@@ -549,7 +535,6 @@ async def _drive(session_id: str) -> None:
         if session is None:
             return
         sink = _Sink(session)
-        _sinks[session_id] = sink
 
         # The manifest comes BEFORE the fold: the system prompt names the services
         # this request carries, and it cannot do that until the request is decided.
@@ -604,10 +589,9 @@ async def _drive(session_id: str) -> None:
                 sink.drop_park()
                 await sink.close(event)
                 return
-            if (sink.parked or sink.stopping) and isinstance(event, BudgetEvent):
+            if sink.parked and isinstance(event, BudgetEvent):
                 # A hop boundary: every call of the parking hop has closed, so the
                 # transcript folds cleanly. The loop stops before the next model call.
-                # A stop holds here for the same reason, and takes the same exit.
                 break
             if isinstance(event, DoneEvent):
                 await sink.close(event)
@@ -619,12 +603,13 @@ async def _drive(session_id: str) -> None:
         if sink.parked:
             await sink.park()
             return
-        if sink.stopping:
-            await sink.park_stopped()
-            return
         await sink.close()
     except asyncio.CancelledError:
-        await _shielded(_ending(session_id, sink, "cancelled"))
+        # The landing the presser asked for. Absent — a cancellation from
+        # somewhere else entirely, a process coming down — it is a cancel, which
+        # is the safe reading: a terminal that says the run ended beats an idle
+        # session nobody is driving.
+        await _shielded(_ending(session_id, sink, _teardown.get(session_id, "cancelled")))
         raise
     except Exception:
         # Not `model_error`: nothing here is the model. A Postgres blip, a
@@ -633,8 +618,7 @@ async def _drive(session_id: str) -> None:
         logger.exception("session %s: the turn failed outside the loop", session_id)
         await _shielded(_ending(session_id, sink, "internal_error"))
     finally:
-        _sinks.pop(session_id, None)
-        _cancelling.discard(session_id)
+        _teardown.pop(session_id, None)
 
 
 async def _settle_gated_call(session: Session, sink: _Sink, dispatch: Dispatch) -> bool:
@@ -718,14 +702,17 @@ async def dispatch_granted(sink: _Sink, dispatch: Dispatch, name: str, args: dic
 
 
 def _result_event(call_id: str, envelope: ResultEnvelope) -> ToolResultEvent:
-    """Build the result event for a call settled outside the loop."""
-    cap = int(_cfg("tools.result_view_cap_chars", 4000))
-    content = envelope.content
-    total = len(content) if len(content) > cap else None
+    """Build the result event for a call settled outside the loop.
+
+    The view cap comes from `loop.cap_view`, not from a second reading of the
+    same config key: this path and the loop's own settle produced identical
+    truncation by coincidence, and coincidence is what drifts.
+    """
+    content, total = cap_view(envelope.content)
     return ToolResultEvent(
         id=call_id,
         ok=envelope.ok,
-        content=content[:cap] if total else content,
+        content=content,
         error_kind=envelope.error_kind if envelope.error_kind != "none" else None,
         total_chars=total,
         ref=envelope.ref,
@@ -741,7 +728,7 @@ async def _manifest_for(session: Session) -> registry.Manifest:
     know whether it fits, and ours always do.
     """
     try:
-        return await registry.manifest(session.user_id, mcp=hands.smithery(), session_id=session.id)
+        return await registry.manifest(session.user_id, mcp=hands.arcade(), session_id=session.id)
     except Exception:
         logger.exception("session %s: building the full manifest failed", session.id)
         return await registry.manifest(session.user_id)
@@ -810,39 +797,34 @@ async def _ending(
     if sink is not None:
         return await sink.abort(reason)
     try:
-        status = "cancelled" if reason == "cancelled" else "failed"
+        done = DoneEvent(reason=reason)
+        if mode is None and done.is_terminal():
+            # EVERY direct-write terminal hands the mode back, not just the one
+            # `cancel` writes for a session with no turn. A cancel that lands
+            # before `_drive` has built its sink comes through here too, and
+            # without this it wrote `cancelled` while the row still said
+            # unattended — holding a quota slot for a run nobody is running.
+            # Not for `stopped`: it is not terminal, and keeping the mode is the
+            # whole point of it.
+            current = await pool.fetchval(
+                "SELECT mode FROM sessions WHERE id = $1", _uuid(session_id)
+            )
+            mode = "attended" if current == "unattended" else None
+        # ONE mapping from reason to status, the same one the sink uses. The
+        # ternary here read `cancelled` or `failed`, which was true of every
+        # reason that could reach it until `stopped` existed — a stop landing in
+        # the window before the sink is built would have been recorded as a
+        # failure of a run nothing had gone wrong with.
+        status = lifecycle.status_for(done)
         # The invariant refuses a `done` while a call is open.
         stream.publish_all(session_id, await slog.close_dangling(session_id))
-        stored = await slog.append(session_id, DoneEvent(reason=reason))
+        stored = await slog.append(session_id, done)
         stream.publish(session_id, stored)
         # `transition` publishes its own event; this call wants only whether it moved.
         return await lifecycle.transition(session_id, expected, status, reason, mode=mode) is not None
     except Exception:
         logger.exception("session %s: could not record the %s ending", session_id, reason)
         return False
-
-
-# What the human sees on the held row, and what the two card actions answer.
-_STOP_PROMPT = "Run stopped. Resume the plan?"
-
-
-def _stopped_envelope(name: str) -> ResultEnvelope:
-    """The result a call gets when a human stopped the run.
-
-    Written for the model to READ on resume, because that is what happens to it:
-    the closed call plus whatever the human said is the next thing in its
-    context. `cancelled_by_user` keeps it out of the per-tool failure streak —
-    stopping the browser three times must not close the browser to the run.
-    """
-    return ResultEnvelope(
-        ok=False,
-        content=(
-            f"The human stopped the run while {name} was running. Its outcome is unknown: "
-            "check before assuming it did or did not happen. They may say what to do instead."
-        ),
-        error_kind="cancelled_by_user",
-        retryable=False,
-    )
 
 
 # The `error_kind` the gate raises to mean "this call is parked, not failed".
@@ -920,6 +902,24 @@ async def plan_folder(session_id: str) -> str | None:
     return writable[0].folder if writable else None
 
 
+async def read_plan(session_id: str) -> str | None:
+    """`plan.md`'s content for this session, or None when no run has happened here.
+
+    Read from the STORE, which is where it was written — the box is hibernated
+    or gone by the time anyone presses run again, and the harness already knows
+    this without asking anything to look.
+    """
+    row = await pool.fetchrow("SELECT user_id FROM sessions WHERE id = $1", _uuid(session_id))
+    folder = await plan_folder(session_id)
+    if row is None or folder is None:
+        return None
+    entries = await store.read_tree(str(row["user_id"]), f"{folder}/{PLAN_NAME}")
+    if not entries:
+        return None
+    blob = await store.get_blob(entries[0].content_hash)
+    return blob.decode(errors="replace") if blob else None
+
+
 async def save_plan(session_id: str, args: dict[str, Any], version: int) -> str | None:
     """Write an approved plan into the session's first linked folder, and return its path.
 
@@ -947,8 +947,8 @@ def _model_options() -> dict[str, Any] | None:
 
 
 def _mcp_call():
-    """Adapts the shared Smithery client to the registry's mcp_call shape, or None if unconfigured."""
-    client = hands.smithery()
+    """Adapts the shared Arcade client to the registry's mcp_call shape, or None if unconfigured."""
+    client = hands.arcade()
     if client is None:
         return None
 
@@ -1000,18 +1000,11 @@ class _Sink:
         # The park tool call whose result arrived, and the arguments it carried. Set on
         # the result, at which point the call is closed in the transcript.
         self._park: tuple[str, str, dict[str, Any]] | None = None
-        self._park_calls: dict[str, tuple[str, dict[str, Any]]] = {}
         # Every tool call of this turn, so a parked one can be bound to its own
         # id and args without threading the id through the approval gate.
         self._calls: dict[str, tuple[str, dict[str, Any]]] = {}
         # True for exactly one gated call: the one the human approved.
         self._grant_once = False
-        # Dispatches in flight, so Stop can close exactly those and nothing else.
-        # The drive task is NOT among them: cancelling that is the old nuke.
-        self._dispatching: set[asyncio.Task[Any]] = set()
-        # Set by `request_stop`. Read at the hop boundary by the drive loop, and
-        # by `guarded` to refuse anything the model asks for after it.
-        self._stopping = False
         # Set when the park left a call open, so `abort` knows to close it.
         self._gated_call: str | None = None
         # Resource keys this session holds, so a second call skips the database.
@@ -1297,8 +1290,6 @@ class _Sink:
             self._hops = event.hops_used
         elif isinstance(event, ToolCallEvent):
             self._calls[event.id] = (event.name, event.args)
-            if event.name in PARK_KINDS:
-                self._park_calls[event.id] = (event.name, event.args)
         elif isinstance(event, ToolResultEvent):
             if event.error_kind == _GATED and self._park is None:
                 name, args = self._calls.get(event.id, ("", {}))
@@ -1306,8 +1297,12 @@ class _Sink:
                 self._gated_call = event.id
                 logger.info("session %s: parking on gated call %s (%s)", self.session.id, event.id, name)
                 return  # dropped on purpose: the call stays open across the park
-            if event.ok and event.id in self._park_calls:
-                name, args = self._park_calls[event.id]
+            name, args = self._calls.get(event.id, ("", {}))
+            if event.ok and name in PARK_KINDS:
+                # A park tool's own result: the call is closed, and THIS is the
+                # moment the session parks. `_calls` already knows every call of
+                # the turn, so the second map that held only the park ones was
+                # one more thing to keep in step for no answer it alone had.
                 self._park = (event.id, name, args)
         self._queue.put_nowait(event)
 
@@ -1331,76 +1326,21 @@ class _Sink:
     def write_ahead(self, dispatch: Dispatch, tools: Sequence[ToolSpec]) -> Dispatch:
         """Wraps dispatch so a non-readonly tool waits for its `tool_call` to be committed.
 
-        It is also where a call becomes STOPPABLE. Every dispatch registers its
-        own task here on the way in, so Stop can cancel the calls in flight
-        without touching the turn — the loop stays pure and knows nothing about
-        any of it, because a stopped call comes back as an ordinary envelope.
+        Nothing here knows about stopping. A teardown cancels the TURN, and a
+        call in flight comes down with it and is closed by the interrupted
+        synthesis every ending already runs — which is the same result 11.8.6's
+        dispatch registry, refusal branch and stopped-call envelope were built
+        to produce, minus three places to race.
         """
         readonly = {t.name: t.readonly for t in tools}
 
         async def guarded(name: str, args: dict[str, Any]) -> ResultEnvelope:
-            if self._stopping:
-                # Stop refuses the rest of the hop too. A fan-out of five whose
-                # first two were cancelled must not have the other three start.
-                return _stopped_envelope(name)
-            task = asyncio.current_task()
-            if task is not None:
-                self._dispatching.add(task)
-            try:
-                # An unknown name counts as non-readonly.
-                if not readonly.get(name, False):
-                    await self.barrier()
-                return await dispatch(name, args)
-            except asyncio.CancelledError:
-                if not self._stopping:
-                    # The whole turn is going down; this is not ours to swallow.
-                    raise
-                return _stopped_envelope(name)
-            finally:
-                if task is not None:
-                    self._dispatching.discard(task)
+            # An unknown name counts as non-readonly.
+            if not readonly.get(name, False):
+                await self.barrier()
+            return await dispatch(name, args)
 
         return guarded
-
-    def request_stop(self) -> int:
-        """Close the calls in flight and refuse the rest of the hop.
-
-        Returns:
-            How many in-flight calls were cancelled. Zero is ordinary — the stop
-            may have landed between calls, or mid-generation.
-        """
-        self._stopping = True
-        live = [task for task in self._dispatching if not task.done()]
-        for task in live:
-            task.cancel()
-        return len(live)
-
-    @property
-    def stopping(self) -> bool:
-        """True once a human has pressed Stop on this turn."""
-        return self._stopping
-
-    async def park_stopped(self) -> bool:
-        """Hold the run on a `resume` row, with everything about it preserved.
-
-        The same shape as `park`, and deliberately so: leases released, box
-        hibernated, `running -> awaiting_approval`. What it does NOT do is the
-        part that matters — no `done`, so nothing terminal is written, and no
-        mode flip, so the plan this run was approved from is still approved.
-        The hop budget carries for free: the fold counts hops from the last
-        `done` and a park appends none.
-        """
-        await self._release_leases(keep_box=True)
-        await self._drain()
-        # Synthetic: no tool call parks here, and nothing in the log bears this
-        # id, so `close_dangling` has nothing to find across the hold.
-        call_id = f"stop_{uuid.uuid4().hex[:12]}"
-        approval = await approvals.create(self.session.id, call_id, "resume", _STOP_PROMPT)
-        await self._save_cursor()
-        moved = await lifecycle.transition(self.session.id, "running", "awaiting_approval", "stopped") is not None
-        if moved:
-            logger.info("session %s stopped at hop %s (%s)", self.session.id, self._hops, approval.id)
-        return moved
 
     # --- the writer -------------------------------------------------------------
 
@@ -1489,7 +1429,12 @@ class _Sink:
                 # Before the drain: the flush may have something to say, and a
                 # status event queued after the writer stops is a status event
                 # nobody sees.
-                await self._release_leases()
+                #
+                # A STOP is not an ending, so the box is hibernated rather than
+                # reaped — the work outside the claimed mounts (a download, an
+                # install) is still there when the run picks back up. Leases go
+                # either way: a session that is not acting holds none.
+                await self._release_leases(keep_box=done.reason == "stopped")
                 await self._drain()
                 # The invariant refuses a `done` while a call is open.
                 closed = await slog.close_dangling(self.session.id)
@@ -1501,7 +1446,10 @@ class _Sink:
 
             await self._save_cursor()
             new_status = lifecycle.status_for(done)
-            # An unattended run that reaches a terminal hands the session back attended.
+            # An unattended run that reaches a TERMINAL hands the session back
+            # attended. A stop reaches `idle` instead and keeps the mode, which
+            # is the whole of what makes it gentle: the plan is still approved,
+            # so a message or a plain start picks the run up unattended.
             mode = "attended" if new_status in lifecycle.TERMINAL and self.session.mode == "unattended" else None
             await lifecycle.transition(self.session.id, "running", new_status, done.reason, mode=mode)
             self._terminal_written = True

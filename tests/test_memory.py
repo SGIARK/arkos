@@ -14,7 +14,7 @@ import pytest
 import pytest_asyncio
 
 from db import pool
-from harness_module import runner, store, workspace
+from harness_module import memory, runner, store, workspace
 from tests.dbgate import require_db
 from tests.test_workspace import FakeSandbox, _sweeping
 from tool_module import registry
@@ -41,7 +41,7 @@ async def read_notes(user_id: str) -> list[_Note]:
     rows = await pool.fetch(
         "SELECT path, body FROM memory_files WHERE user_id = $1 AND path LIKE $2 ORDER BY path",
         uuid.UUID(str(user_id)),
-        f"{store.NOTES_DIR}/%",
+        f"{memory.NOTES_DIR}/%",
     )
     return [_Note(path=r["path"], text=r["body"]) for r in rows]
 
@@ -92,9 +92,9 @@ def _ctx(user_id: str, session_id: str | None = None) -> ToolContext:
 async def test_a_note_is_a_file_of_its_own():
     user_id = await _user()
 
-    path = await store.append_note(user_id, "the human prefers short replies")
+    path = await memory.append_note(user_id, "the human prefers short replies")
 
-    assert path.startswith(f"{store.NOTES_DIR}/")
+    assert path.startswith(f"{memory.NOTES_DIR}/")
     notes = await read_notes(user_id)
     assert [(n.path, n.text) for n in notes] == [(path, "the human prefers short replies")]
 
@@ -103,7 +103,7 @@ async def test_concurrent_appends_land_as_separate_files():
     """No read-modify-write anywhere on this path, so a race cannot lose a note."""
     user_id = await _user()
 
-    paths = await asyncio.gather(*(store.append_note(user_id, f"note {i}") for i in range(10)))
+    paths = await asyncio.gather(*(memory.append_note(user_id, f"note {i}") for i in range(10)))
 
     assert len(set(paths)) == 10
     assert {n.text for n in await read_notes(user_id)} == {f"note {i}" for i in range(10)}
@@ -111,22 +111,22 @@ async def test_concurrent_appends_land_as_separate_files():
 
 async def test_notes_read_back_oldest_first():
     user_id = await _user()
-    first = await store.append_note(user_id, "one")
-    second = await store.append_note(user_id, "two")
+    first = await memory.append_note(user_id, "one")
+    second = await memory.append_note(user_id, "two")
 
     assert [n.path for n in await read_notes(user_id)] == [first, second]
 
 
 async def test_one_users_memory_is_not_anothers():
     mine, theirs = await _user(), await _user()
-    await store.append_note(theirs, "not yours")
-    await store.update_memory(theirs, "# Theirs\n")
+    await memory.append_note(theirs, "not yours")
+    await memory.update_memory(theirs, "# Theirs\n")
 
-    await store.append_note(mine, "mine")
+    await memory.append_note(mine, "mine")
 
     assert [n.text for n in await read_notes(mine)] == ["mine"]
-    assert await store.read_memory(mine) == ""
-    assert await store.search_memory(mine, "yours") == []
+    assert await memory.read_memory(mine) == ""
+    assert await memory.search_memory(mine, "yours") == []
 
 
 # --- the curated core ---------------------------------------------------------------
@@ -134,23 +134,23 @@ async def test_one_users_memory_is_not_anothers():
 
 async def test_the_core_reads_empty_until_it_is_curated():
     user_id = await _user()
-    await store.append_note(user_id, "a note is not the core")
+    await memory.append_note(user_id, "a note is not the core")
 
-    assert await store.read_memory(user_id) == ""
+    assert await memory.read_memory(user_id) == ""
 
 
 async def test_curating_replaces_the_core_whole():
     user_id = await _user()
 
-    await store.update_memory(user_id, "# Memory\n\nShort replies.\n")
-    await store.update_memory(user_id, "# Memory\n\nShort replies. Ships on Fridays.\n")
+    await memory.update_memory(user_id, "# Memory\n\nShort replies.\n")
+    await memory.update_memory(user_id, "# Memory\n\nShort replies. Ships on Fridays.\n")
 
-    assert await store.read_memory(user_id) == "# Memory\n\nShort replies. Ships on Fridays.\n"
+    assert await memory.read_memory(user_id) == "# Memory\n\nShort replies. Ships on Fridays.\n"
     assert await read_notes(user_id) == [], "the core came back as a note"
     rows = await pool.fetchval(
         "SELECT count(*) FROM memory_files WHERE user_id = $1 AND path = $2",
         uuid.UUID(user_id),
-        store.MEMORY_CORE,
+        memory.MEMORY_CORE,
     )
     assert rows == 1, "a rewrite left a second core behind"
 
@@ -160,11 +160,11 @@ async def test_two_curations_at_once_serialize_on_the_gate():
     user_id = await _user()
 
     await asyncio.gather(
-        store.update_memory(user_id, "# A\n" + "a" * 500),
-        store.update_memory(user_id, "# B\n" + "b" * 500),
+        memory.update_memory(user_id, "# A\n" + "a" * 500),
+        memory.update_memory(user_id, "# B\n" + "b" * 500),
     )
 
-    core = await store.read_memory(user_id)
+    core = await memory.read_memory(user_id)
     assert core in ("# A\n" + "a" * 500, "# B\n" + "b" * 500)
 
 
@@ -173,10 +173,10 @@ async def test_two_curations_at_once_serialize_on_the_gate():
 
 async def test_search_finds_a_saved_note():
     user_id = await _user()
-    await store.append_note(user_id, "The user's accountant is Dana Okafor, reachable at the Tuesday standup.")
-    await store.append_note(user_id, "Deployments go out on Fridays, never before the invoices are filed.")
+    await memory.append_note(user_id, "The user's accountant is Dana Okafor, reachable at the Tuesday standup.")
+    await memory.append_note(user_id, "Deployments go out on Fridays, never before the invoices are filed.")
 
-    hits = await store.search_memory(user_id, "accountant")
+    hits = await memory.search_memory(user_id, "accountant")
 
     assert [h.text for h in hits] == [
         "The user's accountant is Dana Okafor, reachable at the Tuesday standup."
@@ -186,19 +186,19 @@ async def test_search_finds_a_saved_note():
 
 async def test_search_covers_the_core_as_well_as_the_notes():
     user_id = await _user()
-    await store.update_memory(user_id, "# Memory\n\nInvoices are filed before any deployment.\n")
+    await memory.update_memory(user_id, "# Memory\n\nInvoices are filed before any deployment.\n")
 
-    hits = await store.search_memory(user_id, "invoices")
+    hits = await memory.search_memory(user_id, "invoices")
 
     assert [h.is_core for h in hits] == [True]
 
 
 async def test_a_query_that_matches_nothing_returns_nothing():
     user_id = await _user()
-    await store.append_note(user_id, "something else entirely")
+    await memory.append_note(user_id, "something else entirely")
 
-    assert await store.search_memory(user_id, "kangaroo") == []
-    assert await store.search_memory(user_id, "   ") == []
+    assert await memory.search_memory(user_id, "kangaroo") == []
+    assert await memory.search_memory(user_id, "   ") == []
 
 
 # --- the tools ----------------------------------------------------------------------
@@ -229,21 +229,21 @@ async def test_save_memory_refuses_a_transcript():
 async def test_update_memory_requires_reading_the_document_first():
     """The prompt's copy is capped, so a rewrite from it would drop the tail."""
     user_id = await _user()
-    await store.update_memory(user_id, "# Memory\n\nOne. Two. Three.\n")
+    await memory.update_memory(user_id, "# Memory\n\nOne. Two. Three.\n")
     ctx = _ctx(user_id)
 
     blind = await registry.dispatch("update_memory", {"content": "# Memory\n\nOne.\n"}, ctx)
 
     assert blind.ok is False
     assert "read_memory" in blind.content
-    assert await store.read_memory(user_id) == "# Memory\n\nOne. Two. Three.\n"
+    assert await memory.read_memory(user_id) == "# Memory\n\nOne. Two. Three.\n"
 
     read = await registry.dispatch("read_memory", {}, ctx)
     rewritten = await registry.dispatch("update_memory", {"content": "# Memory\n\nOne. Two.\n"}, ctx)
 
     assert "Three" in read.content
     assert rewritten.ok
-    assert await store.read_memory(user_id) == "# Memory\n\nOne. Two.\n"
+    assert await memory.read_memory(user_id) == "# Memory\n\nOne. Two.\n"
 
 
 async def test_read_memory_says_so_when_there_is_nothing_yet():
@@ -295,7 +295,7 @@ async def test_what_one_session_learns_the_next_one_knows():
 async def test_the_prompt_carries_a_capped_core_and_says_where_the_rest_is(monkeypatch):
     user_id = await _user()
     session_id = await _session(user_id)
-    await store.update_memory(user_id, "# Memory\n\n" + "long. " * 500)
+    await memory.update_memory(user_id, "# Memory\n\n" + "long. " * 500)
     monkeypatch.setattr(runner, "_cfg", lambda key, default: 200 if key == "memory.prompt_max_chars" else default)
 
     system = (await runner.fold(await runner.load(session_id))).messages[0]["content"]
@@ -327,8 +327,8 @@ async def test_a_session_claiming_everything_still_has_no_memory_in_its_box():
     )
     session_id = await _session(user_id, project_id)
     assert await sandbox_manager.claim_slot(session_id)
-    await store.append_note(user_id, "the most sensitive distillate in the system")
-    await store.update_memory(user_id, "# Memory\n")
+    await memory.append_note(user_id, "the most sensitive distillate in the system")
+    await memory.update_memory(user_id, "# Memory\n")
     await store.commit_tree(
         user_id,
         [store.FileContent(path="taxes/a.txt", content=b"1"), store.FileContent(path="taxes-ro/b.txt", content=b"2")],
@@ -344,4 +344,4 @@ async def test_a_session_claiming_everything_still_has_no_memory_in_its_box():
     landed = set(sandbox.files)
     assert f"{workspace.MOUNT_ROOT}/taxes/a.txt" in landed
     assert not [p for p in landed if "memory" in p.lower()], "memory reached the box"
-    assert not [p for p in landed if p.endswith(store.MEMORY_CORE)]
+    assert not [p for p in landed if p.endswith(memory.MEMORY_CORE)]

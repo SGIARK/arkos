@@ -1,52 +1,97 @@
 """
-The agent's filesystem: bytes in a blob store, the tree in Postgres (D27).
+The agent's filesystem: the TREE. Bytes live in `blobs`, keyed by their hash.
 
-ONE FLAT NAMESPACE PER USER. The tree is `files` rows mapping `(user_id, path)`
-to the hash of the path's content, and a FOLDER is the first segment of a path —
-derived, never a row, unique per user by construction, and alive exactly as long
-as a file exists under it (11.9). No project owns a folder; projects LINK
-folders, which is `project_folders`, and deleting a project deletes its links
-and no files.
-
-Blobs are content-addressed by sha256 and written once, so the same content at
-two paths is one blob and a write can never corrupt an existing one.
+ONE FLAT NAMESPACE PER USER. A row maps `(user_id, path)` to the hash of that
+path's content, and a FOLDER is the first segment of a path — derived, never a
+row, unique per user by construction, and alive exactly as long as a file exists
+under it (11.9). No project owns a folder; projects LINK folders, which is
+`project_folders`, and deleting a project deletes its links and no files.
 
 `commit_tree` uploads every missing blob before it touches a row, and flips the
 rows in one transaction. A crash between the two leaves the previous tree intact
 and whole: an orphan blob costs storage, a row pointing at a blob that is not
 there costs a file.
 
-The user's memory region lives here too, in a table of its own that the mount
-path never reads. A session may only append a note to it.
-
 Nothing here knows about the sandbox, e2b or tools. The store is the harness's
 (D28) and bytes reach a sandbox by being handed to it, never by it reaching in.
+
+11.8.8 split this file by idea. `blobs.py` is content-addressed bytes and the
+HTTP client that carries them; `memory.py` is the user's notes and curated core,
+which is keyed by user, mounts nowhere, and shared nothing with the tree but a
+filename. The imports go one way — blobs <- store <- workspace — and this module
+re-exports the blob calls it is the natural caller of, so the tree's own users
+do not have to know where bytes are kept.
 """
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import io
 import logging
-import os
 import re
-import tarfile
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import Any, Protocol
-from urllib.parse import urlsplit
+from typing import Any
 
-from config_module.loader import cfg as _cfg
 from db import pool
 from db.ids import as_uuid as _uuid
+from harness_module.blobs import (
+    Blobs,
+    FilesystemBlobs,
+    MissingPath,
+    StoreError,
+    SupabaseBlobs,
+    blob_key,
+    blobs,
+    build_tar,
+    get_blob,
+    missing_blobs,
+    put_blob,
+    sha256,
+    use_blobs,
+)
 
 logger = logging.getLogger(__name__)
 
-
+# Re-exported so a caller that reads the tree and then wants the bytes has one
+# import. `blobs.py` is the owner; this is a doorway, not a second copy.
+__all__ = [
+    "Blobs",
+    "Deletion",
+    "FileContent",
+    "FilesystemBlobs",
+    "Folder",
+    "MissingPath",
+    "StoreError",
+    "StoredFile",
+    "SupabaseBlobs",
+    "TreeEntry",
+    "blob_key",
+    "blobs",
+    "build_tar",
+    "commit_entries",
+    "commit_tree",
+    "covers",
+    "delete_path",
+    "dir_sentinel",
+    "folder_of",
+    "folders",
+    "get_blob",
+    "in_folder",
+    "missing_blobs",
+    "move_path",
+    "put_blob",
+    "put_file",
+    "read_tree",
+    "rename_path",
+    "renamed_to",
+    "safe_path",
+    "sha256",
+    "slug",
+    "undo_delete",
+    "unique_folder",
+    "use_blobs",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,288 +111,6 @@ class FileContent:
     path: str
     content: bytes
     mtime: datetime | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class TreeDiff:
-    """What changed between two trees, by hash."""
-
-    added: frozenset[str]
-    changed: frozenset[str]
-    removed: frozenset[str]
-
-    @property
-    def paths(self) -> frozenset[str]:
-        return self.added | self.changed | self.removed
-
-    def __bool__(self) -> bool:
-        return bool(self.paths)
-
-
-def sha256(content: bytes) -> str:
-    return hashlib.sha256(content).hexdigest()
-
-
-def blob_key(content_hash: str) -> str:
-    """Where a blob lives: two hex characters of fan-out, then the full hash."""
-    prefix = str(_cfg("store.prefix", "arkos")).strip("/")
-    return f"{prefix}/blobs/{content_hash[:2]}/{content_hash}"
-
-
-# --- the blob backend -----------------------------------------------------------
-
-
-class Blobs(Protocol):
-    """Somewhere immutable to keep bytes, addressed by their hash."""
-
-    async def put(self, content_hash: str, content: bytes) -> None: ...
-
-    async def get(self, content_hash: str) -> bytes | None: ...
-
-    async def missing(self, hashes: Iterable[str]) -> set[str]: ...
-
-
-class FilesystemBlobs:
-    """Blobs as files under a root directory.
-
-    The interface above is what an object store implements; this is the local
-    one. Writes go to a temporary name and are renamed into place, so a reader
-    never sees a partial blob.
-    """
-
-    def __init__(self, root: str | Path):
-        self.root = Path(root)
-
-    def _path(self, content_hash: str) -> Path:
-        return self.root / blob_key(content_hash)
-
-    async def put(self, content_hash: str, content: bytes) -> None:
-        await asyncio.to_thread(self._put, content_hash, content)
-
-    def _put(self, content_hash: str, content: bytes) -> None:
-        target = self._path(content_hash)
-        if target.exists():
-            return  # write-once: the hash is the content, so there is nothing to update
-        target.parent.mkdir(parents=True, exist_ok=True)
-        staging = target.with_suffix(f".{uuid.uuid4().hex}.partial")
-        staging.write_bytes(content)
-        staging.replace(target)
-
-    async def get(self, content_hash: str) -> bytes | None:
-        return await asyncio.to_thread(self._get, content_hash)
-
-    def _get(self, content_hash: str) -> bytes | None:
-        target = self._path(content_hash)
-        return target.read_bytes() if target.exists() else None
-
-    async def missing(self, hashes: Iterable[str]) -> set[str]:
-        wanted = set(hashes)
-        return await asyncio.to_thread(lambda: {h for h in wanted if not self._path(h).exists()})
-
-
-class SupabaseBlobs:
-    """Blobs in a Supabase Storage bucket, over its REST API.
-
-    Writes are write-once, so an upload of a hash that is already there is a
-    success rather than an overwrite: Supabase reports the duplicate and this
-    treats it as the object already being correct, which it is, because the
-    name is the hash of the content.
-
-    The URL and secret key come from the environment rather than config.yaml,
-    for the same reason E2B_API_KEY does: a `${VAR}` in the yaml makes an unset
-    key crash config load for everything, including the parts that do not use it.
-    """
-
-    def __init__(self, url: str, secret_key: str, bucket: str, concurrency: int = 8, client: Any = None):
-        self.base = url.rstrip("/") + "/storage/v1/object"
-        self.bucket = bucket
-        # Both headers, which suits either key format: the current secret keys
-        # (sb_secret_...) and the legacy service_role JWT.
-        self._headers = {"Authorization": f"Bearer {secret_key}", "apikey": secret_key}
-        self._client = client
-        self._gate = asyncio.Semaphore(concurrency)
-
-    def _client_or_new(self) -> Any:
-        import httpx
-
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=30.0)
-        return self._client
-
-    def _url(self, content_hash: str) -> str:
-        return f"{self.base}/{self.bucket}/{blob_key(content_hash)}"
-
-    async def put(self, content_hash: str, content: bytes) -> None:
-        client = self._client_or_new()
-        async with self._gate:
-            response = await client.post(
-                self._url(content_hash),
-                content=content,
-                headers={**self._headers, "Content-Type": "application/octet-stream"},
-            )
-        if response.status_code in (200, 201):
-            return
-        # The object already exists. Its name is the hash of its content, so it
-        # is the blob we were about to write.
-        if response.status_code in (409, 400) and "duplicate" in response.text.lower():
-            return
-        raise StoreError(f"uploading {content_hash[:12]} failed: {response.status_code} {response.text[:200]}")
-
-    async def get(self, content_hash: str) -> bytes | None:
-        client = self._client_or_new()
-        async with self._gate:
-            response = await client.get(self._url(content_hash), headers=self._headers)
-        if _is_absent(response):
-            return None
-        if response.status_code != 200:
-            raise StoreError(f"reading {content_hash[:12]} failed: {response.status_code} {response.text[:200]}")
-        return response.content
-
-    async def missing(self, hashes: Iterable[str]) -> set[str]:
-        wanted = sorted(set(hashes))
-        if not wanted:
-            return set()
-        client = self._client_or_new()
-
-        async def absent(content_hash: str) -> str | None:
-            async with self._gate:
-                response = await client.head(self._url(content_hash), headers=self._headers)
-            # Anything but a clean 200 counts as absent. A HEAD carries no body
-            # to distinguish a miss from an error, and the two mistakes are not
-            # equal: calling a present blob missing costs one redundant upload,
-            # calling a missing blob present costs the file.
-            return None if response.status_code == 200 else content_hash
-
-        found = await asyncio.gather(*(absent(h) for h in wanted))
-        return {h for h in found if h is not None}
-
-    async def close(self) -> None:
-        if self._client is not None and not self._client.is_closed:
-            await self._client.aclose()
-        self._client = None
-
-
-class StoreError(RuntimeError):
-    """Raised when the blob backend refuses a read or a write."""
-
-
-class MissingPath(StoreError):
-    """Raised when an operation names a path the project's tree does not have."""
-
-
-def _is_absent(response: Any) -> bool:
-    """Whether a response means the object is not there.
-
-    Supabase Storage reports a missing object as HTTP 400 carrying a body of
-    `{"statusCode": "404", ... "code": "NoSuchKey"}`, so the transport status
-    alone does not say.
-    """
-    if response.status_code == 404:
-        return True
-    if response.status_code != 400:
-        return False
-    body = (response.text or "").lower()
-    return '"404"' in body or "nosuchkey" in body or "not_found" in body
-
-
-_blobs: Blobs | None = None
-
-
-def blobs() -> Blobs:
-    """Return the process-wide blob backend, built from `store.backend`."""
-    global _blobs
-    if _blobs is None:
-        _blobs = _build()
-    return _blobs
-
-
-def project_url() -> str | None:
-    """The Supabase project URL, from SUPABASE_URL or derived from the database DSN.
-
-    Both DSN shapes carry the project ref: the direct connection puts it in the
-    host (`db.<ref>.supabase.co`) and the pooler puts it in the username
-    (`postgres.<ref>@aws-0-<region>.pooler.supabase.com`).
-    """
-    explicit = os.environ.get("SUPABASE_URL")
-    if explicit:
-        return explicit.rstrip("/")
-
-    dsn = _cfg("database.url", "") or ""
-    try:
-        parts = urlsplit(dsn)
-    except ValueError:
-        return None
-
-    host = parts.hostname or ""
-    if host.endswith(".supabase.co") and host.startswith("db."):
-        return f"https://{host[len('db.'):]}"
-    if "pooler.supabase.com" in host and "." in (parts.username or ""):
-        return f"https://{parts.username.split('.', 1)[1]}.supabase.co"
-    return None
-
-
-def bucket() -> str:
-    """The bucket blobs live in. STORE_BUCKET overrides the configured name."""
-    return str(os.environ.get("STORE_BUCKET") or _cfg("store.bucket", "") or "")
-
-
-def secret_key() -> str | None:
-    """The key the store authenticates with.
-
-    `SUPABASE_SECRET_KEY` holds a secret API key (`sb_secret_...`), which is
-    revocable and rotatable on its own. `SUPABASE_SERVICE_KEY` is read as a
-    fallback for installations still on the legacy service_role JWT, which can
-    only be rotated by invalidating every key in the project at once.
-    """
-    return os.environ.get("SUPABASE_SECRET_KEY") or os.environ.get("SUPABASE_SERVICE_KEY")
-
-
-def _build() -> Blobs:
-    backend = str(_cfg("store.backend", "filesystem")).lower()
-    if backend == "filesystem":
-        return FilesystemBlobs(_cfg("store.root", ".arkos-store"))
-    if backend == "supabase":
-        url = project_url()
-        key = secret_key()
-        name = bucket()
-        missing = [
-            label
-            for label, value in (
-                ("SUPABASE_URL (or a Supabase database.url to derive it from)", url),
-                ("SUPABASE_SECRET_KEY", key),
-                ("store.bucket (or STORE_BUCKET)", name),
-            )
-            if not value
-        ]
-        if missing:
-            raise StoreError(f"store.backend is 'supabase' but {', '.join(missing)} is unset")
-        return SupabaseBlobs(url, key, name)
-    raise StoreError(f"unknown store.backend {backend!r}; expected 'filesystem' or 'supabase'")
-
-
-def use_blobs(backend: Blobs | None) -> None:
-    """Swap the backend. For tests, and for the day an object store is configured."""
-    global _blobs
-    _blobs = backend
-
-
-# --- bytes ------------------------------------------------------------------------
-
-
-async def put_blob(content: bytes) -> str:
-    """Store content and return its hash. Idempotent: the same bytes are the same blob."""
-    content_hash = sha256(content)
-    await blobs().put(content_hash, content)
-    return content_hash
-
-
-async def get_blob(content_hash: str) -> bytes | None:
-    return await blobs().get(content_hash)
-
-
-async def missing_blobs(hashes: Iterable[str]) -> set[str]:
-    """Which of these hashes the backend does not have."""
-    return await blobs().missing(hashes)
 
 
 # --- the tree ---------------------------------------------------------------------
@@ -429,21 +192,52 @@ async def folders(user_id: str) -> list[Folder]:
     return [Folder(name=r["name"], files=int(r["files"])) for r in rows]
 
 
+# The advisory lock two concurrent folder-namings contend on, in a namespace of
+# its own so it cannot collide with any other advisory lock this database grows.
+_NAMING_LOCK = 8809
+
+
 async def unique_folder(user_id: str, base: str) -> str:
-    """A folder name not already taken in this user's store.
+    """Reserve a folder name not already taken in this user's store, and return it.
 
     The none-case of creating a project: no links were picked, so a folder named
     after the project is made for it. Folder names are unique per user by
-    construction, so the collision has to be resolved before the name is used
-    rather than caught after.
+    construction — they are segments of unique paths — so the collision is
+    resolved before the name is used rather than caught after.
+
+    Check-then-act needs a gate, and this one takes it: two projects created at
+    the same moment both read the same set of taken names and both picked the
+    same one, silently, because reserving the folder is a separate write. The
+    lock is transaction-scoped and held across BOTH the read and the sentinel
+    that reserves it, so the second caller sees the first one's folder.
     """
-    taken = {f.name for f in await folders(user_id)}
-    if base not in taken:
-        return base
-    n = 2
-    while f"{base}-{n}" in taken:
-        n += 1
-    return f"{base}-{n}"
+    async with (await pool.pool()).acquire() as conn, conn.transaction():
+        await conn.execute("SELECT pg_advisory_xact_lock($1, hashtext($2))", _NAMING_LOCK, str(user_id))
+        rows = await conn.fetch(
+            "SELECT DISTINCT split_part(path, '/', 1) AS name FROM files WHERE user_id = $1",
+            _uuid(user_id),
+        )
+        taken = {r["name"] for r in rows}
+        name = base
+        n = 2
+        while name in taken:
+            name = f"{base}-{n}"
+            n += 1
+        # Reserved INSIDE the lock: the sentinel is what makes the folder exist,
+        # so a name returned without it is a name the next caller may also pick.
+        # The blob is written first, as everywhere — an empty one, already there.
+        content_hash = await put_blob(b"")
+        await conn.execute(
+            """
+            INSERT INTO files (user_id, path, content_hash, size, mtime)
+            VALUES ($1, $2, $3, 0, now())
+            ON CONFLICT (user_id, path) DO NOTHING
+            """,
+            _uuid(user_id),
+            dir_sentinel(name),
+            content_hash,
+        )
+        return name
 
 
 def safe_path(name: str) -> str:
@@ -987,174 +781,6 @@ async def commit_entries(
             )
 
     return await read_tree(user_id, prefix)
-
-
-def diff_tree(before: Sequence[TreeEntry], after: Sequence[TreeEntry]) -> TreeDiff:
-    """Compare two trees by hash. Size and mtime do not decide anything."""
-    old = {e.path: e.content_hash for e in before}
-    new = {e.path: e.content_hash for e in after}
-    return TreeDiff(
-        added=frozenset(new.keys() - old.keys()),
-        changed=frozenset(p for p in old.keys() & new.keys() if old[p] != new[p]),
-        removed=frozenset(old.keys() - new.keys()),
-    )
-
-
-# --- memory -----------------------------------------------------------------------
-#
-# The user's own region, `{user}/memory/` in the layout, kept in `memory_files`
-# rather than in the project tree: memory is keyed by user, a project tree is
-# keyed by project. Whether it may ever be mounted is D30 and open; today it is
-# reached only through the calls below, and no claim can name it.
-#
-# The write discipline is the transcript's. A session appends a note and never
-# rewrites one; the curated core is replaced whole, under a lock, so two
-# sessions curating at once cannot interleave into nonsense.
-
-
-# The curated core, and the directory one appended note lands in. Both are
-# relative to the user's region.
-MEMORY_CORE = "MEMORY.md"
-NOTES_DIR = "notes"
-
-# The advisory lock's namespace, so a memory lock cannot collide with any other
-# advisory lock this database grows later.
-_MEMORY_LOCK = 8808
-
-# One statement for both writers: a note that has never been written before, and
-# a core that is written over every time it is curated.
-_MEMORY_UPSERT = """
-    INSERT INTO memory_files (user_id, path, content_hash, size, mtime, body)
-    VALUES ($1, $2, $3, $4, $5, $6)
-    ON CONFLICT (user_id, path) DO UPDATE
-        SET content_hash = EXCLUDED.content_hash,
-            size = EXCLUDED.size,
-            mtime = EXCLUDED.mtime,
-            body = EXCLUDED.body
-"""
-
-
-
-@dataclass(frozen=True, slots=True)
-class Hit:
-    """One search result, and how well it matched."""
-
-    path: str
-    text: str
-    written_at: datetime
-    rank: float
-
-    @property
-    def is_core(self) -> bool:
-        return self.path == MEMORY_CORE
-
-
-async def append_note(user_id: str, text: str) -> str:
-    """
-    Add one note to the user's memory. This is how a session records a fact.
-
-    Each note is a file of its own, named for the moment it landed and a random
-    suffix. Two sessions appending at once cannot collide or overwrite: nothing
-    on this path reads a file in order to write it back, so no lock is needed.
-
-    Returns:
-        The note's path inside the region.
-    """
-    now = datetime.now(UTC)
-    path = f"{NOTES_DIR}/{now.strftime('%Y%m%dT%H%M%S%f')}-{uuid.uuid4().hex[:8]}.md"
-    content = text.encode()
-    await pool.execute(
-        _MEMORY_UPSERT, _uuid(user_id), path, await put_blob(content), len(content), now, text
-    )
-    return path
-
-
-async def update_memory(user_id: str, text: str) -> None:
-    """
-    Replace the curated core with `text`, one writer at a time.
-
-    The core is the one memory file that is rewritten rather than appended, so
-    it is the one with a gate: the write takes a transaction-scoped advisory
-    lock on the user, and a second curation waits for the first to finish. One
-    upsert would be atomic without it; the lock is here because curation grows
-    into read-then-write — the background compactor reading the notes before it
-    replaces the core — and that is the version a gate has to already exist for.
-    It is released with the transaction, including one that dies.
-
-    Whoever calls this is the compactor. For now that is the model, reading the
-    core and the notes and rewriting the core; the background job that will do
-    it unattended is a later card and needs no other entry point than this.
-    """
-    # Blobs first, rows last, as everywhere in the store — and it keeps the lock
-    # off an upload to another service.
-    content = text.encode()
-    content_hash = await put_blob(content)
-
-    async with (await pool.pool()).acquire() as conn, conn.transaction():
-        await conn.execute("SELECT pg_advisory_xact_lock($1, hashtext($2))", _MEMORY_LOCK, str(user_id))
-        await conn.execute(
-            _MEMORY_UPSERT,
-            _uuid(user_id),
-            MEMORY_CORE,
-            content_hash,
-            len(content),
-            datetime.now(UTC),
-            text,
-        )
-
-
-async def read_memory(user_id: str) -> str:
-    """The curated core, or '' when nothing has written one yet."""
-    body = await pool.fetchval(
-        "SELECT body FROM memory_files WHERE user_id = $1 AND path = $2",
-        _uuid(user_id),
-        MEMORY_CORE,
-    )
-    return body or ""
-
-
-async def search_memory(user_id: str, query: str, limit: int = 10) -> list[Hit]:
-    """
-    Full-text search over one user's memory, core and notes alike.
-
-    `websearch_to_tsquery` because the query is written by the model in the
-    shape a person would type: bare words, quoted phrases, `or`. A query that
-    parses to nothing matches nothing rather than everything.
-    """
-    rows = await pool.fetch(
-        """
-        SELECT path, body, mtime, ts_rank(tsv, q) AS rank
-          FROM memory_files, websearch_to_tsquery('english', $2) AS q
-         WHERE user_id = $1 AND tsv @@ q
-         ORDER BY rank DESC, mtime DESC
-         LIMIT $3
-        """,
-        _uuid(user_id),
-        query,
-        max(1, limit),
-    )
-    return [
-        Hit(path=r["path"], text=r["body"], written_at=r["mtime"], rank=float(r["rank"])) for r in rows
-    ]
-
-
-# --- moving bytes -----------------------------------------------------------------
-
-
-def build_tar(files: Sequence[tuple[str, bytes]]) -> bytes:
-    """Pack (path, content) pairs into an uncompressed tar.
-
-    One archive per materialize keeps the transfer to a single write and a
-    single extract, whatever the file count.
-    """
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w") as archive:
-        for path, content in files:
-            info = tarfile.TarInfo(name=path)
-            info.size = len(content)
-            info.mtime = 0  # a stable archive for the same content
-            archive.addfile(info, io.BytesIO(content))
-    return buffer.getvalue()
 
 
 def slug(title: str, fallback: str) -> str:

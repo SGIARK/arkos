@@ -11,6 +11,12 @@ connection that caused it — so the cap is applied here, to whatever the toggle
 say, rather than trusted to whoever wrote them. Ours are always loaded and never
 counted against the human's allowance; MCP servers are the only thing deferred,
 whole servers at a time, most-recently-enabled first.
+
+"Ours" is not the same as "local". Google Search reaches the web over the Arcade
+gateway because that is where its SerpAPI key is configured, and it is still one
+of OUR tools: no per-user grant, nothing for a human to connect, always loaded,
+counted in `ours`. It spends our allowance, not the human's, which is exactly
+what `ours` means.
 """
 
 from __future__ import annotations
@@ -35,14 +41,16 @@ class ServerGroup(Protocol):
 
     label: str
     name: str
-    mcp_url: str
+    server: str
     specs: list[ToolSpec]
 
 
 class McpSource(Protocol):
-    """What `manifest` needs from the MCP half; `Smithery` satisfies it."""
+    """What `manifest` needs from the MCP half; `Arcade` satisfies it."""
 
     async def reach(self, user_id: str) -> list[ServerGroup]: ...
+
+    async def always(self, user_id: str) -> list[ToolSpec]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +64,7 @@ class ServerReach:
 
     label: str
     name: str
-    mcp_url: str
+    server: str
     tools: int
     enabled: bool
     shipped: bool
@@ -135,18 +143,22 @@ async def manifest(user_id: str, *, mcp: McpSource | None = None, session_id: st
     # ToolSpec is mutable and the local ones are process-cached, so every caller
     # gets its own copy.
     ours = [_copy(t.spec) for t in local_tools().values()]
+    # Ours over the wire, named like every other gateway tool so dispatch has
+    # ONE route to the gateway rather than two. They are counted in `ours`, so
+    # the budget below is what is left after them.
+    ours += [_copy(spec, name=f"{MCP_PREFIX}{spec.name}") for spec in (await mcp.always(user_id) if mcp else [])]
     budget = max(0, int(_cfg("llm.max_tools", 128)) - len(ours))
 
     connected = await mcp.reach(user_id) if mcp is not None else []
-    enabled = await session_tools.enabled_urls(session_id) if session_id else []
-    rank = {url: i for i, url in enumerate(enabled)}
+    enabled = await session_tools.enabled_servers(session_id) if session_id else []
+    rank = {server: i for i, server in enumerate(enabled)}
 
     specs = list(ours)
     taken = {s.name for s in specs}
     shipped: set[str] = set()
     used = 0
 
-    for server in sorted((s for s in connected if s.mcp_url in rank), key=lambda s: rank[s.mcp_url]):
+    for server in sorted((s for s in connected if s.server in rank), key=lambda s: rank[s.server]):
         if used + len(server.specs) > budget:
             # Everything from here on is benched: stopping rather than skipping
             # is what makes "most recently enabled goes first" true. Taking a
@@ -168,17 +180,17 @@ async def manifest(user_id: str, *, mcp: McpSource | None = None, session_id: st
                 continue
             taken.add(name)
             specs.append(_copy(spec, name=name))
-        shipped.add(server.mcp_url)
+        shipped.add(server.server)
         used += len(server.specs)
 
     servers = [
         ServerReach(
             label=s.label,
             name=s.name,
-            mcp_url=s.mcp_url,
+            server=s.server,
             tools=len(s.specs),
-            enabled=s.mcp_url in rank,
-            shipped=s.mcp_url in shipped,
+            enabled=s.server in rank,
+            shipped=s.server in shipped,
         )
         for s in connected
     ]

@@ -154,12 +154,14 @@ async def touch_project(conn: Any, session_id: str) -> None:
 def status_for(done: DoneEvent) -> Status:
     """Returns the status a `done` event moves a running session to.
 
-    `turn_end` is the only trigger for running -> idle, and is not terminal, so it leaves
-    `terminal_reason` and `ended_at` NULL. `completed` and `cancelled` map to statuses of
-    the same name; every other reason maps to `failed`, with the reason itself kept in
+    `turn_end` and `stopped` are the two triggers for running -> idle, and
+    neither is terminal, so both leave `terminal_reason` and `ended_at` NULL.
+    They differ only in who ended the hop: the model said its piece, or a human
+    pressed Stop. `completed` and `cancelled` map to statuses of the same name;
+    every other reason maps to `failed`, with the reason itself kept in
     `terminal_reason`.
     """
-    if done.reason == "turn_end":
+    if done.reason in ("turn_end", "stopped"):
         return "idle"
     if done.reason == "completed":
         return "completed"

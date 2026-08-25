@@ -25,9 +25,8 @@ from typing import Any
 import jwt
 from fastapi import Body, Depends, FastAPI, File, Form, Header, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.background import BackgroundTask
 
 from agent_module import prompts
 from agent_module.events import TodoEvent, UserEvent
@@ -35,14 +34,15 @@ from config_module.loader import cfg as _cfg
 from config_module.loader import config
 from db import pool
 from db.ids import as_uuid
-from harness_module import approvals, hands, jwt_utils, lifecycle, runner, store, system_log, workspace
+from harness_module import approvals, blobs, hands, jwt_utils, leases, lifecycle, runner, store, system_log, workspace
 from harness_module import session_log as slog
 from harness_module.stream import LAGGED, stream
+from model_module import client as model_client
 from tool_module import registry, session_tools
 from tool_module.browser.stream import broker as frames
 from tool_module.sandbox import manager as sandbox_manager
 from tool_module.sandbox import tools as sandbox_tools
-from tool_module.smithery import AuthRequiredError, SmitheryError
+from tool_module.arcade import ArcadeError
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +96,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         await system_log.stop()
         await hands.stop()
+        # The store's HTTP client belongs to this loop; closing it here is the
+        # tidy end of a lifetime that is already scoped to the loop rather than
+        # to the process (11.8.8).
+        await blobs.close_clients()
+        model_client.reset_client()
         await pool.close()
 
 
@@ -183,7 +188,8 @@ async def create_auth_session(authorization: str | None = Header(default=None)) 
     if not token:
         raise ApiError(401, "unauthenticated", "Send the Supabase access token as Authorization: Bearer.")
     try:
-        claims = jwt_utils.verify_supabase(token)
+        # Off the loop: the asymmetric path fetches JWKS over the network.
+        claims = await jwt_utils.verify_supabase_off_loop(token)
     except jwt.PyJWTError as e:
         raise ApiError(401, "unauthenticated", f"Token rejected: {e}") from e
 
@@ -267,7 +273,7 @@ async def auth_config() -> dict[str, Any]:
     API. It is served rather than baked into the page because it differs per
     deployment and the page is a checked-in file.
     """
-    return {"supabase_url": store.project_url() or "", "anon_key": _anon_key()}
+    return {"supabase_url": blobs.project_url() or "", "anon_key": _anon_key()}
 
 
 @app.delete("/auth/session", status_code=204)
@@ -856,23 +862,28 @@ async def upload_file(
 
 @app.post("/files/move")
 async def move_file(body: dict[str, Any] = JsonBody, user_id: str = CurrentUser) -> dict[str, Any]:
-    """Move a file or a whole subtree inside the store: store first, boxes after.
+    """Move a file or a whole subtree inside the store.
 
-    The store is the record and moves in one transaction. A live box is a cache
-    and is corrected immediately after, because flush commits what is on disk —
-    a box left holding the old path would put it back and delete the new one
-    when the turn ends, undoing the move without saying so. Sessions whose box
-    refused come back as `stale_sessions` rather than being swallowed.
+    The store is the record and moves in one transaction. It is REFUSED while a
+    running session holds the write lease on either end (`409 folder_busy`),
+    which is what lets this be a row edit and nothing else: with no live box
+    working the folder there is nothing to correct, and with one there is no
+    correcting it from here. Until 11.8.8 the move was pushed into every live
+    box with remote `mv`/`rm` so a flush would not undo it — a protocol chasing
+    a cache, replaced by one lease check.
 
-    Moving BETWEEN folders is an ordinary move now: one namespace, a row edit,
-    no copy. Moving a FOLDER is refused — that is a rename of the thing claims
-    and mounts are keyed by, and it is its own card.
+    Moving BETWEEN folders is an ordinary move: one namespace, no copy. Moving a
+    FOLDER is refused — that is a rename, and it has its own route. A DIRECTORY
+    may be moved out to the top level, where it becomes a folder of its own.
     """
     try:
         src = store.safe_path(str(body.get("from") or ""))
         dst = store.safe_path(str(body.get("to") or ""))
     except ValueError as e:
         raise ApiError(400, "invalid_request", str(e)) from e
+
+    for folder in {store.folder_of(src), store.folder_of(dst)}:
+        await _folder_is_free(user_id, folder)
 
     try:
         moves = await store.move_path(user_id, src, dst)
@@ -882,24 +893,14 @@ async def move_file(body: dict[str, Any] = JsonBody, user_id: str = CurrentUser)
         raise ApiError(409, "move_refused", str(e)) from e
 
     if not moves:
-        return {"from": src, "to": dst, "moved": [], "stale_sessions": []}
+        return {"from": src, "to": dst, "moved": []}
 
     for folder in {store.folder_of(src), store.folder_of(dst)}:
         await _touch_linked_projects(user_id, folder)
-    _, stale = await workspace.move_through(sandbox_manager.manager(), user_id, moves)
-    if stale:
-        system_log.record(
-            "workspace.move_stale",
-            level="error",
-            user_id=user_id,
-            sessions=stale,
-            moved=len(moves),
-        )
     return {
         "from": src,
         "to": dst,
         "moved": [{"from": was, "to": now} for was, now in moves],
-        "stale_sessions": stale,
     }
 
 
@@ -934,8 +935,10 @@ async def rename_file(body: dict[str, Any] = JsonBody, user_id: str = CurrentUse
     except ValueError as e:
         raise ApiError(400, "invalid_request", f"{str(e)} — a rename takes a name, not a path.") from e
 
-    if "/" not in path:
-        await _folder_is_free(user_id, path)
+    # Both ends: the folder it is in, and — for a top-level rename — the name it
+    # is becoming, which nothing may be holding either.
+    for folder in {store.folder_of(path), store.folder_of(destination)}:
+        await _folder_is_free(user_id, folder)
 
     try:
         moves = await store.rename_path(user_id, path, name)
@@ -945,46 +948,43 @@ async def rename_file(body: dict[str, Any] = JsonBody, user_id: str = CurrentUse
         raise ApiError(409, "already_exists", str(e)) from e
 
     if not moves:
-        return {"from": path, "to": destination, "moved": [], "stale_sessions": []}
+        return {"from": path, "to": destination, "moved": []}
 
     for folder in {store.folder_of(path), store.folder_of(destination)}:
         await _touch_linked_projects(user_id, folder)
-
-    # A nested rename is a move as far as a live box is concerned, and the boxes
-    # holding it are corrected in this same request for the reason every move is:
-    # flush commits what is on disk, so a box left on the old path would put it
-    # back. A top-level rename never reaches here with a live box — it was
-    # refused above.
-    _, stale = await workspace.move_through(sandbox_manager.manager(), user_id, moves)
-    if stale:
-        system_log.record(
-            "workspace.rename_stale", level="error", user_id=user_id, sessions=stale, moved=len(moves)
-        )
     return {
         "from": path,
         "to": destination,
         "moved": [{"from": was, "to": now} for was, now in moves],
-        "stale_sessions": stale,
     }
 
 
-async def _folder_is_free(user_id: str, folder: str) -> None:
-    """Refuse to restructure a folder a run currently has on its disk.
+async def _folder_is_free(user_id: str, folder: str) -> str | None:
+    """Refuse a destructive change to a folder a running session is writing.
 
-    The same rule delete, undo and a folder rename all need, for the same
-    reason: the runner holds that session's claims and its manifest in MEMORY,
-    so nothing here can correct the box. A box that still has the files would
-    put them back at its next flush, and a box that lost them would commit the
-    loss. Stopping the run first is the answer, and saying so beats a change
-    that half-happens.
+    PREVENTION, where 11.9 had synchronization. A move used to be propagated
+    into every live box with remote `mv` and `rm` so that a flush would not undo
+    it — a coherency protocol chasing a moving cache, and the scariest path in
+    the subsystem. The lease already answers the question those commands were
+    repairing: a session takes `folder:{user}:{name}` for the whole time it is
+    writing that folder, so if nobody holds it there is no box to diverge, and
+    if somebody does, the honest answer is to say so.
+
+    One query, and it replaces `move_through`, `boxes_holding` and the
+    stale-session accounting between them. Read claims take no lease and need
+    none: their flush discards, so they cannot put anything back.
+
+    Raises:
+        ApiError: 409, naming the folder.
     """
-    busy = await workspace.boxes_holding(user_id, folder)
-    if busy:
+    holder = await leases.holder(f"folder:{user_id}:{folder}")
+    if holder is not None:
         raise ApiError(
             409,
             "folder_busy",
-            f"{folder}/ is mounted in {len(busy)} running session(s). Stop them and try again after.",
+            f"{folder}/ is in use by a running session. Stop it and try again after.",
         )
+    return holder
 
 
 @app.delete("/files")
@@ -1157,8 +1157,6 @@ async def respond_to_approval(
 
     if approval.is_plan:
         return await _answer_plan(approval, text, user_id)
-    if approval.is_resume:
-        return await _answer_resume(approval, text, user_id)
 
     # The UPDATE matches on answered_at IS NULL, so two people answering at once
     # produce one wake.
@@ -1169,39 +1167,6 @@ async def respond_to_approval(
     if not answered.gated_call:
         await _append(answered.session_id, UserEvent(text=text, source="human"))
     started = await runner.start(answered.session_id, reason="answered")
-    return {"accepted": True, "session_id": answered.session_id, "started": started}
-
-
-async def _answer_resume(approval: approvals.Approval, text: str, user_id: str) -> dict[str, Any]:
-    """Resume a stopped run, steer it, or cancel it for real.
-
-    The same three-answer shape as a plan, and the same reason: what a human
-    does to a held run is not one bit. The approve word picks the run up where
-    it held — same plan, same mode, same hop budget, because the hold wrote no
-    terminal. Prose resumes it too, WITH the message appended: "skip that step,
-    do X instead" is the resume, and the model reads it beside the call it just
-    saw closed. The decline word is the hard cancel the button used to be, and
-    it is the only thing here that spends the plan.
-    """
-    verdict = text.strip().lower()
-
-    if verdict == approvals.DECLINE:
-        answered = await approvals.answer(approval.id, approvals.DECLINE)
-        if answered is None:
-            raise ApiError(409, "already_answered", "That run has already been answered.")
-        cancelled = await runner.cancel(answered.session_id)
-        return {"accepted": True, "session_id": answered.session_id, "cancelled": cancelled}
-
-    # `approve` is bare consent to carry on and appends nothing. Anything else is
-    # steering, and the human said it, so it lands as their turn.
-    steer = None if verdict == approvals.APPROVE else text
-    answered = await approvals.answer(approval.id, approvals.APPROVE if steer is None else text)
-    if answered is None:
-        raise ApiError(409, "already_answered", "That run has already been answered.")
-    if steer is not None:
-        await _append(answered.session_id, UserEvent(text=steer, source="human"))
-    # No `mode`: the hold never moved it, so the plan's approval still stands.
-    started = await runner.start(answered.session_id, reason="resumed")
     return {"accepted": True, "session_id": answered.session_id, "started": started}
 
 
@@ -1306,7 +1271,11 @@ async def approve_session(session_id: str, user_id: str = CurrentUser) -> dict[s
     if row["status"] not in ("idle", "pending") and row["status"] not in lifecycle.TERMINAL:
         raise ApiError(409, "not_idle", f"A session in {row['status']!r} cannot be handed over.")
 
-    await _append(session_id, UserEvent(text=prompts.plan_handoff(), source="system"))
+    # The plan state is INJECTED. Sending the model to read `plan.md` was a tool
+    # call for a fact the harness already had — and a guaranteed FileNotFound
+    # after a declined plan, since nothing had written the file.
+    handoff = prompts.plan_handoff(await runner.read_plan(session_id))
+    await _append(session_id, UserEvent(text=handoff, source="system"))
     started = await runner.start(session_id, reason="plan_requested")
     if not started:
         # A 202 with started:false would leave the surface waiting on a plan that
@@ -1322,18 +1291,18 @@ async def approve_session(session_id: str, user_id: str = CurrentUser) -> dict[s
 async def stop_session(session_id: str, user_id: str = CurrentUser) -> dict[str, Any]:
     """Hold a running turn, without ending it.
 
-    The run control has two faces and this is the first: **Stop while running,
-    Cancel while stopped.** Stop closes the calls in flight as
-    `cancelled_by_user`, refuses the rest of the hop, and parks on a `resume`
-    row at the hop boundary — no `done`, no terminal, and NO MODE FLIP, so the
-    plan the run was approved from is still approved and resuming costs nothing.
+    The same teardown as cancel, landing differently: `done{stopped}`,
+    `running -> idle`, the mode KEPT — so the plan the run was approved from is
+    still approved, the box is hibernated rather than reaped, and picking it
+    back up costs nothing. In-flight calls close through the interrupted
+    synthesis every ending already runs.
 
-    Cancel was the only control before this, and it is `task.cancel()` on the
-    whole turn: one slow step stopped, one approved plan spent. That is now the
-    second face, and the fallback here when there is no live turn to hold.
+    Immediate. 11.8.6 held at a hop boundary behind a flag, a dispatch registry
+    and a grace timer that degraded into a cancel; every one of those was a race
+    with a loop that runs on event time, and the complexity was the bug.
 
-    `stopped: false` means the turn is not running in this process, so the
-    caller should cancel instead.
+    `409 not_running` for anything else: an idle or parked session is already
+    not acting, and there is nothing to hold.
     """
     row = await _owned_session(session_id, user_id)
     if row["status"] != "running":
@@ -1341,18 +1310,42 @@ async def stop_session(session_id: str, user_id: str = CurrentUser) -> dict[str,
     return {"accepted": True, "stopped": await runner.stop(session_id)}
 
 
+@app.post("/sessions/{session_id}/resume", status_code=202)
+async def resume_session(session_id: str, user_id: str = CurrentUser) -> dict[str, Any]:
+    """Pick a stopped run back up, with nothing added.
+
+    A plain start. The stop kept the mode, so an idle session that is still
+    unattended resumes UNATTENDED, from its plan, with its hop budget
+    re-counted from the `done{stopped}` like every other `done`. There is no
+    approvals row to answer and no handoff to inject: resuming is the absence of
+    a change, which is why this endpoint does nothing but start the turn.
+
+    Saying something instead of pressing this is `POST /messages` — the words
+    land in the fold and the run reads them next hop. That is the only
+    difference between the two.
+
+    `409 not_idle` for a session that is running, parked or terminal: a running
+    one needs no resuming, and a terminal one is restarted through the plan
+    gate, which is where a spent plan is re-approved.
+    """
+    row = await _owned_session(session_id, user_id)
+    if row["status"] != "idle":
+        raise ApiError(409, "not_idle", f"A session in {row['status']!r} is not waiting to resume.")
+    started = await runner.start(session_id, reason="resumed")
+    if not started:
+        raise ApiError(409, "not_idle", "The session moved before it could be resumed.")
+    return {"accepted": True, "started": True, "mode": row["mode"]}
+
+
 @app.post("/sessions/{session_id}/cancel", status_code=202)
 async def cancel_session(session_id: str, user_id: str = CurrentUser) -> dict[str, Any]:
-    """End a run for good. The second face of the button, and the backstop.
+    """End a run for good, from running or from a stop.
 
-    A stopped session is cancelled from here too, and its `resume` row closes
-    with it: leaving the row open would put a card in front of a human offering
-    to resume a session that is already terminal.
+    Cancelling a STOPPED session is the second press: there is no live turn, so
+    the terminal is written directly — `done{cancelled}`, and the mode handed
+    back to attended, which is what spends the plan.
     """
     await _owned_session(session_id, user_id)
-    for open_row in await approvals.open_for(session_id):
-        if open_row.is_resume:
-            await approvals.answer(open_row.id, approvals.DECLINE)
     return {"cancelled": await runner.cancel(session_id)}
 
 
@@ -1499,133 +1492,77 @@ async def _frame_stream(user_id: str, session_id: str) -> AsyncIterator[str]:
 
 @app.get("/connections")
 async def list_connections(user_id: str = CurrentUser) -> list[dict[str, Any]]:
-    """List every configured server and this user's connection status.
+    """List every configured connector and this user's standing with it.
 
-    A server that is not connected is re-verified before the list is returned;
-    `connect()` is idempotent, so a row left behind by an interrupted OAuth
-    flow is repaired on read.
+    Status is read from Arcade rather than from our rows, because our rows are a
+    cache of Arcade's answer and this is the moment the human is looking. One
+    `POST /v1/tools/authorize` per connector, concurrently: it mints a consent
+    link without invoking anything, so asking is free, and because it is
+    scope-aware it answers about the SERVICE — where the gateway's own app list
+    would only answer about the provider account behind it, and report Google
+    Calendar connected because Gmail was.
 
-    The repair does not hold the response. Waiting on it cost ten seconds with
-    seven servers configured — one Smithery round trip per unconnected row,
-    serially — and the list was already correct before any of them ran: a row
-    that needs repairing reads "not connected", which is exactly what it says
-    afterwards too, until the human finishes the OAuth they abandoned. So the
-    rows go back now and the repairs run behind them, together and on a budget.
+    Each row carries what the next click will do: `scopes`, so the human sees
+    what a connect is about to grant, and `shares_with`, so a disconnect can say
+    which sibling services go with it.
     """
-    client = hands.smithery()
+    client = hands.arcade()
     if client is None:
         return []
-    rows = await client.connections(user_id)
-    broken = [r["server"] for r in rows if client.needs_repair(r)]
-    if broken:
-        task = asyncio.create_task(_repair_connections(user_id, broken))
-        # Held, or the loop may collect a task nobody is awaiting.
-        _repairs.add(task)
-        task.add_done_callback(_repairs.discard)
-    return rows
+    return await client.connections(user_id)
 
 
 @app.post("/connections/{server}/connect")
 async def connect_server(server: str, user_id: str = CurrentUser) -> dict[str, Any]:
-    """Start a connection: mint the id, write the pending row, PUT to Smithery. Idempotent."""
-    client = _require_smithery()
-    if server not in client.servers:
-        raise ApiError(404, "not_found", f"No server {server!r} is configured.")
-    try:
-        await client.connect(user_id, server, return_url=_callback_url(server))
-    except AuthRequiredError as e:
-        # The user has not authorized the server yet; they are sent to setup_url.
-        return {"server": server, "status": e.state, "setup_url": e.setup_url}
-    except SmitheryError as e:
-        raise ApiError(502, "upstream_error", f"Smithery refused: {e}", retryable=True) from e
-    return {"server": server, "status": "connected", "setup_url": None}
+    """Mint the consent link for one service and record the pending state. Idempotent.
 
-
-@app.delete("/connections/{server}", status_code=204)
-async def disconnect_server(server: str, user_id: str = CurrentUser) -> Response:
-    client = _require_smithery()
-    if server not in client.servers:
-        raise ApiError(404, "not_found", f"No server {server!r} is configured.")
-    try:
-        await client.disconnect(user_id, server)
-    except SmitheryError as e:
-        raise ApiError(502, "upstream_error", f"Smithery refused: {e}", retryable=True) from e
-    return Response(status_code=204)
-
-
-_POPUP_CLOSE = """<!doctype html><meta charset="utf-8"><title>Connected</title>
-<body style="font:14px system-ui;padding:2rem">Connected. You can close this window.
-<script>
-  try { window.opener && window.opener.postMessage({type:"arkos:connection", server:%s}, "*"); } catch (e) {}
-  window.close();
-</script></body>"""
-
-
-@app.get("/oauth/callback/{server}")
-async def oauth_callback(server: str, request: Request) -> HTMLResponse:
-    """Land Smithery's redirect once the user has authorized a server.
-
-    The caller is read from the session cookie; this is a top-level GET, so
-    SameSite=Lax sends it. Verification runs once in the background after the
-    response, since dispatch does not re-verify and revalidation skips
-    unconnected rows.
+    Nothing is connected here and no tool is called: Arcade answers with the url
+    its OAuth flow starts at, the panel opens it in a popup, and the user comes
+    back connected or does not. Asking again before they finish returns the same
+    pending authorization rather than starting a second one.
     """
+    client = _require_arcade()
+    _known_server(client, server)
     try:
-        user_id = await current_user(request)
-    except ApiError:
-        return HTMLResponse(
-            "<!doctype html><meta charset=utf-8><body style='font:14px system-ui;padding:2rem'>"
-            "Sign in to this app first, then connect again.</body>",
-            status_code=401,
-        )
-    return HTMLResponse(
-        _POPUP_CLOSE % json.dumps(server),
-        background=BackgroundTask(_verify_once, user_id, server),
-    )
+        return await client.connect(user_id, server)
+    except ArcadeError as e:
+        raise ApiError(502, "upstream_error", f"Arcade refused: {e}", retryable=True) from e
 
 
-# Repairs in flight behind a `GET /connections`, held so they are not collected.
-_repairs: set[asyncio.Task[None]] = set()
+@app.delete("/connections/{server}")
+async def disconnect_server(server: str, user_id: str = CurrentUser) -> dict[str, Any]:
+    """Revoke one service at Arcade and say what went with it.
 
-
-async def _repair_connections(user_id: str, servers: list[str]) -> None:
-    """Re-assert interrupted connections, all at once and bounded.
-
-    Nobody is waiting on this, which is the point — but it still gets a deadline,
-    because a vendor that hangs should not leave tasks alive for the life of the
-    process.
+    Arcade's connection is per provider account, so revoking Gmail revokes every
+    service signed in through the same Google account. There is no narrower
+    revoke to offer, so this returns what actually went — the panel has already
+    warned from `shares_with`, and the response is what it reconciles against.
+    Not a 204: "nothing to say" would be the one wrong thing to say here.
     """
-    budget = float(_cfg("smithery.repair_budget_s", 15))
+    client = _require_arcade()
+    _known_server(client, server)
     try:
-        async with asyncio.timeout(budget):
-            await asyncio.gather(*(_verify_once(user_id, server) for server in servers))
-    except TimeoutError:
-        logger.warning("repairing %d connection(s) for user %s ran past %.0fs", len(servers), user_id, budget)
+        disconnected = await client.disconnect(user_id, server)
+    except ArcadeError as e:
+        raise ApiError(502, "upstream_error", f"Arcade refused: {e}", retryable=True) from e
+    return {"server": server, "disconnected": disconnected}
 
 
-async def _verify_once(user_id: str, server: str) -> None:
-    """Re-assert one connection. Idempotent, and not retried."""
-    client = hands.smithery()
-    if client is None:
-        return
-    try:
-        await client.connect(user_id, server)
-    except AuthRequiredError:
-        # OAuth did not finish; GET /connections repairs the row on the next read.
-        logger.info("oauth callback for %s: still unauthorized", server)
-    except Exception:
-        logger.exception("oauth callback verification failed for %s", server)
-
-
-def _require_smithery() -> Any:
-    client = hands.smithery()
+def _require_arcade() -> Any:
+    client = hands.arcade()
     if client is None:
         raise ApiError(503, "unavailable", "MCP is not configured on this server.")
     return client
 
 
-def _callback_url(server: str) -> str | None:
-    return f"{_origin}/oauth/callback/{server}" if _origin else None
+def _known_server(client: Any, server: str) -> None:
+    """Refuse a prefix that is not one of the configured connectors.
+
+    Google Search fails this on purpose: it is one of ours, it has no grant to
+    make, and connecting or disconnecting it is not a thing that exists.
+    """
+    if not client.is_connector(server):
+        raise ApiError(404, "not_found", f"No server {server!r} is configured.")
 
 
 # --- what this session may reach ------------------------------------------------
@@ -1636,13 +1573,11 @@ async def session_tools_state(session_id: str, user_id: str = CurrentUser) -> di
     """The tool budget for one session: the meter's numbers and a row per connected server.
 
     `budget` is `llm.max_tools - ours`, so the meter moves on its own when we add
-    a local tool — ours are always loaded and never spend the human's allowance.
-    `used` is the tool count of the servers this session has been given.
-
-    What this does NOT say is what the model will actually be handed. Recording a
-    toggle and obeying it are two cards: until Task 11.5 the loop builds its
-    manifest without reading any of this, so the panel is honest about state
-    before it is honest about effect.
+    a tool of our own — ours are always loaded and never spend the human's
+    allowance. `used` is the tool count of the servers this session has been
+    given. Google Search is in `ours` and in none of the rows: it is one of ours
+    that happens to reach the web over the gateway, so it spends our side of the
+    meter and there is nothing about it to toggle.
     """
     await _owned_session(session_id, user_id)
     return await _tools_document(session_id, user_id)
@@ -1691,21 +1626,30 @@ async def set_session_tool(
                 f"({document['used']}/{document['budget']} in use). Turn something off first.",
             )
 
-    await session_tools.set_enabled(session_id, row["mcp_url"], wanted)
+    await session_tools.set_enabled(session_id, row["server"], wanted)
     return await _tools_document(session_id, user_id)
 
 
 async def _tools_document(session_id: str, user_id: str) -> dict[str, Any]:
-    """Build the meter and the server rows from config, the connections and the toggles."""
-    client = hands.smithery()
+    """Build the meter and the server rows from config, the connections and the toggles.
+
+    `ours` counts what `registry.manifest` counts, which is not the same as what
+    `tool_module/tools/` holds: Google Search comes over the gateway and is still
+    ours. Counting it here and not there would put a meter in front of the human
+    that disagrees with the request the model actually gets.
+    """
+    client = hands.arcade()
     rows = await client.connections(user_id) if client is not None else []
-    on = set(await session_tools.enabled_urls(session_id))
+    on = set(await session_tools.enabled_servers(session_id))
 
     ours = len(registry.local_tools())
+    if client is not None:
+        with contextlib.suppress(Exception):
+            ours += len(await client.always(user_id))
     max_tools = int(_cfg("llm.max_tools", 128))
     budget = max(0, max_tools - ours)
 
-    servers = [{**row, "enabled": row["mcp_url"] in on} for row in rows]
+    servers = [{**row, "enabled": row["server"] in on} for row in rows]
     return {
         "max_tools": max_tools,
         "ours": ours,
@@ -1840,14 +1784,11 @@ async def _link_folder(project_id: str, folder: str) -> None:
 async def _make_folder(user_id: str, base: str) -> str:
     """Reserve a new, empty folder named after `base` and return the name it got.
 
-    The none-case of creating a project. A folder exists exactly as long as a
-    file exists under it, so reserving one IS writing the sentinel — the same
-    zero-byte file that keeps any named-but-unfilled folder alive, riding
-    materialize and flush like everything else.
+    The none-case of creating a project. Picking the name and reserving it are
+    ONE operation in the store, under a lock — they were two here, which is how
+    two projects created at the same moment could both be told they had `notes`.
     """
-    name = await store.unique_folder(user_id, base)
-    await store.put_file(user_id, store.dir_sentinel(name), b"")
-    return name
+    return await store.unique_folder(user_id, base)
 
 
 def _session_core(row: Any) -> dict[str, Any]:
@@ -1960,10 +1901,9 @@ async def _check_rate_quota(user_id: str) -> None:
         raise ApiError(429, "quota_exceeded", f"{limit} new sessions an hour is the limit.", retryable=True)
 
 
-# What a composer message is refused with, per park kind. `ask` and `resume` are
-# absent on purpose: they are the two parks a typed message legitimately
-# answers — one because it asked a question, the other because the consent it
-# holds on was given already.
+# What a composer message is refused with, per park kind. `ask` is absent on
+# purpose: it is the one park a typed message legitimately answers, because it
+# asked a question.
 _WAITING_ON = {"call": "a tool call", "approval": "an approval", "plan": "a plan"}
 
 
@@ -1985,14 +1925,14 @@ async def _answer_by_message(session_id: str, text: str) -> dict[str, Any]:
     where a reply becomes the next version, and "yes do that" typed in the
     composer would read as a reply rather than as the approval it meant.
 
-    A `resume` is the one park a typed message DOES answer, and it is not an
-    exception to the rule — it is the rule. The consent that park waits on is
-    the plan, and the plan is already approved; prose here approves nothing new,
-    it steers a run the human already said yes to. So typing "skip the browser,
-    do it another way" into a stopped run resumes it with that message, which is
-    the whole point of stopping rather than cancelling. The decline word cannot
-    reach this path at all — cancelling is a card action — so a message that
-    happens to contain it still resumes.
+    A STOPPED run is not a park at all since 11.8.7, so nothing here is exempted
+    for it: the stop landed the session `idle` with its mode kept, and an idle
+    session with no open question takes the ordinary path below — the message is
+    appended and the turn starts, unattended, with the words in the fold. Typing
+    "skip the browser, do it another way" into a stopped run resumes it with
+    that instruction, and it does so through the code every message already
+    uses rather than through a park kind, a respond arm and a 409 exemption
+    built to say the same thing.
     """
     open_questions = await approvals.open_for(session_id)
     if open_questions and open_questions[0].kind in _WAITING_ON:

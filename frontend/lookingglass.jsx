@@ -461,9 +461,6 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
      timers: a plan appearing ends the drafting, and a session that stops
      running ends it whatever else happened. */
   const openPlan = questions.find((q) => q.kind === "plan") || null;
-  // A held run. It is a park like any other on the wire, and the surface it gets
-  // is one transcript row plus the second face of the run button.
-  const heldRun = questions.find((q) => q.kind === "resume") || null;
   useEffect(() => {
     if (openPlan) {
       setDrafting(false);
@@ -505,10 +502,13 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
   const approvedPlan = approvedHere || (serverPlan && serverPlan.answer === "approve" ? serverPlan : null);
   const abandonedPlan = serverPlan && serverPlan.answer === "decline" ? serverPlan : null;
 
-  /* The faces of a plan that has been decided. `held` is a live park;
-     `cancelled` is a spent one, and it is the only place the run button becomes
-     "resume" — pressing it drafts a CONTINUATION rather than a fresh v1. */
-  const held = !!heldRun;
+  /* THE FACES KEY OFF STATUS, never off an endpoint's 202. A stopped run is
+     `idle` with the mode still `unattended` — the stop kept it, which is what
+     leaves the plan approved — and that pair is reachable no other way: an
+     ordinary idle session is attended, and an unattended one is running or
+     parked. The lifecycle stream carries it, so the button is right after a
+     reload and right in a second tab. */
+  const held = session.status === "idle" && unattended;
   const cancelled = !!approvedPlan && session.status === "cancelled";
   // The pin outlives the run: an approved plan that finished still says where
   // it was saved. It goes only when the plan is dismissed.
@@ -519,11 +519,14 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
      (where it reads "resume"). A held run has its own two faces instead. */
   const showRun = !planCard && !drafting && !held && !running && !unattended;
 
+  /* Cancel is the second press and the only one that spends the plan; resume is
+     a plain start, because the stop changed nothing to undo. Neither answers a
+     row any more — 11.8.7 deleted the `resume` park along with the three-answer
+     machinery behind it. */
   const cancelHeld = () =>
     api
-      .answer(heldRun.approval_id, "decline")
+      .cancel(sessionId)
       .then(() => {
-        refreshQuestions();
         refreshSession();
         if (onPulse) onPulse();
       })
@@ -531,10 +534,9 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
 
   const resumeHeld = () =>
     api
-      .answer(heldRun.approval_id, "approve")
+      .resume(sessionId)
       .then(() => {
         setResumeNote("");
-        refreshQuestions();
         refreshSession();
         if (onPulse) onPulse();
       })
@@ -641,11 +643,28 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
             <button
               className="stop-btn"
               title={
-                "stops at the hop boundary. in-flight calls close as cancelled and count against " +
-                "nothing; the plan's approval stands. if the run hangs, this becomes a hard cancel " +
-                "after a grace period."
+                "holds the run at once. the plan's approval stands and the computer is kept, " +
+                "so a message or resume picks it back up."
               }
-              onClick={() => api.stop(sessionId).catch(() => api.cancel(sessionId).catch(onError))}
+              onClick={() =>
+                api
+                  .stop(sessionId)
+                  .then((body) => {
+                    refreshSession();
+                    // The turn is not running in THIS process — the owning one
+                    // died, and the startup sweep is what ends it. Saying so
+                    // beats a button that looks like it did nothing.
+                    if (body && body.stopped === false) {
+                      onError(
+                        new ApiError(
+                          "not_here",
+                          "This run is not being driven by this server. It will be closed as interrupted; cancel to end it now."
+                        )
+                      );
+                    }
+                  })
+                  .catch(onError)
+              }
             >
               <span className="square" />
               stop
@@ -767,7 +786,8 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
               <div className="plan-stopped">
                 <span className="square" />
                 <span className="said">
-                  stopped at step {stopStep}. in-flight calls closed, nothing counts against the plan.
+                  stopped at step {stopStep}. the plan still stands and the computer is kept —
+                  resume, or say what to do instead.
                 </span>
                 <button className="go" onClick={resumeHeld}>
                   resume
@@ -1033,11 +1053,9 @@ function SessionTools({ sessionId, onError }) {
                         ? "not connected — authorize in settings"
                         : !fits
                           ? "would exceed the cap"
-                          : !row.requires_auth
-                            ? "shared connection"
-                            : row.enabled
-                              ? "on for this session"
-                              : "off for this session"}
+                          : row.enabled
+                            ? "on for this session"
+                            : "off for this session"}
                     </span>
                   </span>
                   <span className="tb-n">{row.tool_count} tools</span>

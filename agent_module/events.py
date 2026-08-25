@@ -22,9 +22,13 @@ EventKind = Literal[
     "done",
 ]
 
-# turn_end is non-terminal: it is the only trigger for running -> idle.
+# turn_end and stopped are NON-terminal: they are the two triggers for
+# running -> idle, and they differ only in who ended the hop.
 DoneReason = Literal[
     "turn_end",
+    # A human pressed Stop. Not a terminal and not a failure: the run is held,
+    # the mode is kept, and a message or a plain start picks it up again.
+    "stopped",
     "completed",
     "max_hops",
     "wall_clock",

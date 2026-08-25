@@ -27,7 +27,7 @@ class _Server:
     def __init__(self, label: str, tools: int):
         self.label = label
         self.name = label.title()
-        self.mcp_url = f"https://{label}.example"
+        self.server = label.title()
         self.specs = [ToolSpec(name=f"{label}_{i}", description="d") for i in range(tools)]
 
 
@@ -38,17 +38,20 @@ class _Mcp:
     async def reach(self, user_id: str) -> list[_Server]:
         return list(self.servers)
 
+    async def always(self, user_id: str) -> list[ToolSpec]:
+        return []
+
 
 @pytest.fixture
 def toggles(monkeypatch):
     """Set which servers the session was given, longest-enabled first."""
 
-    def use(*urls: str):
-        async def enabled_urls(session_id):
+    def use(*servers: str):
+        async def enabled_servers(session_id):
             assert session_id == SESSION
-            return list(urls)
+            return list(servers)
 
-        monkeypatch.setattr(reg.session_tools, "enabled_urls", enabled_urls)
+        monkeypatch.setattr(reg.session_tools, "enabled_servers", enabled_servers)
 
     use()
     return use
@@ -93,7 +96,7 @@ async def test_a_session_with_nothing_enabled_gets_exactly_our_tools(toggles):
 @asyncio_test
 async def test_enabling_a_server_adds_only_its_tools(toggles):
     connected = _Mcp(_Server("gmail", 3), _Server("slack", 4))
-    toggles("https://gmail.example")
+    toggles("Gmail")
 
     shipped = await reg.manifest(USER, mcp=connected, session_id=SESSION)
 
@@ -118,7 +121,7 @@ async def test_the_manifest_never_exceeds_the_budget_the_toggles_ask_for(toggles
     """The 164-schema request, refused where it is built rather than by the provider."""
     cap(20)
     connected = _Mcp(_Server("gmail", 12), _Server("slack", 38))
-    toggles("https://gmail.example", "https://slack.example")
+    toggles("Gmail", "Slack")
 
     shipped = await reg.manifest(USER, mcp=connected, session_id=SESSION)
 
@@ -132,7 +135,7 @@ async def test_the_manifest_never_exceeds_the_budget_the_toggles_ask_for(toggles
 async def test_a_server_that_grew_overnight_is_benched_whole(toggles, cap):
     """Never a subset: half a server is a model that thinks it can post and cannot."""
     cap(20)
-    toggles("https://gmail.example")
+    toggles("Gmail")
 
     small = await reg.manifest(USER, mcp=_Mcp(_Server("gmail", 12)), session_id=SESSION)
     grown = await reg.manifest(USER, mcp=_Mcp(_Server("gmail", 40)), session_id=SESSION)
@@ -147,7 +150,7 @@ async def test_the_most_recently_enabled_server_is_the_one_dropped(toggles, cap)
     """The session keeps the reach it has been working with."""
     cap(20)
     connected = _Mcp(_Server("gmail", 12), _Server("linear", 11))
-    toggles("https://gmail.example", "https://linear.example")
+    toggles("Gmail", "Linear")
 
     shipped = await reg.manifest(USER, mcp=connected, session_id=SESSION)
 
@@ -161,7 +164,7 @@ async def test_a_later_smaller_server_does_not_jump_the_queue(toggles, cap):
     would make the drop rule a lie the next time somebody read it."""
     cap(20)
     connected = _Mcp(_Server("gmail", 5), _Server("slack", 30), _Server("tiny", 1))
-    toggles("https://gmail.example", "https://slack.example", "https://tiny.example")
+    toggles("Gmail", "Slack", "Tiny")
 
     shipped = await reg.manifest(USER, mcp=connected, session_id=SESSION)
 
@@ -172,7 +175,7 @@ async def test_a_later_smaller_server_does_not_jump_the_queue(toggles, cap):
 @asyncio_test
 async def test_a_budget_spent_to_the_last_slot_is_legal(toggles, cap):
     cap(12)
-    toggles("https://gmail.example")
+    toggles("Gmail")
 
     shipped = await reg.manifest(USER, mcp=_Mcp(_Server("gmail", 12)), session_id=SESSION)
 
@@ -193,7 +196,7 @@ async def test_ours_are_never_counted_against_the_humans_allowance(toggles, cap)
 
 
 def _reach(**kw) -> reg.ServerReach:
-    base = {"label": "x", "name": "X", "mcp_url": "https://x.example", "tools": 1, "enabled": True, "shipped": True}
+    base = {"label": "x", "name": "X", "server": "X", "tools": 1, "enabled": True, "shipped": True}
     return reg.ServerReach(**{**base, **kw})
 
 
@@ -245,7 +248,7 @@ async def test_the_prompt_is_generated_from_the_manifest_not_the_toggles(toggles
     prompt for THAT turn must say it is unavailable.
     """
     cap(20)
-    toggles("https://gmail.example", "https://slack.example")
+    toggles("Gmail", "Slack")
 
     monday = await reg.manifest(USER, mcp=_Mcp(_Server("gmail", 12), _Server("slack", 5)), session_id=SESSION)
     tuesday = await reg.manifest(USER, mcp=_Mcp(_Server("gmail", 12), _Server("slack", 40)), session_id=SESSION)
@@ -272,7 +275,7 @@ async def test_the_prompt_changes_between_turns_when_a_toggle_does(toggles):
         now="2026-08-20 14:32 UTC",
         reach=(await reg.manifest(USER, mcp=connected, session_id=SESSION)).servers,
     )
-    toggles("https://slack.example")
+    toggles("Slack")
     second = prompts.system_prompt(
         "attended",
         date="2026-08-19",

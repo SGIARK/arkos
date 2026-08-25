@@ -17,7 +17,7 @@ name: Deploy
 #   3. On ark.mit.edu: the corresponding public key in ~/.ssh/authorized_keys
 #      for the arkos user.
 #   4. On ark.mit.edu: /home/arkos/arkos/.env file with DB_URL,
-#      OPENAI_API_KEY, SMITHERY_API_KEY, etc.
+#      OPENAI_API_KEY, ARCADE_API_KEY, etc.
 #   5. Either: make the ghcr.io/sgiark/arkos package public
 #      OR: run `docker login ghcr.io` once on ark.mit.edu as arkos.
 #   6. Verify the server's root disk has space (was 99% full last check).

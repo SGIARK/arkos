@@ -21,8 +21,16 @@ recreate the file.
 
 **The HTTP server is `harness_module/api.py`** (Task 4), run with
 `uvicorn harness_module.api:app`. `harness_module/` is the control plane:
-api · runner · store · workspace · leases · lifecycle · approvals · session_log ·
-system_log · stream · hands · jwt_utils.
+api · runner · store · blobs · memory · workspace · leases · lifecycle ·
+approvals · session_log · system_log · stream · hands · jwt_utils.
+
+**The store is three files, one idea each** (11.8.8): `blobs.py` is
+content-addressed bytes and the HTTP client that carries them, `store.py` is the
+TREE (`files (user_id, path)`, folders derived from paths), `memory.py` is the
+user's notes and curated core and mounts nowhere. Imports go ONE way —
+blobs ← store ← workspace — and `store.py` re-exports the blob calls so a caller
+that reads a tree and then wants bytes needs one import. `workspace.py` is a
+transfer engine: materialize, flush, seal.
 
 **Deleted code is still documentation.** When rebuilding something 8.10 removed,
 read the deleted implementation in git history for operational facts contracts
@@ -40,13 +48,27 @@ browser in the harness process. The pre-redesign `browser_tool.py`,
 
 Where the live code is: `agent_module/loop.py` (the one loop),
 `model_module/client.py` (the one model client), `tool_module/`
-(envelope · registry · connections · session_tools · smithery · tools/ ·
+(envelope · registry · connections · session_tools · arcade · tools/ ·
 sandbox), `db/pool.py` (asyncpg; the psycopg2 helpers are gone — do not add
 more).
 
+**All MCP traffic flows through ONE Arcade MCP Gateway** (11.10).
+`tool_module/arcade.py` is the only client; Smithery is gone with no
+`kind: smithery` path and no dormant branch. A "server" is a tool-name PREFIX
+(`Gmail_*`, `MicrosoftOutlookMail_*`) inside one flat list behind one url, and
+that prefix is the durable key — `user_connections` and `session_tools` are
+keyed by it, never by the gateway url (the slug is infrastructure and can be
+recreated) and never by the config label. `tools/list` IS PAGINATED at 100 of
+169: page until no cursor, or two apps silently do not exist. Consent is
+PANEL-FIRST through `POST /v1/tools/authorize`, which is also the per-service
+status read — the gateway's `Arcade_ListApps` answers per PROVIDER
+(`arcade-google` = Gmail + Calendar + Search) and cannot answer this. Google
+Search rides the same wire and is OURS: always in the manifest, counted in
+`ours`, in no toggle and no settings row.
+
 **A session reaches only the MCP servers it was given** (11.4 + 11.5). The
-toggles are `session_tools`, keyed by `mcp_url` and never by the `mcp_servers:`
-config label. `registry.manifest` is the ONE builder of a turn's tool list and
+toggles are `session_tools`, keyed by the Arcade prefix and never by the
+`mcp_servers:` config label. `registry.manifest` is the ONE builder of a turn's tool list and
 it cannot exceed `llm.max_tools` whatever the toggles say — whole servers are
 benched, most-recently-enabled first, and a benched server gets a `status` event
 and a `system_events` row. **The system prompt is generated from the manifest

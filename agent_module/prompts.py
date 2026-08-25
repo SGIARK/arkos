@@ -307,7 +307,7 @@ def system_prompt(
     return "\n".join(parts)
 
 
-def plan_handoff() -> str:
+def plan_handoff(plan: str | None = None) -> str:
     """The `user{source: system}` event the play button appends.
 
     The button used to flip the mode and hand the model a transcript. Now it asks
@@ -317,17 +317,34 @@ def plan_handoff() -> str:
     Written to be unrefusable. A thin or empty transcript is the case this exists
     for — the card opens as an intake form, and prose asking the same questions
     beside it would be the failure, not the answer.
+
+    **The plan state is INJECTED, never discovered.** `plan` is `plan.md`'s
+    content when a run has already happened here, and None when none has. It
+    used to say "read plan.md FIRST", which sent the model to a tool for a fact
+    the harness already had — and after a DECLINED plan that read was a
+    guaranteed FileNotFound, because nothing had written the file. A fact the
+    harness knows goes into the transcript; the model spends its tools on facts
+    only the world has.
+
+    Args:
+        plan: the approved plan this session already ran from, or None.
     """
-    return (
+    ask = (
         "The human pressed run. Draft the plan for this run from what this conversation "
         "already says, and call propose_plan with it — ALWAYS, even if this conversation "
         "is thin or empty. Do not ask your questions here: whatever you cannot fill in, "
         "put in `missing` as a question, and leave every other field honest rather than "
-        "invented. Nothing starts until they approve it. "
-        "If a run has already happened here, read plan.md and the transcript above FIRST "
-        "and propose a CONTINUATION, not a fresh start: say what is verifiably done and "
-        "resume from there — \"steps 1-3 verified done; resume at 4\" — rather than "
-        "planning work they have already paid for again."
+        "invented. Nothing starts until they approve it."
+    )
+    if not plan:
+        return ask + " No plan exists for this session yet, so this is the first one."
+    return (
+        ask
+        + " A run has already happened here, from the plan below. Propose a CONTINUATION, "
+        "not a fresh start: read it against the transcript above, say what is verifiably "
+        "done, and resume from there — \"steps 1-3 verified done; resume at 4\" — rather "
+        "than planning work they have already paid for again.\n\n"
+        "--- plan.md ---\n" + plan.strip() + "\n--- end plan.md ---"
     )
 
 

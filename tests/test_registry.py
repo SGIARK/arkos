@@ -23,18 +23,21 @@ class _Server:
     def __init__(self, label, specs):
         self.label = label
         self.name = label.title()
-        self.mcp_url = f"https://{label}.example"
+        self.server = label.title()
         self.specs = list(specs)
 
 
 class _Mcp:
-    """A stand-in for the Smithery half."""
+    """A stand-in for the Arcade half."""
 
     def __init__(self, servers):
         self._servers = servers
 
     async def reach(self, user_id):
         return list(self._servers)
+
+    async def always(self, user_id):
+        return []
 
 
 def _mcp(*specs, label="remote"):
@@ -50,17 +53,17 @@ def _toggles(monkeypatch):
     without this every test about NAMESPACING would be a test about the default
     instead. `_enabled` overrides it where the default is what is under test.
     """
-    _enabled(monkeypatch, "https://remote.example")
+    _enabled(monkeypatch, "Remote")
     return monkeypatch
 
 
-def _enabled(monkeypatch, *urls):
+def _enabled(monkeypatch, *servers):
     """Say which servers the session has been given, longest-enabled first."""
 
-    async def enabled_urls(session_id):
-        return list(urls)
+    async def enabled_servers(session_id):
+        return list(servers)
 
-    monkeypatch.setattr(reg.session_tools, "enabled_urls", enabled_urls)
+    monkeypatch.setattr(reg.session_tools, "enabled_servers", enabled_servers)
 
 
 SESSION = "session-1"
@@ -122,12 +125,12 @@ async def test_dispatch_strips_the_prefix_before_calling_mcp():
 @pytest.mark.asyncio
 async def test_a_raising_mcp_transport_is_still_an_envelope():
     async def mcp_call(bare, args, ctx):
-        raise ConnectionError("smithery down")
+        raise ConnectionError("gateway down")
 
     result = await reg.dispatch("mcp_send_email", {}, _approving(), mcp_call=mcp_call)
 
     assert result.ok is False and result.error_kind == "upstream_error"
-    assert "smithery down" in result.content
+    assert "gateway down" in result.content
 
 
 @pytest.mark.asyncio

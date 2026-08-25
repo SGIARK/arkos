@@ -406,6 +406,8 @@ function SettingsModal({ user, onClose, onSignOut, onError }) {
   const [problem, setProblem] = useState(null);
   const [busy, setBusy] = useState({});
   const [links, setLinks] = useState({});
+  /* Which disconnect has been asked for once and is waiting to be meant. */
+  const [armed, setArmed] = useState(null);
   const poll = useRef(null);
 
   const refresh = useCallback(async () => {
@@ -423,28 +425,21 @@ function SettingsModal({ user, onClose, onSignOut, onError }) {
 
   /* Re-read when this window becomes the one being looked at again.
 
-     The OAuth popup is on another origin, so nothing tells this page when it
-     finishes — which is why this used to poll `api.connections()` every two
-     seconds. Contracts forbids polling anywhere, and it was also the wrong
-     shape: it burned requests while the user was still typing a password, and
-     stopped the moment they tabbed away. Coming back to the tab, or the popup
-     closing, IS the event. `postMessage` from the callback page arrives too
-     (`/oauth/callback/{server}` posts one before it closes), and whichever
-     lands first wins — `refresh` is idempotent. */
+     The consent popup is on Arcade's origin and then the provider's, so nothing
+     tells this page when it finishes — which is why this used to poll
+     `api.connections()` every two seconds. Contracts forbids polling anywhere,
+     and it was also the wrong shape: it burned requests while the user was
+     still typing a password, and stopped the moment they tabbed away. Coming
+     back to the tab, or the popup closing, IS the event. */
   useEffect(() => {
     const again = () => {
       if (document.visibilityState === "visible") refresh();
     };
-    const posted = (e) => {
-      if (e.data && e.data.type === "arkos:connection") refresh();
-    };
     window.addEventListener("focus", again);
     document.addEventListener("visibilitychange", again);
-    window.addEventListener("message", posted);
     return () => {
       window.removeEventListener("focus", again);
       document.removeEventListener("visibilitychange", again);
-      window.removeEventListener("message", posted);
       if (poll.current) clearInterval(poll.current);
     };
   }, [refresh]);
@@ -452,7 +447,7 @@ function SettingsModal({ user, onClose, onSignOut, onError }) {
   /* The popup closing is the other end of the same signal, and it is the only
      one a user who never leaves the tab will produce. One watcher, cleared as
      soon as the window is gone — this checks a boolean, it does not fetch. */
-  function watch(server, popup) {
+  function watch(popup) {
     if (!popup) return;
     if (poll.current) clearInterval(poll.current);
     poll.current = setInterval(() => {
@@ -463,47 +458,49 @@ function SettingsModal({ user, onClose, onSignOut, onError }) {
     }, 500);
   }
 
-  function connect(server) {
-    // Opened SYNCHRONOUSLY inside the click handler: after an await the browser
-    // has lost the user gesture and blocks it silently.
-    const popup = window.open("about:blank", "ark_oauth", "width=560,height=720");
-    setBusy((b) => ({ ...b, [server]: true }));
-    setLinks((m) => ({ ...m, [server]: null }));
-
+  /* The link is already in hand: `GET /connections` asks Arcade for consent
+     state and gets the url back in the same answer, so the popup opens INSIDE
+     the click. After an await the browser has lost the user gesture and blocks
+     it silently, which is the whole reason the url travels with the row. */
+  function connect(row) {
+    const href = links[row.server] || row.setup_url;
+    if (href) {
+      watch(window.open(href, "ark_oauth", "width=560,height=720"));
+      return;
+    }
+    /* No link on the row — it expired, or this app was just added. Mint one and
+       render it as an anchor: the user's click on THAT is a fresh gesture. */
+    setBusy((b) => ({ ...b, [row.server]: true }));
     api
-      .connect(server)
+      .connect(row.server)
       .then((result) => {
-        if (result.status === "connected") {
-          if (popup) popup.close();
-          refresh();
-          return;
-        }
-        if (result.setup_url) {
-          if (popup && !popup.closed) popup.location.href = result.setup_url;
-          else setLinks((m) => ({ ...m, [server]: result.setup_url }));
-          watch(server, popup);
-        } else {
-          if (popup) popup.close();
-          setProblem("could not start authorization for " + server);
-          refresh();
-        }
+        if (result.status === "connected") return refresh();
+        if (result.setup_url) setLinks((m) => ({ ...m, [row.server]: result.setup_url }));
+        else setProblem("could not start authorization for " + (row.name || row.server));
       })
-      .catch((e) => {
-        if (popup) popup.close();
-        setProblem(e.message || String(e));
-      })
-      .finally(() => setBusy((b) => ({ ...b, [server]: false })));
+      .catch((e) => setProblem(e.message || String(e)))
+      .finally(() => setBusy((b) => ({ ...b, [row.server]: false })));
   }
 
-  async function disconnect(server) {
-    setBusy((b) => ({ ...b, [server]: true }));
+  /* Disconnecting is shared whenever services sign in through one account, so a
+     service with siblings is asked twice: the first click says what will go,
+     the second means it. */
+  async function disconnect(row) {
+    const shared = row.shares_with || [];
+    if (shared.length && armed !== row.server) {
+      setArmed(row.server);
+      return;
+    }
+    setArmed(null);
+    setBusy((b) => ({ ...b, [row.server]: true }));
     try {
-      await api.disconnect(server);
+      await api.disconnect(row.server);
+      setLinks({});
       await refresh();
     } catch (e) {
       setProblem(e.message || String(e));
     } finally {
-      setBusy((b) => ({ ...b, [server]: false }));
+      setBusy((b) => ({ ...b, [row.server]: false }));
     }
   }
 
@@ -524,28 +521,49 @@ function SettingsModal({ user, onClose, onSignOut, onError }) {
           )}
           {(rows || []).map((row) => {
             const connected = row.status === "connected";
+            const asking = armed === row.server;
+            const shared = row.shares_with || [];
             return (
               <div className="conn" key={row.server}>
                 <span className="meta">
                   <Dot kind={connected ? "live" : ""} />
                   <span className="nm">{row.name || row.server}</span>
+                  {/* What the click is about to do, before it does it. */}
+                  {!connected && !!(row.scopes || []).length && (
+                    <span className="soft" style={{ fontSize: 10, marginLeft: 8 }}>
+                      grants {scopeNames(row.scopes).join(", ")}
+                    </span>
+                  )}
+                  {connected && !!shared.length && (
+                    <span className="soft" style={{ fontSize: 10, marginLeft: 8 }}>
+                      shares a sign-in with {shared.join(", ")}
+                    </span>
+                  )}
                 </span>
                 <span style={{ display: "flex", alignItems: "center", gap: 12 }}>
                   <span className={"st" + (connected ? " on" : "")}>
-                    {connected ? "connected" : row.requires_auth ? row.status : "shared"}
+                    {connected ? `connected · ${row.tool_count} tools` : row.status}
                   </span>
-                  {!row.requires_auth ? (
-                    <span className="soft" style={{ fontSize: 10 }}>always on</span>
-                  ) : connected ? (
-                    <button className="btn" disabled={busy[row.server]} onClick={() => disconnect(row.server)}>
-                      disconnect
+                  {connected ? (
+                    <button
+                      className={asking ? "btn danger" : "btn"}
+                      disabled={busy[row.server]}
+                      onClick={() => disconnect(row)}
+                    >
+                      {asking ? `also disconnects ${shared.join(" and ")} — confirm` : "disconnect"}
                     </button>
                   ) : links[row.server] ? (
-                    <a className="btn primary" href={links[row.server]} target="ark_oauth" rel="noopener" onClick={() => watch(row.server, null)}>
+                    <a
+                      className="btn primary"
+                      href={links[row.server]}
+                      target="ark_oauth"
+                      rel="noopener"
+                      onClick={() => watch(null)}
+                    >
                       authorize →
                     </a>
                   ) : (
-                    <button className="btn primary" disabled={busy[row.server]} onClick={() => connect(row.server)}>
+                    <button className="btn primary" disabled={busy[row.server]} onClick={() => connect(row)}>
                       {busy[row.server] ? "…" : "connect"}
                     </button>
                   )}
@@ -572,6 +590,16 @@ function SettingsModal({ user, onClose, onSignOut, onError }) {
       </div>
     </div>
   );
+}
+
+/* An OAuth scope url is unreadable and its last segment is not:
+   `https://www.googleapis.com/auth/gmail.readonly` is "gmail.readonly". Shown
+   so the human can see what a connect grants without reading a url. */
+function scopeNames(scopes) {
+  return (scopes || []).map((scope) => {
+    const tail = String(scope).split("/").filter(Boolean).pop();
+    return tail || String(scope);
+  });
 }
 
 /* ---------- SIGN IN ---------- */

@@ -12,6 +12,15 @@ about its own contents that is not verified: both directions hash the files on
 disk and compare against the tree, so a stale or tampered record cannot decide
 what is transferred, kept or deleted.
 
+This module is a TRANSFER ENGINE and nothing else: materialize, flush, seal.
+It used to also carry live-box coherency protocols — `move_through`, the
+stale-session accounting — that chased a moving cache with remote `mv` and `rm`
+so a flush would not undo a store-side move. 11.8.8 deleted them: a destructive
+store operation against a folder whose write lease is HELD is refused, and a
+folder nobody holds has no live box to correct. Prevention, where there was
+synchronization. `write_through` stays, alone, because it is additive and safe —
+it puts an uploaded file into a box already working that folder.
+
 Claimed FOLDERS are the only thing this module mounts, one mount per folder at
 `~/store/<folder>/` (11.9). A folder is a top-level segment of the user's one
 flat store, so a mounted path IS a store path with the mount root in front of
@@ -38,7 +47,6 @@ import posixpath
 import shlex
 import tarfile
 import uuid as _uuid_module
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -466,7 +474,13 @@ async def _remove(sandbox: SandboxIO, session_id: str, paths: tuple[str, ...]) -
 
 
 async def _live_boxes(user_id: str) -> list[str]:
-    """The sessions whose box is awake and holding some of this user's work."""
+    """The sessions whose box is awake and holding some of this user's work.
+
+    One caller: `write_through`. A destructive change to the store no longer
+    chases these boxes with remote `mv`/`rm` — it is REFUSED while the folder's
+    write lease is held, which prevents the divergence those commands existed to
+    repair (11.8.8).
+    """
     rows = await pool.fetch(
         """
         SELECT p.session_id
@@ -481,76 +495,6 @@ async def _live_boxes(user_id: str) -> list[str]:
         _uuid(user_id),
     )
     return [str(r["session_id"]) for r in rows]
-
-
-async def boxes_holding(user_id: str, folder: str) -> list[str]:
-    """The live boxes that have this folder mounted right now.
-
-    A folder rename moves the mount, and a box materialized at the old path
-    would flush its work back under the old name — resurrecting the folder the
-    rename just removed, and losing everything written since. So the rename asks
-    this first and refuses rather than trying to correct a box mid-turn: the
-    session's claims and its manifest are in the runner's memory, not only in
-    the database, and there is no way to reach those from here.
-    """
-    holding: list[str] = []
-    for session_id in await _live_boxes(user_id):
-        if any(c.folder == folder for c in await claims_for(session_id)):
-            holding.append(session_id)
-    return holding
-
-
-async def move_through(
-    sandbox: SandboxIO, user_id: str, moves: Sequence[tuple[str, str]]
-) -> tuple[list[str], list[str]]:
-    """
-    Apply a store-side move to every live box that has the moved paths mounted.
-
-    This is not the courtesy that `write_through` is. A flush commits what is ON
-    DISK under the claim, so a box still holding the old path would put it back
-    and delete the new one when the turn ends — the move would quietly undo
-    itself. A box that cannot be moved is therefore reported, not swallowed.
-
-    Returns:
-        The sessions whose box was moved, and the sessions whose box is now
-        stale and would fight the store at flush time.
-    """
-    if not moves:
-        return [], []
-
-    moved: list[str] = []
-    stale: list[str] = []
-    for session_id in await _live_boxes(user_id):
-        # Only what this session mounted. A move that leaves every claim is a
-        # removal as far as this box is concerned, and one that arrives from
-        # outside them waits for the next materialize.
-        claims = await claims_for(session_id)
-        steps: list[str] = []
-        for was, now in moves:
-            had = any(store.covers(c.prefix, was) for c in claims)
-            wants = any(store.covers(c.prefix, now) for c in claims)
-            src = posixpath.join(MOUNT_ROOT, was)
-            if had and wants:
-                dst = posixpath.join(MOUNT_ROOT, now)
-                steps.append(
-                    f"mkdir -p {shlex.quote(posixpath.dirname(dst))} && mv -f {shlex.quote(src)} {shlex.quote(dst)}"
-                )
-            elif had:
-                steps.append(f"rm -f {shlex.quote(src)}")
-        if not steps:
-            continue
-        try:
-            result = await sandbox.exec(session_id, " && ".join(steps))
-        except Exception:  # noqa: BLE001 - reported to the caller, never raised at the user
-            logger.exception("could not move files in the box of session %s", session_id)
-            stale.append(session_id)
-        else:
-            if result["exit_code"] == 0:
-                moved.append(session_id)
-            else:
-                logger.error("session %s: the box refused the move: %s", session_id, result["stderr"][:200])
-                stale.append(session_id)
-    return moved, stale
 
 
 async def write_through(sandbox: SandboxIO, user_id: str, path: str, content: bytes) -> list[str]:

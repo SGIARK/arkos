@@ -52,10 +52,12 @@ a reader rejoining a long session is exactly the case that exceeds it.
 | `view_transform{rung, dropped_refs[]}` | a context-ladder drop. View-only: the log is never rewritten |
 | `done{reason}` | run over. The only writer of a TERMINAL status from `running` (not the only writer of status: create, lease claim, park, respond, and cancel all move it too) |
 
-`done.reason ∈ turn_end | completed | max_hops | wall_clock | stalled_progress |
-model_error | internal_error | context_overflow | cancelled | interrupted`.
-`turn_end` is NON-terminal: it is the attended "I have said my piece" and the only
-trigger for `running -> idle`, leaving `terminal_reason` and `ended_at` NULL.
+`done.reason ∈ turn_end | stopped | completed | max_hops | wall_clock |
+stalled_progress | model_error | internal_error | context_overflow | cancelled |
+interrupted`. `turn_end` and `stopped` are NON-terminal and are the two triggers
+for `running -> idle`, both leaving `terminal_reason` and `ended_at` NULL. They
+differ only in who ended the hop: `turn_end` is the attended "I have said my
+piece", `stopped` is a human pressing Stop.
 `interrupted` is written by the startup sweep for a session the process died
 underneath.
 
@@ -83,12 +85,12 @@ upcast, rows are never rewritten.
 |---|---|
 | `task_events`, `computer_task_events`, `conversation_context` | merge → **`session_events`** `{seq, session_id, kind, version, payload, ts}` — append-only, per-session monotonic `seq` (DB-assigned) |
 | `tasks` → **`sessions`** | one id (a task IS a session); `mode` (attended\|unattended), `status` incl. `idle`, `terminal_reason`, `cursor_seq`, lease cols. Full DDL: `schema.md` |
-| `task_approvals` → **`approvals`** | kept, renamed to match `schema.md`. FOUR kinds now, and they are not interchangeable: `ask`/`approval` are prose the model reads back; `call` is a gated tool call carrying `(tool_name, tool_args)`; `plan` is a proposed plan carrying the plan itself in `tool_args`; `resume` is a run a human held, and belongs to no tool at all (`tool_call_id` is a synthetic `stop_*` with no matching event, so no call is open across that park) |
+| `task_approvals` → **`approvals`** | kept, renamed to match `schema.md`. THREE kinds, and they are not interchangeable: `ask`/`approval` are prose the model reads back; `call` is a gated tool call carrying `(tool_name, tool_args)`; `plan` is a proposed plan carrying the plan itself in `tool_args`. A stopped run has NO row — 11.8.6 gave it kind `resume` and 11.8.7 deleted it, because a stop is not a question and a held run waits on no consent |
 | `user_sandboxes` → **`session_sandboxes`** | rekeyed by session: the box follows the session, and the row is also its slot in the user's pool |
 | `users` | rebuilt, zero rows (Task 0c clears every user). Columns per `schema.md`, not today's table |
 | `computer_tasks` | dropped with the rest of the old chain |
 | `repeat_tasks` | out of scope (watching scrapped) |
-| new | **`system_events`** (operational log: batched, best-effort, pruned 30d); **`result_blobs`** `{ref, session_id, content, created_at}` — full oversized tool outputs, events carry preview+ref; **`projects`**, **`files`** `{user_id, path, content_hash, size, mtime}` unique on `(user_id, path)` — ONE flat store per user, replacing `project_files` (11.9; `project_files` is DROPPED, and a folder is `split_part(path,'/',1)`, derived and held by no table); **`project_folders`** `{project_id, folder}` — the links, so deleting a project deletes its links and no files; **`user_connections`** `{user_id, mcp_url, connection_id, status, tools_cache, refreshed_at}` — keyed by `(user_id, mcp_url)`; `connection_id` is minted BY US (Smithery accepts a path segment we choose), stored, never recomputed. No `server_name`: config keys are in-process labels, not durable keys. No credentials (they stay behind Smithery). **Write the row first:** mint a UUID, INSERT `status='pending'`, PUT to Smithery, then UPDATE from the response. A crash between mint and PUT leaves a pending row whose id is reused on retry, so the id survives every failure; minting after the PUT strands the old connection holding the user's live OAuth grant, which is the drift D24 exists to kill, just moved to crash-time. **`shared_connections`** `{mcp_url pk, connection_id, status, tools_cache, refreshed_at}` — same rule, no user column, because no-auth servers (Slack's workspace bot token) have no user and `user_connections.user_id` is NOT NULL. |
+| new | **`system_events`** (operational log: batched, best-effort, pruned 30d); **`result_blobs`** `{ref, session_id, content, created_at}` — full oversized tool outputs, events carry preview+ref; **`projects`**, **`files`** `{user_id, path, content_hash, size, mtime}` unique on `(user_id, path)` — ONE flat store per user, replacing `project_files` (11.9; `project_files` is DROPPED, and a folder is `split_part(path,'/',1)`, derived and held by no table); **`project_folders`** `{project_id, folder}` — the links, so deleting a project deletes its links and no files; **`user_connections`** `{user_id, server, status, refreshed_at}` — keyed by `(user_id, server)`, where `server` is the ARCADE APP PREFIX (`Gmail`, `MicrosoftOutlookMail`), which is what every one of that app's tool names is prefixed with (11.10). Not the gateway url: one gateway serves every app, so a url cannot tell two servers apart, and the gateway slug is infrastructure that can be recreated while the grants behind it — keyed Arcade-side by user id — survive untouched. Still not a config key: a `mcp_servers:` label is in-process and nothing durable may reference it; an Arcade prefix is the vendor's own name. No credentials (they stay at Arcade). No `connection_id` and no `tools_cache`: there is no connection object at Arcade to name, and the gateway's tool roster is one roster rather than a per-user fact, so it is cached in-process on the TTL. The row is a CACHE of `POST /v1/tools/authorize`'s answer, so the panel and the toggle refusal can read without a round trip. **`shared_connections` is DROPPED** (11.10): every connector behind the gateway is per-user, Slack is gone, and Google Search is one of ours with no row anywhere — a table with no possible writer. |
 
 ### harness_module (owns control plane — lifecycle sits NEXT TO the agent, never inside it)
 
@@ -114,9 +116,10 @@ Every transition, and its ONE trigger:
 | — | `pending` | `POST /sessions` |
 | `pending` | `running` | runner claims the lease |
 | `running` | `idle` | `done{turn_end}` — attended, model stopped calling tools |
+| `running` | `idle` | `done{stopped}` — a human pressed Stop. **The mode is NOT touched**, which is the whole of what makes it gentle: the plan the run was approved from is still approved, the box is hibernated rather than reaped, and picking it up costs nothing. **`idle` + `unattended` IS a stopped run** — the pair is reachable no other way, since an ordinary idle session is attended and an unattended one is running or parked — and a message or a plain start resumes it unattended |
 | `idle` | `running` | human sends a message |
 | `idle` | `running` | `POST /sessions/{id}/approve` — asks for a plan. Mode does NOT move here |
-| `running` | `awaiting_approval` | park tool (`request_approval` / `ask` / `propose_plan`), or **`POST /sessions/{id}/stop`** — the hold, kind `resume`. Mode is NOT touched |
+| `running` | `awaiting_approval` | park tool (`request_approval` / `ask` / `propose_plan`). Mode is NOT touched |
 | `awaiting_approval` | `running` | respond endpoint wakes it — **also flips `mode` to unattended when the row is a `plan` and the answer is the approve word.** The only mode flip into unattended there is |
 | `awaiting_approval` | `idle` | a DECLINED plan: the park closes, nothing runs, the session is an attended chat again. The only answer that ends a park without waking the session, because it is the only one with nothing for the model to read |
 | `running` | `completed` | `done{completed}` — also flips `mode` back to attended |
@@ -265,7 +268,7 @@ quotas:
 ```
 
 This block is the redesign DELTA, not the whole file. It does not restate
-`llm.base_url`, `llm.model_name`, `database`, `smithery`, or `mcp_servers`.
+`llm.base_url`, `llm.model_name`, `database`, `mcp`, or `mcp_servers`.
 
 Quotas are enforced in `api.py` at command time, before any state change.
 `POST /sessions` checks `new_sessions_per_hour` only; `POST /sessions/{id}/approve`
@@ -332,13 +335,15 @@ chat plumbing. One error shape everywhere: `{code, message, retryable}`.
 | `POST /auth/session` | Supabase JWT as `Authorization: Bearer` | 204 + `Set-Cookie`. Verifies it once, upserts `sub` → `users`. The ONLY endpoint that reads a bearer token |
 | `DELETE /auth/session` | — | 204, cookie cleared |
 | `GET /auth/me` | — | `{user_id, email, home_session_id}` — the home session is the chat the app lands in; the page needs it on first render and no other request would carry it |
+| `GET /health` | — | `{status, database}` — `status ∈ ok \| degraded`, `database` is `ok` or the failure in words. Unauthenticated, because an uptime check has no session and a health endpoint that needs one reports the checker's problems rather than the service's. The only route that was live without a contracts row, which is how it got here |
 | `GET /auth/config` | — | `{supabase_url, anon_key}` — what the sign-in view needs to reach Supabase. Public and unauthenticated: it is how a signed-out browser signs in, and the anon key authorizes nothing on its own |
 | `GET /sessions/{id}` | — | `{title, project_id, project_title, folders[], status, mode, hops_used/max, claims[], plan, recent_events[]}` — `project_title` is the LABEL, and it is here so the window's header reads the same however the window was opened; it came from the grid's navigation state before, which a session opened from the desk does not have. — `folders` is what this session WRITES, in claim order, and the first of them is where `plan.md` lands. It replaced `project_slug` in 11.9: a project links folders rather than owning one, so there is no single directory to name, and the session header stopped drawing directory chips when there could be several. `plan` is the session's NEWEST plan (`{approval_id, version, goal, answer}`) or null: the collapsed card an approved run pins needs it, and counting `propose_plan` calls in `recent_events` drifts because that window is capped |
 | `GET /sessions/{id}/events` | `Last-Event-ID?` | SSE of events, `id:<seq>` each |
 | `POST /sessions` | `{goal, steps?, project_id?}` | `{session_id, project_id}` (new project unless given; `steps` seed the todo list) |
 | `POST /sessions/{id}/messages` | `{text}` | 202 — appended as a user event and read at the next hop, including by a turn already running (LG-1.8). Delivery, never interruption: it waits for the current hop to finish, and stopping a run mid-step is `POST /cancel` |
-| `POST /sessions/{id}/stop` | — | 202 `{stopped}` — holds a running turn at its next hop boundary on a `resume` row. Writes no `done` and does not touch `mode`, so an approved plan survives it. `409 not_running` for anything else; `stopped: false` means no live turn in this process and the caller should cancel instead |
-| `POST /sessions/{id}/cancel` | — | 202 — ends the run and flips `mode` back to attended. An open `resume` row closes with it, so nothing offers to restart a terminal session |
+| `POST /sessions/{id}/stop` | — | 202 `{stopped}` — the SAME teardown as cancel, landing gently: `done{stopped}`, `running -> idle`, mode KEPT, box hibernated, in-flight calls closed by the interrupted synthesis. Immediate: no hop boundary to reach, no window, no grace timer. `409 not_running` for anything else — an idle or parked session is already not acting |
+| `POST /sessions/{id}/resume` | — | 202 — pick a stopped run back up with nothing added. A plain start: the mode was kept, so an idle unattended session resumes UNATTENDED from its plan, hops re-counted from the `done{stopped}` like every other `done`. No row to answer and no handoff injected — resuming is the absence of a change. Saying something instead is `POST /messages`, and the only difference is the words in the fold. `409 not_idle` otherwise |
+| `POST /sessions/{id}/cancel` | — | 202 — ends the run and flips `mode` back to attended. From a stop there is no live turn, so the terminal is written directly — and that direct-write path hands the mode back too, which is what spends the plan |
 | `POST /approvals/{id}/respond` | `{answer}` | 202 — wakes at cursor. `ask`/`approval` take prose and append a `user` event; `call` takes exactly `approve` or `decline`, appends nothing, and the resumed run executes or closes that call; `plan` takes three — the approve word saves `plan.md`, checks the unattended quota and starts the run unattended (**the only mode flip there is**), the decline word closes the park to `idle`, anything else is a REPLY — appended as the human's `user` event plus an unrendered `user{source: system}` instruction to propose again — which wakes the session attended and whose only valid answer is a new plan |
 | `GET /projects` | — | `[{id, title, status_rollup, updated_at}]` |
 | `POST /projects` | `{title, folders?:[name]}` | `{id, title, folders, files}` — a project made deliberately rather than as a side effect of `POST /sessions`. `folders` are store folders it LINKS, by name; `404 not_found` names any that are not in the caller's store. Picking none makes a folder named after the project (uniquified, kept alive by a sentinel) and links that, so it appears in the Files tab as an ordinary folder. This replaced `seed_from`, which copied tree rows between two project-scoped trees: there is one store now, so pointing two projects at one folder is linking it twice and the file stays one file |
@@ -360,35 +365,40 @@ chat plumbing. One error shape everywhere: `{code, message, retryable}`.
 | `GET /results/{ref}` | `offset&limit` | blob slice (ownership-checked) |
 | `GET /sessions/{id}/browser/frames` | — | SSE JPEG side-channel (`event: frame`, `{jpeg}` base64), keyed (user, session), ownership-checked, announced by a `status` event, rendered in the canvas panel (not a corner overlay). Nothing is captured while nobody is subscribed |
 | `POST /sessions/{id}/approve` | — | 202 — **asks for a plan; it does not start an unattended run.** Appends a `user{source: system}` handoff ("draft the plan from this transcript and call `propose_plan`, ALWAYS") and starts an ordinary attended turn. Pressed on a fresh session with no conversation it still yields a plan card, opening as an intake form: the gaps arrive in `missing`, never as prose. Accepts `idle`, `pending` **and any TERMINAL status** — on a cancelled run this is the "resume" press, and the handoff makes it a continuation. `409 already_unattended` / `not_idle` (a live run, or a start that lost the status race — a 202 there would leave the handoff in the transcript with no hop to read it) |
-| `GET /connections` | — | `[{server, name, mcp_url, requires_auth, status, tool_count, refreshed_at}]` — `mcp_servers:` joined to `user_connections` + `shared_connections` |
-| `POST /connections/{server}/connect` | — | `{setup_url}` — mints the id, writes the `pending` row, PUTs to Smithery. Idempotent: reconnect reuses the stored id |
-| `DELETE /connections/{server}` | — | 204 |
-| `GET /oauth/callback/{server}` | Smithery's redirect | HTML that `postMessage`s the opener and closes. Identity from the **cookie**, never a query param |
-| `GET /sessions/{id}/tools` | — | `{max_tools, ours, budget, used, servers:[{server, name, mcp_url, requires_auth, status, tool_count, enabled}]}` — the session window's tool meter. `budget = llm.max_tools - ours`, so it moves on its own when a local tool is added; `used` is the tool count of the servers this session was given. Rows are `GET /connections` plus `enabled` |
+| `GET /connections` | — | `[{server, label, name, status, tool_count, refreshed_at, setup_url, scopes, shares_with}]` — one row per `mcp_servers:` connector, `server` being the Arcade prefix. Status is read LIVE from Arcade, one `POST /v1/tools/authorize` per connector concurrently, and the rows are synced from it: `authorize` mints a consent link without invoking anything, so asking is free, and it is scope-aware, so it answers per SERVICE. The gateway's own `Arcade_ListApps` is NOT the source and cannot be — measured, it reports PROVIDERS (`arcade-google` covers Gmail, Calendar and Search), so connecting Gmail would render Calendar connected while every Calendar call still challenged. `setup_url` travels with the row so the panel opens the popup INSIDE the click, `scopes` says what that click grants, `shares_with` names the sibling services a disconnect takes. Google Search appears in no row: it is ours, with no grant to make |
+| `POST /connections/{server}/connect` | — | `{server, status, setup_url, scopes}` — mints a fresh consent link when the row's has gone stale. Calls no tool and connects nothing; the popup is what connects. Idempotent: asking again before the user finishes returns the same pending authorization rather than starting a second |
+| `DELETE /connections/{server}` | — | `{server, disconnected:[...]}` — revokes at Arcade (`DELETE /v1/admin/user_connections/{id}`) and drops our rows. **Not 204.** Arcade's connection is per PROVIDER ACCOUNT, so revoking Gmail revokes every service signed in through the same Google account; there is no narrower revoke to offer, so the one button says what it will take (the panel confirms from `shares_with` first) and the response is what actually went |
+| `GET /sessions/{id}/tools` | — | `{max_tools, ours, budget, used, servers:[{server, label, name, status, tool_count, enabled, ...}]}` — the session window's tool meter. `budget = llm.max_tools - ours`, so it moves on its own when a tool of ours is added; `used` is the tool count of the servers this session was given. Rows are `GET /connections` plus `enabled`. `ours` counts what `registry.manifest` counts, which includes Google Search — it comes over the gateway and is still ours — or the meter would disagree with the request the model gets |
 | `PUT /sessions/{id}/tools/{server}` | `{enabled}` | the same document. Refuses `409 not_connected` for a server nobody has authorized, and `409 tool_budget` — with both numbers in the message — for a toggle that would put the manifest over `llm.max_tools`. Turning something OFF is never refused |
 | `GET /sessions/{id}/fs` | `path?` | `{path, entries:[{name, path, is_dir, size}]}` — the session's LIVE sandbox disk, not the store. Ownership-checked like the frame stream, and it never boots a box: a parked or reaped session is `404` |
 | `GET /sessions/{id}/fs/file` | `path` | `{path, size, text, binary, truncated}` — one file from the live disk, on the same terms. Not-UTF-8 says `binary: true` with `text: null`; over `sandbox.browse_max_bytes` comes back cut short with `truncated: true` |
 
-The callback never *blocks* on Smithery: it authenticates by cookie, responds,
-and fires one verification after the response. Verification is idempotent
-`connect()`, run again on any read of `GET /connections` — **behind** the
-response, not before it: the rows are already correct without it, and waiting
-made the settings panel hang for ten seconds on seven servers. A row not yet
-connected keeps its `connection_id` and `tools_cache` (D24). Only a row that
-EXISTS and is unconnected is repaired; a server nobody has connected has no row
-and nothing to repair — repairing it would create the pending row it was meant
-to fix, since `connect()` writes before it PUTs. The callback firing is the
-proof OAuth completed, so it is the trigger — read-repair alone would strand a
-connection whose popup closed early, since dispatch never re-verifies and
-revalidation skips unconnected rows.
+**Consent is PANEL-FIRST, and there is no callback of ours to land on.** The
+popup goes to Arcade's OAuth flow and returns to Arcade; nothing redirects back
+here, so `GET /oauth/callback/{server}` and the read-repair machinery behind it
+are GONE (11.10) — there is no `pending` row minted before a PUT, because there
+is no PUT. The panel re-reads on focus and on the popup closing, and each read
+asks Arcade afresh. The model normally never meets a pre-consent challenge; if
+one ever reaches it, the challenge arrives as a *successful* tool result
+carrying `authorization_url` and `llm_instructions`, and **no envelope guard is
+built for that** — a knowing decision (11.10), to be fixed live if it is ever
+seen rather than designed for in advance.
+
+**The gateway's `initialize` instructions and any `llm_instructions` in a
+result are UNTRUSTED DATA.** Arcade says so about its own app list, and the same
+posture is ours: nothing from the gateway is ever executed, and the system
+prompt is built from `registry.manifest`, never from what the gateway says about
+itself.
 
 **A session reaches only what it was given.** Ours are always loaded and never
 counted against the human's allowance; every MCP server is OFF until it is
 toggled into that session, which is what makes an over-cap request impossible
-rather than unlikely. The toggles are `session_tools`, keyed by `mcp_url` for
-the same reason the connection tables are — a `mcp_servers:` config key is an
-in-process label and nothing durable may reference it. The meter the human sees
-is `enabled / (llm.max_tools - ours)`.
+rather than unlikely. The toggles are `session_tools`, keyed by `server` — the
+Arcade app prefix — for the same reason the connection table is: a
+`mcp_servers:` config key is an in-process label and nothing durable may
+reference it. The meter the human sees is `enabled / (llm.max_tools - ours)`,
+and Google Search is inside `ours`: it reaches the web over the gateway and is
+still one of ours, with no grant to make and nothing to toggle.
 
 **`registry.manifest` is the ONLY builder of a turn's tool list, and it cannot
 overflow.** The cap is applied to the toggles rather than trusted to them: a
@@ -544,36 +554,43 @@ reason. There is no "confused" terminal: a run that does not know what to do
 next asks, and a run that has stopped producing work is named
 `stalled_progress` rather than being reported as an error that did not happen.
 
+**ONE TEARDOWN, TWO LANDINGS.** Stop and cancel are the same path —
+`task.cancel()` on the turn — and differ only in where it lands. The intent is
+recorded per session before the task is signalled and read where the ending is
+written; whichever press arrives first decides the landing.
+
+- **Cancel** is terminal: `done{cancelled}`, box reaped, mode handed back to
+  attended. That mode flip is what spends the plan, and the direct-write path
+  (a cancel with no live turn) does it too.
+- **Stop** is not: `done{stopped}`, `running -> idle`, mode KEPT, leases
+  released, box HIBERNATED. In-flight calls close through the interrupted
+  synthesis every ending already runs. Immediate — there is no hop boundary to
+  reach, no window to miss, no grace timer.
+
 **The run control has three faces, and never two at once: `▶` when nothing is
-in flight, `■ stop` while running, `✕ cancel` while stopped.**
-Stop (`POST /sessions/{id}/stop`) cancels the dispatch tasks in flight — each
-call closes with `error_kind: cancelled_by_user`, which does NOT count toward
-the per-tool attempt cap — refuses any further dispatch for the rest of that
-hop, and holds at the hop boundary on a `resume` row: leases released, box
-hibernated, `running -> awaiting_approval`. **No `done` is written and the mode
-is unchanged**, which is the entire point — a park is not a terminal, so the
-plan the run was approved from is still approved, and the hop budget carries
-because the fold counts from the last `done` and a park appends none. Cancel is
-the second press, and the only thing here that spends a plan. `▶` is the third
-face: `autopilot` on a session with no live plan, `resume` on a cancelled one,
-where it drafts a continuation rather than a fresh v1.
+in flight, `■ stop` while running, `✕ cancel` while stopped.** The faces key off
+STATUS, from the lifecycle stream, never off an endpoint's 202 — so the button
+is right after a reload and right in a second tab. `▶` is `autopilot` on a
+session with no live plan and `resume` on a cancelled one, where it drafts a
+continuation rather than a fresh v1.
 
-Stop takes effect at the tool call and the hop boundary; it does not abort the
-model stream mid-generation. **A hop that never reaches a boundary degrades to
-the full cancel after `harness.stop_grace_s`**, so a wedged run is still
-killable by the same button. `POST /cancel` survives for that path and for
-sessions with no live turn; it is no longer the button's first face.
+**Resuming is the absence of a change, so it is code that already exists.** The
+stop kept the mode, so an idle session that is still unattended starts
+unattended: `POST /messages` resumes it with the words in the fold,
+`POST /resume` resumes it with nothing added. Hops re-budget from zero because
+every `done` resets the count, which needs no special case. There is no
+approvals row, no park kind, no arm in `respond` and no exemption in the
+composer's 409 — 11.8.6 built all of those to express what keeping the mode
+already says.
 
-**Kind `resume` takes the same three answers, and it is the ONE park a composer
-message may answer.** The approve word picks the run up where it held; prose
-resumes it with the message appended, so "skip that step, do X instead" is the
-resume — the closed call plus what the human said is what the model reads next
-hop, which is "errors are model input" applied to a human's stop; the decline
-word is the hard cancel. It is exempt from `_answer_by_message`'s 409 because
-the consent it holds on — the plan — was given already, so prose here approves
-nothing new. `call` and `plan` still refuse: those wait on consent nobody has
-given yet. The decline word is a card action only, so a message that happens to
-contain it still resumes.
+What this replaced, recorded because the shape is the lesson: 11.8.6 made stop a
+second authority over how a turn ends — a sink flag, a dispatch-task registry, a
+boundary wait, a wall-clock backstop that degraded into a cancel, and a `resume`
+park with three answers — all coordinating with a loop that runs on event time.
+Every coordination point was a race and first live use found three in one
+afternoon. The complexity was the bug. `cancelled_by_user` went with it: the
+per-tool streak is per-turn state and a stop ends the turn, so the exemption
+protected nothing.
 
 **A park kind is a wire fact, not a UI component.** A held run renders as an
 ordinary inline transcript row that scrolls away like any other, the composer is
@@ -588,16 +605,18 @@ overlaid the transcript, which is what the 11.8.6 canvas pass fixed.
 
 **Pressing ▶ on a TERMINAL session is legal, and it is the important case.** On
 a cancelled run the control reads "resume" and the same endpoint drafts a
-CONTINUATION: the handoff tells the model to read `plan.md` and the transcript
-first and resume from what is verifiably done, rather than planning work the
-human has already paid for a second time. The `terminal -> running` reopen row
-in the transition table is the mechanism.
+CONTINUATION: the handoff CARRIES `plan.md`'s content and tells the model to
+resume from what is verifiably done, rather than planning work the human has
+already paid for a second time. The `terminal -> running` reopen row in the
+transition table is the mechanism.
 
-`cancelled_by_user` joins the tool error kinds for this. Like `interrupted` it
-is never returned by a tool — the dispatch wrapper synthesizes it — and it
-closes the call so the transcript stays foldable. Unlike every other failure it
-does not count toward the attempt cap: stopping the browser three times must not
-close the browser to the run.
+**A fact the harness knows is INJECTED into the transcript, never left for the
+model to discover by tool call.** The handoff carries the plan itself — the
+file's content when a run has happened here, and "no plan exists yet" when none
+has. It used to say "read plan.md FIRST", which spent a tool call on a fact the
+harness already had, and after a DECLINED plan that read was a guaranteed
+FileNotFound, because nothing had written the file. The model's tools are for
+what only the world knows.
 
 What this replaced: the gate refused with a message naming `request_approval`
 and promised "you may call {name} once they agree" — a promise nothing kept,
@@ -645,9 +664,9 @@ run_turn(messages: list[Message],
 # Per-tool attempts cap 3, then the failure stands. The count is CONSECUTIVE
 # FAILURES, not calls, and a success clears the streak: a tool that recovers is
 # not punished for an earlier bad patch. In-flight calls count against the cap,
-# so a parallel fan-out of five cannot outrun a cap of two. ONE failure kind is
-# exempt: `cancelled_by_user`. A human's stop is not the tool failing, and
-# stopping the browser three times must not close the browser to the run.
+# so a parallel fan-out of five cannot outrun a cap of two. No failure kind is
+# exempt: the streak is per-turn state and every teardown ends the turn, so an
+# exemption for a stopped call protected nothing (11.8.7).
 # Malformed tool args buy ONE repair round trip per turn, NOT charged as a hop:
 # the hop produced no usable work, and charging it would let bad JSON eat budget
 # the task needs.
@@ -739,8 +758,10 @@ manifest(user_id) -> list[ToolSpec]
 its `render` (its row in Looking Glass). `registry.py` auto-discovers; adding a
 tool is adding a folder.
 
-**kept:** `smithery.py` (transport under envelope; one ClientSession, TTL,
-vault+proxy — creds never in brain or sandbox); `tool_module/browser/`
+**kept:** `arcade.py` (transport under envelope; one ClientSession, a gateway
+session per user, TTL — the user's credentials never leave Arcade, and ours never
+leave `.env`; it replaced `smithery.py` in 11.10 and there is no
+`kind: smithery` path left); `tool_module/browser/`
 (browser_tool, browser_stream, browser_actions — leashed); `tool_module/sandbox/`
 (e2b manager + sandbox toolset, moved from computer_module; lazy provision on
 first sandbox-tool call).
@@ -770,7 +791,7 @@ That test, not a list, decides future resources.
 | sandbox | no (one box per session) | no (the disk is a cache, D27) | **capped**, not leased: `sandbox.max_concurrent_per_user` |
 | store folder (`folder:{user}:{name}`) | yes | yes (the tree it writes) | **leased**, one per write claim |
 | browser (`browser:{user}`) | yes | yes (profile, cookies, logins) | **leased** |
-| MCP via Smithery | yes | no (stateless per call) | no lease, runs free |
+| MCP via the Arcade gateway | yes | no (stateless per call) | no lease, runs free |
 | session log | no (per session) | — | serialized by the appender, a different race |
 
 **The sandbox is capacity, not a lease.** A box belongs to one session and is
@@ -823,6 +844,19 @@ Bytes in object storage we own, the tree in Postgres, the sandbox disk a cache
 (D27). `harness_module/store.py` owns it, because the store is the harness's and
 never the sandbox's (D28).
 
+**One idea per file** (11.8.8). `blobs.py` is content-addressed bytes and the
+HTTP client that carries them; `store.py` is the TREE alone; `memory.py` is the
+user's notes and curated core, keyed by user and mounted nowhere. Imports go one
+way — blobs ← store ← workspace, memory standing alone — and `workspace.py` is a
+transfer engine: materialize, flush, seal.
+
+**An HTTP client belongs to the loop that made it.** `httpx` binds sockets to
+the running loop, so a client cached in a module global outlives it and the next
+loop finds a dead pool. Both clients — the store's in `blobs.py` and the model's
+in `model_module/client.py` — are keyed by the RUNNING loop, and are fixed
+together on purpose: fixing one and not the other moves the flake rather than
+retiring it.
+
 ```
 put_blob(content) -> sha256          # content-addressed, immutable, write-once
 get_blob(sha256) -> bytes
@@ -835,7 +869,6 @@ move_path(user_id, src, dst) -> [(from, to)]      # one file or a subtree; rows 
                                                   # Refuses a TOP-LEVEL folder: that is a rename of
                                                   # what claims and mounts are keyed by
 commit_tree(user_id, entries, prefix="/")         # blobs FIRST, rows LAST, in one transaction
-diff_tree(a, b) -> paths that differ by hash
 append_note(user_id, text) -> path   # one file per note; never rewritten
 update_memory(user_id, text)         # replaces MEMORY.md whole, under an advisory lock
 read_memory(user_id) -> str          # the curated core, '' when there is none
@@ -958,15 +991,25 @@ fails is logged and nothing more — the store already has the file. An empty fi
 is content like any other. `quotas.upload_max_mb` is enforced as the upload is
 read, not after.
 
-**Restructuring a folder a run has mounted is REFUSED, not corrected.** Delete,
-undo and a folder rename all ask the same question first and all answer it the
-same way (`409 folder_busy`): the runner holds a live session's claims and its
-materialized manifest in MEMORY, so nothing in an HTTP handler can correct that
-box. A box that still holds a deleted file would put it back at its next flush;
-a box that lost one would commit the loss. Stopping the run first is the answer,
-and saying so beats a change that half-happens. A file or a nested directory
-RENAMES freely under a running session — only the top-level name moves a mount —
-but a delete does not, because the file itself is on that disk.
+**PREVENTION, NOT SYNCHRONIZATION: a destructive store operation against a
+folder whose WRITE LEASE is held is refused** (`409 folder_busy`). Move, rename,
+delete and undo all ask `leases.holder("folder:{user}:{name}")` first. A session
+holds that lease for the whole time it is writing the folder, so if nobody holds
+it there is no live box to diverge from the store, and if somebody does, no HTTP
+handler can correct them — the runner holds that session's claims and its
+materialized manifest in MEMORY. A box that still held a deleted file would put
+it back at its next flush; one that lost it would commit the loss.
+
+This replaced a coherency protocol. `move_through` pushed every store-side move
+into every live box with remote `mv` and `rm` so a flush would not undo it, and
+reported the boxes that refused as `stale_sessions` — the scariest path in the
+subsystem, chasing a moving cache to repair a divergence one lease check simply
+prevents (11.8.8). Read claims take no lease and need none: their flush
+discards, so they cannot put anything back.
+
+`write_through` is the one live-box write that stays, because it is ADDITIVE:
+an uploaded file put into a box already working that folder, where the store
+already holds the file either way and a failure is a logged nothing.
 
 **Nothing is destroyed, only unlisted.** Deleted rows move to `deleted_files`
 (with `deleted_links` for the links the same gesture dropped) rather than
@@ -984,6 +1027,13 @@ the only one: nothing else may write a folder name, which is what keeps
 **What is NOT in 11.9, and is deliberately absent rather than forgotten:**
 unlinking a folder from a project; exposing per-folder read mode (claims support
 it; links ship write-only); and blob GC.
+
+**Snapshot TABLES dropped (11.8.8).** 11.7.5 removed the capability and 0015
+dutifully rekeyed the dormant rows into the user namespace — which is when it
+became clear what was being maintained: a correctly-migrated table for a feature
+that does not exist. `project_snapshots` and `snapshot_files` are gone; when
+snapshots return they get designed against the folder store natively rather than
+inheriting a shape drawn for `project_files`, which no longer exists either.
 
 **Snapshots were REMOVED (11.7.5).** `snapshot_project` / `restore_snapshot` /
 `list_snapshots` / `prune_snapshots` had no caller in the tree, and
@@ -1087,7 +1137,7 @@ on concurrently running sessions. None of this exists in prod until it does —
 | `test_event_replay_deterministic` | same log AND same inputs ⇒ identical context assembly, ladder included: a log over the input budget folds to a view under it, and folds byte-identically twice. `now` and `reach` are inputs, not ambient reads |
 | `test_authz_scoping` | user A cannot read/steer user B's sessions, refs, files |
 | `test_plan_gate` | one door into an unattended run: `propose_plan` parks kind `plan` with the plan on the row; approve writes `plan.md`, checks the quota and flips mode+status in one update; decline closes the park to `idle`; anything else is a reply that closes the card and asks for the next plan; a composer message 409s; play appends the handoff without flipping mode, and is accepted on a TERMINAL session (the continuation press) |
-| `test_stop_resume` | stop closes the calls in flight `cancelled_by_user` with no streak increment and refuses the rest of the hop; the hold keeps the mode and writes no `done`; approve resumes, prose resumes with the message appended, decline cancels and spends the plan; a composer message answers a `resume` park while `call` and `plan` still 409 |
+| `test_stop_resume` | stop and cancel are one teardown with two landings: stop lands `idle` with `done{stopped}`, the mode kept and the box hibernated, its in-flight calls closed `interrupted`; a message resumes it unattended with the words in the fold and a plain start resumes it with nothing added; cancel from a stop lands `cancelled` with the mode handed back, and so does a direct-write cancel of an idle unattended session; the handoff carries plan.md's content rather than telling the model to read it |
 | `test_folders_are_the_filesystem` | a folder is a derived top-level segment and no table holds it; renaming one moves its paths, its links and its claims together, is refused onto a taken name, and is refused while a live box holds it; a delete keeps the blobs so undo restores the same content under the same id, takes the folder and its links when it empties one, restores the batch it NAMES, refuses to overwrite what arrived since, and is refused while a live box holds the folder; a project links folders and owns none; `POST /projects` with links → folder claims at spawn, with none → one fresh folder; the link endpoint writes `project_folders` and reaches the NEXT session's claims, not this one's; write leases are per folder, so two projects writing different folders do not contend and the same folder does; `plan.md` lands in the first linked folder; a rename touches no folder; no home-session project is minted |
 
 ---

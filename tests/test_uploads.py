@@ -46,7 +46,7 @@ async def boxes(tmp_path, monkeypatch):
         task.cancel()
     runner._running.clear()
     runner._reapers.clear()
-    runner._cancelling.clear()
+    runner._teardown.clear()
     await asyncio.sleep(0)
     await pool.execute("DELETE FROM sessions WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM files WHERE user_id = ANY($1::uuid[])", _seeded)

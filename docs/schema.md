@@ -74,28 +74,11 @@ create index on project_folders (folder);
 -- Order matters: `created_at` is the order they were chosen in, and the FIRST
 -- one is where an approved plan.md lands.
 
--- a saved copy of a project's tree; the bytes are already immutable
-project_snapshots (
-  id          uuid primary key default gen_random_uuid(),
-  project_id  uuid not null references projects(id) on delete cascade,
-  label       text,
-  taken_at    timestamptz not null default now()
-)
-create index on project_snapshots (project_id, taken_at desc);
-
-snapshot_files (
-  snapshot_id   uuid not null references project_snapshots(id) on delete cascade,
-  path          text not null,
-  content_hash  text not null,
-  size          bigint not null,
-  mtime         timestamptz not null,
-  primary key (snapshot_id, path)
-)
--- A snapshot costs rows, not bytes. Any future blob GC must walk these as well
--- as `files`, or restoring a snapshot stops working. The paths were rekeyed
--- into the user namespace with everything else (migration 0015) so a restore
--- would write `files` rows; the CAPABILITY is still absent — snapshot_project /
--- restore_snapshot were removed in 11.7.5 and nothing reads these tables.
+-- (project_snapshots and snapshot_files were DROPPED in 11.8.8. The capability
+-- went in 11.7.5; 0015 rekeyed the dormant rows, which is when carrying a
+-- correctly-migrated table for a feature that does not exist stopped being
+-- free. git remembers the DDL, and a returning snapshot gets designed against
+-- the folder store natively.)
 
 -- what a delete removed, and what puts it back. Blobs are never collected, so
 -- the bytes of every row here are still in the store: undo is a restore of the

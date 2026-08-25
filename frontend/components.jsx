@@ -74,10 +74,7 @@ function ApprovalCard({ item, onResolve, onError }) {
      conversation that produced it is on screen. */
   const isPlan = item.kind === "plan";
   const plan = isPlan ? item.tool_args || {} : null;
-  // A stopped run: resume or cancel, and the prose that would steer it belongs
-  // in the session window's composer, not here.
-  const isResume = item.kind === "resume";
-  const decided = isCall || isPlan || isResume;
+  const decided = isCall || isPlan;
 
   async function resolve(answer) {
     const extra = note.current ? note.current.value.trim() : "";
@@ -121,7 +118,7 @@ function ApprovalCard({ item, onResolve, onError }) {
           <Dot kind="work" /> {item.session_title || "session"}
         </span>
         <span className="tag accent">
-          {isAsk ? "answer" : isPlan ? `plan v${item.version || 1}` : isResume ? "stopped" : "approve / decline"}
+          {isAsk ? "answer" : isPlan ? `plan v${item.version || 1}` : "approve / decline"}
         </span>
       </div>
       <div className="title">{isCall ? `Run ${item.tool_name}?` : item.prompt}</div>
@@ -163,10 +160,10 @@ function ApprovalCard({ item, onResolve, onError }) {
             )}
             <span className="grow" />
             <button className="btn" disabled={gone} onClick={() => resolve(decided ? "decline" : "no")}>
-              {isResume ? "cancel the run" : "decline"}
+              decline
             </button>
             <button className="btn primary" disabled={gone} onClick={() => resolve(decided ? "approve" : "yes")}>
-              {isPlan ? "approve and run →" : isResume ? "resume →" : "approve →"}
+              {isPlan ? "approve and run →" : "approve →"}
             </button>
           </div>
         </>

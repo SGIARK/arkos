@@ -9,6 +9,7 @@ carries no stream token.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -60,9 +61,9 @@ _jwks_client: Any = None
 
 def jwks_url() -> str | None:
     """Where the project publishes the keys its tokens are signed with."""
-    from harness_module import store
+    from harness_module import blobs
 
-    project = store.project_url()
+    project = blobs.project_url()
     return f"{project}/auth/v1/.well-known/jwks.json" if project else None
 
 
@@ -114,6 +115,22 @@ def verify_supabase(token: str) -> dict[str, Any]:
         return jwt.decode(token, secret, algorithms=[_ALG], audience=audience)
 
     raise jwt.InvalidAlgorithmError(f"tokens signed with {algorithm!r} are not accepted")
+
+
+async def verify_supabase_off_loop(token: str) -> dict[str, Any]:
+    """`verify_supabase`, run off the event loop.
+
+    The asymmetric path fetches the project's JWKS over the network with
+    urllib — synchronously, and PyJWT refetches whenever it meets an unknown
+    `kid`, so it is not a one-time cost that a warm cache retires. Called
+    directly from a request handler it blocks the ONE event loop every session
+    shares, which is the concurrency law's plainest violation.
+
+    HS256 needs no fetch, so most deployments never pay for the thread; the hop
+    is cheap and sign-in is rare, and paying it always beats a rule that holds
+    only for the algorithm somebody happened to configure.
+    """
+    return await asyncio.to_thread(verify_supabase, token)
 
 
 def extract_bearer(authorization: str | None) -> str | None:

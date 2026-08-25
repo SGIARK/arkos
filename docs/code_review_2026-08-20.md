@@ -118,3 +118,61 @@ criterion — the target is stale or a trim card is owed.
 2. Re-run review over smithery.py, components.jsx, api.jsx.
 3. Decide: refresh the 4.5k-line target in the spec, or card a trim pass
    (the P1 lists above are ~600-700 lines of it).
+
+---
+
+# Re-run over the unreviewed files — 2026-08-21 (Task 11.7.5, clause 3)
+
+The original snapshot was missing `tool_module/smithery.py`,
+`tool_module/session_tools.py`, `tool_module/tools/control.py`,
+`frontend/components.jsx` and `frontend/api.jsx`. This is that pass. Three
+findings, one fixed here and two carded — plus what was checked and found
+sound, because a review that lists only faults says nothing about coverage.
+
+## Fixed in 11.7.5
+
+**`smithery.py:_envelope` was a THIRD copy of the view cap.** It read
+`tools.result_view_cap_chars` and cut to its own length, alongside
+`loop._cap_view` and `runner._result_event` — the exact drift the original
+review flagged between the other two, sitting in the file it could not see. All
+three now go through `loop.cap_view`, and `grep -rn result_view_cap_chars`
+returns ONE read in the tree. The message also stops naming the configured cap
+and names what it actually cut, which differ the moment the cap moves.
+
+## Carded, not fixed
+
+**F1 · `SmitheryClient` caches an `aiohttp.ClientSession` on the instance.**
+The same loop-binding class of bug 11.8.8 fixed twice — httpx in `blobs.py`,
+the OpenAI SDK in `model_module/client.py` — where a client outlives the loop
+that opened its sockets. It is LATENT here rather than live: `hands.start()` /
+`hands.stop()` are lifespan-managed, so production creates and closes it inside
+one loop. It bites the moment anything constructs a `Smithery` outside that
+lifespan, which is what a test does. Fix is the same shape: key by the running
+loop, close the one being replaced. **Coordinate with 11.9.5**, which is about
+to rework this module's auth handling — doing both at once beats two passes.
+
+**F2 · `Smithery`'s per-owner state is unbounded.** `_cache`, `_locks`,
+`_generation` and `_setup_urls` are all keyed by user and only ever grow: one
+entry per user who has touched MCP in this process, each holding that user's
+connections and every connection's `tools_cache` — and a tool cache is the
+thing that reached 164 schemas. Nothing evicts; `_invalidate` pops one owner
+and `close` clears everything. `_load`'s own docstring says "once per process",
+so the caching is deliberate — the growth across USERS is what nobody chose.
+Needs an eviction policy (LRU by owner, or drop with the session), which is a
+design decision rather than a patch.
+
+## Checked and sound
+
+* `api.jsx` never stores a credential — the Supabase token is used once and
+  discarded, identity is the httpOnly cookie, and the comment says why.
+* `useStream`'s EventSource is closed on unmount and guarded by a `dead` flag;
+  its effect deps (`refreshQuestions`, `refreshSession`, `onError`, `onPulse`)
+  are all `useCallback`, so there is no reconnect storm.
+* The frontend consolidation the original review asked for has landed: one
+  `@keyframes pop`, one `Dot`, one `useEscape`, one file tree, and ONE
+  `api.attention()` fetch (it was four).
+* `_owner_for` refuses a per-user server with no user rather than falling back
+  to the shared row — the check that keeps one person's OAuth grant off
+  another's call.
+* `session_tools.py` (66 lines) and `tools/control.py` (242) carry no
+  duplication worth collapsing.

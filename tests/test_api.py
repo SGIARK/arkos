@@ -1049,8 +1049,8 @@ async def _read_frames(stream, user_id, session_id):
 # --- the tool budget (11.4): what this session may reach ---------------------------
 
 
-class _FakeSmithery:
-    """The connections half of `Smithery`, which is all the tools document reads."""
+class _FakeArcade:
+    """The connections half of `Arcade`, which is all the tools document reads."""
 
     def __init__(self, rows):
         self._rows = rows
@@ -1058,17 +1058,21 @@ class _FakeSmithery:
     async def connections(self, user_id):
         return [dict(r) for r in self._rows]
 
+    async def always(self, user_id):
+        return []
 
-def _server(label, *, tools, connected=True, requires_auth=True):
+
+def _server(label, *, tools, connected=True):
     return {
-        "server": label,
+        "server": label.title(),
+        "label": label,
         "name": label.title(),
-        "mcp_url": f"https://{label}.example",
-        "requires_auth": requires_auth,
         "status": "connected" if connected else "disconnected",
         "tool_count": tools,
         "refreshed_at": None,
         "setup_url": None,
+        "scopes": [],
+        "shares_with": [],
     }
 
 
@@ -1077,7 +1081,7 @@ def mcp(monkeypatch):
     """Install a connections source, and return a setter for what it holds."""
 
     def use(rows):
-        monkeypatch.setattr(api.hands, "smithery", lambda: _FakeSmithery(rows))
+        monkeypatch.setattr(api.hands, "arcade", lambda: _FakeArcade(rows))
 
     use([])
     return use
@@ -1085,7 +1089,7 @@ def mcp(monkeypatch):
 
 async def test_a_session_starts_reaching_nothing_but_ours(client, mcp):
     """The default is ours alone: a connected server is not a reachable one."""
-    mcp([_server("gmail", tools=12), _server("slack", tools=38, requires_auth=False)])
+    mcp([_server("gmail", tools=12), _server("slack", tools=38)])
     user_id = await _signed_in(client)
     session_id = await _session_for(user_id)
 
@@ -1102,13 +1106,13 @@ async def test_a_toggle_is_recorded_and_read_back(client, mcp):
     user_id = await _signed_in(client)
     session_id = await _session_for(user_id)
 
-    written = await client.put(f"/sessions/{session_id}/tools/gmail", json={"enabled": True})
+    written = await client.put(f"/sessions/{session_id}/tools/Gmail", json={"enabled": True})
 
     assert written.status_code == 200
     assert written.json()["used"] == 12, "the write answers with the meter it just moved"
     assert (await client.get(f"/sessions/{session_id}/tools")).json()["used"] == 12
 
-    await client.put(f"/sessions/{session_id}/tools/gmail", json={"enabled": False})
+    await client.put(f"/sessions/{session_id}/tools/Gmail", json={"enabled": False})
     assert (await client.get(f"/sessions/{session_id}/tools")).json()["used"] == 0
 
 
@@ -1119,7 +1123,7 @@ async def test_a_toggle_over_the_cap_is_refused_with_the_numbers(client, mcp):
     user_id = await _signed_in(client)
     session_id = await _session_for(user_id)
 
-    refused = await client.put(f"/sessions/{session_id}/tools/huge", json={"enabled": True})
+    refused = await client.put(f"/sessions/{session_id}/tools/Huge", json={"enabled": True})
 
     assert refused.status_code == 409
     assert refused.json()["code"] == "tool_budget"
@@ -1132,7 +1136,7 @@ async def test_an_unconnected_server_cannot_be_given_to_a_session(client, mcp):
     user_id = await _signed_in(client)
     session_id = await _session_for(user_id)
 
-    refused = await client.put(f"/sessions/{session_id}/tools/linear", json={"enabled": True})
+    refused = await client.put(f"/sessions/{session_id}/tools/Linear", json={"enabled": True})
 
     assert refused.status_code == 409
     assert refused.json()["code"] == "not_connected"
@@ -1143,10 +1147,10 @@ async def test_turning_a_server_off_is_never_refused(client, mcp):
     mcp([_server("gmail", tools=12)])
     user_id = await _signed_in(client)
     session_id = await _session_for(user_id)
-    await client.put(f"/sessions/{session_id}/tools/gmail", json={"enabled": True})
+    await client.put(f"/sessions/{session_id}/tools/Gmail", json={"enabled": True})
 
     mcp([_server("gmail", tools=9000)])  # the server grew overnight
-    off = await client.put(f"/sessions/{session_id}/tools/gmail", json={"enabled": False})
+    off = await client.put(f"/sessions/{session_id}/tools/Gmail", json={"enabled": False})
 
     assert off.status_code == 200
     assert off.json()["used"] == 0
@@ -1156,7 +1160,7 @@ async def test_an_unknown_server_is_not_found(client, mcp):
     user_id = await _signed_in(client)
     session_id = await _session_for(user_id)
 
-    assert (await client.put(f"/sessions/{session_id}/tools/nope", json={"enabled": True})).status_code == 404
+    assert (await client.put(f"/sessions/{session_id}/tools/Nope", json={"enabled": True})).status_code == 404
 
 
 async def test_the_tool_budget_is_scoped_to_the_session_owner(client, mcp):
@@ -1168,7 +1172,7 @@ async def test_the_tool_budget_is_scoped_to_the_session_owner(client, mcp):
     await _signed_in(client)
 
     assert (await client.get(f"/sessions/{their_session}/tools")).status_code == 404
-    assert (await client.put(f"/sessions/{their_session}/tools/gmail", json={"enabled": True})).status_code == 404
+    assert (await client.put(f"/sessions/{their_session}/tools/Gmail", json={"enabled": True})).status_code == 404
 
 
 async def test_the_toggles_are_per_session(client, mcp):
@@ -1177,7 +1181,7 @@ async def test_the_toggles_are_per_session(client, mcp):
     user_id = await _signed_in(client)
     one, other = await _session_for(user_id), await _session_for(user_id)
 
-    await client.put(f"/sessions/{one}/tools/gmail", json={"enabled": True})
+    await client.put(f"/sessions/{one}/tools/Gmail", json={"enabled": True})
 
     assert (await client.get(f"/sessions/{one}/tools")).json()["used"] == 12
     assert (await client.get(f"/sessions/{other}/tools")).json()["used"] == 0

@@ -77,32 +77,50 @@ Delta = TextDelta | ReasoningDelta | ToolCallDelta | Finish
 
 
 # --- client -----------------------------------------------------------------
+#
+# ONE CLIENT PER RUNNING LOOP, not one per process. The SDK holds an httpx
+# connection pool, and httpx binds its sockets to the loop that opened them —
+# so a client cached in a module global outlives the loop it belongs to, and the
+# next loop finds a dead pool ("Event loop is closed"). Keying the cache by the
+# RUNNING loop makes the lifetime follow the thing it actually depends on.
+#
+# `harness_module/blobs.py` does the identical thing for the store's HTTP
+# client, and they were fixed together in 11.8.8 on purpose: fixing one and not
+# the other just moves the flake to whichever is constructed first.
 
-_client: AsyncOpenAI | None = None
-_client_key: tuple[str, str, float] | None = None
+_clients: dict[Any, tuple[tuple[str, str, float], AsyncOpenAI]] = {}
 
 
 def get_client() -> AsyncOpenAI:
-    """Return the cached client; max_retries=0 because `generate` is the only retry layer."""
-    global _client, _client_key
-
+    """Return this loop's client; max_retries=0 because `generate` is the only retry layer."""
     base_url = str(_cfg("llm.base_url", ""))
     api_key = str(_cfg("llm.api_key", "-"))
     # Part of the cache key: the SDK reads it only at construction.
     timeout = float(_cfg("llm.timeout_s", 90))
     key = (base_url, api_key, timeout)
 
-    if _client is None or _client_key != key:
-        _client = AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=timeout, max_retries=0)
-        _client_key = key
-    return _client
+    try:
+        loop: Any = asyncio.get_running_loop()
+    except RuntimeError:
+        # Constructed outside a loop — a config probe, or a synchronous caller.
+        # It gets its own client under a key no loop can equal, and no cache.
+        return AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=timeout, max_retries=0)
+
+    cached = _clients.get(loop)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    client = AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=timeout, max_retries=0)
+    _clients[loop] = (key, client)
+    # Loops that have gone leave nothing to close: their pools died with them,
+    # and the entry is only a reference to collect.
+    for stale in [other for other in _clients if other.is_closed()]:
+        _clients.pop(stale, None)
+    return client
 
 
 def reset_client() -> None:
-    """Drop the cached client, for tests and config reloads."""
-    global _client, _client_key
-    _client = None
-    _client_key = None
+    """Drop every cached client, for tests and config reloads."""
+    _clients.clear()
 
 
 # --- error classification ---------------------------------------------------

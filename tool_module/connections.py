@@ -1,16 +1,24 @@
 """
-Stored MCP connections, keyed by `mcp_url` and addressed by a minted `connection_id`.
+Per-user Arcade connections, keyed by `(user_id, server)`.
 
-The row is written BEFORE the Smithery PUT, so a crash in between leaves a pending
-row whose id is reused rather than stranding a connection holding a live OAuth grant.
+`server` is the Arcade app prefix — `Gmail`, `Linear`, `GoogleCalendar` — which
+is also what every one of that app's tool names is prefixed with. It is the
+vendor's name for the app, not a config label, which is what makes it safe to
+store: renaming the key under `mcp_servers:` in config.yaml still changes
+nothing here.
+
+A row is a CACHE of a fact that lives at Arcade, not the fact itself. The grant
+belongs to Arcade, keyed by the user id we send in `Arcade-User-Id`, and it
+survives anything we do to this table — including recreating the gateway, which
+is why the gateway url is not part of the key. What the row buys is a settings
+panel that can render without a round trip, and a `PUT /sessions/{id}/tools`
+that can refuse an unconnected server without one either.
 """
 
 from __future__ import annotations
 
-import re
-import uuid
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from db import pool
@@ -18,151 +26,82 @@ from db.ids import as_uuid as _uid
 
 PENDING = "pending"
 CONNECTED = "connected"
-
-_COLUMNS = "mcp_url, connection_id, status, tools_cache, refreshed_at"
+DISCONNECTED = "disconnected"
 
 
 @dataclass(slots=True)
 class Connection:
-    """One stored connection; `tools` is the cached `tools/list` response."""
+    """One user's standing with one Arcade app."""
 
-    mcp_url: str
-    connection_id: str
+    server: str
     status: str = PENDING
-    tools: list[dict[str, Any]] = field(default_factory=list)
     refreshed_at: datetime | None = None
 
     @property
     def connected(self) -> bool:
         return self.status == CONNECTED
 
-    def stale(self, ttl_s: float) -> bool:
-        """Return True when the cached tool list is old enough to revalidate."""
-        if self.refreshed_at is None:
-            return True
-        return (datetime.now(UTC) - self.refreshed_at).total_seconds() > ttl_s
-
-
-def mint_id(mcp_url: str) -> str:
-    """Mint a fresh connection id: the host slugified for readability, a uuid for uniqueness."""
-    host = re.sub(r"^https?://", "", mcp_url).split("/")[0]
-    slug = re.sub(r"[^a-z0-9]+", "-", host.lower()).strip("-")[:40]
-    return f"{slug}-{uuid.uuid4().hex[:12]}" if slug else uuid.uuid4().hex
-
-
-
 
 def _row(record: Any) -> Connection:
     return Connection(
-        mcp_url=record["mcp_url"],
-        connection_id=record["connection_id"],
+        server=record["server"],
         status=record["status"],
-        tools=record["tools_cache"] or [],
         refreshed_at=record["refreshed_at"],
     )
 
 
-async def load(user_id: str | None) -> dict[str, Connection]:
-    """Return every stored connection keyed by `mcp_url`; `user_id=None` loads the shared ones."""
-    if user_id is None:
-        rows = await pool.fetch(f"SELECT {_COLUMNS} FROM shared_connections")
-    else:
-        rows = await pool.fetch(
-            f"SELECT {_COLUMNS} FROM user_connections WHERE user_id = $1",
-            _uid(user_id),
-        )
-    return {r["mcp_url"]: _row(r) for r in rows}
-
-
-async def claim(user_id: str | None, mcp_url: str) -> str:
-    """Return the id to PUT with, reusing an existing row's id so a retry strands nothing."""
-    new_id = mint_id(mcp_url)
-    if user_id is None:
-        return await pool.fetchval(
-            """
-            INSERT INTO shared_connections (mcp_url, connection_id, status)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (mcp_url) DO UPDATE SET mcp_url = EXCLUDED.mcp_url
-            RETURNING connection_id
-            """,
-            mcp_url,
-            new_id,
-            PENDING,
-        )
-    return await pool.fetchval(
-        """
-        INSERT INTO user_connections (user_id, mcp_url, connection_id, status)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (user_id, mcp_url) DO UPDATE SET mcp_url = EXCLUDED.mcp_url
-        RETURNING connection_id
-        """,
+async def load(user_id: str) -> dict[str, Connection]:
+    """Return every stored connection for one user, keyed by `server`."""
+    rows = await pool.fetch(
+        "SELECT server, status, refreshed_at FROM user_connections WHERE user_id = $1",
         _uid(user_id),
-        mcp_url,
-        new_id,
-        PENDING,
     )
+    return {r["server"]: _row(r) for r in rows}
 
 
-async def save(
-    user_id: str | None,
-    mcp_url: str,
-    *,
-    status: str,
-    tools: list[dict[str, Any]] | None = None,
-) -> None:
-    """Record what Smithery came back with; `refreshed_at` is the TTL clock."""
-    if user_id is None:
-        await pool.execute(
-            """
-            UPDATE shared_connections SET status = $2, tools_cache = $3, refreshed_at = now()
-            WHERE mcp_url = $1
-            """,
-            mcp_url,
-            status,
-            tools,
-        )
-        return
+async def mark(user_id: str, server: str, status: str) -> None:
+    """Record what Arcade says about one app, inserting the row if it is the first word."""
     await pool.execute(
         """
-        UPDATE user_connections SET status = $3, tools_cache = $4, refreshed_at = now()
-        WHERE user_id = $1 AND mcp_url = $2
+        INSERT INTO user_connections (user_id, server, status)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id, server)
+        DO UPDATE SET status = EXCLUDED.status, refreshed_at = now()
         """,
         _uid(user_id),
-        mcp_url,
-        status,
-        tools,
-    )
-
-
-async def set_status(user_id: str | None, mcp_url: str, status: str) -> None:
-    """
-    Change the status and nothing else.
-
-    Unlike `save(tools=None)` this keeps `tools_cache`, which is how a later call
-    still resolves a name to this connection.
-    """
-    if user_id is None:
-        await pool.execute(
-            "UPDATE shared_connections SET status = $2, refreshed_at = now() WHERE mcp_url = $1",
-            mcp_url,
-            status,
-        )
-        return
-    await pool.execute(
-        "UPDATE user_connections SET status = $3, refreshed_at = now() WHERE user_id = $1 AND mcp_url = $2",
-        _uid(user_id),
-        mcp_url,
+        server,
         status,
     )
 
 
-async def forget(user_id: str | None, mcp_url: str) -> None:
-    """Drop the row so the next connect mints a fresh id and a fresh OAuth flow."""
-    if user_id is None:
-        await pool.execute("DELETE FROM shared_connections WHERE mcp_url = $1", mcp_url)
+async def sync(user_id: str, statuses: dict[str, str]) -> None:
+    """Write a whole reading of Arcade's per-user state in one transaction.
+
+    `Arcade_ListApps` answers for every app at once, so the rows move together
+    or not at all: a partial write would leave the panel showing one app's
+    reading beside another's from minutes ago, with nothing to say which.
+    """
+    if not statuses:
         return
+    async with (await pool.pool()).acquire() as conn, conn.transaction():
+        for server, status in statuses.items():
+            await conn.execute(
+                """
+                INSERT INTO user_connections (user_id, server, status)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (user_id, server)
+                DO UPDATE SET status = EXCLUDED.status, refreshed_at = now()
+                """,
+                _uid(user_id),
+                server,
+                status,
+            )
+
+
+async def forget(user_id: str, server: str) -> None:
+    """Drop the row, so the app reads as never-connected until Arcade says otherwise."""
     await pool.execute(
-        "DELETE FROM user_connections WHERE user_id = $1 AND mcp_url = $2",
+        "DELETE FROM user_connections WHERE user_id = $1 AND server = $2",
         _uid(user_id),
-        mcp_url,
+        server,
     )

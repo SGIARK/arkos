@@ -186,7 +186,7 @@ async def test_renaming_onto_an_occupied_name_is_refused(client):
     assert [f.name for f in await store.folders(user_id)] == ["notes", "triage"]
 
 
-async def test_renaming_a_folder_a_run_has_mounted_is_refused(client, monkeypatch):
+async def test_renaming_a_folder_whose_lease_is_held_is_refused(client):
     """A box at `~/store/<old>/` would flush its work back under the old name.
 
     The session's claims and its manifest are in the runner's memory as well as
@@ -200,53 +200,15 @@ async def test_renaming_a_folder_a_run_has_mounted_is_refused(client, monkeypatc
     session_id = (
         await client.post("/sessions", json={"goal": "go", "project_id": made["id"]})
     ).json()["session_id"]
-    # A live box: a slot with a nonce, an unexpired lease on it, and a running session.
-    await pool.execute(
-        "UPDATE sessions SET status = 'running' WHERE id = $1", uuid.UUID(session_id)
-    )
-    await pool.execute(
-        """
-        INSERT INTO session_sandboxes (session_id, user_id, sandbox_id, workspace_nonce, expires_at)
-        VALUES ($1, $2, 'box-1', 'nonce-1', now() + interval '10 minutes')
-        """,
-        uuid.UUID(session_id),
-        uuid.UUID(user_id),
-    )
+    # The write lease IS the signal: a session holds it for as long as it is
+    # writing that folder, which is exactly the window a rename must not land in.
+    assert await leases.acquire(f"folder:{user_id}:triage", session_id, 60)
 
     refused = await client.post("/files/rename", json={"path": "triage", "name": "sorted"})
 
     assert refused.status_code == 409
     assert refused.json()["code"] == "folder_busy"
-    assert "1 running session" in refused.json()["message"]
     assert [f.name for f in await store.folders(user_id)] == ["triage"], "the folder moved anyway"
-
-
-async def test_a_file_inside_a_busy_folder_still_renames(client):
-    """The refusal is about the MOUNT moving, and a file inside one does not move it.
-
-    A live box is corrected by the same write-through a move uses, which is why
-    only the top-level name needs the run stopped.
-    """
-    user_id = await _signed(client)
-    await store.put_file(user_id, "triage/a.md", b"1")
-    made = (await client.post("/projects", json={"title": "work", "folders": ["triage"]})).json()
-    session_id = (
-        await client.post("/sessions", json={"goal": "go", "project_id": made["id"]})
-    ).json()["session_id"]
-    await pool.execute("UPDATE sessions SET status = 'running' WHERE id = $1", uuid.UUID(session_id))
-    await pool.execute(
-        """
-        INSERT INTO session_sandboxes (session_id, user_id, sandbox_id, workspace_nonce, expires_at)
-        VALUES ($1, $2, 'box-1', 'nonce-1', now() + interval '10 minutes')
-        """,
-        uuid.UUID(session_id),
-        uuid.UUID(user_id),
-    )
-
-    renamed = await client.post("/files/rename", json={"path": "triage/a.md", "name": "b.md"})
-
-    assert renamed.status_code == 200
-    assert [f["path"] for f in (await client.get("/files")).json()] == ["triage/b.md"]
 
 
 async def test_dragging_a_directory_to_the_edge_makes_it_a_folder(client):
@@ -394,29 +356,49 @@ async def test_undoing_twice_finds_nothing_the_second_time(client):
     assert again.status_code == 404
 
 
-async def test_deleting_in_a_folder_a_run_has_mounted_is_refused(client):
-    """A box still holding the file would put it back at its next flush."""
+async def test_a_destructive_change_is_refused_while_the_folders_lease_is_held(client):
+    """PREVENTION, not synchronization (11.8.8).
+
+    A session holds `folder:{user}:{name}` for the whole time it writes that
+    folder. If nobody holds it there is no live box to diverge from the store;
+    if somebody does, no HTTP handler can correct them — their claims and
+    manifest are in the runner's memory. One lease check replaced `move_through`
+    pushing remote `mv`/`rm` into every live box and reporting the ones that
+    refused.
+    """
     user_id = await _signed(client)
     await store.put_file(user_id, "triage/a.md", b"1")
+    await store.put_file(user_id, "notes/b.md", b"2")
     made = (await client.post("/projects", json={"title": "work", "folders": ["triage"]})).json()
     session_id = (
         await client.post("/sessions", json={"goal": "go", "project_id": made["id"]})
     ).json()["session_id"]
-    await pool.execute("UPDATE sessions SET status = 'running' WHERE id = $1", uuid.UUID(session_id))
-    await pool.execute(
-        """
-        INSERT INTO session_sandboxes (session_id, user_id, sandbox_id, workspace_nonce, expires_at)
-        VALUES ($1, $2, 'box-1', 'nonce-1', now() + interval '10 minutes')
-        """,
-        uuid.UUID(session_id),
-        uuid.UUID(user_id),
-    )
+    assert await leases.acquire(f"folder:{user_id}:triage", session_id, 60)
 
-    refused = await client.request("DELETE", "/files", json={"path": "triage/a.md"})
+    refused = [
+        await client.request("DELETE", "/files", json={"path": "triage/a.md"}),
+        await client.post("/files/move", json={"from": "triage/a.md", "to": "notes/a.md"}),
+        await client.post("/files/rename", json={"path": "triage/a.md", "name": "b.md"}),
+    ]
 
-    assert refused.status_code == 409
-    assert refused.json()["code"] == "folder_busy"
-    assert [f["path"] for f in (await client.get("/files")).json()] == ["triage/a.md"]
+    assert [r.status_code for r in refused] == [409, 409, 409]
+    assert {r.json()["code"] for r in refused} == {"folder_busy"}
+    assert [f["path"] for f in (await client.get("/files")).json()] == ["notes/b.md", "triage/a.md"]
+
+    # And the same operations succeed the moment it is released.
+    assert await leases.release(f"folder:{user_id}:triage", session_id)
+    assert (await client.post("/files/rename", json={"path": "triage/a.md", "name": "b.md"})).status_code == 200
+
+
+async def test_a_folder_nobody_is_writing_has_no_live_box_to_correct(client):
+    """The other half of the rule, and why deleting the protocol is safe."""
+    user_id = await _signed(client)
+    await store.put_file(user_id, "triage/a.md", b"1")
+
+    gone = await client.request("DELETE", "/files", json={"path": "triage/a.md"})
+
+    assert gone.status_code == 200
+    assert await leases.holder(f"folder:{user_id}:triage") is None
 
 
 async def test_another_users_batch_cannot_be_undone(client):

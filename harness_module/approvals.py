@@ -16,11 +16,12 @@ closes the park, and anything else is workshop feedback the model reads and
 revises from. Each `propose_plan` call is a VERSION: a new one supersedes the
 open row rather than sitting beside it, so a session never has two live plans.
 
-`resume` is the fourth and it belongs to no tool at all. A human pressed Stop, so
-the run holds at a hop boundary instead of dying: the row is the hold, and its
-three answers are resume / resume-with-a-message / cancel for real. It is the one
-kind a composer message may answer, because the consent it waits on — the plan —
-already stands, and prose here approves nothing new.
+There is no kind for a STOPPED run. 11.8.6 gave one a `resume` row and three
+answers; 11.8.7 deleted it, because a stop is not a question and a held run is
+not waiting on consent. A stop lands the session `idle` with its mode kept, and
+an idle session resumes on a message or a plain start — code that already
+existed, with no row to answer, no arm in `respond`, and no exemption in the
+composer's 409.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ from typing import Any, Literal
 from db import pool
 from db.ids import as_uuid as _uuid
 
-Kind = Literal["approval", "ask", "call", "plan", "resume"]
+Kind = Literal["approval", "ask", "call", "plan"]
 
 _COLUMNS = (
     "id, session_id, tool_call_id, kind, prompt, answer, created_at, answered_at, "
@@ -72,11 +73,6 @@ class Approval:
     def gated_call(self) -> bool:
         """True for a parked tool call, whose answer runs code rather than being read."""
         return self.kind == "call"
-
-    @property
-    def is_resume(self) -> bool:
-        """True for a stopped run waiting to be resumed or cancelled."""
-        return self.kind == "resume"
 
     @property
     def is_plan(self) -> bool:

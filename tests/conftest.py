@@ -15,13 +15,10 @@ except Exception:
     pass
 
 # Every ${VAR} config.yaml interpolates must be set, or the loader raises during
-# collection and the whole suite fails before a single test runs. Adding a server
-# under mcp_servers: with a ${...} header means adding it here too.
+# collection and the whole suite fails before a single test runs.
 os.environ.setdefault("DB_URL", "postgresql://test:test@localhost:5432/test")
 os.environ.setdefault("OPENAI_API_KEY", "sk-test-dummy-key")
-os.environ.setdefault("SMITHERY_API_KEY", "sk-test-smithery-key")
-os.environ.setdefault("SMITHERY_NAMESPACE", "arkos-test")
-os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-test-token")
+os.environ.setdefault("ARCADE_API_KEY", "arc-test-dummy-key")
 
 # Two secrets, two trust domains: SUPABASE_JWT_SECRET verifies a token somebody
 # else issued, ARK_SESSION_SECRET signs the cookie we issue. `or` not setdefault,
