@@ -1,0 +1,29 @@
+.DS_Store
+.env 
+/tool_module/secrets
+/credentials/
+
+/model_module/models/*
+/model_module/data/*
+/model_module/hub/* 
+
+# neovim
+
+
+# Python
+**/__pycache__/
+**/*.pyc
+
+# editor swap files — two were tracked until 2026-08-16
+*.swp
+*.swo
+*~
+
+.env
+*.env
+!.env.example
+/scripts/*
+
+# cursor
+.cursor/*
+.arkos-store/

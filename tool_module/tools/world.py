@@ -1,0 +1,252 @@
+"""The world tools: what the model can see of its own installation.
+
+All reads, each scoped to `ctx.user_id` in the SQL itself. Another user's row
+and a missing row both come back as `not_found`.
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+from typing import Any
+
+from db import pool
+from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, fail, ok
+
+# Every list tool returns at most one page.
+_DEFAULT_LIMIT = 50
+_MAX_LIMIT = 200
+
+
+def _render(rows: Any) -> str:
+    """Serialize rows as JSON for the model to read."""
+    return json.dumps(rows, indent=2, default=str)
+
+
+def _limit(args: dict[str, Any]) -> int:
+    try:
+        wanted = int(args.get("limit") or _DEFAULT_LIMIT)
+    except (TypeError, ValueError):
+        return _DEFAULT_LIMIT
+    return max(1, min(wanted, _MAX_LIMIT))
+
+
+def _as_uuid(value: Any) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+class ListProjects:
+    spec = ToolSpec(
+        name="list_projects",
+        description=(
+            "List the user's projects, most recently updated first. A project is a piece of "
+            "work and the store folders it is linked to; use it to find work you or the user "
+            "did before. It does not own those folders — several projects may link one."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "description": f"Default {_DEFAULT_LIMIT}."}},
+        },
+        readonly=True,
+    )
+
+    async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
+        rows = await pool.fetch(
+            """
+            SELECT p.id, p.title, p.created_at, p.updated_at,
+                   count(DISTINCT s.id) AS sessions,
+                   -- The folders it links. A project is work plus the folders
+                   -- it reads and writes, and naming them is what tells the
+                   -- model where that work lives.
+                   coalesce(array_agg(DISTINCT f.folder) FILTER (WHERE f.folder IS NOT NULL), '{}') AS folders
+              FROM projects p
+              LEFT JOIN sessions s ON s.project_id = p.id
+              LEFT JOIN project_folders f ON f.project_id = p.id
+             WHERE p.user_id = $1
+             GROUP BY p.id
+             ORDER BY p.updated_at DESC
+             LIMIT $2
+            """,
+            _as_uuid(ctx.user_id),
+            _limit(args),
+        )
+        if not rows:
+            return ok("No projects yet.")
+        return ok(_render([dict(r) for r in rows]))
+
+
+class GetProject:
+    spec = ToolSpec(
+        name="get_project",
+        description="Read one project and the sessions in it, by id.",
+        input_schema={
+            "type": "object",
+            "properties": {"project_id": {"type": "string"}},
+            "required": ["project_id"],
+        },
+        readonly=True,
+    )
+
+    async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
+        project_id = _as_uuid(args["project_id"])
+        project = await pool.fetchrow(
+            "SELECT id, title, created_at, updated_at FROM projects WHERE id = $1 AND user_id = $2",
+            project_id,
+            _as_uuid(ctx.user_id),
+        )
+        if project is None:
+            return fail("not_found", f"No project {args['project_id']!r}.")
+        sessions = await pool.fetch(
+            """
+            SELECT id, title, status, mode, terminal_reason, created_at, ended_at
+              FROM sessions WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2
+            """,
+            project_id,
+            _MAX_LIMIT,
+        )
+        folders = await pool.fetch(
+            "SELECT folder FROM project_folders WHERE project_id = $1 ORDER BY created_at, folder",
+            project_id,
+        )
+        return ok(
+            _render(
+                {
+                    **dict(project),
+                    "folders": [f["folder"] for f in folders],
+                    "sessions": [dict(s) for s in sessions],
+                }
+            )
+        )
+
+
+class ListSessions:
+    spec = ToolSpec(
+        name="list_sessions",
+        description=(
+            "List the user's sessions, newest first. Optionally filter to one project or "
+            "one status (pending, idle, running, awaiting_approval, completed, failed, cancelled)."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "status": {"type": "string"},
+                "limit": {"type": "integer", "description": f"Default {_DEFAULT_LIMIT}."},
+            },
+        },
+        readonly=True,
+    )
+
+    async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
+        # A NULL parameter means "no filter", so one query serves every
+        # combination of the two optional arguments.
+        rows = await pool.fetch(
+            """
+            SELECT id, project_id, title, goal, status, mode, terminal_reason,
+                   hops_used, created_at, ended_at
+              FROM sessions
+             WHERE user_id = $1
+               AND ($2::uuid IS NULL OR project_id = $2)
+               AND ($3::text IS NULL OR status = $3)
+             ORDER BY created_at DESC
+             LIMIT $4
+            """,
+            _as_uuid(ctx.user_id),
+            _as_uuid(args.get("project_id")) if args.get("project_id") else None,
+            args.get("status"),
+            _limit(args),
+        )
+        if not rows:
+            return ok("No sessions match.")
+        return ok(_render([dict(r) for r in rows]))
+
+
+class GetSession:
+    spec = ToolSpec(
+        name="get_session",
+        description=(
+            "Read one session by id: its goal, status, and the tail of its transcript. "
+            "Use it to pick up what another session found without re-doing the work."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+                "events": {"type": "integer", "description": "How many trailing events to include. Default 20."},
+            },
+            "required": ["session_id"],
+        },
+        readonly=True,
+    )
+
+    async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
+        session = await pool.fetchrow(
+            """
+            SELECT id, project_id, title, goal, status, mode, terminal_reason,
+                   hops_used, created_at, ended_at
+              FROM sessions WHERE id = $1 AND user_id = $2
+            """,
+            _as_uuid(args["session_id"]),
+            _as_uuid(ctx.user_id),
+        )
+        if session is None:
+            return fail("not_found", f"No session {args['session_id']!r}.")
+
+        try:
+            wanted = max(0, min(int(args.get("events") or 20), _MAX_LIMIT))
+        except (TypeError, ValueError):
+            wanted = 20
+        # Only the kinds that carry transcript content.
+        tail = await pool.fetch(
+            """
+            SELECT kind, payload, ts FROM (
+                SELECT seq, kind, payload, ts FROM session_events
+                 WHERE session_id = $1 AND kind IN ('user', 'content', 'tool_call', 'done')
+                 ORDER BY seq DESC LIMIT $2
+            ) t ORDER BY seq
+            """,
+            session["id"],
+            wanted,
+        )
+        return ok(_render({**dict(session), "recent_events": [dict(e) for e in tail]}))
+
+
+class ListFiles:
+    spec = ToolSpec(
+        name="list_files",
+        description=(
+            "List files in the user's store. Paths start with their folder, and the folders "
+            "this session was given are mounted at ~/store/<folder>/, so read the contents "
+            "there by path rather than through this tool. Pass `folder` to list just one; "
+            "a folder this session does not hold is still listed here and is NOT on the disk."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"folder": {"type": "string", "description": "One folder, e.g. 'triage'."}},
+        },
+        readonly=True,
+    )
+
+    async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
+        folder = str(args.get("folder") or "").strip().strip("/")
+        rows = await pool.fetch(
+            """
+            SELECT path, size, mtime
+              FROM files
+             WHERE user_id = $1 AND ($2 = '' OR split_part(path, '/', 1) = $2)
+             ORDER BY path
+             LIMIT $3
+            """,
+            _as_uuid(ctx.user_id),
+            folder,
+            _MAX_LIMIT,
+        )
+        if not rows:
+            return ok(f"No files under {folder}/." if folder else "The store is empty.")
+        return ok(_render([dict(r) for r in rows]))
+
+
+TOOLS = [ListProjects(), GetProject(), ListSessions(), GetSession(), ListFiles()]

@@ -1,0 +1,58 @@
+name: Monitor
+
+# DISABLED. Renamed from monitor.yml to monitor.yml.disabled because
+# GitHub Actions only schedules files matching .github/workflows/*.yml.
+# To re-enable: `git mv monitor.yml.disabled monitor.yml`.
+#
+# Why disabled: there's nothing live to monitor. The deploy workflow is
+# also disabled, so the production /health endpoint this would ping
+# doesn't exist yet.
+#
+# BEFORE THIS WORKS, you need to configure:
+#   1. GitHub repo secret: MONITOR_URL (e.g. http://ark.mit.edu:1112)
+#      OR update the URL below to match the eventual deployment.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *" # every 30 minutes
+  workflow_dispatch: # allow manual trigger
+
+jobs:
+  health-check:
+    name: Health Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /health endpoint
+        run: |
+          MONITOR_URL="${{ secrets.MONITOR_URL }}"
+          if [ -z "$MONITOR_URL" ]; then
+            echo "MONITOR_URL secret not set, skipping"
+            exit 0
+          fi
+
+          echo "Checking $MONITOR_URL/health ..."
+          response=$(curl -sf --max-time 10 "$MONITOR_URL/health") || {
+            echo "FAILED: Server is not responding!"
+            exit 1
+          }
+
+          echo "Response: $response"
+
+          # Check overall status
+          status=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+          echo "Status: $status"
+
+          if [ "$status" != "ok" ]; then
+            echo "WARNING: Server is degraded — one or more services are down"
+            # Parse individual service statuses
+            echo "$response" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          for svc, status in data.get('services', {}).items():
+              icon = 'OK' if status == 'running' else 'DOWN'
+              print(f'  {icon}: {svc} ({status})')
+          "
+            exit 1
+          fi
+
+          echo "All services healthy."

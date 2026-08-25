@@ -1,0 +1,14 @@
+[tool.pytest.ini_options]
+# Only collect tests from the tests/ directory. Without this, pytest also
+# tries to import any test_*.py at the repo root or inside source modules,
+# which has historically picked up debug scripts and in-module helpers
+# and crashed the run.
+testpaths = ["tests"]
+
+# Existing async tests use explicit @pytest.mark.asyncio decorators, so
+# keep pytest-asyncio in strict mode (don't auto-promote bare async defs).
+asyncio_mode = "strict"
+
+markers = [
+    "integration: requires live external services (LLM, DB, etc.); skipped in CI by default",
+]

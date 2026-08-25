@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>buddy: a sandboxed ai agent for the long boring tasks</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+:root{
+--ink:#1c1b18;--ink-soft:#54524b;--ink-mute:#97948a;--ink-faint:#c4c1b6;
+--paper:#f7f6f1;--surface:#fdfcf9;--surface-2:#f1efe8;--line:#e6e3da;--line-soft:#efece4;
+--accent:oklch(0.55 0.075 150);--accent-soft:oklch(0.55 0.075 150 / 0.12);--accent-line:oklch(0.55 0.075 150 / 0.35);
+--work:oklch(0.66 0.085 75);--stop:oklch(0.58 0.10 28);
+--mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+--r:7px;--shadow:0 1px 2px rgba(28,27,24,.03),0 12px 32px -20px rgba(28,27,24,.18);
+--shadow-lift:0 1px 2px rgba(28,27,24,.04),0 40px 90px -36px rgba(28,27,24,.32);
+--ease:cubic-bezier(.4,0,.2,1);
+}
+[data-theme="dark"]{
+--ink:#ecebe6;--ink-soft:#b6b3aa;--ink-mute:#797668;--ink-faint:#46443d;
+--paper:#121210;--surface:#1a1815;--surface-2:#201f1b;--line:#2a2823;--line-soft:#221f1b;
+--accent:oklch(0.74 0.105 150);--accent-soft:oklch(0.74 0.105 150 / 0.16);--accent-line:oklch(0.74 0.105 150 / 0.40);
+--work:oklch(0.78 0.10 78);--stop:oklch(0.70 0.12 28);
+--shadow:0 1px 2px rgba(0,0,0,.4),0 16px 40px -24px rgba(0,0,0,.7);
+--shadow-lift:0 1px 2px rgba(0,0,0,.5),0 50px 100px -40px rgba(0,0,0,.85);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--mono);background:var(--paper);color:var(--ink);font-size:14px;line-height:1.6;-webkit-font-smoothing:antialiased;transition:background .4s var(--ease),color .4s var(--ease);overflow-x:hidden}
+::selection{background:var(--accent-soft)}
+a{color:var(--accent)}
+a:hover{color:var(--ink)}
+.wrap{max-width:1080px;margin:0 auto;padding:0 40px}
+
+/* nav */
+.nav{display:flex;align-items:center;justify-content:space-between;padding:26px 40px;max-width:1080px;margin:0 auto}
+.brand{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;letter-spacing:-.02em}
+.brand .pip{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:ping 2.4s var(--ease) infinite}
+@keyframes ping{0%{box-shadow:0 0 0 0 var(--accent-soft)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
+.nav-right{display:flex;align-items:center;gap:22px;font-size:12px;color:var(--ink-mute)}
+.theme-btn{background:none;border:1px solid var(--line);color:var(--ink-mute);font-family:var(--mono);font-size:11px;padding:6px 12px;border-radius:100px;cursor:pointer;transition:all .2s var(--ease)}
+.theme-btn:hover{color:var(--ink);border-color:var(--ink-faint)}
+
+/* hero */
+.hero{padding:70px 40px 30px;max-width:1080px;margin:0 auto;text-align:center}
+.kicker{font-size:10.5px;letter-spacing:.24em;text-transform:uppercase;color:var(--ink-mute);font-weight:500;display:inline-flex;align-items:center;gap:8px;margin-bottom:22px}
+.kicker::before,.kicker::after{content:"";width:22px;height:1px;background:var(--line)}
+h1{font-size:44px;font-weight:500;letter-spacing:-.03em;line-height:1.15;margin:0 auto 20px;max-width:760px;text-wrap:pretty}
+h1 .accent{color:var(--accent)}
+.sub{font-size:14.5px;color:var(--ink-soft);max-width:480px;margin:0 auto 36px;line-height:1.7;text-wrap:pretty}
+
+/* signup */
+.signup{display:flex;justify-content:center;gap:10px;max-width:420px;margin:0 auto}
+.signup input{flex:1;font-family:var(--mono);font-size:13px;padding:13px 16px;border:1px solid var(--line);border-radius:var(--r);background:var(--surface);color:var(--ink);outline:none;transition:border-color .2s var(--ease)}
+.signup input::placeholder{color:var(--ink-mute)}
+.signup input:focus{border-color:var(--accent-line)}
+.signup button{font-family:var(--mono);font-size:13px;padding:13px 20px;border-radius:var(--r);border:1px solid var(--ink);background:var(--ink);color:var(--paper);cursor:pointer;white-space:nowrap;transition:all .18s var(--ease)}
+.signup button:hover{background:var(--accent);border-color:var(--accent)}
+.signup-note{font-size:11px;color:var(--ink-mute);margin-top:14px}
+.signup.done input,.signup.done button{display:none}
+.signup-thanks{display:none;font-size:13px;color:var(--accent);text-align:center}
+.signup.done + .signup-note{display:none}
+.signup.done ~ .signup-thanks{display:block}
+
+/* mockup frame */
+.mock-stage{padding:50px 40px 100px;max-width:1080px;margin:0 auto}
+.mock-frame{border:1px solid var(--line);border-radius:14px;background:var(--surface);box-shadow:var(--shadow-lift);overflow:hidden}
+.mock-bar{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.mock-dot{width:8px;height:8px;border-radius:50%;background:var(--line)}
+.mock-bar .url{margin-left:14px;font-size:10.5px;color:var(--ink-mute)}
+.mock-body{display:grid;grid-template-columns:44px 1fr;font-size:11px}
+.mock-rail{border-right:1px solid var(--line);display:flex;flex-direction:column;align-items:center;padding:16px 0;gap:16px}
+.mock-rail .m{font-weight:700;font-size:13px}
+.mock-rail .n{writing-mode:vertical-rl;rotate:180deg;color:var(--ink-faint);font-size:9px;letter-spacing:.12em;flex:1}
+.mock-main{padding:26px 30px}
+.mock-head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:26px}
+.mock-head .t{font-size:16px;color:var(--ink)}
+.mock-head .t .accent{color:var(--accent)}
+.mock-head .l{font-size:10px;color:var(--ink-mute);max-width:200px;text-align:right}
+.mock-cols{display:grid;grid-template-columns:1.5fr 1fr 1fr;gap:0}
+.mock-col{padding:0 20px}
+.mock-col:first-child{padding-left:0}
+.mock-col+.mock-col{border-left:1px solid var(--line)}
+.mock-col .k{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-mute);margin-bottom:14px;display:block}
+.mock-card{border:1px solid var(--line);border-radius:6px;padding:10px 11px;margin-bottom:9px;background:var(--surface)}
+.mock-card.lead{background:var(--accent-soft);border-color:var(--accent-line)}
+.mock-col-lead .k{color:var(--ink-soft)}
+.mock-card .top{display:flex;justify-content:space-between;font-size:9px;color:var(--ink-mute);margin-bottom:6px}
+.mock-card .top .a{color:var(--accent)}
+.mock-card .title{font-size:10.5px;color:var(--ink)}
+.mock-card .body{font-size:9.5px;color:var(--ink-soft);margin-top:5px;line-height:1.5}
+.mock-actions{display:flex;gap:6px;justify-content:flex-end;margin-top:10px}
+.mbtn{font-size:9px;padding:5px 10px;border-radius:5px;border:1px solid var(--line);color:var(--ink-soft);background:var(--surface)}
+.mbtn.primary{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.mock-row{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:6px;padding:9px 11px;margin-bottom:8px;font-size:10px;color:var(--ink-soft)}
+.mock-dotstat{width:5px;height:5px;border-radius:50%;background:var(--accent);flex-shrink:0}
+.mock-dotstat.mute{background:var(--ink-faint)}
+
+/* capability grid */
+.capabilities{padding:20px 40px 90px;max-width:1080px;margin:0 auto}
+.cap-head{text-align:center;margin-bottom:56px}
+.cap-head h2{font-size:24px;font-weight:500;letter-spacing:-.02em;margin:0 0 12px}
+.cap-head p{font-size:13px;color:var(--ink-mute);max-width:440px;margin:0 auto}
+.cap-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.cap{background:var(--surface);padding:30px 24px;opacity:0;transform:translateY(14px);transition:opacity .6s var(--ease),transform .6s var(--ease)}
+.cap.in{opacity:1;transform:translateY(0)}
+.cap .num{font-size:10px;color:var(--ink-faint);margin-bottom:16px;font-variant-numeric:tabular-nums}
+.cap h3{font-size:13.5px;font-weight:500;margin:0 0 8px;color:var(--ink)}
+.cap p{font-size:11.5px;color:var(--ink-mute);margin:0;line-height:1.6}
+
+/* closing cta */
+.closing{padding:80px 40px 90px;text-align:center;border-top:1px solid var(--line)}
+.closing h2{font-size:26px;font-weight:500;letter-spacing:-.02em;margin:0 0 14px}
+.closing p{font-size:13px;color:var(--ink-mute);margin:0 0 34px}
+
+footer{padding:30px 40px;text-align:center;font-size:10.5px;color:var(--ink-mute);border-top:1px solid var(--line)}
+
+@media (max-width:760px){
+.nav{padding:20px 22px}
+.brand{font-size:14px}
+.nav-right{gap:12px;font-size:11px}
+.hero{padding:48px 22px 20px}
+h1{font-size:28px}
+.sub{font-size:13.5px;margin-bottom:28px}
+.signup{flex-direction:column;max-width:340px}
+.signup button{width:100%}
+.mock-stage{padding:34px 22px 60px}
+.mock-body{grid-template-columns:1fr}
+.mock-rail{display:none}
+.mock-main{padding:20px 20px}
+.mock-cols{grid-template-columns:1fr;gap:22px}
+.mock-col{padding:0}
+.mock-col+.mock-col{border-left:none;border-top:1px solid var(--line);padding-top:20px}
+.mock-bar .url{display:none}
+.capabilities{padding:10px 22px 60px}
+.cap-head{margin-bottom:36px}
+.cap-head h2{font-size:20px}
+.cap-grid{grid-template-columns:1fr}
+.cap{padding:24px 22px}
+.closing{padding:56px 22px 64px}
+.closing h2{font-size:21px}
+footer{padding:24px 22px}
+}
+@media (max-width:380px){
+h1{font-size:24px}
+.kicker{font-size:9.5px;letter-spacing:.18em}
+}
+</style>
+</head>
+<body>
+
+<div class="nav">
+<div class="brand"><span>a</span><span class="pip"></span><span>buddy</span></div>
+<div class="nav-right">
+<span>launching fall 2026</span>
+<button class="theme-btn" onclick="toggleTheme()">dark</button>
+</div>
+</div>
+
+<div class="hero">
+<span class="kicker">sandboxed ai agent</span>
+<h1>buddy runs your browser and computer tasks.</h1>
+<p class="sub">it drafts the reply, files the form, triages the board, then waits for your <span class="accent">ok</span>.</p>
+<form class="signup" id="signup-form" onsubmit="return handleSignup(event)">
+<input type="email" placeholder="you@company.com" required>
+<button type="submit">join the waitlist</button>
+</form>
+<div class="signup-note">no spam. one email, when we launch.</div>
+<div class="signup-thanks">you're on the list. we'll be in touch.</div>
+</div>
+
+<div class="mock-stage">
+<div class="mock-frame">
+<div class="mock-bar"><span class="mock-dot"></span><span class="mock-dot"></span><span class="mock-dot"></span><span class="url">ark.mit.edu/desk</span></div>
+<div class="mock-body">
+<div class="mock-rail"><span class="m">a</span><span class="n">desk · watching · approvals · computer</span></div>
+<div class="mock-main">
+<div class="mock-head">
+<span class="t">buddy's <span class="accent">desk</span></span>
+<span class="l">your computer work, handled in the background.</span>
+</div>
+<div class="mock-cols">
+<div class="mock-col mock-col-lead">
+<span class="k">pending approvals</span>
+<div class="mock-card lead"><div class="top"><span>mail.google.com</span><span class="a">draft reply</span></div><div class="title">reply to priya re: q3 roadmap review</div><div class="body">draft: "thursday 2pm works," with roadmap-metrics.pdf linked from drive.</div><div class="mock-actions"><span class="mbtn">decline</span><span class="mbtn primary">approve →</span></div></div>
+<div class="mock-card"><div class="top"><span>linear.app</span><span class="a">triage</span></div><div class="title">close 6 stale issues in team ark</div></div>
+</div>
+<div class="mock-col">
+<span class="k">active tasks</span>
+<div class="mock-row"><span class="mock-dotstat"></span>drafting the q3 metrics summary</div>
+<div class="mock-row"><span class="mock-dotstat"></span>comparing vendor pricing in the browser</div>
+</div>
+<div class="mock-col">
+<span class="k">watching</span>
+<div class="mock-row"><span class="mock-dotstat"></span>mail.google.com / inbox</div>
+<div class="mock-row"><span class="mock-dotstat"></span>linear.app / team ark</div>
+<div class="mock-row"><span class="mock-dotstat mute"></span>calendar / this week</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+
+<div class="capabilities">
+<div class="cap-head">
+<h2>what it does while you're away</h2>
+<p>quiet, sandboxed, and always waiting on your ok before anything leaves the desk.</p>
+</div>
+<div class="cap-grid">
+<div class="cap"><span class="num">01</span><h3>browses and computes for you</h3><p>reads pages, fills forms, and runs real tasks on its own sandboxed computer.</p></div>
+<div class="cap"><span class="num">02</span><h3>sends when you say so</h3><p>writes the reply, the plan, the summary, and sends once you approve.</p></div>
+<div class="cap"><span class="num">03</span><h3>watches quietly</h3><p>keeps an eye on your inbox, board, and calendar, and only surfaces what needs you.</p></div>
+<div class="cap"><span class="num">04</span><h3>learns how you work</h3><p>picks up how you like things done from the way you correct it, and applies it to the next task. you stop repeating yourself.</p></div>
+</div>
+</div>
+
+<div class="closing">
+<h2>be first to try buddy</h2>
+<p>we're onboarding a small group ahead of launch.</p>
+<form class="signup" onsubmit="return handleSignup(event)">
+<input type="email" placeholder="you@company.com" required>
+<button type="submit">join the waitlist</button>
+</form>
+</div>
+
+<footer>ark. a sandboxed ai agent</footer>
+
+<script>
+function toggleTheme(){
+const html=document.documentElement;
+const next=html.getAttribute('data-theme')==='dark'?null:'dark';
+if(next){html.setAttribute('data-theme','dark');document.querySelector('.theme-btn').textContent='light';}
+else{html.removeAttribute('data-theme');document.querySelector('.theme-btn').textContent='dark';}
+}
+function handleSignup(e){
+e.preventDefault();
+const form=e.target;
+form.classList.add('done');
+return false;
+}
+const io=new IntersectionObserver((entries)=>{
+entries.forEach(en=>{if(en.isIntersecting){en.target.classList.add('in');io.unobserve(en.target);}});
+},{threshold:.2});
+document.querySelectorAll('.cap').forEach((c,i)=>{c.style.transitionDelay=(i*80)+'ms';io.observe(c);});
+</script>
+</body>
+</html>

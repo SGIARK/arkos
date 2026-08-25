@@ -1,0 +1,242 @@
+app:
+  host: "0.0.0.0"
+  port: "1121"
+  reload: true
+  # The origin /app and the API are served from, behind Caddy. Mutations arriving
+  # with any other Origin are refused, approval notifications deep-link here, and
+  # the OAuth callback URL is built from it. The frontend is same-site: with
+  # SameSite=Lax, a cross-site EventSource carries no cookie.
+  public_url: "http://localhost:1121"
+
+auth:
+  jwt_audience: "authenticated"   # what Supabase stamps on its access tokens
+  cookie_name: "ark_session"
+  cookie_secure: true             # false only for plain-http local development
+  cookie_samesite: "lax"
+  session_ttl_s: 604800           # cookie lifetime in seconds (7 days)
+
+harness:
+  snapshot_events: 200            # what GET /sessions/{id} returns as recent_events
+  sse_keepalive_s: 15             # seconds between SSE keepalives; proxies drop an idle stream at ~30s
+  # Backoff in seconds, and the attempt cap, for retrying a terminal transition
+  # the database refused.
+  terminal_retry_s: 2
+  terminal_retry_max_s: 60
+  terminal_retry_max: 8
+  # Stop holds a run at its next hop boundary. A hop that never reaches one —
+  # a wedged tool, a stuck stream — would leave the button doing nothing, so
+  # after this many seconds the stop degrades to the old full cancel. Long
+  # enough that a slow-but-live step finishes its hop; short enough that a
+  # runaway run is still killable by the same button press.
+
+context:
+  # Fraction of the input budget (llm.context_window - llm.max_tokens) at which
+  # the context ladder starts clearing the oldest blob-backed results.
+  recovery_threshold: 0.8
+  chars_per_token: 4              # characters per token in the estimate; there is no tokenizer for this model
+  turns: 50                       # short-term transcript window; not read yet
+
+store:
+  # Where the agent's files live. Bytes are content-addressed under
+  # {prefix}/blobs/{hh}/{sha256}; the tree is rows in `files`, ONE flat namespace
+  # per user, where a folder is the first segment of a path. The sandbox disk is
+  # a cache of this, not the other way round.
+  #
+  # supabase   -- a Storage bucket, over its REST API. Needs SUPABASE_URL and
+  #               SUPABASE_SERVICE_KEY in the environment, and the bucket below.
+  # filesystem -- blobs under `root`. Single box only; used by the test suite.
+  backend: "supabase"
+  # The bucket name, overridable by STORE_BUCKET in the environment. A literal
+  # rather than a ${VAR}: an unset interpolation fails config load for the whole
+  # process, including the parts that never touch the store.
+  bucket: "arkos"
+  prefix: "arkos"
+  root: ".arkos-store"
+
+browser:
+  # The rented specialist (browser_task). One section, so a knob is never in two
+  # places: the model it thinks with defaults to the session model above.
+  #
+  # WHERE THE BROWSER IS. It runs in the browserless container from
+  # docker-compose and is reached only over CDP. The tool never launches a
+  # browser in the harness process — that would put a Chromium executing
+  # model-chosen pages beside the user's cookies and the store's secret key —
+  # so an unset url is a refusal, not a fallback.
+  # Left literal and empty rather than "${BROWSERLESS_URL}": an unset ${VAR} in
+  # this file raises at config LOAD, so a machine with no browser container
+  # would fail to start the whole app instead of failing one tool. Set this, or
+  # set BROWSERLESS_URL in the environment — the tool reads this first and falls
+  # back to the variable. Same reasoning as the Supabase and e2b keys.
+  cdp_url: ""
+  headless: true
+  max_steps: 25                   # the vendor's own cap on how many steps it plans
+  wall_clock_s: 240               # at this point it is ASKED to stop, keeping partial results
+  hard_timeout_s: 300             # the wait_for backstop, for a run that ignores being asked.
+                                  # Must exceed wall_clock_s or the ask never gets its chance.
+  # No frame interval: frames come from the browser's own CDP screencast at
+  # everyNthFrame=1, and the broker drops what no subscriber is holding.
+
+memory:
+  # What the agent carries between sessions: MEMORY.md (the curated core) and
+  # the notes it appends, in `memory_files`. Read by the memory tools, and the
+  # core is injected into the system prompt at fold time.
+  prompt_max_chars: 4000          # of the core, in the system prompt; the rest needs read_memory
+  core_max_chars: 20000           # update_memory refuses a document longer than this
+  note_max_chars: 2000            # save_memory refuses a note longer than this
+  search_limit: 10                # default hits per search_memory call
+
+system_log:
+  # The operational log: batched, best-effort, never on a request path.
+  flush_interval_s: 5
+  retain_days: 30         # pruned at startup
+
+leases:
+  # The browser is shared per user and keeps state between calls, so one session
+  # holds it for its whole run; a write claim holds its project the same way.
+  ttl_s: 900              # a lease expires if the process holding it dies
+  wait_timeout_s: 90      # how long a contended call waits before giving up; must leave room
+                          # inside tools.call_timeout_s for the tool to report that it never ran
+  poll_s: 2               # how often the waiter retries
+
+quotas:
+  max_unattended_sessions: 5      # per user; only unattended runs occupy a worker
+  new_sessions_per_hour: 20       # per user; sliding window
+  upload_max_mb: 25               # per file, POST /projects/{id}/files
+
+approvals:
+  # Whether an attended session approves gated tool calls WITHOUT asking.
+  #
+  # Commented out deliberately (owner, 2026-08-18). While it was on, every
+  # requires_approval call was a silent yes — a calendar invite went to a third
+  # party on the strength of one chat message — and not one approval row was
+  # ever written, so the desk, the rail and the approvals view were all wired to
+  # an empty table. Off, BOTH modes are told to ask with request_approval, which
+  # parks the session and puts a card in front of the human — the unattended one
+  # waits as long as it takes, which is what unattended parking is for.
+  #
+  # Uncomment only to get the old unattended-style behaviour back.
+  # attended_auto_approve: true
+
+llm:
+  # OpenAI-compatible endpoint; client.py is an AsyncOpenAI against base_url.
+  base_url: "https://api.openai.com/v1"
+  model_name: "gpt-4.1-mini"
+  api_key: "${OPENAI_API_KEY}"   # client.py falls back to "-" when this is unset
+  max_tokens: 8192          # tokens reserved for the completion
+  # The most tool schemas the API accepts in ONE request. Above it the provider
+  # refuses the whole turn ("array too long"), before a token is generated —
+  # which is how connecting a few MCP servers put 164 schemas in the request and
+  # killed every hop. The human's allowance is what is left after ours:
+  # `llm.max_tools - ours` is the meter in the session window, so adding a local
+  # tool moves the meter rather than silently overspending the cap.
+  max_tools: 128
+  context_window: 128000    # tokens of context assumed when sizing the input budget;
+                            # at or below what the API accepts for model_name
+  temperature: 0.7
+  timeout_s: 90             # seconds per request
+  max_retries: 3            # cap on total attempts per generate() call
+  retry_backoff_s: 0.5      # first backoff in seconds; doubles, with jitter
+  retry_backoff_max_s: 8.0
+
+budgets:
+  # Keyed by sessions.mode. wall_clock_s is seconds of run time.
+  attended:   {max_hops: 6,  wall_clock_s: 300}
+  unattended: {max_hops: 15, wall_clock_s: 1800}
+  per_tool_attempts: 3
+  model_retries: 3          # consecutive hop re-attempts after the client gives up
+
+tools:
+  result_view_cap_chars: 4000   # over this -> blob + ref
+  call_timeout_s: 120           # seconds, hard cap on one tool call
+  mcp_cache_ttl_s: 3600         # seconds before a connection's cached tools/list is revalidated;
+                                # revalidation refreshes the list only, and never re-PUTs
+
+database:
+  url: "${DB_URL}"
+  pool_min_size: 1
+  pool_max_size: 10
+
+
+# Per-session e2b sandbox (files + shell). The E2B SDK reads E2B_API_KEY from the
+# environment directly, so the key is not referenced here.
+sandbox:
+  template: "base"                         # e2b template
+  timeout_seconds: 300                     # seconds a sandbox stays alive while working
+  max_concurrent_per_user: 5               # boxes one user runs at once; a session over the cap
+                                           # waits with a status event until one is reaped. At or
+                                           # above quotas.max_unattended_sessions, checked at boot
+  slot_ttl_s: 900                          # a slot expires unless a call into its box renews it,
+                                           # so a process that dies frees its capacity
+  browse_max_bytes: 1048576                # cap on one HTTP read of the live disk
+                                           # (GET /sessions/{id}/fs/file). Over it the
+                                           # response is cut short and says so.
+
+# All MCP traffic flows through ONE Arcade MCP Gateway. Arcade hosts the OAuth
+# apps, holds the users' grants, and refreshes tokens; this side sends an
+# identity and never holds a credential of the user's.
+mcp:
+  kind: arcade
+  # The gateway, from the Arcade dashboard (project "buddy", auth mode Arcade
+  # Headers, per-tool confirmation OFF — the 11.7 approval gate owns consent).
+  # One url for every app: the tools come back FLAT in a single list, prefixed
+  # by app, so a "server" below is a PREFIX GROUP and not a url of its own.
+  gateway_url: "https://api.arcade.dev/mcp/gw_3IErRNEhqI6uH9fdquWfocoxdcF"
+  api_key: "${ARCADE_API_KEY}"
+  # Arcade's REST API, where authorization lives. Same host and same key as the
+  # gateway; a different surface, because `POST /v1/tools/authorize` is not
+  # something the MCP protocol can express. It is how the settings panel gets a
+  # consent link WITHOUT calling a tool, and how it reads whether a service is
+  # connected — `authorize` is scope-aware, so it answers per service.
+  engine_url: "https://api.arcade.dev"
+  protocol_version: "2025-11-25"   # what the gateway negotiated when this was measured
+
+  # Google Search is OURS, not a connector. SerpAPI-backed, with the key set as
+  # an app-level secret in Arcade's dashboard, so there is no per-user OAuth and
+  # every user's searches share our quota. It rides the gateway wire and belongs
+  # to buddy: always in the manifest, counted in `ours` for the tool meter, and
+  # absent from the session toggles and the settings panel entirely.
+  search:
+    server: "GoogleSearch"
+
+mcp_servers:
+  # THE SIX TOGGLEABLE CONNECTORS, and nothing else.
+  #
+  # The config key is a label for logs and display. `server` is the Arcade app
+  # prefix — the vendor's own name, which every one of that app's tool names
+  # carries — and it is the identity `user_connections` and `session_tools` are
+  # keyed by. Renaming a key here changes nothing durable, which is the point.
+  #
+  # `consent_tool` names the tool the panel authorizes through. It is a MEASURED
+  # choice, not a favourite: its scopes must cover the whole app, or connecting
+  # grants a subset and the rest of the service keeps challenging. Run
+  # `scripts/probe_arcade.py`, which authorizes every tool and reports which one
+  # covers the union.
+  #
+  # auto_approve waives the approval prompt: `true` for every tool on the app,
+  # or a list for those tools only. Absent, every MCP tool requires approval.
+  #   auto_approve: true
+  #   auto_approve: [Linear_GetIssue]
+
+  gmail:
+    server: "Gmail"
+    name: "Gmail"
+
+  github:
+    server: "Github"
+    name: "GitHub"
+
+  linear:
+    server: "Linear"
+    name: "Linear"
+
+  outlook:
+    server: "MicrosoftOutlookMail"
+    name: "Microsoft Outlook Mail"
+
+  notion:
+    server: "Notion"
+    name: "Notion"
+
+  google-calendar:
+    server: "GoogleCalendar"
+    name: "Google Calendar"

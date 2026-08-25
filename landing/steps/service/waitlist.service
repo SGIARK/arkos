@@ -1,0 +1,26 @@
+# /etc/systemd/system/ark-waitlist.service
+# Runs the intake API on loopback only; Caddy is the only thing in front of it.
+[Unit]
+Description=ark landing waitlist intake
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=arkwait
+Group=arkwait
+WorkingDirectory=/opt/ark-waitlist
+EnvironmentFile=/opt/ark-waitlist/.env
+ExecStart=/opt/ark-waitlist/venv/bin/uvicorn waitlist:app --host 127.0.0.1 --port 8899
+Restart=on-failure
+RestartSec=2
+# hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

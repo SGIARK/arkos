@@ -1,0 +1,16 @@
+target-version = "py311"
+line-length = 120
+exclude = ["depricated"]
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort (import sorting)
+    "UP",  # pyupgrade
+    "B",   # bugbear (common bug patterns)
+    "SIM", # simplify
+]
+
+[format]
+quote-style = "double"
