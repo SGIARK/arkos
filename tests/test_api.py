@@ -163,6 +163,7 @@ async def test_test_cookie_session(client):
         ("post", f"/sessions/{uuid.uuid4()}/cancel"),
         ("get", f"/results/{uuid.uuid4()}"),
         ("get", "/connections"),
+        ("get", "/connections/verify"),
     ):
         body = {"json": {}} if method == "post" else {}
         bare = await getattr(client, method)(path, **body)
@@ -1768,3 +1769,62 @@ async def test_moving_a_path_the_store_does_not_have_is_absent(client, tmp_path)
         assert gone.status_code == 404
     finally:
         store.use_blobs(None)
+
+
+# --- the custom user verifier (11.10) -----------------------------------------
+
+
+async def test_the_verifier_confirms_the_user_the_cookie_names(client):
+    """Arcade asks who this browser is; the cookie answers, and nothing else does."""
+    user_id = await _signed_in(client)
+
+    response = await client.get("/connections/verify")
+
+    assert response.status_code == 200
+    assert response.json() == {"verified": True, "user_id": user_id, "flow": None}
+
+
+async def test_the_verifier_refuses_a_url_naming_another_user(client):
+    """The query is a claim by whoever built the link. Binding a grant to it is the bug."""
+    await _signed_in(client)
+
+    response = await client.get("/connections/verify", params={"user_id": str(uuid.uuid4())})
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "forbidden"
+
+
+async def test_the_verifier_agrees_when_the_url_names_the_same_user(client):
+    user_id = await _signed_in(client)
+
+    response = await client.get("/connections/verify", params={"user_id": user_id})
+
+    assert response.status_code == 200
+    assert response.json()["user_id"] == user_id
+
+
+async def test_the_verifier_bounces_back_to_arcade_over_tls(client):
+    user_id = await _signed_in(client)
+    back = "https://cloud.arcade.dev/api/v1/oauth/continue?flow=abc"
+
+    response = await client.get(
+        "/connections/verify",
+        params={"user_id": user_id, "redirect_uri": back},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == back
+
+
+async def test_the_verifier_will_not_be_an_open_redirect(client):
+    """A continuation url is a place this route sends a signed-in browser."""
+    await _signed_in(client)
+
+    response = await client.get(
+        "/connections/verify",
+        params={"redirect_uri": "http://evil.example/steal"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400

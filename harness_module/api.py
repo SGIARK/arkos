@@ -25,7 +25,7 @@ from typing import Any
 import jwt
 from fastapi import Body, Depends, FastAPI, File, Form, Header, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from agent_module import prompts
@@ -1510,6 +1510,65 @@ async def list_connections(user_id: str = CurrentUser) -> list[dict[str, Any]]:
     if client is None:
         return []
     return await client.connections(user_id)
+
+
+@app.get("/connections/verify")
+async def verify_user(request: Request) -> Response:
+    """Arcade's custom user verifier: confirm the person at the browser IS this user.
+
+    Arcade needs to know that the `Arcade-User-ID` the harness asserts belongs to
+    whoever is about to sit at a provider's consent screen. Its default answer is
+    an arcade.dev account picker, which violates the no-vendor-in-the-user's-path
+    rule; the custom verifier replaces it with this route, so the whole flow shows
+    only the provider and our app.
+
+    The session cookie is the ONLY source of identity here. A `user_id` in the
+    query is a CLAIM by whoever built the url, and it is compared against the
+    cookie, never trusted: binding a provider grant to an attacker-supplied uuid
+    is the exact bug class that put `browser_routes` on the incident list. A
+    top-level GET carries a `SameSite=Lax` cookie, which is why this is a GET and
+    why it must stay same-origin with `/app`.
+
+    The parameter names Arcade sends are NOT yet measured — the dashboard's "Run
+    test" is the first time we see them — so the flow id is read under every
+    plausible spelling and the whole query is logged once at INFO. When the real
+    shape lands, narrow this and record it in `implementation_notes.md`.
+    """
+    params = dict(request.query_params)
+    logger.info("arcade user verification hit with params=%s", sorted(params))
+
+    cookie = request.cookies.get(str(_cfg("auth.cookie_name", "ark_session")))
+    if not cookie:
+        raise ApiError(401, "unauthenticated", "No session. Sign in, then start the connection again.")
+    try:
+        claims = jwt_utils.read_session(cookie)
+    except jwt.PyJWTError as e:
+        raise ApiError(401, "unauthenticated", f"Session rejected: {e}") from e
+    verified = str(claims["sub"])
+
+    claimed = params.get("user_id") or params.get("userId") or params.get("user")
+    if claimed and claimed != verified:
+        # Someone handed this browser a link naming a different user. Refusing is
+        # the whole point of the route.
+        logger.warning("user verification refused: cookie says %s, url claimed %s", verified, claimed)
+        raise ApiError(403, "forbidden", "This connection link belongs to a different account.")
+
+    flow = (
+        params.get("flow_id")
+        or params.get("flowId")
+        or params.get("auth_id")
+        or params.get("id")
+        or params.get("state")
+    )
+    nxt = params.get("redirect_uri") or params.get("next") or params.get("return_url")
+    if nxt and not str(nxt).startswith("https://"):
+        # Only ever bounce back to Arcade over TLS; an open redirect here would
+        # hand the flow to anyone who could craft the url.
+        raise ApiError(400, "bad_request", "The continuation url must be https.")
+
+    if nxt:
+        return RedirectResponse(str(nxt), status_code=303)
+    return JSONResponse({"verified": True, "user_id": verified, "flow": flow})
 
 
 @app.post("/connections/{server}/connect")
