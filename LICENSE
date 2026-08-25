@@ -1,0 +1,33 @@
+Copyright (c) 2026 Nathaniel Morgan. All rights reserved.
+
+PROPRIETARY AND CONFIDENTIAL
+
+This software and its source code, documentation, design files, and all
+associated materials (the "Software") are the proprietary and confidential
+property of the copyright holder.
+
+No license, express or implied, is granted to any person or entity. Without
+the prior written permission of the copyright holder, you may not:
+
+  1. use, execute, or run the Software for any purpose;
+  2. copy, reproduce, or store the Software in any medium;
+  3. modify the Software or prepare derivative works based upon it;
+  4. distribute, publish, sublicense, sell, lease, or otherwise transfer the
+     Software or any portion of it to any third party;
+  5. disclose the Software or its contents to any third party; or
+  6. reverse engineer, decompile, or disassemble the Software.
+
+Access to this repository does not constitute a grant of any of the rights
+above. Any permission granted must be in writing and signed by the copyright
+holder, and is limited to its express terms.
+
+Third-party components incorporated into or depended upon by the Software
+remain governed by their own licenses. Nothing in this notice purports to
+restrict rights granted by those licenses in respect of those components.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
