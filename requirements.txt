@@ -12,7 +12,7 @@ fastapi>=0.115.0
 starlette>=0.40.0         # BackgroundTask, imported directly by api.py. A FastAPI
                           # dependency, named here because we import it ourselves.
 uvicorn>=0.32.0           # not imported; the Dockerfile CMD runs it
-pydantic>=2.10.6          # a FastAPI dependency, named because landing/ imports it directly
+pydantic>=2.10.6          # a FastAPI dependency; pinned for the floor, not imported directly
 python-multipart>=0.0.9   # multipart form parsing, for POST /projects/{id}/files
 PyJWT>=2.8.0
 cryptography>=42.0.0      # PyJWT needs it for the ES256 tokens Supabase signs

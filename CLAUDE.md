@@ -1,17 +1,37 @@
-# ARKOS
+# Buddy
 
 Mid-redesign. The old architecture guidelines are gone: they mandated state
 graphs, `StateOutput`, routers, and mem0, all of which this redesign deletes.
-They are kept at `docs/deprecated/CLAUDE_pre_redesign.md` for history only.
+They were removed from the tree entirely — read them in `git log` if you need
+the history.
 
 **Start at `docs/single_loop_redesign_spec.md`.** It routes to everything else.
 
 `docs/contracts.md` is law. The spec says what to build; contracts says whether
 it is correct. If they disagree, contracts wins and the spec is the bug.
 
-**Never read `docs/deprecated/`.** It is the architecture that was deleted. Do
-not open it, cite it, or follow its task numbers. Stale pointers to it in
-docstrings should be deleted, not followed.
+**Do not resurrect the pre-redesign architecture.** It is deleted, not archived:
+there is no `docs/deprecated/`, and any pointer to that path is stale. Do not
+cite it or follow its task numbers. Stale pointers to it in docstrings should be
+deleted, not followed.
+
+**The project is Buddy** (`the-real-buddy/buddy-core`); it was called ARKOS, and
+the rename is cosmetic-only so far. The literal string `arkos` is still
+LOAD-BEARING in several places and must NOT be swept: `_ISSUER` in
+`harness_module/jwt_utils.py` (every live token carries `iss=arkos`, so changing
+it invalidates every session), `store.bucket` / `store.prefix` / `store.root` in
+`config_module/config.yaml` (the content-addressed blob prefix — changing it
+orphans every stored blob), the `/tmp/arkos-*.tar` staging paths in
+`harness_module/workspace.py` (materialize and flush must agree on them), and
+the `ark_session` cookie with `ARK_SESSION_SECRET`. Rename prose and titles
+freely; leave those identifiers alone.
+
+**There is no CI.** `.github/workflows/` was deleted on 2026-08-25 — ci.yml plus
+the already-disabled deploy and monitor jobs. Nothing runs ruff or the test
+suite on push, so run them yourself before claiming a change is green. Do not
+recreate those files from `git log` expecting them to work: they targeted
+`ghcr.io/sgiark/arkos` and `ark.mit.edu`, which are not this project's
+infrastructure.
 
 **The old architecture is GONE as of 2026-08-13** (Tasks 7 and 8, pulled forward).
 `state_module`, `memory_module` and `computer_module` no longer exist, and

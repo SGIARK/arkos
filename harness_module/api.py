@@ -104,7 +104,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await pool.close()
 
 
-app = FastAPI(title="ARKOS", lifespan=lifespan)
+app = FastAPI(title="Buddy", lifespan=lifespan)
 
 _origin = str(_cfg("app.public_url", "")).rstrip("/")
 app.add_middleware(

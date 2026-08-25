@@ -21,7 +21,7 @@ class ConfigLoader:
 
         if not self.config_path.exists():
             raise FileNotFoundError(
-                f"Config file not found: {self.config_path}\nPlease create config_module/arkos.yaml"
+                f"Config file not found: {self.config_path}\nPlease create config_module/config.yaml"
             )
 
     def load(self) -> dict[str, Any]:

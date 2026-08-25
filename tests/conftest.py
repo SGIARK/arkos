@@ -1,4 +1,4 @@
-"""Shared fixtures for arkos tests."""
+"""Shared fixtures for buddy tests."""
 
 import os
 import sys
