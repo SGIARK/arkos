@@ -1522,12 +1522,18 @@ async def verify_user(request: Request) -> Response:
     top-level GET carries a `SameSite=Lax` cookie, which is why this is a GET and
     why it must stay same-origin with `/app`.
 
-    The parameter names Arcade sends are NOT yet measured — the dashboard's "Run
-    test" is the first time we see them — so the flow id is read under every
-    plausible spelling and the whole query is logged once at INFO. When the real
-    shape lands, narrow this and record it in `implementation_notes.md`.
+    Measured 2026-08-25 from the dashboard's "Run test": Arcade sends exactly one
+    parameter, `flow_id`, a UUID — no `user_id`, no continuation url. The
+    `user_id` comparison below therefore never fires on Arcade's own traffic; it
+    guards the case of a hand-crafted link, which is the case worth guarding.
+    Anything unexpected in the query is logged as a warning, because a changed
+    shape is the thing that would break this quietly.
     """
     params = dict(request.query_params)
+    flow = params.get("flow_id")
+    unexpected = sorted(k for k in params if k not in ("flow_id", "user_id", "redirect_uri"))
+    if unexpected:
+        logger.warning("arcade user verification sent unexpected params=%s", unexpected)
     logger.info("arcade user verification hit with params=%s", sorted(params))
 
     cookie = request.cookies.get(str(_cfg("auth.cookie_name", "ark_session")))
@@ -1546,14 +1552,7 @@ async def verify_user(request: Request) -> Response:
         logger.warning("user verification refused: cookie says %s, url claimed %s", verified, claimed)
         raise ApiError(403, "forbidden", "This connection link belongs to a different account.")
 
-    flow = (
-        params.get("flow_id")
-        or params.get("flowId")
-        or params.get("auth_id")
-        or params.get("id")
-        or params.get("state")
-    )
-    nxt = params.get("redirect_uri") or params.get("next") or params.get("return_url")
+    nxt = params.get("redirect_uri")
     if nxt and not str(nxt).startswith("https://"):
         # Only ever bounce back to Arcade over TLS; an open redirect here would
         # hand the flow to anyone who could craft the url.
