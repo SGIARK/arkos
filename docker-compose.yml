@@ -1,0 +1,225 @@
+version: "3.8"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "1112:1112"
+    environment:
+      - DB_URL=postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@supabase-db:5432/postgres
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-sk-dummy}
+      - HF_TOKEN=${HF_TOKEN:-}
+      - SGLANG_URL=http://sglang:30000
+      - TEI_URL=http://tei:80
+      - SUPABASE_URL=http://supabase-rest:3000
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY:-}
+      - BROWSERLESS_URL=ws://browserless:3000
+    env_file:
+      - .env
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+      sglang:
+        condition: service_started
+      tei:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - arkos-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:1112/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ============================================
+  # SGLang - LLM Inference Server
+  # ============================================
+  sglang:
+    image: lmsysorg/sglang:latest
+    ports:
+      - "30000:30000"
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+    volumes:
+      - sglang_cache:/root/.cache/huggingface
+    command: >
+      python -m sglang.launch_server
+      --model-path ${SGLANG_MODEL:-Qwen/Qwen2.5-7B-Instruct}
+      --host 0.0.0.0
+      --port 30000
+      --tool-call-parser qwen3_coder
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    networks:
+      - arkos-network
+
+  # ============================================
+  # Huggingface Text Embeddings Inference
+  # ============================================
+  tei:
+    image: ghcr.io/huggingface/text-embeddings-inference:1.5
+    ports:
+      - "8081:80"
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+    volumes:
+      - tei_cache:/data
+    command: >
+      --model-id ${TEI_MODEL:-BAAI/bge-small-en-v1.5}
+      --port 80
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - arkos-network
+
+  # ============================================
+  # Browserless - Sandboxed Chromium pool (CDP over WebSocket)
+  # ============================================
+  browserless:
+    image: ghcr.io/browserless/chromium:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - CONCURRENT=${BROWSERLESS_CONCURRENT:-10}
+      # TIMEOUT must be strictly greater than browser_task's wall-clock cap
+      # (BROWSER_USE_MAX_SECONDS, default 180s). If Browserless wins the
+      # race, the app reports 'wall-clock exceeded' when the real cause was
+      # the container killing the session — wrong diagnosis to ship.
+      - TIMEOUT=${BROWSERLESS_TIMEOUT:-300000}
+    restart: unless-stopped
+    networks:
+      - arkos-network
+
+  # ============================================
+  # Supabase Services
+  # ============================================
+  supabase-db:
+    image: supabase/postgres:15.6.1.143
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: postgres
+      JWT_SECRET: ${JWT_SECRET:-super-secret-jwt-token-with-at-least-32-characters}
+      JWT_EXP: 3600
+    volumes:
+      - supabase_db_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - arkos-network
+
+  supabase-auth:
+    image: supabase/gotrue:v2.164.0
+    ports:
+      - "9999:9999"
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: ${API_EXTERNAL_URL:-http://localhost:9999}
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@supabase-db:5432/postgres?search_path=auth
+      GOTRUE_SITE_URL: ${SITE_URL:-http://localhost:3000}
+      GOTRUE_URI_ALLOW_LIST: ${ADDITIONAL_REDIRECT_URLS:-}
+      GOTRUE_DISABLE_SIGNUP: ${DISABLE_SIGNUP:-false}
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_EXP: 3600
+      GOTRUE_JWT_SECRET: ${JWT_SECRET:-super-secret-jwt-token-with-at-least-32-characters}
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: ${ENABLE_EMAIL_SIGNUP:-true}
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: ${ENABLE_ANONYMOUS_USERS:-false}
+      GOTRUE_MAILER_AUTOCONFIRM: ${ENABLE_EMAIL_AUTOCONFIRM:-true}
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - arkos-network
+
+  supabase-rest:
+    image: postgrest/postgrest:v12.2.3
+    ports:
+      - "3001:3000"
+    environment:
+      PGRST_DB_URI: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@supabase-db:5432/postgres
+      PGRST_DB_SCHEMAS: public,storage,graphql_public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET:-super-secret-jwt-token-with-at-least-32-characters}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+      PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET:-super-secret-jwt-token-with-at-least-32-characters}
+      PGRST_APP_SETTINGS_JWT_EXP: 3600
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - arkos-network
+
+  supabase-storage:
+    image: supabase/storage-api:v1.11.13
+    ports:
+      - "5000:5000"
+    environment:
+      ANON_KEY: ${SUPABASE_ANON_KEY:-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0}
+      SERVICE_KEY: ${SUPABASE_SERVICE_KEY:-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU}
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@supabase-db:5432/postgres
+      FILE_SIZE_LIMIT: 52428800
+      STORAGE_BACKEND: file
+      FILE_STORAGE_BACKEND_PATH: /var/lib/storage
+      TENANT_ID: stub
+      REGION: stub
+      GLOBAL_S3_BUCKET: stub
+      ENABLE_IMAGE_TRANSFORMATION: "true"
+      IMGPROXY_URL: http://supabase-imgproxy:8080
+      PGRST_JWT_SECRET: ${JWT_SECRET:-super-secret-jwt-token-with-at-least-32-characters}
+      POSTGREST_URL: http://supabase-rest:3000
+      AUTH_JWT_SECRET: ${JWT_SECRET:-super-secret-jwt-token-with-at-least-32-characters}
+      AUTH_JWT_ALGORITHM: HS256
+    volumes:
+      - supabase_storage_data:/var/lib/storage
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+      supabase-rest:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - arkos-network
+
+volumes:
+  supabase_db_data:
+  supabase_storage_data:
+  sglang_cache:
+  tei_cache:
+
+networks:
+  arkos-network:
+    driver: bridge
