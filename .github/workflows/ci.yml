@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev_refactor]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  # ──────────────────────────────────────────────
+  # Stage 1: Lint & Format
+  # ──────────────────────────────────────────────
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff lint check
+        run: ruff check .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+  # ──────────────────────────────────────────────
+  # Stage 2: Tests — the throwaway Postgres lives here.
+  # A fresh buddy_test database is conjured per run and destroyed after;
+  # tests never see a production DSN.
+  # ──────────────────────────────────────────────
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: buddy_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements-dev.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        env:
+          DB_URL: postgresql://postgres:postgres@localhost:5432/buddy_test
+          OPENAI_API_KEY: sk-test-dummy-key
+          PYTHONPATH: ${{ github.workspace }}
+        run: pytest tests/ -q --timeout=120 -m "not integration"
+
+  # Stage 3 (Docker image build) from the old repo's CI is intentionally
+  # absent: the Dockerfile left the tree in the 2026-08-25 refactor.
+  # Restore a build stage when the deploy story lands (Task 14).
