@@ -17,13 +17,13 @@ import uuid
 import pytest
 import pytest_asyncio
 
-from harness_module import store
+from harness_module import blobs, store
 
 pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.integration,
     pytest.mark.skipif(
-        not (store.project_url() and store.secret_key()),
+        not (blobs.project_url() and blobs.secret_key()),
         reason="the Supabase project URL or secret key is not configured",
     ),
 ]
@@ -32,7 +32,7 @@ pytestmark = [
 @pytest_asyncio.fixture
 async def backend():
     """A live backend that removes whatever the test wrote."""
-    made = store.SupabaseBlobs(store.project_url(), store.secret_key(), store.bucket())
+    made = store.SupabaseBlobs(blobs.project_url(), blobs.secret_key(), blobs.bucket())
     written: list[str] = []
     made.written = written
     yield made

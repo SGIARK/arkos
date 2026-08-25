@@ -39,10 +39,10 @@ from harness_module import session_log as slog
 from harness_module.stream import LAGGED, stream
 from model_module import client as model_client
 from tool_module import registry, session_tools
+from tool_module.arcade import ArcadeError
 from tool_module.browser.stream import broker as frames
 from tool_module.sandbox import manager as sandbox_manager
 from tool_module.sandbox import tools as sandbox_tools
-from tool_module.arcade import ArcadeError
 
 logger = logging.getLogger(__name__)
 
