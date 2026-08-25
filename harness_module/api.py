@@ -1526,12 +1526,15 @@ async def verify_user(request: Request) -> Response:
     parameter, `flow_id`, a UUID — no `user_id`, no continuation url. The
     `user_id` comparison below therefore never fires on Arcade's own traffic; it
     guards the case of a hand-crafted link, which is the case worth guarding.
-    Anything unexpected in the query is logged as a warning, because a changed
-    shape is the thing that would break this quietly.
+
+    Verifying is only half of it. The flow finalizes when we CONFIRM the user
+    back to Arcade and then send the BROWSER onward to the `next_uri` that
+    answer carries. Returning JSON here instead — which this route did on
+    2026-08-25 — ends the flow on a dead page and binds no connection at all.
     """
     params = dict(request.query_params)
     flow = params.get("flow_id")
-    unexpected = sorted(k for k in params if k not in ("flow_id", "user_id", "redirect_uri"))
+    unexpected = sorted(k for k in params if k not in ("flow_id", "user_id"))
     if unexpected:
         logger.warning("arcade user verification sent unexpected params=%s", unexpected)
     logger.info("arcade user verification hit with params=%s", sorted(params))
@@ -1545,22 +1548,36 @@ async def verify_user(request: Request) -> Response:
         raise ApiError(401, "unauthenticated", f"Session rejected: {e}") from e
     verified = str(claims["sub"])
 
-    claimed = params.get("user_id") or params.get("userId") or params.get("user")
+    claimed = params.get("user_id")
     if claimed and claimed != verified:
         # Someone handed this browser a link naming a different user. Refusing is
         # the whole point of the route.
         logger.warning("user verification refused: cookie says %s, url claimed %s", verified, claimed)
         raise ApiError(403, "forbidden", "This connection link belongs to a different account.")
 
-    nxt = params.get("redirect_uri")
-    if nxt and not str(nxt).startswith("https://"):
-        # Only ever bounce back to Arcade over TLS; an open redirect here would
-        # hand the flow to anyone who could craft the url.
-        raise ApiError(400, "bad_request", "The continuation url must be https.")
+    if not flow:
+        # Not Arcade's traffic. Say who the cookie is and finish; there is no
+        # flow to confirm and nowhere to send the browser.
+        return JSONResponse({"verified": True, "user_id": verified, "flow": None})
 
+    client = hands.arcade()
+    if client is None:
+        raise ApiError(503, "unavailable", "Connectors are not configured on this server.")
+    try:
+        answer = await client.client.confirm_user(flow, verified)
+    except ArcadeError as e:
+        # A stale or already-spent flow is a flat 400 from Arcade. The person is
+        # looking at this page, so it has to say something they can act on.
+        logger.warning("confirm_user failed for flow %s: %s", flow, e)
+        raise ApiError(502, "upstream_error", f"Arcade would not confirm this connection: {e}", retryable=True) from e
+
+    nxt = answer.get("next_uri")
     if nxt:
-        return RedirectResponse(str(nxt), status_code=303)
-    return JSONResponse({"verified": True, "user_id": verified, "flow": flow})
+        if not str(nxt).startswith("https://"):
+            # Only ever bounce a signed-in browser onward over TLS.
+            raise ApiError(502, "upstream_error", "Arcade returned a non-https continuation url.")
+        return RedirectResponse(str(nxt), status_code=302)
+    return JSONResponse({"verified": True, "user_id": verified, "flow": flow, "auth_id": answer.get("auth_id")})
 
 
 @app.post("/connections/{server}/connect")

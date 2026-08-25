@@ -108,6 +108,7 @@ class ArcadeClient:
         gateway_url: str,
         *,
         engine_url: str = "https://api.arcade.dev",
+        cloud_url: str = "https://cloud.arcade.dev",
         protocol_version: str = "2025-11-25",
     ):
         if not api_key:
@@ -117,6 +118,7 @@ class ArcadeClient:
         self.api_key = api_key
         self.gateway_url = gateway_url.rstrip("/")
         self.engine_url = engine_url.rstrip("/")
+        self.cloud_url = cloud_url.rstrip("/")
         self.protocol_version = protocol_version
         self._http: aiohttp.ClientSession | None = None
         self._http_lock = asyncio.Lock()
@@ -349,6 +351,42 @@ class ArcadeClient:
         }
         return await self._engine("POST", "/v1/auth/authorize", user_id, body)
 
+    async def confirm_user(self, flow_id: str, user_id: str) -> dict[str, Any]:
+        """Tell Arcade which user the browser in one auth flow actually is.
+
+        The second half of the custom user verifier. Arcade bounces the browser
+        to our route with a `flow_id`; this call — server-side, signed with the
+        API key, never from the browser — names the user we verified from the
+        session cookie, and the grant binds to that uuid.
+
+        Measured 2026-08-25: the route is
+        `POST https://cloud.arcade.dev/api/v1/oauth/confirm_user`. It is on
+        cloud.arcade.dev, NOT the engine host every other call here uses; every
+        equivalent path on api.arcade.dev is a 404. Body is `{flow_id, user_id}`
+        — omitting `user_id` answers 422 naming the field. A stale or unknown
+        flow is a flat 400 `{"code":400,"msg":"Bad request"}`. Success is 200
+        with `auth_id`, and optionally `next_uri`: the url the BROWSER must be
+        sent to for the flow to finalize. Answering the browser with anything
+        else — JSON, a success page of our own — leaves the flow unfinished and
+        nothing binds.
+        """
+        url = f"{self.cloud_url}/api/v1/oauth/confirm_user"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        body = {"flow_id": flow_id, "user_id": user_id}
+        http = await self.http()
+        async with http.post(url, json=body, headers=headers) as resp:
+            text = await resp.text()
+            if resp.status >= 400:
+                raise ArcadeError(f"confirm_user -> {resp.status}: {text[:300]}")
+        try:
+            return json.loads(text) if text.strip() else {}
+        except json.JSONDecodeError as e:
+            raise ArcadeError(f"confirm_user: response was not JSON: {text[:200]}") from e
+
     async def user_connections(self, user_id: str) -> list[dict[str, Any]]:
         """List this user's provider connections, which is where a revoke finds its id."""
         payload = await self._engine("GET", f"/v1/admin/user_connections?user_id={user_id}", user_id)
@@ -436,6 +474,7 @@ class Arcade:
             api_key=mcp_config.get("api_key"),
             gateway_url=mcp_config.get("gateway_url"),
             engine_url=mcp_config.get("engine_url", "https://api.arcade.dev"),
+            cloud_url=mcp_config.get("cloud_url", "https://cloud.arcade.dev"),
             protocol_version=mcp_config.get("protocol_version", "2025-11-25"),
         )
         search = mcp_config.get("search") or {}

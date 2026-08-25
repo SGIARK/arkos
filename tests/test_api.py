@@ -22,6 +22,7 @@ from harness_module import api, approvals, lifecycle, runner, store
 from harness_module import session_log as slog
 from harness_module.stream import SessionStream, stream
 from tests.dbgate import require_db
+from tool_module.arcade import ArcadeError
 
 pytestmark = pytest.mark.asyncio
 
@@ -1766,6 +1767,75 @@ async def test_the_verifier_confirms_the_user_the_cookie_names(client):
     assert response.json() == {"verified": True, "user_id": user_id, "flow": None}
 
 
+class _FakeConfirm:
+    """Stands in for the Arcade client's confirm_user leg."""
+
+    def __init__(self, answer=None, blow_up=False):
+        self.answer = answer or {}
+        self.blow_up = blow_up
+        self.calls: list[tuple[str, str]] = []
+
+    class _Inner:
+        def __init__(self, outer):
+            self.outer = outer
+
+        async def confirm_user(self, flow_id, user_id):
+            self.outer.calls.append((flow_id, user_id))
+            if self.outer.blow_up:
+                raise ArcadeError("400: Bad request")
+            return self.outer.answer
+
+    @property
+    def client(self):
+        return self._Inner(self)
+
+
+async def test_the_verifier_confirms_the_flow_and_follows_next_uri(monkeypatch, client):
+    """The flow finalizes when the BROWSER follows next_uri. JSON would end it on a dead page."""
+    user_id = await _signed_in(client)
+    fake = _FakeConfirm({"auth_id": "au_1", "next_uri": "https://cloud.arcade.dev/done?x=1"})
+    monkeypatch.setattr(api.hands, "arcade", lambda: fake)
+
+    response = await client.get("/connections/verify", params={"flow_id": "flow-1"}, follow_redirects=False)
+
+    assert response.status_code == 302
+    assert response.headers["location"] == "https://cloud.arcade.dev/done?x=1"
+    # The uuid confirmed is the COOKIE's, never anything off the url.
+    assert fake.calls == [("flow-1", user_id)]
+
+
+async def test_the_verifier_confirms_the_cookie_user_not_the_url_user(monkeypatch, client):
+    user_id = await _signed_in(client)
+    fake = _FakeConfirm({"auth_id": "au_1"})
+    monkeypatch.setattr(api.hands, "arcade", lambda: fake)
+
+    response = await client.get("/connections/verify", params={"flow_id": "flow-1"})
+
+    assert response.status_code == 200
+    assert fake.calls == [("flow-1", user_id)]
+
+
+async def test_a_flow_arcade_will_not_confirm_says_so(monkeypatch, client):
+    """A stale flow is a flat 400 upstream; the person is looking at this page."""
+    await _signed_in(client)
+    monkeypatch.setattr(api.hands, "arcade", lambda: _FakeConfirm(blow_up=True))
+
+    response = await client.get("/connections/verify", params={"flow_id": "spent"})
+
+    assert response.status_code == 502
+    assert response.json()["code"] == "upstream_error"
+
+
+async def test_the_verifier_will_not_follow_a_non_tls_next_uri(monkeypatch, client):
+    await _signed_in(client)
+    fake = _FakeConfirm({"next_uri": "http://evil.example/steal"})
+    monkeypatch.setattr(api.hands, "arcade", lambda: fake)
+
+    response = await client.get("/connections/verify", params={"flow_id": "flow-1"}, follow_redirects=False)
+
+    assert response.status_code == 502
+
+
 async def test_the_verifier_refuses_a_url_naming_another_user(client):
     """The query is a claim by whoever built the link. Binding a grant to it is the bug."""
     await _signed_in(client)
@@ -1783,30 +1853,3 @@ async def test_the_verifier_agrees_when_the_url_names_the_same_user(client):
 
     assert response.status_code == 200
     assert response.json()["user_id"] == user_id
-
-
-async def test_the_verifier_bounces_back_to_arcade_over_tls(client):
-    user_id = await _signed_in(client)
-    back = "https://cloud.arcade.dev/api/v1/oauth/continue?flow=abc"
-
-    response = await client.get(
-        "/connections/verify",
-        params={"user_id": user_id, "redirect_uri": back},
-        follow_redirects=False,
-    )
-
-    assert response.status_code == 303
-    assert response.headers["location"] == back
-
-
-async def test_the_verifier_will_not_be_an_open_redirect(client):
-    """A continuation url is a place this route sends a signed-in browser."""
-    await _signed_in(client)
-
-    response = await client.get(
-        "/connections/verify",
-        params={"redirect_uri": "http://evil.example/steal"},
-        follow_redirects=False,
-    )
-
-    assert response.status_code == 400

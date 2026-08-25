@@ -188,6 +188,11 @@ mcp:
   # consent link WITHOUT calling a tool, and how it reads whether a service is
   # connected — `authorize` is scope-aware, so it answers per service.
   engine_url: "https://api.arcade.dev"
+  # A DIFFERENT HOST, and not a typo. The custom user verifier confirms a user
+  # back to Arcade at `POST {cloud_url}/api/v1/oauth/confirm_user`, which lives
+  # on cloud.arcade.dev — measured 2026-08-25, every equivalent path on
+  # api.arcade.dev is a 404. Same API key.
+  cloud_url: "https://cloud.arcade.dev"
   protocol_version: "2025-11-25"   # what the gateway negotiated when this was measured
 
   # Google Search is OURS, not a connector. SerpAPI-backed, with the key set as
