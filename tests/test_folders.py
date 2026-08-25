@@ -76,9 +76,7 @@ async def client():
 async def _signed(client: AsyncClient) -> str:
     user_id = str(uuid.uuid4())
     _seeded.append(uuid.UUID(user_id))
-    response = await client.post(
-        "/auth/session", headers={"Authorization": f"Bearer {_supabase_token(user_id)}"}
-    )
+    response = await client.post("/auth/session", headers={"Authorization": f"Bearer {_supabase_token(user_id)}"})
     assert response.status_code == 204
     return user_id
 
@@ -90,9 +88,7 @@ async def test_a_folder_is_derived_and_no_table_holds_one(client):
     """It exists because a file's path starts with it. There is nothing else to it."""
     await _signed(client)
 
-    await client.post(
-        "/files", files={"file": ("a.md", b"x", "text/plain")}, data={"path": "triage/a.md"}
-    )
+    await client.post("/files", files={"file": ("a.md", b"x", "text/plain")}, data={"path": "triage/a.md"})
 
     assert (await client.get("/folders")).json() == [{"name": "triage", "files": 1}]
     assert await pool.fetchval("SELECT to_regclass('public.folders')") is None
@@ -197,9 +193,7 @@ async def test_renaming_a_folder_whose_lease_is_held_is_refused(client):
     user_id = await _signed(client)
     await store.put_file(user_id, "triage/a.md", b"1")
     made = (await client.post("/projects", json={"title": "work", "folders": ["triage"]})).json()
-    session_id = (
-        await client.post("/sessions", json={"goal": "go", "project_id": made["id"]})
-    ).json()["session_id"]
+    session_id = (await client.post("/sessions", json={"goal": "go", "project_id": made["id"]})).json()["session_id"]
     # The write lease IS the signal: a session holds it for as long as it is
     # writing that folder, which is exactly the window a rename must not land in.
     assert await leases.acquire(f"folder:{user_id}:triage", session_id, 60)
@@ -304,17 +298,13 @@ async def test_deleting_the_last_file_takes_the_folder_and_its_links(client):
     assert gone["folders"] == ["triage"]
     assert gone["unlinked"] == 1
     assert (await client.get("/folders")).json() == []
-    assert await pool.fetchval(
-        "SELECT count(*) FROM project_folders WHERE project_id = $1", uuid.UUID(made["id"])
-    ) == 0
+    assert await pool.fetchval("SELECT count(*) FROM project_folders WHERE project_id = $1", uuid.UUID(made["id"])) == 0
 
     back = (await client.post("/files/undo", json={"batch": gone["batch"]})).json()
 
     assert back["relinked"] == 1
     assert (await client.get("/folders")).json() == [{"name": "triage", "files": 1}]
-    assert [f["path"] for f in (await client.get(f"/projects/{made['id']}/files")).json()] == [
-        "triage/a.md"
-    ]
+    assert [f["path"] for f in (await client.get(f"/projects/{made['id']}/files")).json()] == ["triage/a.md"]
 
 
 async def test_undo_refuses_to_overwrite_what_was_put_there_since(client):
@@ -370,9 +360,7 @@ async def test_a_destructive_change_is_refused_while_the_folders_lease_is_held(c
     await store.put_file(user_id, "triage/a.md", b"1")
     await store.put_file(user_id, "notes/b.md", b"2")
     made = (await client.post("/projects", json={"title": "work", "folders": ["triage"]})).json()
-    session_id = (
-        await client.post("/sessions", json={"goal": "go", "project_id": made["id"]})
-    ).json()["session_id"]
+    session_id = (await client.post("/sessions", json={"goal": "go", "project_id": made["id"]})).json()["session_id"]
     assert await leases.acquire(f"folder:{user_id}:triage", session_id, 60)
 
     refused = [
@@ -424,12 +412,8 @@ async def test_a_project_linking_two_folders_claims_both_at_spawn(client):
     await store.put_file(user_id, "triage/a.md", b"1")
     await store.put_file(user_id, "notes/b.md", b"2")
 
-    made = (
-        await client.post("/projects", json={"title": "both", "folders": ["triage", "notes"]})
-    ).json()
-    session_id = (
-        await client.post("/sessions", json={"goal": "work", "project_id": made["id"]})
-    ).json()["session_id"]
+    made = (await client.post("/projects", json={"title": "both", "folders": ["triage", "notes"]})).json()
+    session_id = (await client.post("/sessions", json={"goal": "work", "project_id": made["id"]})).json()["session_id"]
 
     assert made["folders"] == ["triage", "notes"]
     assert made["files"] == 2
@@ -461,23 +445,17 @@ async def test_a_link_added_later_reaches_the_next_session_not_the_running_one(c
     await store.put_file(user_id, "triage/a.md", b"1")
     await store.put_file(user_id, "notes/b.md", b"2")
     made = (await client.post("/projects", json={"title": "work", "folders": ["triage"]})).json()
-    running = (
-        await client.post("/sessions", json={"goal": "start", "project_id": made["id"]})
-    ).json()["session_id"]
+    running = (await client.post("/sessions", json={"goal": "start", "project_id": made["id"]})).json()["session_id"]
 
     linked = await client.post(f"/projects/{made['id']}/folders", json={"folder": "notes"})
 
     # The surface shows it at once...
     assert linked.json()["folders"] == ["triage", "notes"]
-    assert await pool.fetchval(
-        "SELECT count(*) FROM project_folders WHERE project_id = $1", uuid.UUID(made["id"])
-    ) == 2
+    assert await pool.fetchval("SELECT count(*) FROM project_folders WHERE project_id = $1", uuid.UUID(made["id"])) == 2
     # ...the running session's claims are unchanged...
     assert [c.folder for c in await workspace.claims_for(running)] == ["triage"]
     # ...and the next session's include it.
-    later = (
-        await client.post("/sessions", json={"goal": "again", "project_id": made["id"]})
-    ).json()["session_id"]
+    later = (await client.post("/sessions", json={"goal": "again", "project_id": made["id"]})).json()["session_id"]
     assert sorted(c.folder for c in await workspace.claims_for(later)) == ["notes", "triage"]
 
 
@@ -488,9 +466,7 @@ async def test_deleting_a_project_takes_its_links_and_no_files(client):
 
     await pool.execute("DELETE FROM projects WHERE id = $1", uuid.UUID(made["id"]))
 
-    assert await pool.fetchval(
-        "SELECT count(*) FROM project_folders WHERE project_id = $1", uuid.UUID(made["id"])
-    ) == 0
+    assert await pool.fetchval("SELECT count(*) FROM project_folders WHERE project_id = $1", uuid.UUID(made["id"])) == 0
     assert [f["path"] for f in (await client.get("/files")).json()] == ["triage/a.md"]
     assert (await client.get("/folders")).json() == [{"name": "triage", "files": 1}]
 
@@ -539,18 +515,10 @@ async def test_an_approved_plan_lands_in_the_first_linked_folder(client):
     user_id = await _signed(client)
     await store.put_file(user_id, "triage/a.md", b"1")
     await store.put_file(user_id, "archive/b.md", b"2")
-    made = (
-        await client.post("/projects", json={"title": "work", "folders": ["triage", "archive"]})
-    ).json()
-    session_id = (
-        await client.post("/sessions", json={"goal": "work", "project_id": made["id"]})
-    ).json()["session_id"]
-    await pool.execute(
-        "UPDATE sessions SET status = 'awaiting_approval' WHERE id = $1", uuid.UUID(session_id)
-    )
-    row = await approvals.create(
-        session_id, "c1", "plan", PLAN["goal"], tool_name="propose_plan", tool_args=PLAN
-    )
+    made = (await client.post("/projects", json={"title": "work", "folders": ["triage", "archive"]})).json()
+    session_id = (await client.post("/sessions", json={"goal": "work", "project_id": made["id"]})).json()["session_id"]
+    await pool.execute("UPDATE sessions SET status = 'awaiting_approval' WHERE id = $1", uuid.UUID(session_id))
+    row = await approvals.create(session_id, "c1", "plan", PLAN["goal"], tool_name="propose_plan", tool_args=PLAN)
 
     response = await client.post(f"/approvals/{row.id}/respond", json={"answer": "approve"})
 
@@ -568,9 +536,7 @@ async def test_the_sandbox_sees_the_plan_at_the_mounted_folder_path(client):
     user_id = await _signed(client)
     await store.put_file(user_id, "triage/a.md", b"1")
     made = (await client.post("/projects", json={"title": "work", "folders": ["triage"]})).json()
-    session_id = (
-        await client.post("/sessions", json={"goal": "work", "project_id": made["id"]})
-    ).json()["session_id"]
+    session_id = (await client.post("/sessions", json={"goal": "work", "project_id": made["id"]})).json()["session_id"]
     await store.put_file(user_id, "triage/plan.md", b"# the plan\n")
 
     claims = await workspace.claims_for(session_id)
@@ -592,9 +558,9 @@ async def test_a_fresh_account_has_no_project_and_no_folder(client):
     assert me["home_session_id"], "no home session was made"
     assert (await client.get("/projects")).json() == []
     assert (await client.get("/folders")).json() == []
-    assert await pool.fetchval(
-        "SELECT project_id FROM sessions WHERE id = $1", uuid.UUID(me["home_session_id"])
-    ) is None
+    assert (
+        await pool.fetchval("SELECT project_id FROM sessions WHERE id = $1", uuid.UUID(me["home_session_id"])) is None
+    )
 
 
 async def test_a_session_with_no_project_says_so_rather_than_naming_itself(client):
@@ -607,9 +573,7 @@ async def test_a_session_with_no_project_says_so_rather_than_naming_itself(clien
     await _signed(client)
     home = (await client.get("/auth/me")).json()["home_session_id"]
     made = (await client.post("/projects", json={"title": "inbox triage"})).json()
-    in_project = (
-        await client.post("/sessions", json={"goal": "work", "project_id": made["id"]})
-    ).json()["session_id"]
+    in_project = (await client.post("/sessions", json={"goal": "work", "project_id": made["id"]})).json()["session_id"]
 
     orphan = (await client.get(f"/sessions/{home}")).json()
     housed = (await client.get(f"/sessions/{in_project}")).json()
@@ -626,9 +590,7 @@ async def test_the_home_session_claims_nothing_and_cannot_approve_a_plan(client)
     await _signed(client)
     home = (await client.get("/auth/me")).json()["home_session_id"]
     await pool.execute("UPDATE sessions SET status = 'awaiting_approval' WHERE id = $1", uuid.UUID(home))
-    row = await approvals.create(
-        home, "c1", "plan", PLAN["goal"], tool_name="propose_plan", tool_args=PLAN
-    )
+    row = await approvals.create(home, "c1", "plan", PLAN["goal"], tool_name="propose_plan", tool_args=PLAN)
 
     response = await client.post(f"/approvals/{row.id}/respond", json={"answer": "approve"})
 
@@ -645,12 +607,9 @@ async def test_the_home_session_claims_nothing_and_cannot_approve_a_plan(client)
 @pytest.mark.asyncio(loop_scope="function")
 async def test_contracts_records_the_store_and_the_links():
     """The card's own check: contracts is law, and this card changed the law."""
-    contracts = (
-        __import__("pathlib").Path(__file__).resolve().parent.parent / "docs" / "contracts.md"
-    ).read_text()
+    contracts = (__import__("pathlib").Path(__file__).resolve().parent.parent / "docs" / "contracts.md").read_text()
 
     assert "project_folders" in contracts
     assert "`files` `{user_id, path, content_hash, size, mtime}`" in contracts.replace("**", "")
     assert "folder:{user_id}:{name}" in contracts
     assert "~/store/<folder>/" in contracts
-

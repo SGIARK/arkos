@@ -41,9 +41,7 @@ async def _project() -> tuple[uuid.UUID, uuid.UUID]:
     user_id = uuid.uuid4()
     await pool.execute("INSERT INTO users (id) VALUES ($1)", user_id)
     _seeded.append(user_id)
-    project_id = await pool.fetchval(
-        "INSERT INTO projects (user_id, title) VALUES ($1, 'p') RETURNING id", user_id
-    )
+    project_id = await pool.fetchval("INSERT INTO projects (user_id, title) VALUES ($1, 'p') RETURNING id", user_id)
     return user_id, project_id
 
 
@@ -92,9 +90,7 @@ async def test_the_tree_holds_no_bytes():
     """Bytes live in the store, addressed by hash."""
     columns = {
         r["column_name"]
-        for r in await pool.fetch(
-            "SELECT column_name FROM information_schema.columns WHERE table_name = 'files'"
-        )
+        for r in await pool.fetch("SELECT column_name FROM information_schema.columns WHERE table_name = 'files'")
     }
 
     assert {"user_id", "path", "content_hash", "size", "mtime"} <= columns
@@ -136,22 +132,16 @@ async def test_a_project_links_a_folder_and_linking_twice_is_one_link():
             project_id,
         )
 
-    assert await pool.fetchval(
-        "SELECT count(*) FROM project_folders WHERE project_id = $1", project_id
-    ) == 1
+    assert await pool.fetchval("SELECT count(*) FROM project_folders WHERE project_id = $1", project_id) == 1
 
 
 async def test_two_projects_may_link_the_same_folder():
     """Nothing owns a folder, so nothing has to be taken from anybody to share it."""
     user_id, first = await _project()
-    second = await pool.fetchval(
-        "INSERT INTO projects (user_id, title) VALUES ($1, 'other') RETURNING id", user_id
-    )
+    second = await pool.fetchval("INSERT INTO projects (user_id, title) VALUES ($1, 'other') RETURNING id", user_id)
 
     for project_id in (first, second):
-        await pool.execute(
-            "INSERT INTO project_folders (project_id, folder) VALUES ($1, 'triage')", project_id
-        )
+        await pool.execute("INSERT INTO project_folders (project_id, folder) VALUES ($1, 'triage')", project_id)
 
     assert await pool.fetchval("SELECT count(*) FROM project_folders WHERE folder = 'triage'") == 2
 
@@ -167,9 +157,7 @@ async def test_deleting_a_project_deletes_its_links_and_no_files():
 
     await pool.execute("DELETE FROM projects WHERE id = $1", project_id)
 
-    assert await pool.fetchval(
-        "SELECT count(*) FROM project_folders WHERE project_id = $1", project_id
-    ) == 0
+    assert await pool.fetchval("SELECT count(*) FROM project_folders WHERE project_id = $1", project_id) == 0
     assert await pool.fetchval("SELECT count(*) FROM files WHERE user_id = $1", user_id) == 1
 
 
@@ -196,9 +184,7 @@ async def test_a_claim_names_a_folder_and_defaults_to_all_of_it():
         session_id,
     )
 
-    row = await pool.fetchrow(
-        "SELECT folder, subpath FROM session_claims WHERE session_id = $1", session_id
-    )
+    row = await pool.fetchrow("SELECT folder, subpath FROM session_claims WHERE session_id = $1", session_id)
     assert (row["folder"], row["subpath"]) == ("triage", "/")
 
 

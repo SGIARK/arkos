@@ -46,8 +46,6 @@ from tool_module.tools.control import PARK_KINDS
 logger = logging.getLogger(__name__)
 
 
-
-
 @dataclass(slots=True)
 class Session:
     """The session columns a turn needs, read once at the start of the turn."""
@@ -257,11 +255,7 @@ def _steering(session_id: str, after_seq: int) -> Callable[[], Awaitable[list[st
 
 def _clearable_refs(events: list[slog.StoredEvent]) -> list[str]:
     """Returns every stored result's ref, oldest first."""
-    return [
-        e.event.ref
-        for e in events
-        if isinstance(e.event, ToolResultEvent) and e.event.ref
-    ]
+    return [e.event.ref for e in events if isinstance(e.event, ToolResultEvent) and e.event.ref]
 
 
 def _assemble(
@@ -349,9 +343,7 @@ def _assemble(
             # after the assistant message carrying its call.
             flush_assistant()
             body = _cleared_text(event.ref) if event.ref and event.ref in cleared else _result_text(event)
-            messages.append(
-                {"role": "tool", "tool_call_id": event.id, "content": _stamped(body, stored.ts)}
-            )
+            messages.append({"role": "tool", "tool_call_id": event.id, "content": _stamped(body, stored.ts)})
             open_calls.discard(event.id)
             drain_deferred()
         elif isinstance(event, BudgetEvent):
@@ -655,9 +647,7 @@ async def _settle_gated_call(session: Session, sink: _Sink, dispatch: Dispatch) 
             session.id,
             row.tool_call_id,
         )
-        sink.emit(
-            ToolResultEvent(id=row.tool_call_id, ok=False, content=slog.INTERRUPTED, error_kind="interrupted")
-        )
+        sink.emit(ToolResultEvent(id=row.tool_call_id, ok=False, content=slog.INTERRUPTED, error_kind="interrupted"))
         await sink.barrier()
         return True
 
@@ -806,9 +796,7 @@ async def _ending(
             # unattended — holding a quota slot for a run nobody is running.
             # Not for `stopped`: it is not terminal, and keeping the mode is the
             # whole point of it.
-            current = await pool.fetchval(
-                "SELECT mode FROM sessions WHERE id = $1", _uuid(session_id)
-            )
+            current = await pool.fetchval("SELECT mode FROM sessions WHERE id = $1", _uuid(session_id))
             mode = "attended" if current == "unattended" else None
         # ONE mapping from reason to status, the same one the sink uses. The
         # ternary here read `cancelled` or `failed`, which was true of every
@@ -1257,9 +1245,7 @@ class _Sink:
             flushed = await workspace.flush(sandbox_manager.manager(), self.session.id, claims, manifest)
         except Exception as e:  # noqa: BLE001 - recorded, retried by the reaper
             logger.exception("session %s: flushing the workspace failed", self.session.id)
-            system_log.record(
-                "flush_failed", level="error", session_id=self.session.id, error=type(e).__name__
-            )
+            system_log.record("flush_failed", level="error", session_id=self.session.id, error=type(e).__name__)
             raise
         self._workspace = None
         system_log.record(
@@ -1548,9 +1534,7 @@ class _Sink:
                 tool_args=args,
             )
         else:
-            approval = await approvals.create(
-                self.session.id, call_id, PARK_KINDS[name], _park_prompt(name, args)
-            )
+            approval = await approvals.create(self.session.id, call_id, PARK_KINDS[name], _park_prompt(name, args))
         await self._save_cursor()
         moved = await lifecycle.transition(self.session.id, "running", "awaiting_approval", name) is not None
         if moved:
@@ -1588,5 +1572,3 @@ class _Sink:
                 self._last_seq,
                 self._hops,
             )
-
-

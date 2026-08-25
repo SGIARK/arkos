@@ -134,9 +134,7 @@ class ProposePlan:
             return "Every step must be a non-empty string."
         for field in ("missing",):
             value = args.get(field)
-            if value is not None and (
-                not isinstance(value, list) or any(not isinstance(v, str) for v in value)
-            ):
+            if value is not None and (not isinstance(value, list) or any(not isinstance(v, str) for v in value)):
                 return f"{field} must be a list of strings."
         inputs = args.get("inputs")
         if inputs is not None:
@@ -151,11 +149,7 @@ class ProposePlan:
         # Closes the call so the session can park on it. The human's decision
         # arrives through /approvals/{id}/respond, never as this call's result.
         missing = [m for m in (args.get("missing") or []) if str(m).strip()]
-        tail = (
-            f" It names {len(missing)} open question(s), which the human answers on the card."
-            if missing
-            else ""
-        )
+        tail = f" It names {len(missing)} open question(s), which the human answers on the card." if missing else ""
         return ok(
             f"Plan proposed: {args['goal']}\n"
             f"The run is paused until a human approves it, asks for a change, or dismisses it.{tail}"

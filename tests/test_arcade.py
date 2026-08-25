@@ -301,7 +301,11 @@ async def test_consent_asks_the_provider_for_the_pinned_scopes():
     await hands.consent("alice", "Gmail")
 
     assert client.authorized == [
-        ("alice", "buddy-google", ("https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.send"))
+        (
+            "alice",
+            "buddy-google",
+            ("https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.send"),
+        )
     ]
 
 

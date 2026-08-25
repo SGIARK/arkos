@@ -73,6 +73,7 @@ class SessionStream:
                 if not subscribers:
                     del self._subscribers[session_id]
 
+
 def _drain(queue: asyncio.Queue[Item]) -> None:
     while True:
         try:

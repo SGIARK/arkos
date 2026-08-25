@@ -97,9 +97,7 @@ async def _project(user_id: str, title: str, *folders: str) -> str:
         store.slug(title, "project"),
     )
     for folder in folders or (store.slug(title, "project"),):
-        await pool.execute(
-            "INSERT INTO project_folders (project_id, folder) VALUES ($1, $2)", project_id, folder
-        )
+        await pool.execute("INSERT INTO project_folders (project_id, folder) VALUES ($1, $2)", project_id, folder)
     return str(project_id)
 
 
@@ -189,9 +187,7 @@ async def test_every_linked_folder_is_claimed_at_spawn(client):
     await store.put_file(user_id, "notes/b.md", b"2")
     made = (await client.post("/projects", json={"title": "both", "folders": ["triage", "notes"]})).json()
 
-    body = (
-        await client.post("/sessions", json={"goal": "work", "project_id": made["id"]})
-    ).json()
+    body = (await client.post("/sessions", json={"goal": "work", "project_id": made["id"]})).json()
     claims = await workspace.claims_for(body["session_id"])
 
     assert sorted(c.folder for c in claims) == ["notes", "triage"]
@@ -227,9 +223,7 @@ async def test_a_claim_mode_that_is_neither_read_nor_write_is_refused(client):
     user_id = await _signed(client)
     await store.put_file(user_id, "mine/a.txt", b"1")
 
-    response = await client.post(
-        "/sessions", json={"goal": "x", "claims": [{"folder": "mine", "mode": "sideways"}]}
-    )
+    response = await client.post("/sessions", json={"goal": "x", "claims": [{"folder": "mine", "mode": "sideways"}]})
 
     assert response.status_code == 400
 
@@ -246,9 +240,7 @@ async def _signed(client: AsyncClient) -> str:
 async def test_both_claims_mount_and_only_the_write_one_flushes(model):
     user_id = await _user()
     writable = await _project(user_id, "Writable")
-    await store.commit_tree(
-        user_id, [_file("writable/a.txt", "A original"), _file("readable/b.txt", "B original")]
-    )
+    await store.commit_tree(user_id, [_file("writable/a.txt", "A original"), _file("readable/b.txt", "B original")])
     session_id = await _session(user_id, writable)
     await _claim_row(session_id, "writable", "write")
     await _claim_row(session_id, "readable", "read")
@@ -275,17 +267,13 @@ async def test_both_claims_mount_and_only_the_write_one_flushes(model):
     tree = {e.path: e for e in await store.read_tree(user_id)}
 
     assert await store.get_blob(tree["writable/a.txt"].content_hash) == b"A edited"
-    assert await store.get_blob(tree["readable/b.txt"].content_hash) == b"B original", (
-        "a read claim was written"
-    )
+    assert await store.get_blob(tree["readable/b.txt"].content_hash) == b"B original", "a read claim was written"
 
 
 async def test_nothing_unclaimed_appears_in_the_sandbox(model):
     user_id = await _user()
     claimed = await _project(user_id, "Claimed")
-    await store.commit_tree(
-        user_id, [_file("claimed/mine.txt", "1"), _file("unclaimed/theirs.txt", "2")]
-    )
+    await store.commit_tree(user_id, [_file("claimed/mine.txt", "1"), _file("unclaimed/theirs.txt", "2")])
     session_id = await _session(user_id, claimed)
     await _claim_row(session_id, "claimed", "write")
     await slog.append(session_id, UserEvent(text="go"))

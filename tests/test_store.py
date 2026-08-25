@@ -95,9 +95,7 @@ async def test_missing_blobs_reports_only_what_is_absent():
 async def test_a_commit_writes_the_tree_and_the_bytes():
     user_id = await _user()
 
-    entries = await store.commit_tree(
-        user_id, [_file("proj/src/main.py", "print(1)"), _file("proj/README.md", "hi")]
-    )
+    entries = await store.commit_tree(user_id, [_file("proj/src/main.py", "print(1)"), _file("proj/README.md", "hi")])
 
     assert [e.path for e in entries] == ["proj/README.md", "proj/src/main.py"]
     body = await store.get_blob(next(e.content_hash for e in entries if e.path == "proj/README.md"))
@@ -121,12 +119,8 @@ async def test_a_commit_is_idempotent_on_retry():
     first = await store.commit_tree(user_id, files)
     second = await store.commit_tree(user_id, files)
 
-    assert [(e.path, e.content_hash, e.size) for e in first] == [
-        (e.path, e.content_hash, e.size) for e in second
-    ]
-    assert await pool.fetchval(
-        "SELECT count(*) FROM files WHERE user_id = $1", uuid.UUID(user_id)
-    ) == 2
+    assert [(e.path, e.content_hash, e.size) for e in first] == [(e.path, e.content_hash, e.size) for e in second]
+    assert await pool.fetchval("SELECT count(*) FROM files WHERE user_id = $1", uuid.UUID(user_id)) == 2
 
 
 async def test_a_commit_that_dies_before_the_rows_leaves_the_old_tree_whole(monkeypatch):
@@ -304,9 +298,7 @@ async def test_renaming_a_file_keeps_it_where_it_is():
     tree = await store.read_tree(user_id)
     assert [e.path for e in tree] == ["triage/final.md"]
     # Same row, same blob: nothing was re-uploaded and an open reader follows it.
-    assert await pool.fetchval(
-        "SELECT path FROM files WHERE id = $1", uuid.UUID(stored.id)
-    ) == "triage/final.md"
+    assert await pool.fetchval("SELECT path FROM files WHERE id = $1", uuid.UUID(stored.id)) == "triage/final.md"
 
 
 async def test_renaming_a_directory_takes_everything_under_it():
@@ -370,14 +362,11 @@ async def test_renaming_a_top_level_folder_carries_its_links_and_claims():
         "INSERT INTO projects (user_id, title) VALUES ($1, 'work') RETURNING id", uuid.UUID(user_id)
     )
     session_id = await pool.fetchval(
-        "INSERT INTO sessions (user_id, project_id, mode, status) VALUES ($1, $2, 'attended', 'idle') "
-        "RETURNING id",
+        "INSERT INTO sessions (user_id, project_id, mode, status) VALUES ($1, $2, 'attended', 'idle') RETURNING id",
         uuid.UUID(user_id),
         project_id,
     )
-    await pool.execute(
-        "INSERT INTO project_folders (project_id, folder) VALUES ($1, 'triage')", project_id
-    )
+    await pool.execute("INSERT INTO project_folders (project_id, folder) VALUES ($1, 'triage')", project_id)
     await pool.execute(
         "INSERT INTO session_claims (session_id, folder, mode) VALUES ($1, 'triage', 'write')", session_id
     )
@@ -387,12 +376,8 @@ async def test_renaming_a_top_level_folder_carries_its_links_and_claims():
 
     assert [e.path for e in await store.read_tree(user_id)] == ["sorted/deep/a.md"]
     assert [f.name for f in await store.folders(user_id)] == ["sorted"]
-    assert await pool.fetchval(
-        "SELECT folder FROM project_folders WHERE project_id = $1", project_id
-    ) == "sorted"
-    assert await pool.fetchval(
-        "SELECT folder FROM session_claims WHERE session_id = $1", session_id
-    ) == "sorted"
+    assert await pool.fetchval("SELECT folder FROM project_folders WHERE project_id = $1", project_id) == "sorted"
+    assert await pool.fetchval("SELECT folder FROM session_claims WHERE session_id = $1", session_id) == "sorted"
 
 
 async def test_renaming_a_nested_directory_leaves_links_and_claims_alone():
@@ -401,16 +386,12 @@ async def test_renaming_a_nested_directory_leaves_links_and_claims_alone():
     project_id = await pool.fetchval(
         "INSERT INTO projects (user_id, title) VALUES ($1, 'work') RETURNING id", uuid.UUID(user_id)
     )
-    await pool.execute(
-        "INSERT INTO project_folders (project_id, folder) VALUES ($1, 'triage')", project_id
-    )
+    await pool.execute("INSERT INTO project_folders (project_id, folder) VALUES ($1, 'triage')", project_id)
     await store.put_file(user_id, "triage/inbox/a.md", b"1")
 
     await store.rename_path(user_id, "triage/inbox", "archive")
 
-    assert await pool.fetchval(
-        "SELECT folder FROM project_folders WHERE project_id = $1", project_id
-    ) == "triage"
+    assert await pool.fetchval("SELECT folder FROM project_folders WHERE project_id = $1", project_id) == "triage"
 
 
 async def test_the_way_to_a_new_top_level_folder_is_to_make_it_then_move_into_it():
@@ -547,9 +528,9 @@ async def test_the_project_url_is_derived_from_a_direct_dsn(monkeypatch):
     monkeypatch.setattr(
         blobs,
         "_cfg",
-        lambda key, default: "postgresql://postgres:pw@db.abcdefg.supabase.co:5432/postgres"
-        if key == "database.url"
-        else default,
+        lambda key, default: (
+            "postgresql://postgres:pw@db.abcdefg.supabase.co:5432/postgres" if key == "database.url" else default
+        ),
     )
 
     assert blobs.project_url() == "https://abcdefg.supabase.co"
@@ -561,9 +542,11 @@ async def test_the_project_url_is_derived_from_a_pooler_dsn(monkeypatch):
     monkeypatch.setattr(
         blobs,
         "_cfg",
-        lambda key, default: "postgresql://postgres.abcdefg:pw@aws-0-eu-west-2.pooler.supabase.com:6543/postgres"
-        if key == "database.url"
-        else default,
+        lambda key, default: (
+            "postgresql://postgres.abcdefg:pw@aws-0-eu-west-2.pooler.supabase.com:6543/postgres"
+            if key == "database.url"
+            else default
+        ),
     )
 
     assert blobs.project_url() == "https://abcdefg.supabase.co"
@@ -574,9 +557,9 @@ async def test_an_explicit_url_wins_over_the_dsn(monkeypatch):
     monkeypatch.setattr(
         blobs,
         "_cfg",
-        lambda key, default: "postgresql://postgres:pw@db.abcdefg.supabase.co:5432/postgres"
-        if key == "database.url"
-        else default,
+        lambda key, default: (
+            "postgresql://postgres:pw@db.abcdefg.supabase.co:5432/postgres" if key == "database.url" else default
+        ),
     )
 
     assert blobs.project_url() == "https://storage.example.com"

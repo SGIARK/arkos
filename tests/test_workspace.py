@@ -93,9 +93,7 @@ async def _workspace() -> tuple[str, str]:
 
 async def _second_session(session_id: str) -> str:
     """Another session of the same user, for the tests that run two boxes."""
-    user_id = await pool.fetchval(
-        "SELECT user_id FROM sessions WHERE id = $1", uuid.UUID(session_id)
-    )
+    user_id = await pool.fetchval("SELECT user_id FROM sessions WHERE id = $1", uuid.UUID(session_id))
     other = str(
         await pool.fetchval(
             "INSERT INTO sessions (user_id, mode, status) VALUES ($1, 'attended', 'idle') RETURNING id",
@@ -147,9 +145,7 @@ async def test_two_claimed_folders_mount_side_by_side():
     await store.commit_tree(user_id, [_file("taxes/a.txt", "1"), _file("notes/b.txt", "2")])
     sandbox = _sweeping(FakeSandbox())
 
-    await workspace.materialize(
-        sandbox, session_id, [_claim(user_id), _claim(user_id, folder="notes")]
-    )
+    await workspace.materialize(sandbox, session_id, [_claim(user_id), _claim(user_id, folder="notes")])
 
     assert sandbox.files[f"{workspace.MOUNT_ROOT}/taxes/a.txt"] == b"1"
     assert sandbox.files[f"{workspace.MOUNT_ROOT}/notes/b.txt"] == b"2"

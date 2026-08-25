@@ -105,9 +105,7 @@ async def test_a_parked_call_stays_open_and_the_row_carries_it():
     assert row is None, "unanswered is not grantable"
 
     open_rows = await approvals.open_for(session_id)
-    assert [(r.kind, r.tool_call_id, r.tool_name) for r in open_rows] == [
-        ("call", "c1", "mcp_send_email")
-    ]
+    assert [(r.kind, r.tool_call_id, r.tool_name) for r in open_rows] == [("call", "c1", "mcp_send_email")]
     assert open_rows[0].tool_args == {"to": "rachel@lumen.co"}
 
 
@@ -315,9 +313,9 @@ async def test_the_gated_result_is_dropped_so_the_call_stays_open():
 
         assert sink.parked is True
         assert sink._park == ("c9", "mcp_send_email", {"to": "x"})
-        assert not any(
-            isinstance(e, ToolResultEvent) for e in list(sink._queue._queue)
-        ), "the result never reached the writer"
+        assert not any(isinstance(e, ToolResultEvent) for e in list(sink._queue._queue)), (
+            "the result never reached the writer"
+        )
     finally:
         await sink.close()
 

@@ -95,9 +95,7 @@ async def _signed_in(client: AsyncClient) -> str:
 
 async def _sign_in_as(client: AsyncClient, user_id: str) -> None:
     """Sign in as a specific user, for the tests about what first login does."""
-    response = await client.post(
-        "/auth/session", headers={"Authorization": f"Bearer {_supabase_token(user_id)}"}
-    )
+    response = await client.post("/auth/session", headers={"Authorization": f"Bearer {_supabase_token(user_id)}"})
     assert response.status_code == 204
 
 
@@ -1029,10 +1027,7 @@ async def test_a_frame_reaches_the_watcher_of_that_session(client):
     user_id = await _signed_in(client)
     session_id = await _session_for(user_id)
 
-    frames = [
-        frame
-        async for frame in _read_frames(api._frame_stream(user_id, session_id), user_id, session_id)
-    ]
+    frames = [frame async for frame in _read_frames(api._frame_stream(user_id, session_id), user_id, session_id)]
 
     assert frames and "jpeg" in frames[0]
 
@@ -1364,9 +1359,7 @@ async def test_two_projects_may_link_the_same_folder(client, tmp_path):
         second = (await client.post("/projects", json={"title": "two", "folders": ["triage"]})).json()
 
         assert first["folders"] == second["folders"] == ["triage"]
-        assert [f["path"] for f in (await client.get(f"/projects/{second['id']}/files")).json()] == [
-            "triage/a.md"
-        ]
+        assert [f["path"] for f in (await client.get(f"/projects/{second['id']}/files")).json()] == ["triage/a.md"]
     finally:
         store.use_blobs(None)
 
@@ -1405,22 +1398,21 @@ async def test_a_folder_linked_after_creation_reaches_the_next_session_not_this_
         await store.put_file(user_id, "triage/a.md", b"1")
         await store.put_file(user_id, "notes/b.md", b"2")
         made = (await client.post("/projects", json={"title": "work", "folders": ["triage"]})).json()
-        running = (
-            await client.post("/sessions", json={"goal": "start", "project_id": made["id"]})
-        ).json()["session_id"]
+        running = (await client.post("/sessions", json={"goal": "start", "project_id": made["id"]})).json()[
+            "session_id"
+        ]
 
         linked = await client.post(f"/projects/{made['id']}/folders", json={"folder": "notes"})
 
         assert linked.status_code == 201
         assert linked.json()["folders"] == ["triage", "notes"]
-        assert await pool.fetchval(
-            "SELECT count(*) FROM project_folders WHERE project_id = $1", uuid.UUID(made["id"])
-        ) == 2
+        assert (
+            await pool.fetchval("SELECT count(*) FROM project_folders WHERE project_id = $1", uuid.UUID(made["id"]))
+            == 2
+        )
         assert [c.folder for c in await workspace.claims_for(running)] == ["triage"]
 
-        later = (
-            await client.post("/sessions", json={"goal": "again", "project_id": made["id"]})
-        ).json()["session_id"]
+        later = (await client.post("/sessions", json={"goal": "again", "project_id": made["id"]})).json()["session_id"]
         assert sorted(c.folder for c in await workspace.claims_for(later)) == ["notes", "triage"]
     finally:
         store.use_blobs(None)
@@ -1457,9 +1449,11 @@ async def test_renaming_someone_elses_project_is_not_found(client):
     theirs = str(uuid.uuid4())
     _seeded.append(uuid.UUID(theirs))
     await pool.execute("INSERT INTO users (id) VALUES ($1)", uuid.UUID(theirs))
-    their_project = str(await pool.fetchval(
-        "INSERT INTO projects (user_id, title) VALUES ($1, 'theirs') RETURNING id", uuid.UUID(theirs)
-    ))
+    their_project = str(
+        await pool.fetchval(
+            "INSERT INTO projects (user_id, title) VALUES ($1, 'theirs') RETURNING id", uuid.UUID(theirs)
+        )
+    )
     await _signed_in(client)
 
     assert (await client.patch(f"/projects/{their_project}", json={"title": "mine now"})).status_code == 404
@@ -1484,9 +1478,9 @@ async def test_a_rename_touches_no_folder_and_no_mount(client, tmp_path):
         await _signed_in(client)
         made = (await client.post("/projects", json={"title": "inbox triage"})).json()
         assert made["folders"] == ["inbox-triage"]
-        session_id = (
-            await client.post("/sessions", json={"goal": "go", "project_id": made["id"]})
-        ).json()["session_id"]
+        session_id = (await client.post("/sessions", json={"goal": "go", "project_id": made["id"]})).json()[
+            "session_id"
+        ]
         before = (await workspace.claims_for(session_id))[0].mount
         headers = (await client.get("/folders")).json()
 
@@ -1539,7 +1533,7 @@ async def test_the_app_is_served_at_app(client):
 
     assert page.status_code == 200
     assert "text/html" in page.headers["content-type"]
-    assert "<div id=\"root\">" in page.text
+    assert '<div id="root">' in page.text
 
 
 async def test_the_apps_assets_are_served_beside_it(client):
@@ -1645,9 +1639,7 @@ async def test_moving_a_file_moves_the_row_and_leaves_the_blob_alone(client, tmp
         listed = (await client.get("/files")).json()
 
         assert moved.status_code == 200
-        assert moved.json()["moved"] == [
-            {"from": "taxes/receipts.csv", "to": "taxes/2026/receipts.csv"}
-        ]
+        assert moved.json()["moved"] == [{"from": "taxes/receipts.csv", "to": "taxes/2026/receipts.csv"}]
         assert [f["path"] for f in listed] == ["taxes/2026/receipts.csv"]
         # The id survives, which is what lets an open reader follow the file.
         assert listed[0]["file_id"] == uploaded["file_id"]
@@ -1661,9 +1653,7 @@ async def test_moving_between_folders_is_an_ordinary_move(client, tmp_path):
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     try:
         await _signed_in(client)
-        await client.post(
-            "/files", files={"file": ("a.md", b"x", "text/plain")}, data={"path": "triage/a.md"}
-        )
+        await client.post("/files", files={"file": ("a.md", b"x", "text/plain")}, data={"path": "triage/a.md"})
         await client.post("/folders", json={"path": "archive"})
 
         moved = await client.post("/files/move", json={"from": "triage/a.md", "to": "archive/a.md"})
@@ -1688,9 +1678,7 @@ async def test_moving_a_directory_takes_everything_under_it(client, tmp_path):
                 data={"path": path},
             )
 
-        moved = await client.post(
-            "/files/move", json={"from": "mail/inbox", "to": "mail/archive/2026"}
-        )
+        moved = await client.post("/files/move", json={"from": "mail/inbox", "to": "mail/archive/2026"})
         listed = (await client.get("/files")).json()
 
         assert moved.status_code == 200
@@ -1707,9 +1695,7 @@ async def test_renaming_a_folder_is_refused_here(client, tmp_path):
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     try:
         await _signed_in(client)
-        await client.post(
-            "/files", files={"file": ("a.md", b"x", "text/plain")}, data={"path": "triage/a.md"}
-        )
+        await client.post("/files", files={"file": ("a.md", b"x", "text/plain")}, data={"path": "triage/a.md"})
 
         refused = await client.post("/files/move", json={"from": "triage", "to": "sorted"})
 
@@ -1726,9 +1712,7 @@ async def test_a_move_onto_an_occupied_path_is_refused_whole(client, tmp_path):
     try:
         await _signed_in(client)
         for path in ("mail/a/note.md", "mail/b/note.md"):
-            await client.post(
-                "/files", files={"file": ("note.md", b"x", "text/plain")}, data={"path": path}
-            )
+            await client.post("/files", files={"file": ("note.md", b"x", "text/plain")}, data={"path": path})
 
         clash = await client.post("/files/move", json={"from": "mail/a", "to": "mail/b"})
         listed = (await client.get("/files")).json()
@@ -1750,9 +1734,7 @@ async def test_a_directory_cannot_be_moved_into_itself(client, tmp_path):
             data={"path": "mail/inbox/note.md"},
         )
 
-        eats_itself = await client.post(
-            "/files/move", json={"from": "mail/inbox", "to": "mail/inbox/inbox"}
-        )
+        eats_itself = await client.post("/files/move", json={"from": "mail/inbox", "to": "mail/inbox/inbox"})
 
         assert eats_itself.status_code == 409
     finally:

@@ -95,8 +95,6 @@ class Manifest:
         return [s for s in self.servers if s.benched]
 
 
-
-
 logger = logging.getLogger(__name__)
 
 MCP_PREFIX = "mcp_"

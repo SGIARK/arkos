@@ -47,8 +47,6 @@ from tool_module.sandbox import tools as sandbox_tools
 logger = logging.getLogger(__name__)
 
 
-
-
 # --- error shape ---------------------------------------------------------------
 
 
@@ -234,9 +232,7 @@ async def _ensure_home_session(user_id: str) -> str:
     is the truth about it: asking it for work makes a project, and that is when
     a folder appears.
     """
-    existing = await pool.fetchval(
-        "SELECT home_session_id FROM users WHERE id = $1", _uuid(user_id, "user")
-    )
+    existing = await pool.fetchval("SELECT home_session_id FROM users WHERE id = $1", _uuid(user_id, "user"))
     if existing is not None:
         return str(existing)
 
@@ -291,9 +287,7 @@ async def auth_me(user_id: str = CurrentUser) -> dict[str, Any]:
     and there is no other request that would carry it. It is null only for a
     user whose home session was deleted; the next sign-in makes another.
     """
-    row = await pool.fetchrow(
-        "SELECT id, email, home_session_id FROM users WHERE id = $1", _uuid(user_id, "user")
-    )
+    row = await pool.fetchrow("SELECT id, email, home_session_id FROM users WHERE id = $1", _uuid(user_id, "user"))
     if row is None:
         raise ApiError(401, "unauthenticated", "That user no longer exists.")
     return {
@@ -586,8 +580,7 @@ async def rename_project(
     if not title:
         raise ApiError(400, "invalid_request", "A project needs a name.")
     row = await pool.fetchrow(
-        "UPDATE projects SET title = $2, updated_at = now() WHERE id = $1 "
-        "RETURNING id, title, updated_at",
+        "UPDATE projects SET title = $2, updated_at = now() WHERE id = $1 RETURNING id, title, updated_at",
         _uuid(project_id, "project"),
         title,
     )
@@ -1194,9 +1187,7 @@ async def _answer_plan(approval: approvals.Approval, text: str, user_id: str) ->
             # root of its first linked folder. A session that claims no folder
             # has nowhere to write it, and starting anyway would make that
             # promise a lie. Checked BEFORE the row is answered, like the quota.
-            raise ApiError(
-                409, "no_folder", "A plan is saved in a folder, and this session was given none."
-            )
+            raise ApiError(409, "no_folder", "A plan is saved in a folder, and this session was given none.")
         if row["mode"] != "unattended":
             # Sessions are created attended and the play button no longer flips
             # the mode, so this is the only point at which a user's unattended
@@ -1423,9 +1414,11 @@ async def _event_stream(session_id: str, after_seq: int) -> AsyncIterator[str]:
         logger.exception("session %s: the event stream failed", session_id)
         # EventSource cannot tell a truncated stream from a finished one, so
         # the failure is delivered as an error event.
-        yield "event: error\ndata: " + json.dumps(
-            {"code": "stream_failed", "message": f"{type(e).__name__}: {e}", "retryable": True}
-        ) + "\n\n"
+        yield (
+            "event: error\ndata: "
+            + json.dumps({"code": "stream_failed", "message": f"{type(e).__name__}: {e}", "retryable": True})
+            + "\n\n"
+        )
 
 
 async def _backlog(session_id: str, after_seq: int) -> AsyncIterator[slog.StoredEvent]:
@@ -2061,8 +2054,7 @@ async def _record_claims(session_id: str, project_id: Any, declared: Any, user_i
 async def _claims_of(session_id: str) -> list[dict[str, Any]]:
     """The session's claims, for the window to render. Folders, in claim order."""
     rows = await pool.fetch(
-        "SELECT folder, subpath, mode FROM session_claims WHERE session_id = $1 "
-        "ORDER BY ord, folder, subpath",
+        "SELECT folder, subpath, mode FROM session_claims WHERE session_id = $1 ORDER BY ord, folder, subpath",
         _uuid(session_id, "session"),
     )
     return [{"folder": r["folder"], "subpath": r["subpath"], "mode": r["mode"]} for r in rows]
@@ -2149,4 +2141,3 @@ if _FRONTEND.is_dir():
     app.mount("/app", StaticFiles(directory=_FRONTEND, html=True), name="app")
 else:  # pragma: no cover - only a broken checkout or a partial image
     logger.error("no frontend/ directory at %s; /app will 404", _FRONTEND)
-

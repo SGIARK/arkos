@@ -45,6 +45,7 @@ async def read_notes(user_id: str) -> list[_Note]:
     )
     return [_Note(path=r["path"], text=r["body"]) for r in rows]
 
+
 pytestmark = pytest.mark.asyncio
 
 _seeded: list[uuid.UUID] = []
@@ -74,8 +75,7 @@ async def _user() -> str:
 async def _session(user_id: str, project_id: str | None = None) -> str:
     return str(
         await pool.fetchval(
-            "INSERT INTO sessions (user_id, project_id, mode, status) "
-            "VALUES ($1, $2, 'attended', 'idle') RETURNING id",
+            "INSERT INTO sessions (user_id, project_id, mode, status) VALUES ($1, $2, 'attended', 'idle') RETURNING id",
             uuid.UUID(user_id),
             uuid.UUID(project_id) if project_id else None,
         )
@@ -178,9 +178,7 @@ async def test_search_finds_a_saved_note():
 
     hits = await memory.search_memory(user_id, "accountant")
 
-    assert [h.text for h in hits] == [
-        "The user's accountant is Dana Okafor, reachable at the Tuesday standup."
-    ]
+    assert [h.text for h in hits] == ["The user's accountant is Dana Okafor, reachable at the Tuesday standup."]
     assert hits[0].is_core is False
 
 
@@ -274,13 +272,9 @@ async def test_what_one_session_learns_the_next_one_knows():
     second = await _session(user_id)
     ctx_a = _ctx(user_id, first)
 
-    await registry.dispatch(
-        "save_memory", {"text": "The user's accountant is Dana Okafor."}, ctx_a
-    )
+    await registry.dispatch("save_memory", {"text": "The user's accountant is Dana Okafor."}, ctx_a)
     await registry.dispatch("read_memory", {}, ctx_a)
-    await registry.dispatch(
-        "update_memory", {"content": "# Memory\n\nThe user's accountant is Dana Okafor.\n"}, ctx_a
-    )
+    await registry.dispatch("update_memory", {"content": "# Memory\n\nThe user's accountant is Dana Okafor.\n"}, ctx_a)
 
     # A different session, sharing nothing with the first but the user.
     found = await registry.dispatch("search_memory", {"query": "accountant"}, _ctx(user_id, second))

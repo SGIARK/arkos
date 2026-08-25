@@ -23,8 +23,6 @@ from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, ToolUnav
 _SNIPPET_CHARS = 600
 
 
-
-
 def _user(ctx: ToolContext) -> str:
     """The user whose memory this is.
 
@@ -81,7 +79,7 @@ class SearchMemory:
         name="search_memory",
         description=(
             "Search your long-term memory, across the curated core and every note you have "
-            "saved. Full-text search: bare words, \"quoted phrases\", or. Reach for it when a "
+            'saved. Full-text search: bare words, "quoted phrases", or. Reach for it when a '
             "request touches something the user may have told you before — a preference, a "
             "past decision, a name — rather than assuming you have never heard of it."
         ),

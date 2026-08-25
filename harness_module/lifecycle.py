@@ -129,9 +129,7 @@ async def transition(
             return None
         # Same transaction as the UPDATE, so the status and its explanation commit
         # together.
-        stored = await session_log.append_tx(
-            conn, session_id, LifecycleEvent(from_=expected, to=new, reason=reason)
-        )
+        stored = await session_log.append_tx(conn, session_id, LifecycleEvent(from_=expected, to=new, reason=reason))
         await touch_project(conn, session_id)
 
     # Outside the block, so the seq being announced is one the log can already serve.
@@ -192,5 +190,3 @@ async def sweep_interrupted(reason: str = "interrupted") -> int:
     if swept:
         logger.warning("startup sweep failed %d session(s) the process died underneath", swept)
     return swept
-
-

@@ -71,8 +71,6 @@ def _template() -> str | None:
     return name if name and name != "base" else None
 
 
-
-
 async def claim_slot(session_id: str) -> bool:
     """
     Take this session's slot in its user's sandbox pool.
@@ -247,9 +245,7 @@ class SandboxManager:
         """
         async with self._lock(session_id):
             if not await renew_slot(session_id):
-                raise SandboxUnavailable(
-                    f"session {session_id} holds no sandbox slot; claim_slot comes first"
-                )
+                raise SandboxUnavailable(f"session {session_id} holds no sandbox slot; claim_slot comes first")
 
             cached = self._live.get(session_id)
             if cached is not None:
@@ -357,7 +353,6 @@ class SandboxManager:
         return _entries(await asyncio.to_thread(sandbox.files.list, path))
 
     # ---------- reading a live box without waking one ----------
-
 
     async def browse(self, session_id: str, path: str = "/home/user") -> list[dict[str, Any]]:
         """List a directory in a box that is already awake.

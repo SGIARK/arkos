@@ -192,12 +192,12 @@ async def test_the_streak_nudge_does_not_consume_the_near_cap_nudge(model):
     run and an unexplained ending; nothing else may spend it.
     """
     model.arm(
-        _text("thinking"),      # hop 1: streak 1 -> continuation
+        _text("thinking"),  # hop 1: streak 1 -> continuation
         _text("still thinking"),  # hop 2: streak 2 -> finish nudge (streak's own)
-        _call("grep"),          # hop 3: streak cleared
-        _call("grep"),          # hop 4
-        _text("hmm"),           # hop 5 == max_hops - 1: the near-cap nudge is still owed
-        _call("grep"),          # hop 6
+        _call("grep"),  # hop 3: streak cleared
+        _call("grep"),  # hop 4
+        _text("hmm"),  # hop 5 == max_hops - 1: the near-cap nudge is still owed
+        _call("grep"),  # hop 6
     )
 
     events, _ = await _run(model, mode="unattended", budgets=_budgets(max_hops=6))

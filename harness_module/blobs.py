@@ -234,7 +234,7 @@ def project_url() -> str | None:
 
     host = parts.hostname or ""
     if host.endswith(".supabase.co") and host.startswith("db."):
-        return f"https://{host[len('db.'):]}"
+        return f"https://{host[len('db.') :]}"
     if "pooler.supabase.com" in host and "." in (parts.username or ""):
         return f"https://{parts.username.split('.', 1)[1]}.supabase.co"
     return None
@@ -302,7 +302,6 @@ async def get_blob(content_hash: str) -> bytes | None:
 async def missing_blobs(hashes: Iterable[str]) -> set[str]:
     """Which of these hashes the backend does not have."""
     return await blobs().missing(hashes)
-
 
 
 # --- the HTTP client, one per running loop ---------------------------------------

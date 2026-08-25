@@ -154,7 +154,10 @@ async def test_list_files_lists_the_store_and_narrows_to_one_folder():
     for path in ("triage/a.md", "notes/b.md"):
         await pool.execute(
             "INSERT INTO files (user_id, path, content_hash, size) VALUES ($1, $2, $3, $4)",
-            uuid.UUID(user_id), path, "0" * 64, 10,
+            uuid.UUID(user_id),
+            path,
+            "0" * 64,
+            10,
         )
 
     everything = await _run("list_files", {}, user_id)

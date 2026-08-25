@@ -224,9 +224,7 @@ async def test_a_session_leaves_no_lease_behind(sandbox, model, impatient):
     await _drive(session_id)
 
     assert sandbox.commands == ["ls"]
-    held = await pool.fetchval(
-        "SELECT count(*) FROM resource_leases WHERE session_id = $1", uuid.UUID(session_id)
-    )
+    held = await pool.fetchval("SELECT count(*) FROM resource_leases WHERE session_id = $1", uuid.UUID(session_id))
     assert held == 0, "a lease outlived the run"
 
 
@@ -255,11 +253,7 @@ async def test_a_park_gives_the_leases_back(sandbox, model, impatient):
 
     row = await pool.fetchrow("SELECT status FROM sessions WHERE id = $1", uuid.UUID(session_id))
     assert row["status"] == "awaiting_approval"
-    held = await pool.fetchval(
-        "SELECT count(*) FROM resource_leases WHERE session_id = $1", uuid.UUID(session_id)
-    )
+    held = await pool.fetchval("SELECT count(*) FROM resource_leases WHERE session_id = $1", uuid.UUID(session_id))
     assert held == 0
-    slot = await pool.fetchval(
-        "SELECT count(*) FROM session_sandboxes WHERE session_id = $1", uuid.UUID(session_id)
-    )
+    slot = await pool.fetchval("SELECT count(*) FROM session_sandboxes WHERE session_id = $1", uuid.UUID(session_id))
     assert slot == 1, "the box is hibernated on a park, not given up"

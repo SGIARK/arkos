@@ -79,6 +79,7 @@ def mounted_folders(mounts: Sequence[Mount]) -> str:
         lines.append(f"- ~/store/{mount.folder}/ — {note}")
     return "\n".join(lines) + "\n"
 
+
 _SHARED = """You are ARK. You do work on the user's behalf by USING TOOLS — reading and \
 writing files, running commands, driving a browser, and calling the services they have \
 connected. You act; you do not merely describe what could be done.
@@ -227,11 +228,7 @@ def connected_services(reach: Sequence[Reach]) -> str:
         lines.append("No service is enabled in this session. You have your own tools and nothing else.")
 
     if off:
-        lines.append(
-            "\nConnected to this user's account but NOT enabled here: "
-            + ", ".join(s.name for s in off)
-            + "."
-        )
+        lines.append("\nConnected to this user's account but NOT enabled here: " + ", ".join(s.name for s in off) + ".")
     if benched:
         lines.append(
             "\nEnabled here but NOT loaded this turn — there was not room for them alongside "
@@ -339,10 +336,9 @@ def plan_handoff(plan: str | None = None) -> str:
     if not plan:
         return ask + " No plan exists for this session yet, so this is the first one."
     return (
-        ask
-        + " A run has already happened here, from the plan below. Propose a CONTINUATION, "
+        ask + " A run has already happened here, from the plan below. Propose a CONTINUATION, "
         "not a fresh start: read it against the transcript above, say what is verifiably "
-        "done, and resume from there — \"steps 1-3 verified done; resume at 4\" — rather "
+        'done, and resume from there — "steps 1-3 verified done; resume at 4" — rather '
         "than planning work they have already paid for again.\n\n"
         "--- plan.md ---\n" + plan.strip() + "\n--- end plan.md ---"
     )

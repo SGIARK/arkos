@@ -139,8 +139,7 @@ class WriteFile:
     spec = ToolSpec(
         name="write_file",
         description=(
-            "Write a file, replacing it if it exists. Prefer edit_file for a change to part of an "
-            "existing file."
+            "Write a file, replacing it if it exists. Prefer edit_file for a change to part of an existing file."
         ),
         input_schema={
             "type": "object",
@@ -221,8 +220,7 @@ class Grep:
     spec = ToolSpec(
         name="grep",
         description=(
-            "Search file contents for a pattern, recursively. Returns matching lines with their "
-            "file and line number."
+            "Search file contents for a pattern, recursively. Returns matching lines with their file and line number."
         ),
         input_schema={
             "type": "object",

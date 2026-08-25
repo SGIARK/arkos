@@ -79,5 +79,3 @@ async def holder(resource_key: str) -> str | None:
         resource_key,
     )
     return str(held) if held else None
-
-

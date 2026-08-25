@@ -39,8 +39,6 @@ logger = logging.getLogger(__name__)
 Source = Literal["interactive", "background"]
 
 
-
-
 # --- deltas -----------------------------------------------------------------
 
 
@@ -170,8 +168,9 @@ def _classify(exc: Exception, source: Source) -> ModelError:
     if isinstance(exc, _TERMINAL):
         if isinstance(exc, BadRequestError) and _is_context_overflow(exc):
             # Its own kind: the loop recovers from this one by shrinking the view.
-            return ModelError(f"the request exceeded the context window: {exc}", retryable=False,
-                              kind="context_overflow", cause=exc)
+            return ModelError(
+                f"the request exceeded the context window: {exc}", retryable=False, kind="context_overflow", cause=exc
+            )
         kind = "auth" if isinstance(exc, (AuthenticationError, PermissionDeniedError)) else "bad_request"
         return ModelError(f"model rejected the request: {exc}", retryable=False, kind=kind, cause=exc)
     if isinstance(exc, InternalServerError):

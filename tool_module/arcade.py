@@ -323,9 +323,7 @@ class ArcadeClient:
         """
         return await self._engine("POST", "/v1/tools/authorize", user_id, {"tool_name": tool_name, "user_id": user_id})
 
-    async def authorize_scopes(
-        self, user_id: str, provider_id: str, scopes: Sequence[str]
-    ) -> dict[str, Any]:
+    async def authorize_scopes(self, user_id: str, provider_id: str, scopes: Sequence[str]) -> dict[str, Any]:
         """Ask one PROVIDER for an explicit scope list: `{status, url, id, provider_id, scopes}`.
 
         The consent call the panel uses (11.10, amended 2026-08-25). Asking for a
@@ -387,8 +385,6 @@ def _parse_rpc(text: str, method: str) -> dict[str, Any]:
             if isinstance(candidate, dict) and ("result" in candidate or "error" in candidate):
                 return candidate
     raise ArcadeError(f"{method}: response was neither JSON nor SSE: {text[:200]}")
-
-
 
 
 @dataclass(frozen=True, slots=True)
@@ -664,8 +660,7 @@ class Arcade:
             return Consent(server, CONNECTED, None, provider, granted)
         if not url:
             raise ArcadeError(
-                f"authorize({provider}, {len(scopes)} scopes) returned neither a url "
-                f"nor a completed status: {response}"
+                f"authorize({provider}, {len(scopes)} scopes) returned neither a url nor a completed status: {response}"
             )
         return Consent(server, conns.PENDING, url, provider, granted)
 
@@ -678,9 +673,7 @@ class Arcade:
         with nothing to say which is which.
         """
         prefixes = self.prefixes
-        results = await asyncio.gather(
-            *(self.consent(user_id, server) for server in prefixes), return_exceptions=True
-        )
+        results = await asyncio.gather(*(self.consent(user_id, server) for server in prefixes), return_exceptions=True)
 
         found: dict[str, Consent] = {}
         for server, result in zip(prefixes, results, strict=True):
@@ -888,7 +881,6 @@ async def _envelope(name: str, result: Any, ctx: ToolContext) -> ResultEnvelope:
     # The blob holds the whole text; the envelope carries the head plus the ref.
     ref = await ctx.store_blob(text)
     return ok(
-        f"{head}\n\n[truncated at {len(head)} of {total} chars. "
-        f"Read the rest with read_result(ref={ref!r})]",
+        f"{head}\n\n[truncated at {len(head)} of {total} chars. Read the rest with read_result(ref={ref!r})]",
         ref=ref,
     )

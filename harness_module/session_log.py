@@ -142,8 +142,7 @@ async def _check_invariant(conn: asyncpg.Connection, session_id: str, event: Eve
         if dangling:
             names = ", ".join(f"{r['name']}({r['call_id']})" for r in dangling)
             raise TranscriptError(
-                f"session {session_id} cannot end with open tool calls: {names}. "
-                "Call close_dangling() first."
+                f"session {session_id} cannot end with open tool calls: {names}. Call close_dangling() first."
             )
 
 
@@ -263,5 +262,3 @@ async def read_blob(ref: str, offset: int = 0, limit: int = 2000, *, user_id: st
         offset + 1,
         max(0, limit),
     )
-
-

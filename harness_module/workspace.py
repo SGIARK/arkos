@@ -248,9 +248,7 @@ async def materialize(sandbox: SandboxIO, session_id: str, claims: list[Claim]) 
         len(payload),
         len(removed),
     )
-    return Materialized(
-        manifest=wanted, transferred=len(payload), bytes_sent=bytes_sent, removed=removed, nonce=nonce
-    )
+    return Materialized(manifest=wanted, transferred=len(payload), bytes_sent=bytes_sent, removed=removed, nonce=nonce)
 
 
 def _tree_hash(manifest: dict[str, str]) -> str:
@@ -408,9 +406,7 @@ async def flush(
                 extra = await _read_out(sandbox, session_id, [path])
                 body = extra.get(path, b"")
                 entries.append(
-                    store.TreeEntry(
-                        path=relative, content_hash=await store.put_blob(body), size=len(body), mtime=now
-                    )
+                    store.TreeEntry(path=relative, content_hash=await store.put_blob(body), size=len(body), mtime=now)
                 )
                 uploaded += 1
                 continue
@@ -446,9 +442,7 @@ async def _sweep(sandbox: SandboxIO, session_id: str, claims: list[Claim]) -> di
 async def _read_out(sandbox: SandboxIO, session_id: str, paths: list[str]) -> dict[str, bytes]:
     """Tar the changed files and read the archive back in one transfer."""
     quoted = " ".join(shlex.quote(p.lstrip("/")) for p in paths)
-    result = await sandbox.exec(
-        session_id, f"tar cf {shlex.quote(_FLUSH_TAR)} -C / {quoted}"
-    )
+    result = await sandbox.exec(session_id, f"tar cf {shlex.quote(_FLUSH_TAR)} -C / {quoted}")
     if result["exit_code"] != 0:
         raise store.StoreError(f"flush could not archive the changes: {result['stderr'][:200]}")
 
@@ -469,8 +463,6 @@ async def _remove(sandbox: SandboxIO, session_id: str, paths: tuple[str, ...]) -
     """Delete files the tree no longer has, so a resumed sandbox does not keep them."""
     quoted = " ".join(shlex.quote(p) for p in paths)
     await sandbox.exec(session_id, f"rm -f {quoted}")
-
-
 
 
 async def _live_boxes(user_id: str) -> list[str]:

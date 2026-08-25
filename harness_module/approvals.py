@@ -37,8 +37,7 @@ from db.ids import as_uuid as _uuid
 Kind = Literal["approval", "ask", "call", "plan"]
 
 _COLUMNS = (
-    "id, session_id, tool_call_id, kind, prompt, answer, created_at, answered_at, "
-    "tool_name, tool_args, consumed_at"
+    "id, session_id, tool_call_id, kind, prompt, answer, created_at, answered_at, tool_name, tool_args, consumed_at"
 )
 
 # What a human sends to resolve a gated call. Free text answers a question; a
@@ -273,5 +272,3 @@ async def answer(approval_id: str, text: str) -> Approval | None:
         text,
     )
     return _row(record) if record else None
-
-

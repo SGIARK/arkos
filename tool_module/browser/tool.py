@@ -39,8 +39,6 @@ from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, ToolUnav
 logger = logging.getLogger(__name__)
 
 
-
-
 def _frames_url(session_id: str) -> str:
     """Where the UI mounts the pane. Relative: the app and the API share an origin."""
     return f"/sessions/{session_id}/browser/frames"
@@ -122,9 +120,7 @@ class BrowserTask:
             if ctx.emit_status is not None:
                 ctx.emit_status("the browser is done")
 
-        return await _envelope(
-            history, ctx, stopped="deadline" if run.out_of_time else None, steps=run.history_lines
-        )
+        return await _envelope(history, ctx, stopped="deadline" if run.out_of_time else None, steps=run.history_lines)
 
 
 class _Run:
@@ -199,9 +195,7 @@ class _Run:
 
         # Frames flow while the run runs, and stop with it. Nobody watching
         # costs nothing: the broker drops what no subscriber holds.
-        self._screencast = asyncio.create_task(
-            run_screencast(self._agent, self.ctx.user_id, str(self.ctx.session_id))
-        )
+        self._screencast = asyncio.create_task(run_screencast(self._agent, self.ctx.user_id, str(self.ctx.session_id)))
         try:
             result = self._agent.run(max_steps=self.max_steps)
             return await result if inspect.isawaitable(result) else result

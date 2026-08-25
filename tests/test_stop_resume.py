@@ -66,9 +66,7 @@ async def client():
 async def _user(client: AsyncClient) -> str:
     user_id = str(uuid.uuid4())
     _seeded.append(uuid.UUID(user_id))
-    response = await client.post(
-        "/auth/session", headers={"Authorization": f"Bearer {_supabase_token(user_id)}"}
-    )
+    response = await client.post("/auth/session", headers={"Authorization": f"Bearer {_supabase_token(user_id)}"})
     assert response.status_code == 204
     return user_id
 
@@ -128,9 +126,7 @@ async def test_a_cancel_lands_terminal_and_hands_the_mode_back():
 
     await sink.abort("cancelled")
 
-    row = await pool.fetchrow(
-        "SELECT status, mode, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id)
-    )
+    row = await pool.fetchrow("SELECT status, mode, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id))
     assert (row["status"], row["mode"]) == ("cancelled", "attended")
     assert row["terminal_reason"] == "cancelled", "the plan's approval is spent"
 
@@ -166,9 +162,7 @@ async def test_the_press_decides_the_landing_of_one_teardown(monkeypatch):
         runner._running.pop(session_id, None)
         runner._teardown.pop(session_id, None)
 
-        row = await pool.fetchrow(
-            "SELECT status, mode FROM sessions WHERE id = $1", uuid.UUID(session_id)
-        )
+        row = await pool.fetchrow("SELECT status, mode FROM sessions WHERE id = $1", uuid.UUID(session_id))
         assert (row["status"], row["mode"]) == (status, mode), intent
 
 
@@ -228,9 +222,7 @@ async def test_a_live_stop_lands_stopped_and_not_the_loops_cancelled(monkeypatch
 
     assert await runner.stop(session_id) is True
 
-    row = await pool.fetchrow(
-        "SELECT status, mode, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id)
-    )
+    row = await pool.fetchrow("SELECT status, mode, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id))
     dones = [e.event for e in await slog.get_events(session_id) if e.event.kind == "done"]
     assert [d.reason for d in dones] == ["stopped"], "the loop's own done{cancelled} was consumed"
     assert (row["status"], row["mode"]) == ("idle", "unattended")
@@ -262,9 +254,7 @@ async def test_a_live_cancel_still_lands_cancelled(monkeypatch):
 
     assert await runner.cancel(session_id) is True
 
-    row = await pool.fetchrow(
-        "SELECT status, mode, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id)
-    )
+    row = await pool.fetchrow("SELECT status, mode, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id))
     dones = [e.event for e in await slog.get_events(session_id) if e.event.kind == "done"]
     assert [d.reason for d in dones] == ["cancelled"]
     assert (row["status"], row["mode"], row["terminal_reason"]) == ("cancelled", "attended", "cancelled")
@@ -298,9 +288,7 @@ async def test_a_message_resumes_a_stopped_run_unattended(client, monkeypatch):
     assert calls and "mode" not in calls[-1], "nothing moved the mode, so nothing moves it back"
     events = [e.event for e in await slog.get_events(session_id)]
     assert events[-1].text == "skip the browser, do it another way"
-    assert await pool.fetchval(
-        "SELECT mode FROM sessions WHERE id = $1", uuid.UUID(session_id)
-    ) == "unattended"
+    assert await pool.fetchval("SELECT mode FROM sessions WHERE id = $1", uuid.UUID(session_id)) == "unattended"
 
 
 @pytest.mark.asyncio
@@ -345,9 +333,7 @@ async def test_cancelling_a_stopped_run_spends_the_plan(client):
     response = await client.post(f"/sessions/{session_id}/cancel")
 
     assert response.status_code == 202
-    row = await pool.fetchrow(
-        "SELECT status, mode, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id)
-    )
+    row = await pool.fetchrow("SELECT status, mode, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id))
     assert (row["status"], row["mode"]) == ("cancelled", "attended")
     assert row["terminal_reason"] == "cancelled"
 
@@ -387,9 +373,7 @@ async def test_a_stop_through_the_no_sink_path_keeps_the_mode(client):
 
     assert await runner._ending(session_id, None, "stopped") is True
 
-    row = await pool.fetchrow(
-        "SELECT status, mode, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id)
-    )
+    row = await pool.fetchrow("SELECT status, mode, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id))
     assert (row["status"], row["mode"]) == ("idle", "unattended")
     assert row["terminal_reason"] is None
 
@@ -411,9 +395,7 @@ async def test_a_plan_park_still_refuses_a_composer_message(client):
     user_id = await _user(client)
     session_id = await _session(user_id, mode="attended")
     await approvals.create(session_id, "c1", "plan", "a goal", tool_name="propose_plan", tool_args={})
-    await pool.execute(
-        "UPDATE sessions SET status = 'awaiting_approval' WHERE id = $1", uuid.UUID(session_id)
-    )
+    await pool.execute("UPDATE sessions SET status = 'awaiting_approval' WHERE id = $1", uuid.UUID(session_id))
 
     response = await client.post(f"/sessions/{session_id}/messages", json={"text": "sounds good"})
 

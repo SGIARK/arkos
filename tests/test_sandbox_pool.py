@@ -141,9 +141,7 @@ def model(monkeypatch):
             else:
                 line = command(messages) if callable(command) else command
                 deltas = [
-                    mc.ToolCallDelta(
-                        index=0, id="c1", name="run_command", arguments=json.dumps({"command": line})
-                    ),
+                    mc.ToolCallDelta(index=0, id="c1", name="run_command", arguments=json.dumps({"command": line})),
                     mc.Finish(reason="tool_calls"),
                 ]
 
@@ -182,9 +180,7 @@ async def _project(user_id: str, title: str) -> str:
     return str(project_id)
 
 
-async def _session(
-    user_id: str, project_id: str | None = None, status: str = "idle", text: str = "go"
-) -> str:
+async def _session(user_id: str, project_id: str | None = None, status: str = "idle", text: str = "go") -> str:
     session_id = str(
         await pool.fetchval(
             "INSERT INTO sessions (user_id, project_id, mode, status) VALUES ($1, $2, 'attended', $3) RETURNING id",
@@ -214,9 +210,7 @@ async def _drive(session_id: str) -> None:
 
 
 async def _slots(user_id: str) -> int:
-    return await pool.fetchval(
-        "SELECT count(*) FROM session_sandboxes WHERE user_id = $1", uuid.UUID(user_id)
-    )
+    return await pool.fetchval("SELECT count(*) FROM session_sandboxes WHERE user_id = $1", uuid.UUID(user_id))
 
 
 def _statuses(events) -> list[str]:
@@ -252,9 +246,7 @@ async def test_two_sessions_of_one_user_run_at_once_and_flush_to_their_own_store
     assert {e.path for e in await store.read_tree(user_id, "one")} == {"one/a.txt", "one/mine.txt"}
     assert {e.path for e in await store.read_tree(user_id, "two")} == {"two/b.txt", "two/mine.txt"}
     for folder in ("one", "two"):
-        entry = next(
-            e for e in await store.read_tree(user_id, folder) if e.path == f"{folder}/mine.txt"
-        )
+        entry = next(e for e in await store.read_tree(user_id, folder) if e.path == f"{folder}/mine.txt")
         assert await store.get_blob(entry.content_hash) == f"hello from {folder}".encode()
     assert sorted(boxes.reaped) == sorted([first, second])
     assert await _slots(user_id) == 0
@@ -596,7 +588,5 @@ async def test_a_park_pauses_the_box_and_keeps_its_slot(boxes, model, patient, m
     assert boxes.paused == [session_id]
     assert boxes.reaped == [], "a parked session lost its computer"
     assert await _slots(user_id) == 1, "a parked session gave up its slot"
-    held = await pool.fetchval(
-        "SELECT count(*) FROM resource_leases WHERE session_id = $1", uuid.UUID(session_id)
-    )
+    held = await pool.fetchval("SELECT count(*) FROM resource_leases WHERE session_id = $1", uuid.UUID(session_id))
     assert held == 0, "a parked session is not acting, so it holds no lease"

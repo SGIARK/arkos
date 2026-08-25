@@ -138,9 +138,7 @@ async def read_tree(user_id: str, prefix: str = "/") -> list[TreeEntry]:
         _relative(prefix),
         f"{_relative(prefix)}/%",
     )
-    return [
-        TreeEntry(path=r["path"], content_hash=r["content_hash"], size=r["size"], mtime=r["mtime"]) for r in rows
-    ]
+    return [TreeEntry(path=r["path"], content_hash=r["content_hash"], size=r["size"], mtime=r["mtime"]) for r in rows]
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,9 +302,7 @@ async def put_file(
     )
     return StoredFile(
         id=str(row["id"]),
-        entry=TreeEntry(
-            path=row["path"], content_hash=row["content_hash"], size=row["size"], mtime=row["mtime"]
-        ),
+        entry=TreeEntry(path=row["path"], content_hash=row["content_hash"], size=row["size"], mtime=row["mtime"]),
     )
 
 
@@ -371,13 +367,9 @@ async def move_path(user_id: str, src: str, dst: str) -> list[tuple[str, str]]:
         if "/" not in dst:
             # Bound for the top level. Only a directory may go: the rows say
             # which this is, because an exact match means `src` names a file.
-            is_file = await conn.fetchval(
-                "SELECT 1 FROM files WHERE user_id = $1 AND path = $2", _uuid(user_id), src
-            )
+            is_file = await conn.fetchval("SELECT 1 FROM files WHERE user_id = $1 AND path = $2", _uuid(user_id), src)
             if is_file:
-                raise StoreError(
-                    f"the store's top level holds folders, not files: {dst!r} needs a folder to go in"
-                )
+                raise StoreError(f"the store's top level holds folders, not files: {dst!r} needs a folder to go in")
         moves = await _rewrite_prefix(conn, user_id, src, dst)
 
     # mtime is left alone on purpose: a move does not change what the file says,
@@ -677,21 +669,16 @@ async def undo_delete(user_id: str, batch: str) -> Deletion:
                 row["created_at"],
             )
 
-        links = await conn.fetch(
-            "SELECT project_id, folder FROM deleted_links WHERE batch = $1", _uuid(batch)
-        )
+        links = await conn.fetch("SELECT project_id, folder FROM deleted_links WHERE batch = $1", _uuid(batch))
         for link in links:
             await conn.execute(
-                "INSERT INTO project_folders (project_id, folder) VALUES ($1, $2) "
-                "ON CONFLICT DO NOTHING",
+                "INSERT INTO project_folders (project_id, folder) VALUES ($1, $2) ON CONFLICT DO NOTHING",
                 link["project_id"],
                 link["folder"],
             )
 
         await conn.execute("DELETE FROM deleted_links WHERE batch = $1", _uuid(batch))
-        await conn.execute(
-            "DELETE FROM deleted_files WHERE user_id = $1 AND batch = $2", _uuid(user_id), _uuid(batch)
-        )
+        await conn.execute("DELETE FROM deleted_files WHERE user_id = $1 AND batch = $2", _uuid(user_id), _uuid(batch))
 
     return Deletion(
         batch=str(batch),
@@ -728,10 +715,7 @@ async def commit_tree(
     now = datetime.now(UTC)
     return await commit_entries(
         user_id,
-        [
-            TreeEntry(path=f.path, content_hash=h, size=len(f.content), mtime=f.mtime or now)
-            for f, h in hashed
-        ],
+        [TreeEntry(path=f.path, content_hash=h, size=len(f.content), mtime=f.mtime or now) for f, h in hashed],
         prefix,
     )
 
@@ -802,5 +786,3 @@ def covers(prefix: str, path: str) -> bool:
 def _relative(prefix: str) -> str:
     """Normalize a prefix to a tree prefix. '/' or '' means the whole store."""
     return (prefix or "").strip("/")
-
-

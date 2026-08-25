@@ -169,9 +169,7 @@ async def test_a_reaped_sandbox_is_gone_and_its_slot_is_free():
 
     await manager.reap(session_id)
 
-    slots = await pool.fetchval(
-        "SELECT count(*) FROM session_sandboxes WHERE session_id = $1", uuid.UUID(session_id)
-    )
+    slots = await pool.fetchval("SELECT count(*) FROM session_sandboxes WHERE session_id = $1", uuid.UUID(session_id))
     assert slots == 0
     assert _is_dead(sandbox_id), "the slot was freed but the box is still running"
 
@@ -217,9 +215,7 @@ async def test_a_paused_box_can_still_be_reaped():
 
     await manager.reap(session_id)
 
-    slots = await pool.fetchval(
-        "SELECT count(*) FROM session_sandboxes WHERE session_id = $1", uuid.UUID(session_id)
-    )
+    slots = await pool.fetchval("SELECT count(*) FROM session_sandboxes WHERE session_id = $1", uuid.UUID(session_id))
     assert slots == 0
     assert _is_dead(sandbox_id), "a paused box survived its reap"
 

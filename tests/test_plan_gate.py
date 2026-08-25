@@ -78,9 +78,7 @@ async def client():
 async def _user(client: AsyncClient) -> str:
     user_id = str(uuid.uuid4())
     _seeded.append(uuid.UUID(user_id))
-    response = await client.post(
-        "/auth/session", headers={"Authorization": f"Bearer {_supabase_token(user_id)}"}
-    )
+    response = await client.post("/auth/session", headers={"Authorization": f"Bearer {_supabase_token(user_id)}"})
     assert response.status_code == 204
     return user_id
 
@@ -108,12 +106,8 @@ async def _propose(session_id: str, args: dict, *, call_id: str = "c1") -> appro
     """Put a session where the park leaves it: the call closed, the row carrying the plan."""
     await slog.append(session_id, ToolCallEvent(id=call_id, name="propose_plan", args=args))
     await approvals.supersede_plans(session_id)
-    row = await approvals.create(
-        session_id, call_id, "plan", args["goal"], tool_name="propose_plan", tool_args=args
-    )
-    await pool.execute(
-        "UPDATE sessions SET status = 'awaiting_approval' WHERE id = $1", uuid.UUID(session_id)
-    )
+    row = await approvals.create(session_id, call_id, "plan", args["goal"], tool_name="propose_plan", tool_args=args)
+    await pool.execute("UPDATE sessions SET status = 'awaiting_approval' WHERE id = $1", uuid.UUID(session_id))
     return row
 
 
@@ -189,9 +183,7 @@ async def test_the_unattended_quota_binds_at_plan_approval(client, monkeypatch):
     rather than losing it to an approval that then cannot start anything.
     """
     user_id = await _user(client)
-    monkeypatch.setattr(
-        api, "_cfg", lambda key, default: 1 if key == "quotas.max_unattended_sessions" else default
-    )
+    monkeypatch.setattr(api, "_cfg", lambda key, default: 1 if key == "quotas.max_unattended_sessions" else default)
     await pool.execute(
         "INSERT INTO sessions (user_id, mode, status) VALUES ($1, 'unattended', 'running')",
         uuid.UUID(user_id),
@@ -219,14 +211,15 @@ async def test_declining_closes_the_park_and_leaves_an_attended_chat(client):
     assert response.json()["mode"] == "attended"
     assert api.start_calls == [], "nothing ran"
     assert await approvals.open_for(session_id) == []
-    session = await pool.fetchrow(
-        "SELECT status, mode FROM sessions WHERE id = $1", uuid.UUID(session_id)
-    )
+    session = await pool.fetchrow("SELECT status, mode FROM sessions WHERE id = $1", uuid.UUID(session_id))
     assert (session["status"], session["mode"]) == ("idle", "attended")
-    assert await pool.fetchval(
-        "SELECT count(*) FROM files WHERE user_id = $1 AND path = 'inbox-triage/plan.md'",
-        uuid.UUID(user_id),
-    ) == 0
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM files WHERE user_id = $1 AND path = 'inbox-triage/plan.md'",
+            uuid.UUID(user_id),
+        )
+        == 0
+    )
 
 
 @pytest.mark.asyncio
@@ -242,9 +235,7 @@ async def test_a_reply_closes_the_plan_and_asks_for_the_next_one(client):
     _, session_id = await _project_session(user_id)
     row = await _propose(session_id, PLAN)
 
-    response = await client.post(
-        f"/approvals/{row.id}/respond", json={"answer": "don't send anything, draft it all"}
-    )
+    response = await client.post(f"/approvals/{row.id}/respond", json={"answer": "don't send anything, draft it all"})
 
     assert response.status_code == 202
     assert response.json()["mode"] == "attended"
@@ -257,10 +248,13 @@ async def test_a_reply_closes_the_plan_and_asks_for_the_next_one(client):
     assert "propose_plan" in events[-1].text
 
     assert await approvals.open_for(session_id) == [], "the card closed with the reply"
-    assert await pool.fetchval(
-        "SELECT count(*) FROM files WHERE user_id = $1 AND path = 'inbox-triage/plan.md'",
-        uuid.UUID(user_id),
-    ) == 0
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM files WHERE user_id = $1 AND path = 'inbox-triage/plan.md'",
+            uuid.UUID(user_id),
+        )
+        == 0
+    )
 
 
 @pytest.mark.asyncio
@@ -377,8 +371,7 @@ async def test_a_session_given_no_folder_cannot_approve_a_plan(client):
     user_id = await _user(client)
     session_id = str(
         await pool.fetchval(
-            "INSERT INTO sessions (user_id, mode, status) VALUES ($1, 'attended', 'awaiting_approval') "
-            "RETURNING id",
+            "INSERT INTO sessions (user_id, mode, status) VALUES ($1, 'attended', 'awaiting_approval') RETURNING id",
             uuid.UUID(user_id),
         )
     )
@@ -438,9 +431,7 @@ async def test_play_on_a_cancelled_run_drafts_a_continuation(client):
     """
     user_id = await _user(client)
     _, session_id = await _project_session(user_id, status="cancelled")
-    await pool.execute(
-        "UPDATE sessions SET terminal_reason = 'cancelled' WHERE id = $1", uuid.UUID(session_id)
-    )
+    await pool.execute("UPDATE sessions SET terminal_reason = 'cancelled' WHERE id = $1", uuid.UUID(session_id))
     await runner.save_plan(session_id, PLAN, 1)
 
     response = await client.post(f"/sessions/{session_id}/approve")

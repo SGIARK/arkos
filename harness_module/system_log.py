@@ -38,8 +38,6 @@ _stopping: asyncio.Event | None = None
 _SHUTDOWN_GRACE_S = 10.0
 
 
-
-
 def record(
     event: str,
     *,

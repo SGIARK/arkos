@@ -46,8 +46,6 @@ FINISH_TOOL = "finish_task"
 _BARE_TEXT_LIMIT = 3
 
 
-
-
 def _require(key: str) -> Any:
     """Read a config value that has no default in code."""
     value = config.get(key)

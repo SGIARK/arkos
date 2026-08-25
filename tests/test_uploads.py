@@ -161,9 +161,7 @@ async def test_a_subdirectory_path_is_kept(client):
     user_id = await _signed(client)
     await _project(user_id)
 
-    created = await client.post(
-        "/files", **_upload("q3.csv", b"1,2,3", path="taxes/data/2026/q3.csv")
-    )
+    created = await client.post("/files", **_upload("q3.csv", b"1,2,3", path="taxes/data/2026/q3.csv"))
 
     assert created.json()["path"] == "taxes/data/2026/q3.csv"
     assert created.json()["name"] == "q3.csv"
@@ -191,9 +189,7 @@ async def test_an_oversized_upload_is_refused_in_the_standard_shape(client, monk
     await _project(user_id)
     monkeypatch.setattr(api, "_cfg", lambda key, default: 1 if key == "quotas.upload_max_mb" else default)
 
-    response = await client.post(
-        "/files", **_upload("big.bin", b"x" * (2 * 1024 * 1024), path="taxes/big.bin")
-    )
+    response = await client.post("/files", **_upload("big.bin", b"x" * (2 * 1024 * 1024), path="taxes/big.bin"))
 
     assert response.status_code == 413
     assert response.json() == {
@@ -208,9 +204,7 @@ async def test_a_path_that_climbs_out_of_the_store_is_refused(client):
     user_id = await _signed(client)
     await _project(user_id)
 
-    response = await client.post(
-        "/files", **_upload("passwd", b"root", path="../../etc/passwd")
-    )
+    response = await client.post("/files", **_upload("passwd", b"root", path="../../etc/passwd"))
 
     assert response.status_code == 400
     assert response.json()["code"] == "invalid_request"
@@ -260,9 +254,7 @@ async def test_an_empty_file_is_content_like_any_other(client):
 async def test_listing_a_hundred_file_project_boots_nothing(client, boxes):
     user_id = await _signed(client)
     project_id = await _project(user_id, "Big")
-    await store.commit_tree(
-        user_id, [store.FileContent(path=f"big/f{i:03}.txt", content=b"x") for i in range(100)]
-    )
+    await store.commit_tree(user_id, [store.FileContent(path=f"big/f{i:03}.txt", content=b"x") for i in range(100)])
 
     listing = await client.get(f"/projects/{project_id}/files")
     projects = await client.get("/projects")

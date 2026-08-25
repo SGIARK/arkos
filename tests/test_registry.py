@@ -303,9 +303,7 @@ async def test_an_mcp_call_passes_through_the_approval_gate():
         return False
 
     specs = {"mcp_send_email": ToolSpec(name="mcp_send_email", requires_approval=True)}
-    result = await reg.dispatch(
-        "mcp_send_email", {"to": "x"}, _ctx(approve=deny), mcp_call=mcp_call, specs=specs
-    )
+    result = await reg.dispatch("mcp_send_email", {"to": "x"}, _ctx(approve=deny), mcp_call=mcp_call, specs=specs)
 
     assert asked == ["mcp_send_email"], "the human was never asked"
     assert ran == [], "the tool ran despite the refusal"
@@ -318,9 +316,7 @@ async def test_an_approved_mcp_call_runs():
         return ok(f"sent via {bare}")
 
     specs = {"mcp_send_email": ToolSpec(name="mcp_send_email", requires_approval=True)}
-    result = await reg.dispatch(
-        "mcp_send_email", {}, _ctx(approve=lambda n, a: True), mcp_call=mcp_call, specs=specs
-    )
+    result = await reg.dispatch("mcp_send_email", {}, _ctx(approve=lambda n, a: True), mcp_call=mcp_call, specs=specs)
 
     assert result.ok
     assert result.content == "sent via send_email"

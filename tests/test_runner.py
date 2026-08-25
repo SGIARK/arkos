@@ -612,14 +612,11 @@ async def test_a_setup_failure_is_an_internal_error_not_a_model_error(monkeypatc
     assert await runner.start(session_id)
     await _settle(session_id)
 
-    row = await pool.fetchrow(
-        "SELECT status, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id)
-    )
+    row = await pool.fetchrow("SELECT status, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id))
     events = [e.event for e in await slog.get_events(session_id)]
 
     assert (row["status"], row["terminal_reason"]) == ("failed", "internal_error")
     assert [e.reason for e in events if e.kind == "done"] == ["internal_error"]
-
 
 
 # --- steering: a message typed while the turn is running ----------------------------

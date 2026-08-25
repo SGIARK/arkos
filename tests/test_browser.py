@@ -343,9 +343,7 @@ async def test_nothing_is_dropped_when_the_vendor_still_accepts_it():
     def agent_with_callbacks(task=None, llm=None, register_new_step_callback=None):
         return None
 
-    kept = browser_tool._accepted(
-        agent_with_callbacks, {"task": "t", "llm": None, "register_new_step_callback": print}
-    )
+    kept = browser_tool._accepted(agent_with_callbacks, {"task": "t", "llm": None, "register_new_step_callback": print})
 
     assert set(kept) == {"task", "llm", "register_new_step_callback"}
 

@@ -50,7 +50,6 @@ _MEMORY_UPSERT = """
 """
 
 
-
 @dataclass(frozen=True, slots=True)
 class Hit:
     """One search result, and how well it matched."""
@@ -79,9 +78,7 @@ async def append_note(user_id: str, text: str) -> str:
     now = datetime.now(UTC)
     path = f"{NOTES_DIR}/{now.strftime('%Y%m%dT%H%M%S%f')}-{uuid.uuid4().hex[:8]}.md"
     content = text.encode()
-    await pool.execute(
-        _MEMORY_UPSERT, _uuid(user_id), path, await put_blob(content), len(content), now, text
-    )
+    await pool.execute(_MEMORY_UPSERT, _uuid(user_id), path, await put_blob(content), len(content), now, text)
     return path
 
 
@@ -149,6 +146,4 @@ async def search_memory(user_id: str, query: str, limit: int = 10) -> list[Hit]:
         query,
         max(1, limit),
     )
-    return [
-        Hit(path=r["path"], text=r["body"], written_at=r["mtime"], rank=float(r["rank"])) for r in rows
-    ]
+    return [Hit(path=r["path"], text=r["body"], written_at=r["mtime"], rank=float(r["rank"])) for r in rows]

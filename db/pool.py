@@ -15,8 +15,6 @@ _pool: asyncpg.Pool | None = None
 _lock = asyncio.Lock()
 
 
-
-
 async def pool() -> asyncpg.Pool:
     """Return the process-wide pool, creating it on first use."""
     global _pool
