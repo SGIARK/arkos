@@ -22,6 +22,7 @@ from agent_module.events import (
     DoneEvent,
     Event,
     ReasoningEvent,
+    StatusEvent,
     TodoTracker,
     ToolCallEvent,
     ToolResultEvent,
@@ -305,7 +306,12 @@ async def run_turn(
                 reattempt = True
                 logger.warning("hop failed (%s), re-attempting %d/%d", e.kind, model_retries, budgets.model_retries)
                 continue
-            logger.error("model error ends the run: %s", e)
+            attempts = getattr(e, "attempts", 1)
+            logger.error("model error ends the run after %d attempt(s): %s", attempts, e)
+            # Said in the transcript, not only the log: "it failed" and "it was
+            # tried five times over twenty seconds and then failed" are different
+            # facts to the person reading, and only one of them is the truth.
+            yield StatusEvent(label=f"model failed after {attempts} attempt(s): {e.kind}")
             yield DoneEvent(reason="model_error")
             return
         except asyncio.CancelledError:
@@ -347,6 +353,15 @@ class _Hop:
         if isinstance(delta, model_client.ReasoningDelta):
             # Streamed, never folded back into messages.
             return ReasoningEvent(text=delta.text)
+        if isinstance(delta, model_client.RetryDelta):
+            # The client is about to wait. Said out loud (11.11.3) because a run
+            # gone quiet for eight seconds looks exactly like a hung one, and the
+            # person watching cannot tell which without being told. A status
+            # event, so the run stays RUNNING and no lifecycle state is invented
+            # for "briefly waiting".
+            return StatusEvent(
+                label=f"model busy ({delta.kind}) — retry {delta.attempt}/{delta.of}, {delta.delay_s:.1f}s"
+            )
         if isinstance(delta, model_client.ToolCallDelta):
             partial = self._calls.setdefault(delta.index, _PartialCall())
             if delta.id:

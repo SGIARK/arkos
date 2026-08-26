@@ -669,6 +669,9 @@ kbd {
    carries it. Same muted weight as the rest of the status line — it should be
    findable when scanning for what the run did on your behalf, not shouty. */
 .ev-auto .tag { text-transform: uppercase; letter-spacing: 0.04em; font-size: 9.5px; }
+/* Waiting, not working. Same muted register as the auto badge: both are the
+   run telling you what it is doing without a human asked to act. */
+.ev-retry .tag { text-transform: uppercase; letter-spacing: 0.04em; font-size: 9.5px; }
 .ev-ask { background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: var(--r); padding: 13px 15px; font-size: 12.5px; color: var(--ink); }
 .ev-ask .who { display: block; font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
 .ev-ask .opts { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }

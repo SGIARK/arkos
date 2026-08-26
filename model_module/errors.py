@@ -11,6 +11,9 @@ class ModelError(Exception):
         kind: one of timeout, connect, rate_limit, server_error, bad_request,
             auth, stream, internal, unknown.
         cause: the original exception, preserved for logging.
+        retry_after: seconds the PROVIDER asked us to wait, when it said so.
+            A 429 usually carries one, and honouring it beats guessing: our
+            backoff curve is a guess about a number the other side knows.
     """
 
     def __init__(
@@ -20,10 +23,16 @@ class ModelError(Exception):
         retryable: bool,
         kind: str = "unknown",
         cause: Exception | None = None,
+        retry_after: float | None = None,
     ) -> None:
         super().__init__(message)
         self.retryable = retryable
         self.kind = kind
+        self.retry_after = retry_after
+        # How many attempts were spent before giving up. Set by the retry loop
+        # so a terminal can say "5 attempts" rather than only naming the last
+        # failure, which reads as if nothing was tried.
+        self.attempts = 1
         self.cause = cause
 
 

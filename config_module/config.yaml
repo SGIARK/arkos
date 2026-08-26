@@ -134,7 +134,12 @@ llm:
                             # at or below what the API accepts for model_name
   temperature: 0.7
   timeout_s: 90             # seconds per request
-  max_retries: 3            # cap on total attempts per generate() call
+  # Cap on total attempts per generate() call. Five, because a rate limit is
+  # the common transient and providers hand back retry-after values of a few
+  # seconds — five attempts on a backoff that honours those spans the window a
+  # TPM limit actually reopens in, and an unattended run must not die on it
+  # (11.11.3).
+  max_retries: 5
   retry_backoff_s: 0.5      # first backoff in seconds; doubles, with jitter
   retry_backoff_max_s: 8.0
 

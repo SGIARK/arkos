@@ -71,7 +71,23 @@ class Finish:
     usage: dict[str, Any] | None = None
 
 
-Delta = TextDelta | ReasoningDelta | ToolCallDelta | Finish
+@dataclass(slots=True)
+class RetryDelta:
+    """The client is waiting to try again, and says so before it waits.
+
+    Yielded rather than logged because a run that has gone quiet for eight
+    seconds is indistinguishable from a hung one, and the person watching
+    deserves to know which. Carries the numbers rather than a sentence so the
+    caller decides how to say it.
+    """
+
+    attempt: int
+    of: int
+    delay_s: float
+    kind: str
+
+
+Delta = TextDelta | ReasoningDelta | ToolCallDelta | Finish | RetryDelta
 
 
 # --- client -----------------------------------------------------------------
@@ -158,12 +174,17 @@ def _classify(exc: Exception, source: Source) -> ModelError:
     if isinstance(exc, APIConnectionError):
         return ModelError(f"cannot reach the model: {exc}", retryable=True, kind="connect", cause=exc)
     if isinstance(exc, RateLimitError):
-        # Overload is retryable only for a run with a human waiting.
+        # ALWAYS retryable (11.11.3). This used to be `source != "background"` —
+        # retryable only for a run with a human waiting — which is backwards for
+        # an unattended product: a background run is the one with nobody to mind
+        # a four-second wait, and it was the one being killed by it. A live 429
+        # that said "try again in 4.404s" ended an autopilot session outright.
         return ModelError(
             f"model overloaded: {exc}",
-            retryable=source != "background",
+            retryable=True,
             kind="rate_limit",
             cause=exc,
+            retry_after=_retry_after(exc),
         )
     if isinstance(exc, _TERMINAL):
         if isinstance(exc, BadRequestError) and _is_context_overflow(exc):
@@ -195,12 +216,42 @@ def _classify(exc: Exception, source: Source) -> ModelError:
     )
 
 
-async def _backoff(attempt: int) -> None:
-    """Exponential backoff with jitter. `attempt` is 1-based."""
+def _retry_after(exc: Exception) -> float | None:
+    """The provider's own "wait this long", in seconds, if it sent one.
+
+    Read from the `retry-after` header, which a 429 usually carries. Their
+    number is knowledge; ours is a guess about it.
+    """
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if not headers:
+        return None
+    for name in ("retry-after-ms", "retry-after"):
+        raw = headers.get(name)
+        if raw is None:
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        seconds = value / 1000 if name.endswith("-ms") else value
+        # A provider asking for an hour is not a retry, it is an outage; the
+        # ceiling keeps a wait bounded by something we chose.
+        return min(seconds, float(_cfg("llm.retry_backoff_max_s", 8.0)))
+    return None
+
+
+def backoff_delay(attempt: int, retry_after: float | None = None) -> float:
+    """How long to wait before `attempt` + 1. Exponential with jitter.
+
+    The provider's `retry-after` wins when present: it knows when the window
+    reopens and this does not. Jitter still applies on top, so a fleet of
+    sessions told the same number does not return in one thundering herd.
+    """
     base = float(_cfg("llm.retry_backoff_s", 0.5))
     ceiling = float(_cfg("llm.retry_backoff_max_s", 8.0))
-    delay = min(base * (2 ** (attempt - 1)), ceiling)
-    await asyncio.sleep(delay * (0.5 + random.random() / 2))
+    delay = retry_after if retry_after is not None else min(base * (2 ** (attempt - 1)), ceiling)
+    return delay * (0.5 + random.random() / 2)
 
 
 # --- generate ---------------------------------------------------------------
@@ -249,10 +300,18 @@ async def generate(
             return
         except ModelError as e:
             if started or not e.retryable or attempt == max_attempts:
+                if attempt > 1:
+                    # Exhaustion is honest: the caller's terminal says how many
+                    # attempts it took, not just that the last one failed.
+                    e.attempts = attempt
                 raise
             last = e
-            logger.warning("model attempt %d/%d failed (%s), retrying: %s", attempt, max_attempts, e.kind, e)
-            await _backoff(attempt)
+            delay = backoff_delay(attempt, e.retry_after)
+            logger.warning(
+                "model attempt %d/%d failed (%s), retrying in %.1fs: %s", attempt, max_attempts, e.kind, delay, e
+            )
+            yield RetryDelta(attempt=attempt, of=max_attempts, delay_s=delay, kind=e.kind)
+            await asyncio.sleep(delay)
 
     assert last is not None
     raise last

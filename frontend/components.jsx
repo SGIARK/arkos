@@ -488,6 +488,17 @@ function StreamEvent({ event, questions, onAnswered, onError }) {
          beside the tool it approved. The prefix is the harness's `_AUTO_BADGE`
          — approvals are not an event kind, so a status event is where an
          answered one can appear in a transcript at all. */
+      /* A retry is the run waiting, not working: the spinner would say the
+         opposite. It reads as a held breath rather than progress, which is what
+         it is — the model asked us to wait and we are waiting. */
+      if (String(event.label || "").startsWith(RETRY_LABEL)) {
+        return (
+          <div className="ev-block ev-status ev-retry">
+            <span className="tag">waiting</span>
+            {String(event.label).slice(RETRY_LABEL.length)}
+          </div>
+        );
+      }
       if (String(event.label || "").startsWith(AUTO_BADGE)) {
         return (
           <div className="ev-block ev-status ev-auto">
@@ -533,6 +544,11 @@ function StreamEvent({ event, questions, onAnswered, onError }) {
 /* Mirrors `_AUTO_BADGE` in harness_module/runner.py. An autopilot run answers
    its own non-destructive gates, and this is how the transcript says so. */
 const AUTO_BADGE = "auto-approved ";
+
+/* Mirrors the label agent_module/loop.py builds when the client is backing off.
+   A run gone quiet for eight seconds looks exactly like a hung one; this is how
+   the person watching can tell which. */
+const RETRY_LABEL = "model busy ";
 
 /* A parked session's open question, answered where it was asked. */
 function AskBlock({ item, onAnswered, onError }) {

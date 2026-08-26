@@ -11,6 +11,7 @@ from openai import (
     APIConnectionError,
     APIError,
     APITimeoutError,
+    AuthenticationError,
     BadRequestError,
     InternalServerError,
     RateLimitError,
@@ -127,22 +128,32 @@ async def test_retryable_failures_stop_at_three_attempts(fake, error, kind):
     with pytest.raises(ModelError) as excinfo:
         await _drain()
 
-    assert completions.calls == 3
+    assert completions.calls == 5
     assert excinfo.value.kind == kind
     assert excinfo.value.retryable is True
 
 
-@pytest.mark.parametrize("source,expected_calls", [("background", 1), ("interactive", 3)])
+@pytest.mark.parametrize("source", ["background", "interactive"])
 @pytest.mark.asyncio
-async def test_only_interactive_waits_out_an_overload(fake, source, expected_calls):
-    """An unattended run yields the GPU slot instead of queueing for it."""
+async def test_an_overload_is_waited_out_whichever_kind_of_run_it_is(fake, source):
+    """REVERSED 2026-08-26 (11.11.3). This asserted the opposite.
+
+    The old rule was `retryable = source != "background"` — "an unattended run
+    yields the GPU slot instead of queueing for it" — which made sense against a
+    self-hosted SGLang where a background run competing for a slot was the whole
+    problem. Against a metered API it is backwards: a TPM limit reopens in
+    seconds, and the background run is precisely the one with nobody waiting on
+    it, so it is the one that can afford to wait. A live 429 saying "try again
+    in 4.404s" killed an autopilot session outright.
+    """
     completions = fake(lambda n: RateLimitError("busy", response=_response(429), body=None))
 
     with pytest.raises(ModelError) as excinfo:
         await _drain(source=source)
 
-    assert completions.calls == expected_calls
+    assert completions.calls == 5, "every attempt the budget allows"
     assert excinfo.value.kind == "rate_limit"
+    assert excinfo.value.attempts == 5, "the terminal says how many were tried"
 
 
 @pytest.mark.parametrize(
@@ -435,3 +446,109 @@ def test_overflow_is_recognised_from_the_prose_alone():
         exc = BadRequestError.__new__(BadRequestError)
         Exception.__init__(exc, wording)
         assert mc._classify(exc, "interactive").kind == "context_overflow", wording
+
+
+# --- transient errors retry, permanent ones do not (11.11.3) --------------------
+
+
+def _rate_limited(retry_after=None, ms=None):
+    headers = {}
+    if retry_after is not None:
+        headers["retry-after"] = str(retry_after)
+    if ms is not None:
+        headers["retry-after-ms"] = str(ms)
+    import httpx
+
+    response = httpx.Response(
+        status_code=429,
+        headers=headers,
+        request=httpx.Request("POST", "http://t/v1/chat/completions"),
+    )
+    return RateLimitError("busy", response=response, body=None)
+
+
+def test_the_providers_retry_after_beats_our_guess():
+    """Their number is knowledge; ours is a guess about it."""
+    err = mc._classify(_rate_limited(retry_after=4.404), "background")
+
+    assert err.retry_after == pytest.approx(4.404)
+    # Jitter still applies, so a fleet told the same number does not return together.
+    delay = mc.backoff_delay(1, err.retry_after)
+    assert 4.404 * 0.5 <= delay <= 4.404
+
+
+def test_a_retry_after_in_milliseconds_is_read_too():
+    assert mc._classify(_rate_limited(ms=2500), "background").retry_after == pytest.approx(2.5)
+
+
+def test_an_absurd_retry_after_is_capped():
+    """A provider asking for an hour is an outage, not a retry."""
+    assert mc._classify(_rate_limited(retry_after=3600), "background").retry_after == 8.0
+
+
+def test_no_retry_after_falls_back_to_exponential_backoff():
+    err = mc._classify(_rate_limited(), "background")
+
+    assert err.retry_after is None
+    assert mc.backoff_delay(1) <= mc.backoff_delay(4), "later attempts wait longer"
+
+
+@pytest.mark.asyncio
+async def test_a_permanent_error_is_terminal_with_zero_retries(fake):
+    """Auth and bad requests do not improve by being asked again."""
+    completions = fake(lambda n: AuthenticationError("nope", response=_response(401), body=None))
+
+    with pytest.raises(ModelError) as excinfo:
+        await _drain()
+
+    assert completions.calls == 1, "a permanent error must not be retried at all"
+    assert excinfo.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_a_transient_error_that_recovers_lets_the_run_continue(fake):
+    """The point of the card: a hiccup is not the end of a run."""
+    completions = fake(
+        lambda n: (
+            _rate_limited(retry_after=0) if n == 1 else _Stream([_chunk(content="recovered"), _chunk(finish="stop")])
+        )
+    )
+
+    deltas = await _drain()
+
+    assert completions.calls == 2
+    assert any(isinstance(d, mc.RetryDelta) for d in deltas), "the wait is announced, not silent"
+    assert any(getattr(d, "text", "") == "recovered" for d in deltas)
+
+
+@pytest.mark.asyncio
+async def test_the_retry_delta_carries_the_numbers(fake):
+    completions = fake(
+        lambda n: _rate_limited(retry_after=0) if n == 1 else _Stream([_chunk(content="ok"), _chunk(finish="stop")])
+    )
+
+    retries = [d for d in await _drain() if isinstance(d, mc.RetryDelta)]
+
+    assert len(retries) == 1
+    assert (retries[0].attempt, retries[0].of, retries[0].kind) == (1, 5, "rate_limit")
+    assert completions.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_the_wait_is_interruptible(fake, monkeypatch):
+    """Stop and cancel reach a backoff the way they reach anything else.
+
+    It is a plain sleep, so there is no separate pause machinery to teach about
+    the verbs — which is the whole reason it is a plain sleep. The rest of this
+    file keeps backoff at a millisecond to stay fast; this one needs a wait long
+    enough to be interrupted mid-flight, which is the thing under test.
+    """
+    fake(lambda n: _rate_limited(retry_after=30))
+    monkeypatch.setattr(mc, "_cfg", lambda k, d=None: 30.0 if "backoff_max" in k else _real_cfg(k, d))
+
+    task = asyncio.create_task(_drain())
+    await asyncio.sleep(0.15)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
