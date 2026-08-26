@@ -69,3 +69,44 @@ def test_a_newer_writers_extra_keys_are_dropped_not_fatal():
 def test_a_missing_required_field_is_loud():
     with pytest.raises(ValueError):
         ev.parse_event("tool_call", {"id": "c1"})
+
+
+def test_the_frontend_event_vocabulary_matches_the_backend():
+    """`EVENT_KINDS` in api.jsx registers the SSE listeners.
+
+    A kind present in Python and absent there is never delivered to the browser
+    at all — no error, no frame, just a surface that quietly never updates. It
+    cannot import the Python definition, so the copy is checked against it.
+    """
+    import pathlib
+    import re
+    from typing import get_args
+
+    from agent_module.events import EventKind
+
+    source = pathlib.Path("frontend/api.jsx").read_text()
+    block = re.search(r"const EVENT_KINDS = \[(.*?)\];", source, re.S)
+    assert block, "EVENT_KINDS is not where this test expects it"
+    in_js = set(re.findall(r'"([a-z_]+)"', block.group(1)))
+
+    in_python = set(get_args(EventKind))
+    assert in_js == in_python, f"only in python: {sorted(in_python - in_js)}; only in js: {sorted(in_js - in_python)}"
+
+
+def test_every_event_kind_has_a_renderer_branch():
+    """A kind the renderer does not name falls through to its default.
+
+    Two of them return null ON PURPOSE — `todo` and `budget` live in the context
+    panel — but that has to be a decision the switch states, not an omission.
+    """
+    import pathlib
+    import re
+    from typing import get_args
+
+    from agent_module.events import EventKind
+
+    source = pathlib.Path("frontend/components.jsx").read_text()
+    cased = set(re.findall(r'case "([a-z_]+)":', source))
+
+    missing = set(get_args(EventKind)) - cased
+    assert not missing, f"no renderer branch names: {sorted(missing)}"

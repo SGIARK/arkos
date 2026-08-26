@@ -6,7 +6,7 @@ object pushed, so db, SSE and tests share one shape.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, fields
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, get_args
 
 EventKind = Literal[
     "user",
@@ -259,6 +259,16 @@ _BY_KIND: dict[str, type[Event]] = {
         DoneEvent,
     )
 }
+
+
+# The Literal and the class registry are two spellings of one vocabulary, and a
+# kind added to one and not the other fails differently in each: a missing
+# Literal member is a type error nobody runs, a missing registry entry is a
+# ValueError at parse time on a row already written. Checked at import, so the
+# process refuses to start rather than failing later on one path.
+assert set(_BY_KIND) == set(get_args(EventKind)), (
+    f"event kinds disagree: registry={sorted(_BY_KIND)} literal={sorted(get_args(EventKind))}"
+)
 
 
 def parse_event(kind: str, payload: dict[str, Any], version: int = 1) -> Event:
