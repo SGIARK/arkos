@@ -1835,3 +1835,55 @@ async def test_an_upstream_refusal_still_closes_the_popup(monkeypatch, client):
 
     assert response.status_code == 200
     assert "not connected" in response.text
+
+
+# --- streams end themselves on shutdown (11.11.4) -------------------------------
+
+
+async def test_shutdown_wakes_every_subscriber_on_both_channels():
+    """An SSE response is an in-flight request that never ends.
+
+    A graceful shutdown waits for it — forever, since every signed-in tab holds
+    an attention stream open for its whole session. The dev flag papered over it
+    by shooting the connection; this hangs up on purpose instead.
+    """
+    from harness_module.stream import CLOSED, attention, shutdown_streams, stream
+
+    async with stream.subscribe("session-a") as session_q, attention.subscribe("user-b") as attention_q:
+        told = shutdown_streams()
+
+        assert told == 2, "every subscriber of every channel is told, not just one"
+        assert session_q.get_nowait() is CLOSED
+        assert attention_q.get_nowait() is CLOSED
+
+
+async def test_shutdown_reaches_a_subscriber_whose_queue_is_full():
+    """A subscriber that is behind still has to learn the server is leaving.
+
+    What it was behind ON stops mattering the moment the process is going down,
+    so the sentinel is forced past a full queue rather than dropped.
+    """
+    from harness_module.stream import CLOSED, AttentionSignal, UserStream
+
+    channel = UserStream(queue_size=1)
+    async with channel.subscribe("user-c") as queue:
+        channel.publish("user-c", AttentionSignal(reason="parked", session_id="s"))
+        channel.publish("user-c", AttentionSignal(reason="parked", session_id="s"))
+
+        channel.shutdown()
+
+        assert queue.get_nowait() is CLOSED, "the sentinel jumps the queue it cannot join"
+
+
+async def test_shutdown_with_nobody_listening_is_a_no_op():
+    from harness_module.stream import shutdown_streams
+
+    assert shutdown_streams() == 0
+
+
+async def test_a_new_channel_gets_shutdown_by_being_a_fanout():
+    """The reason this lives in the base class rather than in each endpoint."""
+    from harness_module.stream import SessionStream, UserStream, _Fanout
+
+    assert issubclass(SessionStream, _Fanout)
+    assert issubclass(UserStream, _Fanout)

@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import posixpath
+import signal
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -36,7 +37,7 @@ from db import pool
 from db.ids import as_uuid
 from harness_module import approvals, blobs, hands, jwt_utils, leases, lifecycle, runner, store, system_log, workspace
 from harness_module import session_log as slog
-from harness_module.stream import LAGGED, stream
+from harness_module.stream import CLOSED, LAGGED, shutdown_streams, stream
 from harness_module.stream import attention as attention_channel
 from model_module import client as model_client
 from tool_module import registry, session_tools
@@ -90,16 +91,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await sandbox_manager.sweep_slots()
     await hands.start()
     await system_log.start()
-    _shutting_down.clear()
+    # NOT in the `finally` below, which is far too late: uvicorn drains open
+    # connections BEFORE it runs the lifespan's shutdown, so a stream waiting to
+    # be told to stop waits for a message that only arrives after the wait it is
+    # blocking. Measured — the log reaches "Waiting for connections to close"
+    # and never reaches "Waiting for application shutdown".
+    #
+    # The signal is the earliest moment the process knows it is leaving, so the
+    # streams are told there, before the drain begins (11.11.4).
+    _end_streams_on_signal()
     try:
         yield
     finally:
-        # SET FIRST. An SSE response is an in-flight request that never ends, so
-        # a graceful shutdown waits for it forever — and since 11.11 every
-        # signed-in tab holds one open for the whole session, which made a dev
-        # autoreload hang every time. The streams race their queue against this
-        # and return the moment it fires.
-        _shutting_down.set()
+        # Belt and braces: a shutdown that arrives some other way (a test
+        # calling the lifespan directly, a runner that does not signal) still
+        # ends the streams, and doing it twice is harmless.
+        shutdown_streams()
         await system_log.stop()
         await hands.stop()
         # The store's HTTP client belongs to this loop; closing it here is the
@@ -110,8 +117,35 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await pool.close()
 
 
-# Set when the app is going down, so the endless streams can end themselves.
-_shutting_down = asyncio.Event()
+def _end_streams_on_signal() -> None:
+    """Tell every open stream to end the moment a shutdown signal arrives.
+
+    Chained rather than installed: `add_signal_handler` keeps ONE handler per
+    signal, so replacing uvicorn's would mean the server never learns to stop.
+    Ours runs first and then delegates, which is the whole trick — the streams
+    end while uvicorn is still deciding to shut down, so the drain it does next
+    has nothing left to wait for.
+
+    Best-effort by design. On a loop with no signal support, or a platform
+    without these signals, this does nothing and the lifespan's own call still
+    runs; the dev flag remains as the last resort it was always meant to be.
+    """
+    for signame in ("SIGTERM", "SIGINT"):
+        sig = getattr(signal, signame, None)
+        if sig is None:
+            continue
+        previous = signal.getsignal(sig)
+
+        def chained(signum, frame, _previous=previous):
+            shutdown_streams()
+            if callable(_previous):
+                _previous(signum, frame)
+
+        try:
+            signal.signal(sig, chained)
+        except (ValueError, OSError):  # pragma: no cover - not the main thread
+            logger.debug("could not chain %s; streams will end at lifespan shutdown", signame)
+
 
 app = FastAPI(title="Buddy", lifespan=lifespan)
 
@@ -1389,32 +1423,6 @@ async def attention_stream(user_id: str = CurrentUser) -> StreamingResponse:
     )
 
 
-async def _next_or_shutdown(queue: asyncio.Queue[Any], timeout: float) -> Any:
-    """The next item, or `_TIMEOUT`, or `_SHUTDOWN` — whichever comes first.
-
-    A plain `wait_for(queue.get())` cannot see the server going down, and an SSE
-    generator that cannot see it holds the shutdown open until something kills
-    the process.
-    """
-    getter = asyncio.ensure_future(queue.get())
-    stopping = asyncio.ensure_future(_shutting_down.wait())
-    try:
-        done, _ = await asyncio.wait({getter, stopping}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
-        if getter in done:
-            return getter.result()
-        if stopping in done:
-            return _SHUTDOWN
-        return _TIMEOUT
-    finally:
-        for task in (getter, stopping):
-            if not task.done():
-                task.cancel()
-
-
-_TIMEOUT = object()
-_SHUTDOWN = object()
-
-
 async def _attention_frames(user_id: str) -> AsyncIterator[str]:
     """Yield a frame per signal until the client disconnects."""
     keepalive = float(_cfg("harness.sse_keepalive_s", 15))
@@ -1423,13 +1431,17 @@ async def _attention_frames(user_id: str) -> AsyncIterator[str]:
         # first frame is what makes "subscribed" and "current" the same moment.
         yield 'event: attention\ndata: {"reason":"open"}\n\n'
         while True:
-            signal = await _next_or_shutdown(queue, keepalive)
-            if signal is _SHUTDOWN:
-                return
-            if signal is _TIMEOUT:
+            try:
+                signal = await asyncio.wait_for(queue.get(), timeout=keepalive)
+            except TimeoutError:
                 # Proxies and EventSource drop a stream that stays silent.
                 yield ": keepalive\n\n"
                 continue
+            if signal is CLOSED:
+                # The server is leaving. Ending here is a clean end-of-stream;
+                # the client reconnects on its own and the opening frame
+                # refetches, so a restart heals without anyone doing anything.
+                return
             payload = json.dumps({"reason": signal.reason, "session_id": signal.session_id})
             yield f"event: attention\ndata: {payload}\n\n"
 
@@ -1471,16 +1483,17 @@ async def _event_stream(session_id: str, after_seq: int) -> AsyncIterator[str]:
                 yield _frame(stored)
 
             while True:
-                item = await _next_or_shutdown(queue, keepalive)
-                if item is _SHUTDOWN:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=keepalive)
+                except TimeoutError:
+                    # Proxies and EventSource drop a stream that stays silent.
+                    yield ": keepalive\n\n"
+                    continue
+                if item is CLOSED:
                     # The client reconnects with Last-Event-ID and resumes from
                     # the log, so ending here costs nothing and lets the process
                     # actually go down.
                     return
-                if item is _TIMEOUT:
-                    # Proxies and EventSource drop a stream that stays silent.
-                    yield ": keepalive\n\n"
-                    continue
 
                 if item is LAGGED:
                     # This consumer fell behind its queue; it rejoins from the log.

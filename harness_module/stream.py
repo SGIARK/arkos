@@ -13,8 +13,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Iterable
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
+from typing import Any
 
 from harness_module.session_log import StoredEvent
 
@@ -25,17 +26,79 @@ class Lagged:
     """Sentinel telling a subscriber its queue overflowed and it re-reads from the log."""
 
 
+class Closed:
+    """Sentinel telling a subscriber the server is going down.
+
+    A stream generator that sees this yields nothing further and RETURNS, which
+    the client reads as a clean end of stream — not an aborted connection.
+    """
+
+
 LAGGED = Lagged()
+CLOSED = Closed()
 
-Item = StoredEvent | Lagged
+Item = StoredEvent | Lagged | Closed
 
 
-class SessionStream:
+class _Fanout:
+    """The subscriber machinery both channels share.
+
+    Keyed queues, a subscription that cleans up after itself, and — the reason
+    this is a base class rather than two copies — ONE shutdown that reaches
+    every subscriber of every channel.
+
+    THE STREAMS HAVE TO END THEMSELVES. An SSE response is an in-flight request
+    that never finishes, so a graceful shutdown waits for it: uvicorn's reload
+    hung until it was force-quit, and a production restart would wait the same
+    way with real users connected. `--timeout-graceful-shutdown` papers over
+    that by shooting the connection. Hanging up on purpose is the honest
+    version, and it is one behaviour, so it is written once.
+    """
+
+    def __init__(self, queue_size: int):
+        self._queue_size = queue_size
+        self._subscribers: dict[str, set[asyncio.Queue[Any]]] = {}
+
+    @asynccontextmanager
+    async def _subscribe(self, key: str) -> AsyncIterator[asyncio.Queue[Any]]:
+        queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=self._queue_size)
+        self._subscribers.setdefault(key, set()).add(queue)
+        try:
+            yield queue
+        finally:
+            subscribers = self._subscribers.get(key)
+            if subscribers is not None:
+                subscribers.discard(queue)
+                if not subscribers:
+                    del self._subscribers[key]
+
+    def shutdown(self) -> int:
+        """Wake every subscriber with CLOSED so its generator can return.
+
+        Force-put past a full queue: a subscriber that is behind still has to
+        learn the server is leaving, and what it was behind ON no longer
+        matters. Returns how many were told, for the log and the tests.
+        """
+        told = 0
+        for queues in list(self._subscribers.values()):
+            for queue in list(queues):
+                _drain(queue)
+                queue.put_nowait(CLOSED)
+                told += 1
+        return told
+
+    def subscriber_count(self, key: str | None = None) -> int:
+        """For tests, and for a log line that answers "is anyone listening"."""
+        if key is not None:
+            return len(self._subscribers.get(key, ()))
+        return sum(len(q) for q in self._subscribers.values())
+
+
+class SessionStream(_Fanout):
     """In-memory fan-out: one publisher per session, any number of subscribers."""
 
     def __init__(self, queue_size: int = 256):
-        self._queue_size = queue_size
-        self._subscribers: dict[str, set[asyncio.Queue[Item]]] = {}
+        super().__init__(queue_size)
 
     def publish(self, session_id: str, event: StoredEvent) -> None:
         """Hands one appended event to every subscriber. Never blocks, never raises."""
@@ -60,23 +123,13 @@ class SessionStream:
         for event in events:
             self.publish(session_id, event)
 
-    @asynccontextmanager
-    async def subscribe(self, session_id: str) -> AsyncIterator[asyncio.Queue[Item]]:
+    def subscribe(self, session_id: str) -> AbstractAsyncContextManager[asyncio.Queue[Item]]:
         """Attaches to a session's live events for the life of the context.
 
         Callers subscribe before reading the backlog, so an event appended between the two
         still arrives; readers de-duplicate on seq.
         """
-        queue: asyncio.Queue[Item] = asyncio.Queue(maxsize=self._queue_size)
-        self._subscribers.setdefault(session_id, set()).add(queue)
-        try:
-            yield queue
-        finally:
-            subscribers = self._subscribers.get(session_id)
-            if subscribers is not None:
-                subscribers.discard(queue)
-                if not subscribers:
-                    del self._subscribers[session_id]
+        return self._subscribe(session_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,7 +147,7 @@ class AttentionSignal:
     session_id: str
 
 
-class UserStream:
+class UserStream(_Fanout):
     """In-memory fan-out keyed by user: one publisher per user, any subscribers.
 
     Separate from `SessionStream` rather than a mode of it, because the two
@@ -104,8 +157,7 @@ class UserStream:
     """
 
     def __init__(self, queue_size: int = 64):
-        self._queue_size = queue_size
-        self._subscribers: dict[str, set[asyncio.Queue[AttentionSignal]]] = {}
+        super().__init__(queue_size)
 
     def publish(self, user_id: str, signal: AttentionSignal) -> None:
         """Nudge every subscriber of one user. Never blocks, never raises.
@@ -122,23 +174,9 @@ class UserStream:
             except asyncio.QueueFull:
                 logger.debug("attention queue full for %s; dropping a nudge", user_id)
 
-    @asynccontextmanager
-    async def subscribe(self, user_id: str) -> AsyncIterator[asyncio.Queue[AttentionSignal]]:
+    def subscribe(self, user_id: str) -> AbstractAsyncContextManager[asyncio.Queue[AttentionSignal | Closed]]:
         """Attach to one user's attention signals for the life of the context."""
-        queue: asyncio.Queue[AttentionSignal] = asyncio.Queue(maxsize=self._queue_size)
-        self._subscribers.setdefault(user_id, set()).add(queue)
-        try:
-            yield queue
-        finally:
-            subscribers = self._subscribers.get(user_id)
-            if subscribers is not None:
-                subscribers.discard(queue)
-                if not subscribers:
-                    del self._subscribers[user_id]
-
-    def subscriber_count(self, user_id: str) -> int:
-        """For tests, and for a log line that answers "is anyone listening"."""
-        return len(self._subscribers.get(user_id, ()))
+        return self._subscribe(user_id)
 
 
 def _drain(queue: asyncio.Queue[Item]) -> None:
@@ -151,3 +189,17 @@ def _drain(queue: asyncio.Queue[Item]) -> None:
 
 stream = SessionStream()
 attention = UserStream()
+
+
+def shutdown_streams() -> int:
+    """End every open stream, on every channel, cleanly. Called once, from the
+    lifespan's teardown.
+
+    Stated here rather than per endpoint: it is one behaviour — "the server is
+    leaving, hang up" — and a channel added later gets it by being a `_Fanout`
+    rather than by somebody remembering to add a case.
+    """
+    told = stream.shutdown() + attention.shutdown()
+    if told:
+        logger.info("shutdown: ended %d open stream(s)", told)
+    return told
