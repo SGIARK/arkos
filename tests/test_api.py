@@ -148,7 +148,7 @@ async def test_an_expired_token_is_refused(client):
     assert response.status_code == 401
 
 
-async def test_test_cookie_session(client):
+async def test_cookie_session(client):
     """No cookie and a foreign cookie are both rejected, on every endpoint."""
     forged = jwt.encode({"sub": str(uuid.uuid4()), "iss": "arkos"}, "wrong-secret", algorithm="HS256")
 

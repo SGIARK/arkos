@@ -271,7 +271,9 @@ def _steering(session_id: str, after_seq: int) -> Callable[[], Awaitable[list[st
     about its own events, and the nudge it injects is its own business.
 
     This is delivery, never interruption. The message waits for the current hop
-    to finish; stopping a run mid-step is `POST /cancel` (owner, 2026-08-18).
+    to finish. Holding a run mid-step is `POST /stop`, which is immediate and
+    lands it gently with the mode kept (11.11.2.5); `POST /cancel` is the
+    terminal press.
     """
     cursor = after_seq
 

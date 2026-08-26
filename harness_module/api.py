@@ -1598,9 +1598,13 @@ async def list_connections(user_id: str = CurrentUser) -> list[dict[str, Any]]:
     is per TOOLKIT — so unlike the provider-account grants this replaced, reading
     Gmail says nothing about Calendar and disconnecting one leaves the other.
 
-    Each row carries what the next click will do: `scopes`, so the human sees
-    what a connect is about to grant, and `shares_with`, so a disconnect can say
-    which sibling services go with it.
+    Each row carries what the next click will do: `setup_url` where one has been
+    minted, and `account_id`, the handle a revoke needs. There is no `scopes` —
+    a managed auth config fixes them and we cannot tune or report them — and
+    `shares_with` is always empty, because a Composio grant is per toolkit and
+    nothing goes with a disconnect. It ships anyway so the panel reads one shape
+    whatever the backend, and so a backend whose grants ARE shared could say so
+    without a new contract.
     """
     client = hands.connectors()
     if client is None:
@@ -1655,11 +1659,16 @@ _CLOSE_POPUP = """<!doctype html><meta charset="utf-8"><title>Connected</title>
 
 @app.post("/connections/{server}/connect")
 async def connect_server(server: str, user_id: str = CurrentUser) -> dict[str, Any]:
-    """Mint the consent link for one service and record the pending state. Idempotent.
+    """Mint the consent link for one service and record the pending state.
 
     Nothing is connected here and no tool is called: Composio answers with the
     url its OAuth flow starts at, the panel opens it in a popup, and the user
     comes back through `/connections/done` connected or does not.
+
+    Safe to press twice, but not idempotent in what it returns: already
+    connected, it mints nothing and answers `status: connected` with a null
+    `setup_url`; otherwise every press mints a FRESH link rather than handing
+    back the unfinished one.
     """
     client = _require_connectors()
     _known_server(client, server)

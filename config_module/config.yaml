@@ -101,7 +101,7 @@ leases:
 quotas:
   max_unattended_sessions: 5      # per user; only unattended runs occupy a worker
   new_sessions_per_hour: 20       # per user; sliding window
-  upload_max_mb: 25               # per file, POST /projects/{id}/files
+  upload_max_mb: 25               # per file, POST /files
 
 approvals:
   # Whether an attended session approves gated tool calls WITHOUT asking.

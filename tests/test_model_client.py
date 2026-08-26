@@ -121,8 +121,8 @@ async def _drain(source="interactive", tools=None, options=None):
     ],
 )
 @pytest.mark.asyncio
-async def test_retryable_failures_stop_at_three_attempts(fake, error, kind):
-    """A permanently failing endpoint costs 3 requests, not 99."""
+async def test_retryable_failures_stop_at_the_configured_cap(fake, error, kind):
+    """A permanently failing endpoint costs `llm.max_retries` requests, not 99."""
     completions = fake(lambda n: error)
 
     with pytest.raises(ModelError) as excinfo:
