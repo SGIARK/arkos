@@ -119,7 +119,7 @@ async def append_tx(conn: asyncpg.Connection, session_id: str, event: Event) -> 
         row["version"],
         row["payload"],
     )
-    return StoredEvent(seq=record["seq"], ts=record["ts"], event=event)
+    return _stored(record, event)
 
 
 async def _check_invariant(conn: asyncpg.Connection, session_id: str, event: Event) -> None:
@@ -217,11 +217,19 @@ async def recent_events(session_id: str, limit: int = 200) -> list[StoredEvent]:
     return [_stored(r) for r in rows]
 
 
-def _stored(record: asyncpg.Record) -> StoredEvent:
+def _stored(record: asyncpg.Record, event: Event | None = None) -> StoredEvent:
+    """The one place that knows `StoredEvent`'s field set.
+
+    Two callers, and they differ only in whether the event is already in hand:
+    an append just built it, a read has to parse it back out of the row. Passing
+    it in rather than re-parsing is not an optimisation — a freshly appended
+    event round-tripping through `parse_event` would silently drop any field the
+    reader does not know, which is the one moment that would be invisible.
+    """
     return StoredEvent(
         seq=record["seq"],
         ts=record["ts"],
-        event=parse_event(record["kind"], record["payload"], record["version"]),
+        event=event if event is not None else parse_event(record["kind"], record["payload"], record["version"]),
     )
 
 
