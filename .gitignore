@@ -23,6 +23,10 @@
 *.env
 !.env.example
 /scripts/*
+# ...except the one that rebuilds the production MCP server from the
+# tracked roster. `allowed_tools` cannot be updated in place, so this is how a
+# roster change ships.
+!/scripts/composio_server.py
 
 # cursor
 .cursor/*

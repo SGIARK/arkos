@@ -188,6 +188,9 @@ mcp:
   # seven toolkits offer (GitHub alone is 871). It is capacity bounding, not
   # scoping: the session toggles remain the only per-session authority.
   #
+  # The roster itself is tracked at `config_module/composio_tools.json`, and
+  # `scripts/composio_server.py verify|mint|list` is how it is checked or rebuilt.
+  #
   # MEASURED 2026-08-26: `allowed_tools` CANNOT be updated in place. The SDK's
   # `mcp.update` answers ValidationError and every REST path tried — PATCH/PUT on
   # /api/v3 and /api/v3.1 /mcp/servers/{id} — is a 404. A roster change means
