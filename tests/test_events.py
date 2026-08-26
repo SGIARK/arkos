@@ -110,3 +110,22 @@ def test_every_event_kind_has_a_renderer_branch():
 
     missing = set(get_args(EventKind)) - cased
     assert not missing, f"no renderer branch names: {sorted(missing)}"
+
+
+def test_no_event_payload_can_collide_with_the_wire_envelope():
+    """The client flattens `payload` up one level, so a collision is invisible.
+
+    `asEvent` in frontend/api.jsx spreads the payload over the envelope. A field
+    named `seq`, `ts`, `kind` or `version` would be overwritten by the envelope's
+    own value — no error, no warning, an event that simply arrives wrong. This is
+    the check that keeps the two halves safe to keep flattening.
+    """
+    from dataclasses import fields
+
+    from agent_module.events import _BY_KIND
+    from harness_module.api import ENVELOPE_KEYS
+
+    for kind, cls in sorted(_BY_KIND.items()):
+        names = {f.name for f in fields(cls)} - {"version"}
+        collisions = names & ENVELOPE_KEYS
+        assert not collisions, f"{kind} carries {sorted(collisions)}, which the envelope would overwrite"

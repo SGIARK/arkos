@@ -1528,6 +1528,13 @@ def _frame(stored: slog.StoredEvent) -> str:
     return f"id: {stored.seq}\nevent: {stored.event.kind}\ndata: {json.dumps(_wire(stored), default=str)}\n\n"
 
 
+# The envelope keys the client strips before flattening `payload` up a level
+# (`asEvent` in frontend/api.jsx). A payload field named one of these would be
+# silently overwritten by the envelope and the event would arrive wrong with no
+# error anywhere — so `test_events` proves no event can carry one.
+ENVELOPE_KEYS = frozenset(("seq", "ts", "kind", "version", "payload"))
+
+
 def _wire(stored: slog.StoredEvent) -> dict[str, Any]:
     """Render one stored event for the wire, adding the seq and ts columns."""
     row = stored.event.to_row()
