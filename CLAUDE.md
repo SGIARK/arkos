@@ -26,12 +26,16 @@ orphans every stored blob), the `/tmp/arkos-*.tar` staging paths in
 the `ark_session` cookie with `ARK_SESSION_SECRET`. Rename prose and titles
 freely; leave those identifiers alone.
 
-**There is no CI.** `.github/workflows/` was deleted on 2026-08-25 — ci.yml plus
-the already-disabled deploy and monitor jobs. Nothing runs ruff or the test
-suite on push, so run them yourself before claiming a change is green. Do not
-recreate those files from `git log` expecting them to work: they targeted
-`ghcr.io/sgiark/arkos` and `ark.mit.edu`, which are not this project's
-infrastructure.
+**CI is `.github/workflows/ci.yml`, and it runs on this branch.** It was deleted
+on 2026-08-25 and restored the same afternoon (`79fab01`) carrying only what
+works: a lint stage (`ruff check .`, `ruff format --check .`) and a test stage
+(`pytest tests/ -q --timeout=120 -m "not integration"`) against a `postgres:15`
+service, on push to `main` and `dev_refactor`. Run both yourself before claiming
+a change is green — a red push is a slower way to learn the same thing. The
+deploy and monitor jobs did NOT come back and should not be recreated from
+`git log`: they targeted `ghcr.io/sgiark/arkos` and `ark.mit.edu`, which are not
+this project's infrastructure. Integration tests are deselected in CI and need
+real credentials.
 
 **The old architecture is GONE as of 2026-08-13** (Tasks 7 and 8, pulled forward).
 `state_module`, `memory_module` and `computer_module` no longer exist, and
@@ -68,26 +72,30 @@ browser in the harness process. The pre-redesign `browser_tool.py`,
 
 Where the live code is: `agent_module/loop.py` (the one loop),
 `model_module/client.py` (the one model client), `tool_module/`
-(envelope · registry · connections · session_tools · arcade · tools/ ·
+(envelope · registry · connections · session_tools · composio_mcp · tools/ ·
 sandbox), `db/pool.py` (asyncpg; the psycopg2 helpers are gone — do not add
 more).
 
-**All MCP traffic flows through ONE Arcade MCP Gateway** (11.10).
-`tool_module/arcade.py` is the only client; Smithery is gone with no
-`kind: smithery` path and no dormant branch. A "server" is a tool-name PREFIX
-(`Gmail_*`, `MicrosoftOutlookMail_*`) inside one flat list behind one url, and
-that prefix is the durable key — `user_connections` and `session_tools` are
-keyed by it, never by the gateway url (the slug is infrastructure and can be
-recreated) and never by the config label. `tools/list` IS PAGINATED at 100 of
-169: page until no cursor, or two apps silently do not exist. Consent is
-PANEL-FIRST through `POST /v1/tools/authorize`, which is also the per-service
-status read — the gateway's `Arcade_ListApps` answers per PROVIDER
-(`arcade-google` = Gmail + Calendar + Search) and cannot answer this. Google
-Search rides the same wire and is OURS: always in the manifest, counted in
-`ours`, in no toggle and no settings row.
+**All MCP traffic flows through COMPOSIO** (11.10.2). `tool_module/composio_mcp.py`
+is the only client. Arcade and Smithery are both gone — no `kind: smithery` path,
+no `arcade.py`, no dormant branch — and `git log` is the only place to read them.
+A "server" is a toolkit PREFIX in UPPER SNAKE (`GMAIL_*`, `GOOGLEDRIVE_*`), the
+vendor's own name, and that prefix is the durable key: `user_connections` and
+`session_tools` are keyed by it, never by the MCP url (which is derived per user
+and can be re-minted) and never by the `mcp_servers:` config label. Consent is
+PANEL-FIRST: `POST /connections/{server}/connect` mints a link against Composio's
+MANAGED auth config, the popup connects, and `/connections/done` settles the row.
+Scopes are NOT tunable on a managed config. Status is one
+`GET /api/v3/connected_accounts` listing that answers for every toolkit at once,
+and a Composio grant is per TOOLKIT — so reading Gmail says nothing about
+Calendar, and disconnecting one leaves the other. That per-provider coupling was
+the Arcade problem this replaced. Web search does NOT ride this wire: it is
+`web_search`, a local SerpAPI tool on an app-level key, and `always()` returns
+`[]`, so nothing enters `ours` from the connector wire. It is still OURS — always
+in the manifest, counted in `ours`, in no toggle and no settings row.
 
 **A session reaches only the MCP servers it was given** (11.4 + 11.5). The
-toggles are `session_tools`, keyed by the Arcade prefix and never by the
+toggles are `session_tools`, keyed by the Composio toolkit prefix and never by the
 `mcp_servers:` config label. `registry.manifest` is the ONE builder of a turn's tool list and
 it cannot exceed `llm.max_tools` whatever the toggles say — whole servers are
 benched, most-recently-enabled first, and a benched server gets a `status` event
