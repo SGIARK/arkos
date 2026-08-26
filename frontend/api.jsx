@@ -227,7 +227,8 @@ const api = {
 
   /* One row per connector, each carrying what the next click does: `scopes`,
      what a connect is about to grant, and `shares_with`, the sibling services a
-     disconnect takes with it because Arcade signs them in through one account.
+     disconnect takes with it. A Composio connected account is per toolkit, so
+     this is normally empty.
      `setup_url` is a live consent link, so the panel can open the popup inside
      the click rather than after an await, which the browser would block. */
   connections: () => request("GET", "/connections"),
@@ -236,7 +237,7 @@ const api = {
      connects nothing: the popup is what connects. */
   connect: (server) => request("POST", `/connections/${encodeURIComponent(server)}/connect`),
 
-  /* Revokes at Arcade and answers with what actually went — which is more than
+  /* Revokes at Composio and answers with what actually went — which may be more than
      one service whenever they share a sign-in. */
   disconnect: (server) => request("DELETE", `/connections/${encodeURIComponent(server)}`),
 

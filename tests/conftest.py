@@ -32,7 +32,8 @@ os.environ["DB_URL"] = _explicit_db_url or TEST_DB_URL
 # Every ${VAR} config.yaml interpolates must be set, or the loader raises during
 # collection and the whole suite fails before a single test runs.
 os.environ.setdefault("OPENAI_API_KEY", "sk-test-dummy-key")
-os.environ.setdefault("ARCADE_API_KEY", "arc-test-dummy-key")
+os.environ.setdefault("COMPOSIO_API_KEY", "comp-test-dummy-key")
+os.environ.setdefault("SERPAPI_API_KEY", "serp-test-dummy-key")
 
 # Two secrets, two trust domains: SUPABASE_JWT_SECRET verifies a token somebody
 # else issued, ARK_SESSION_SECRET signs the cookie we issue. `or` not setdefault,

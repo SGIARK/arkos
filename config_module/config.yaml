@@ -146,6 +146,9 @@ budgets:
   model_retries: 3          # consecutive hop re-attempts after the client gives up
 
 tools:
+  # Web search is OURS (11.10.2): app-level SerpAPI key, no per-user OAuth, so
+  # every user's searches share our quota. Falls back to $SERPAPI_API_KEY.
+  serpapi_key: "${SERPAPI_API_KEY}"
   result_view_cap_chars: 4000   # over this -> blob + ref
   call_timeout_s: 120           # seconds, hard cap on one tool call
   mcp_cache_ttl_s: 3600         # seconds before a connection's cached tools/list is revalidated;
@@ -181,7 +184,16 @@ mcp:
   # ONE server for all seven: the tools come back FLAT in a single list,
   # prefixed by toolkit in UPPER SNAKE (`GMAIL_FETCH_EMAILS`), so a "server"
   # below is a PREFIX GROUP and not a url of its own.
-  server_id: "a51f26a8-dc87-4aa8-8313-81f6731707fa"
+  # `allowed_tools` on this server is CURATED SERVER-SIDE, 205 of the 1442 the
+  # seven toolkits offer (GitHub alone is 871). It is capacity bounding, not
+  # scoping: the session toggles remain the only per-session authority.
+  #
+  # MEASURED 2026-08-26: `allowed_tools` CANNOT be updated in place. The SDK's
+  # `mcp.update` answers ValidationError and every REST path tried — PATCH/PUT on
+  # /api/v3 and /api/v3.1 /mcp/servers/{id} — is a 404. A roster change means
+  # MINTING A NEW SERVER and changing this id, and an account caps at ~16
+  # servers, so delete the old one in the same pass.
+  server_id: "5f381b11-5216-4888-a766-752820fde274"
   api_key: "${COMPOSIO_API_KEY}"
   # The per-user url is DERIVED from these two plus the user id, not minted:
   #   {base_url}/v3/mcp/{server_id}/mcp?user_id={uuid}

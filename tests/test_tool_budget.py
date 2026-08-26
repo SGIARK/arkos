@@ -32,7 +32,7 @@ def _server(label, *, tools, connected=True):
     }
 
 
-class _FakeArcade:
+class _FakeConnectors:
     def __init__(self, rows):
         self._rows = rows
 
@@ -64,7 +64,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(api.session_tools, "enabled_servers", enabled_servers)
     monkeypatch.setattr(api.session_tools, "set_enabled", set_enabled)
     monkeypatch.setattr(api, "_owned_session", owned)
-    monkeypatch.setattr(api.hands, "arcade", lambda: _FakeArcade(state["rows"]))
+    monkeypatch.setattr(api.hands, "connectors", lambda: _FakeConnectors(state["rows"]))
     monkeypatch.setattr(api.registry, "local_tools", lambda: dict.fromkeys(range(state["ours"])))
     monkeypatch.setattr(
         api, "_cfg", lambda key, default: state["max_tools"] if key == "llm.max_tools" else real_cfg(key, default)
@@ -177,8 +177,8 @@ async def test_a_body_without_enabled_is_a_bad_request(wired):
 
 
 async def test_without_mcp_configured_the_meter_still_reads(wired, monkeypatch):
-    """No Arcade client is a server list of none, not a failure."""
-    monkeypatch.setattr(api.hands, "arcade", lambda: None)
+    """No connector client is a server list of none, not a failure."""
+    monkeypatch.setattr(api.hands, "connectors", lambda: None)
 
     document = await api.session_tools_state(SESSION, USER)
 

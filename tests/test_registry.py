@@ -28,7 +28,7 @@ class _Server:
 
 
 class _Mcp:
-    """A stand-in for the Arcade half."""
+    """A stand-in for the connector half."""
 
     def __init__(self, servers):
         self._servers = servers

@@ -425,7 +425,7 @@ function SettingsModal({ user, onClose, onSignOut, onError }) {
 
   /* Re-read when this window becomes the one being looked at again.
 
-     The consent popup is on Arcade's origin and then the provider's, so nothing
+     The consent popup is on Composio's origin and then the provider's, so nothing
      tells this page when it finishes — which is why this used to poll
      `api.connections()` every two seconds. Contracts forbids polling anywhere,
      and it was also the wrong shape: it burned requests while the user was
@@ -458,7 +458,7 @@ function SettingsModal({ user, onClose, onSignOut, onError }) {
     }, 500);
   }
 
-  /* The link is already in hand: `GET /connections` asks Arcade for consent
+  /* The link is already in hand: `GET /connections` asks Composio for consent
      state and gets the url back in the same answer, so the popup opens INSIDE
      the click. After an await the browser has lost the user gesture and blocks
      it silently, which is the whole reason the url travels with the row. */

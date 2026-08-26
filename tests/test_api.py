@@ -22,7 +22,7 @@ from harness_module import api, approvals, lifecycle, runner, store
 from harness_module import session_log as slog
 from harness_module.stream import SessionStream, stream
 from tests.dbgate import require_db
-from tool_module.arcade import ArcadeError
+from tool_module.composio_mcp import ComposioError
 
 pytestmark = pytest.mark.asyncio
 
@@ -162,7 +162,7 @@ async def test_test_cookie_session(client):
         ("post", f"/sessions/{uuid.uuid4()}/cancel"),
         ("get", f"/results/{uuid.uuid4()}"),
         ("get", "/connections"),
-        ("get", "/connections/verify"),
+        ("get", "/connections/done"),
     ):
         body = {"json": {}} if method == "post" else {}
         bare = await getattr(client, method)(path, **body)
@@ -1046,8 +1046,8 @@ async def _read_frames(stream, user_id, session_id):
 # --- the tool budget (11.4): what this session may reach ---------------------------
 
 
-class _FakeArcade:
-    """The connections half of `Arcade`, which is all the tools document reads."""
+class _FakeConnectors:
+    """The connections half of the client, which is all the tools document reads."""
 
     def __init__(self, rows):
         self._rows = rows
@@ -1078,7 +1078,7 @@ def mcp(monkeypatch):
     """Install a connections source, and return a setter for what it holds."""
 
     def use(rows):
-        monkeypatch.setattr(api.hands, "arcade", lambda: _FakeArcade(rows))
+        monkeypatch.setattr(api.hands, "connectors", lambda: _FakeConnectors(rows))
 
     use([])
     return use
@@ -1754,102 +1754,72 @@ async def test_moving_a_path_the_store_does_not_have_is_absent(client, tmp_path)
         store.use_blobs(None)
 
 
-# --- the custom user verifier (11.10) -----------------------------------------
+# --- the consent callback (11.10.2) --------------------------------------------
 
 
-async def test_the_verifier_confirms_the_user_the_cookie_names(client):
-    """Arcade asks who this browser is; the cookie answers, and nothing else does."""
-    user_id = await _signed_in(client)
+class _FakeConnectors:
+    """Stands in for the Composio client's reconcile leg."""
 
-    response = await client.get("/connections/verify")
-
-    assert response.status_code == 200
-    assert response.json() == {"verified": True, "user_id": user_id, "flow": None}
-
-
-class _FakeConfirm:
-    """Stands in for the Arcade client's confirm_user leg."""
-
-    def __init__(self, answer=None, blow_up=False):
-        self.answer = answer or {}
+    def __init__(self, settles=None, blow_up=False):
+        self.settles = settles
         self.blow_up = blow_up
         self.calls: list[tuple[str, str]] = []
 
-    class _Inner:
-        def __init__(self, outer):
-            self.outer = outer
-
-        async def confirm_user(self, flow_id, user_id):
-            self.outer.calls.append((flow_id, user_id))
-            if self.outer.blow_up:
-                raise ArcadeError("400: Bad request")
-            return self.outer.answer
-
-    @property
-    def client(self):
-        return self._Inner(self)
+    async def reconcile(self, user_id, account_id):
+        self.calls.append((user_id, account_id))
+        if self.blow_up:
+            raise ComposioError("400: Bad request")
+        return self.settles
 
 
-async def test_the_verifier_confirms_the_flow_and_follows_next_uri(monkeypatch, client):
-    """The flow finalizes when the BROWSER follows next_uri. JSON would end it on a dead page."""
+async def test_the_callback_settles_the_connection(monkeypatch, client):
+    """Composio lands the browser here with a status and an account id."""
     user_id = await _signed_in(client)
-    fake = _FakeConfirm({"auth_id": "au_1", "next_uri": "https://cloud.arcade.dev/done?x=1"})
-    monkeypatch.setattr(api.hands, "arcade", lambda: fake)
+    fake = _FakeConnectors(settles="GMAIL")
+    monkeypatch.setattr(api.hands, "connectors", lambda: fake)
 
-    response = await client.get("/connections/verify", params={"flow_id": "flow-1"}, follow_redirects=False)
-
-    assert response.status_code == 302
-    assert response.headers["location"] == "https://cloud.arcade.dev/done?x=1"
-    # The uuid confirmed is the COOKIE's, never anything off the url.
-    assert fake.calls == [("flow-1", user_id)]
-
-
-async def test_the_verifier_confirms_the_cookie_user_not_the_url_user(monkeypatch, client):
-    user_id = await _signed_in(client)
-    fake = _FakeConfirm({"auth_id": "au_1"})
-    monkeypatch.setattr(api.hands, "arcade", lambda: fake)
-
-    response = await client.get("/connections/verify", params={"flow_id": "flow-1"})
+    response = await client.get("/connections/done", params={"status": "success", "connected_account_id": "ca_1"})
 
     assert response.status_code == 200
-    assert fake.calls == [("flow-1", user_id)]
+    assert fake.calls == [(user_id, "ca_1")]
+    # The popup closes itself and pings the opener, rather than stranding the
+    # person on a raw body.
+    assert "window.close" in response.text
+    assert "connected" in response.text
 
 
-async def test_a_flow_arcade_will_not_confirm_says_so(monkeypatch, client):
-    """A stale flow is a flat 400 upstream; the person is looking at this page."""
-    await _signed_in(client)
-    monkeypatch.setattr(api.hands, "arcade", lambda: _FakeConfirm(blow_up=True))
-
-    response = await client.get("/connections/verify", params={"flow_id": "spent"})
-
-    assert response.status_code == 502
-    assert response.json()["code"] == "upstream_error"
-
-
-async def test_the_verifier_will_not_follow_a_non_tls_next_uri(monkeypatch, client):
-    await _signed_in(client)
-    fake = _FakeConfirm({"next_uri": "http://evil.example/steal"})
-    monkeypatch.setattr(api.hands, "arcade", lambda: fake)
-
-    response = await client.get("/connections/verify", params={"flow_id": "flow-1"}, follow_redirects=False)
-
-    assert response.status_code == 502
-
-
-async def test_the_verifier_refuses_a_url_naming_another_user(client):
-    """The query is a claim by whoever built the link. Binding a grant to it is the bug."""
-    await _signed_in(client)
-
-    response = await client.get("/connections/verify", params={"user_id": str(uuid.uuid4())})
-
-    assert response.status_code == 403
-    assert response.json()["code"] == "forbidden"
-
-
-async def test_the_verifier_agrees_when_the_url_names_the_same_user(client):
+async def test_the_callback_reconciles_against_the_cookie_user(monkeypatch, client):
+    """The account id in the url is a claim; whose it is comes from Composio."""
     user_id = await _signed_in(client)
+    fake = _FakeConnectors(settles=None)
+    monkeypatch.setattr(api.hands, "connectors", lambda: fake)
 
-    response = await client.get("/connections/verify", params={"user_id": user_id})
+    response = await client.get(
+        "/connections/done", params={"status": "success", "connected_account_id": "ca_someone_else"}
+    )
 
     assert response.status_code == 200
-    assert response.json()["user_id"] == user_id
+    assert fake.calls == [(user_id, "ca_someone_else")]
+    assert "not connected" in response.text
+
+
+async def test_a_failed_consent_settles_nothing(monkeypatch, client):
+    await _signed_in(client)
+    fake = _FakeConnectors(settles="GMAIL")
+    monkeypatch.setattr(api.hands, "connectors", lambda: fake)
+
+    response = await client.get("/connections/done", params={"status": "failed"})
+
+    assert response.status_code == 200
+    assert not fake.calls, "a failed consent must not settle a row"
+
+
+async def test_an_upstream_refusal_still_closes_the_popup(monkeypatch, client):
+    """The person is looking at this page; a 500 here strands them mid-flow."""
+    await _signed_in(client)
+    monkeypatch.setattr(api.hands, "connectors", lambda: _FakeConnectors(blow_up=True))
+
+    response = await client.get("/connections/done", params={"status": "success", "connected_account_id": "ca_1"})
+
+    assert response.status_code == 200
+    assert "not connected" in response.text
