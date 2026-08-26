@@ -36,7 +36,8 @@ class _FakeConnectors:
     def __init__(self, rows):
         self._rows = rows
 
-    async def connections(self, user_id):
+    async def connections(self, user_id, *, refresh=True):
+        self.refreshed = getattr(self, "refreshed", 0) + (1 if refresh else 0)
         return [dict(r) for r in self._rows]
 
     async def always(self, user_id):

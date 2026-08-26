@@ -448,17 +448,35 @@ class Composio:
         await conns.sync(user_id, statuses, {s: (live[s].account_id if s in live else None) for s in statuses})
         return live
 
-    async def connections(self, user_id: str) -> list[dict[str, Any]]:
-        """Every configured connector and this user's standing with it."""
-        live = await self.refresh_status(user_id)
+    async def connections(self, user_id: str, *, refresh: bool = True) -> list[dict[str, Any]]:
+        """Every configured connector and this user's standing with it.
+
+        `refresh=True` re-reads Composio and syncs the rows: that is the settings
+        panel, where this is the moment the human is looking and a round trip is
+        what makes the reading honest.
+
+        `refresh=False` answers from the STORED rows and the cached catalogue,
+        with no vendor call at all. That is the session tool toggle, which needs
+        `status` and `tool_count` and nothing live — the panel is what refreshes
+        them, and making every toggle render pay 305ms of REST plus a seven-row
+        write transaction bought a freshness nobody was reading.
+        """
+        if refresh:
+            live = await self.refresh_status(user_id)
+            statuses = {s: c.status for s, c in live.items()}
+            accounts = {s: c.account_id for s, c in live.items()}
+        else:
+            stored = await conns.load(user_id)
+            statuses = {s: row.status for s, row in stored.items()}
+            accounts = {s: row.connected_account_id for s, row in stored.items()}
+
         grouped = await self._tools_or_empty(user_id)
         rows: list[dict[str, Any]] = []
         for label, spec in self.servers.items():
             server = spec.get("server")
             if not server:
                 continue
-            found = live.get(server)
-            status = found.status if found else conns.PENDING
+            status = statuses.get(server, conns.PENDING)
             rows.append(
                 {
                     "server": server,
@@ -467,7 +485,7 @@ class Composio:
                     "status": status,
                     "tool_count": len(grouped.get(server, [])),
                     "setup_url": self._setup_urls.get((user_id, server)),
-                    "account_id": found.account_id if found else None,
+                    "account_id": accounts.get(server),
                     # Composio grants are per TOOLKIT: nothing goes with a
                     # disconnect, which is why this is always empty and still
                     # present — the panel reads the same shape either backend.

@@ -63,6 +63,7 @@ class FakeClient:
         self.accounts = accounts or []
         self.link_response = link or {"redirect_url": "https://connect.composio.dev/link/lk_1", "id": "ca_1"}
         self.calls: list[tuple[str, str]] = []
+        self.account_reads = 0
         self.linked: list[tuple[str, str, str]] = []
         self.deleted: list[str] = []
 
@@ -78,6 +79,7 @@ class FakeClient:
         return self.link_response
 
     async def connected_accounts(self, user_id):
+        self.account_reads += 1
         return self.accounts
 
     async def delete_connected_account(self, account_id):
@@ -373,3 +375,41 @@ async def test_auto_approve_waives_the_gate_for_the_named_tool():
 
     assert not spec.requires_approval
     assert other.requires_approval, "a remote tool is gated unless config names it"
+
+
+async def test_the_toggle_path_asks_the_vendor_nothing(db):
+    """`refresh=False` answers from stored rows: the toggle needs no round trip.
+
+    It runs on every render and every click, and it reads `status` and
+    `tool_count` — both already in the rows the settings panel refreshes. Asking
+    Composio here cost 305ms of REST and a seven-row write per click for a
+    freshness nothing downstream read.
+    """
+    user_id = _user()
+    await _seed_user(user_id)
+    await conns.mark(user_id, "GMAIL", conns.CONNECTED, "ca_1")
+    client = FakeClient()
+    hands = _hands(client)
+
+    rows = await hands.connections(user_id, refresh=False)
+
+    assert client.account_reads == 0, "the toggle path must not reach the vendor"
+    gmail = next(r for r in rows if r["server"] == "GMAIL")
+    assert gmail["status"] == conns.CONNECTED
+    assert gmail["tool_count"] == 3
+    assert gmail["account_id"] == "ca_1"
+
+
+async def test_the_panel_path_does_refresh(db):
+    """The settings panel is the moment the human is looking; it pays the trip."""
+    user_id = _user()
+    await _seed_user(user_id)
+    client = FakeClient(accounts=[{"id": "ca_1", "status": "ACTIVE", "toolkit": {"slug": "gmail"}}])
+    hands = _hands(client)
+
+    rows = await hands.connections(user_id)
+
+    assert client.account_reads == 1
+    assert next(r for r in rows if r["server"] == "GMAIL")["status"] == conns.CONNECTED
+    # and it syncs, so the toggle path that follows reads the fresh answer
+    assert (await conns.load(user_id))["GMAIL"].connected

@@ -1663,10 +1663,20 @@ async def set_session_tool(
             )
 
     await session_tools.set_enabled(session_id, row["server"], wanted)
-    return await _tools_document(session_id, user_id)
+
+    # Recomputed locally rather than rebuilt: the only thing that changed is one
+    # server's `enabled`, and everything else in the document was true a
+    # millisecond ago. Rebuilding it re-ran the whole read for a second time on
+    # every click.
+    servers = [{**r, "enabled": wanted if r["server"] == row["server"] else r["enabled"]} for r in document["servers"]]
+    return {
+        **document,
+        "servers": servers,
+        "used": sum(s["tool_count"] for s in servers if s["enabled"]),
+    }
 
 
-async def _tools_document(session_id: str, user_id: str) -> dict[str, Any]:
+async def _tools_document(session_id: str, user_id: str, *, refresh: bool = False) -> dict[str, Any]:
     """Build the meter and the server rows from config, the connections and the toggles.
 
     `ours` counts what `registry.manifest` counts, which is not the same as what
@@ -1674,8 +1684,13 @@ async def _tools_document(session_id: str, user_id: str) -> dict[str, Any]:
     ours. Counting it here and not there would put a meter in front of the human
     that disagrees with the request the model actually gets.
     """
+    # NOT refreshed by default. This runs on every toggle render and every
+    # toggle write, and it needs `status` and `tool_count` — both already in the
+    # rows the settings panel refreshes. Asking the vendor here cost 305ms of
+    # REST and a seven-row write transaction per click, for a freshness nothing
+    # downstream read.
     client = hands.connectors()
-    rows = await client.connections(user_id) if client is not None else []
+    rows = await client.connections(user_id, refresh=refresh) if client is not None else []
     on = set(await session_tools.enabled_servers(session_id))
 
     ours = len(registry.local_tools())
