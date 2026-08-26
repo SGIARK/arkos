@@ -12,10 +12,9 @@ say, rather than trusted to whoever wrote them. Ours are always loaded and never
 counted against the human's allowance; MCP servers are the only thing deferred,
 whole servers at a time, most-recently-enabled first.
 
-"Ours" is not the same as "local". Google Search reaches the web over the Arcade
-gateway because that is where its SerpAPI key is configured, and it is still one
-of OUR tools: no per-user grant, nothing for a human to connect, always loaded,
-counted in `ours`. It spends our allowance, not the human's, which is exactly
+"Ours" is not the same as "local". Google Search reaches the web over SerpAPI,
+and it is still one of OUR tools: no per-user grant, nothing for a human to
+connect, always loaded, counted in `ours`. It spends our allowance, not the human's, which is exactly
 what `ours` means.
 """
 
@@ -46,7 +45,7 @@ class ServerGroup(Protocol):
 
 
 class McpSource(Protocol):
-    """What `manifest` needs from the MCP half; `Arcade` satisfies it."""
+    """What `manifest` needs from the MCP half; `Composio` satisfies it."""
 
     async def reach(self, user_id: str) -> list[ServerGroup]: ...
 

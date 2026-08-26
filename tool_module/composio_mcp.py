@@ -2,53 +2,56 @@
 
 Composio holds the OAuth apps — MANAGED ones, already verified with each
 provider — and the users' grants; this side holds an identity and names it on
-every request. Task 11.10.2 swapped this in for the Arcade gateway, after the
-11.10.1 spike measured the whole path. The DIALECT differs from Arcade's in
-eight ways, every one of them measured rather than assumed, and every one of
-them a place a port silently breaks:
+every request. There is no connection to create and no credential of the user's
+on this box.
+
+THE DIALECT, all of it measured before it was written (11.10.1, and
+`docs/implementation_notes.md` § "Composio over MCP"). Each of these is a place
+a client written against the generic MCP spec breaks quietly:
 
 1. **`x-api-key`, never `Authorization: Bearer`.** The bearer form is a 401
-   (code 906) and sending BOTH is a 401 too ("Multiple authentication modes
-   were provided"). Arcade takes exactly the header Composio refuses.
+   (code 906), and sending BOTH is a 401 too: "Multiple authentication modes
+   were provided."
 
-2. **Identity is a QUERY PARAM on a per-user url**, not a header on one shared
-   gateway. `…/v3/mcp/{server}/mcp?user_id={uuid}`. The url is DERIVED, not
-   minted: `POST /api/v3/mcp/servers/{id}/instances` exists but is not required,
-   and a url for a user who never had an instance handshakes fine. It is still
-   built server-side and never handed to a browser — it is useless without the
-   api key, but a per-user url in a client is a habit worth not forming.
+2. **Identity is a QUERY PARAM on a per-user url**: `…/v3/mcp/{server}/mcp
+   ?user_id={uuid}`. The url is DERIVED, not minted —
+   `POST /api/v3/mcp/servers/{id}/instances` exists but is not required, and a
+   url for a user who never had an instance handshakes fine. It is still built
+   server-side and never handed to a browser: useless without the api key, but a
+   per-user url in a client is a habit worth not forming.
 
 3. **The url the dashboard and SDK hand you is NOT the url you connect to.**
    `/v3.1/mcp/{id}?…` answers **307** with a JSON BODY naming
    `/v3/mcp/{id}/mcp?…` — no `Location` header, so no HTTP client follows it.
    This client speaks the resolved form directly.
 
-4. **No session.** Arcade mints `Mcp-Session-Id` on initialize and demands it on
-   every later call; Composio scopes state to the url. All of the per-user
-   session bookkeeping the Arcade client carried is gone.
+4. **No session.** State is scoped to the url, so there is no session id to mint
+   and no header to carry.
 
-5. **No pagination.** `tools/list` returns everything in one page with no
-   cursor. Arcade capped at 100 and hid two whole apps from the first probe;
-   here the loop would be dead code.
+5. **No pagination.** `tools/list` returns the whole catalogue in one page with
+   no cursor.
 
-6. **SSE frames on ordinary POSTs.** Replies come back `event: message` /
+6. **SSE frames on ordinary POSTs.** Replies arrive `event: message` /
    `data: {…}` even for a plain JSON-RPC POST, so a parser that only does
    `json.loads` sees nothing at all.
 
 7. **A refusal is a SUCCESSFUL `tools/call` with `isError: true`**, not an HTTP
    error: an unconnected user gets `{"content":[{"type":"text","text":"No
    connected account found for user ID … for toolkit gmail"}],"isError":true}`.
-   Dispatch has to read the flag.
+   Dispatch reads the flag, and treats that particular body as a dead grant.
 
 8. **The content block's `text` is a JSON STRING that must be parsed again**,
    and the object inside spells success **`successfull`** (three l's), while the
-   REST SDK spells it `successful`. Both are handled.
+   REST API spells it `successful`. Both are handled.
 
 WHAT A "SERVER" IS HERE. One server url serves every enabled toolkit, and the
 tools come back FLAT, prefixed by toolkit in upper snake — `GMAIL_FETCH_EMAILS`,
-`LINEAR_CREATE_ISSUE`. So a "server" is still a PREFIX GROUP, and that prefix —
-the toolkit slug, upper-cased — is what `user_connections` and `session_tools`
-are keyed by. The Arcade-era key was `Gmail`; the Composio-era key is `GMAIL`.
+`LINEAR_CREATE_ISSUE`. So a "server" is a PREFIX GROUP, and that prefix is what
+`user_connections` and `session_tools` are keyed by.
+
+A CONNECTED ACCOUNT IS PER TOOLKIT. Disconnecting Gmail leaves Calendar alone,
+even though both are Google, so there are no sibling services to warn about
+before a revoke.
 
 THE CATALOGUE IS 1442 TOOLS, GitHub alone 871, against `llm.max_tools`. The
 lever is `allowed_tools` on the server config, curated server-side; the session
@@ -226,10 +229,8 @@ class ServerTools:
 class Consent:
     """What Composio says about one toolkit for one user.
 
-    No `provider_id` and no sibling story: a Composio connected account is per
-    TOOLKIT, so disconnecting Gmail does not touch Calendar. That is the one way
-    this backend is kinder than Arcade's, whose grants were per provider account
-    and took every sibling service with them.
+    No `provider_id` and no sibling story: a connected account is per TOOLKIT, so
+    disconnecting Gmail does not touch Calendar.
     """
 
     server: str
@@ -488,10 +489,10 @@ class Composio:
     async def disconnect(self, user_id: str, server: str) -> list[str]:
         """Delete the connected account at Composio and drop our row.
 
-        Returns a list of one, always. Arcade's revoke was per provider account
-        and took every sibling service with it; a Composio connected account is
-        per toolkit, so disconnecting Gmail leaves Calendar alone. The list shape
-        is kept so the panel does not need to know which backend it is talking to.
+        Returns a list of one, always: a connected account is per toolkit, so
+        disconnecting Gmail leaves Calendar alone. The list shape is kept so the
+        panel does not need to know which backend it is talking to, and so a
+        backend whose grants ARE shared could say so without a new contract.
         """
         live = await self._accounts(user_id)
         found = live.get(server)

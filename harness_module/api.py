@@ -25,7 +25,7 @@ from typing import Any
 import jwt
 from fastapi import Body, Depends, FastAPI, File, Form, Header, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from agent_module import prompts
@@ -39,8 +39,8 @@ from harness_module import session_log as slog
 from harness_module.stream import LAGGED, stream
 from model_module import client as model_client
 from tool_module import registry, session_tools
-from tool_module.arcade import ArcadeError
 from tool_module.browser.stream import broker as frames
+from tool_module.composio_mcp import ComposioError
 from tool_module.sandbox import manager as sandbox_manager
 from tool_module.sandbox import tools as sandbox_tools
 
@@ -1487,137 +1487,105 @@ async def _frame_stream(user_id: str, session_id: str) -> AsyncIterator[str]:
 async def list_connections(user_id: str = CurrentUser) -> list[dict[str, Any]]:
     """List every configured connector and this user's standing with it.
 
-    Status is read from Arcade rather than from our rows, because our rows are a
-    cache of Arcade's answer and this is the moment the human is looking. One
-    `POST /v1/tools/authorize` per connector, concurrently: it mints a consent
-    link without invoking anything, so asking is free, and because it is
-    scope-aware it answers about the SERVICE — where the gateway's own app list
-    would only answer about the provider account behind it, and report Google
-    Calendar connected because Gmail was.
+    Status is read from Composio rather than from our rows, because our rows are
+    a cache of Composio's answer and this is the moment the human is looking. One
+    listing answers for every toolkit at once, and a Composio connected account
+    is per TOOLKIT — so unlike the provider-account grants this replaced, reading
+    Gmail says nothing about Calendar and disconnecting one leaves the other.
 
     Each row carries what the next click will do: `scopes`, so the human sees
     what a connect is about to grant, and `shares_with`, so a disconnect can say
     which sibling services go with it.
     """
-    client = hands.arcade()
+    client = hands.connectors()
     if client is None:
         return []
     return await client.connections(user_id)
 
 
-@app.get("/connections/verify")
-async def verify_user(request: Request) -> Response:
-    """Arcade's custom user verifier: confirm the person at the browser IS this user.
+@app.get("/connections/done")
+async def connection_done(request: Request, user_id: str = CurrentUser) -> Response:
+    """Where Composio lands the browser when consent finishes.
 
-    Arcade needs to know that the `Arcade-User-ID` the harness asserts belongs to
-    whoever is about to sit at a provider's consent screen. Its default answer is
-    an arcade.dev account picker, which violates the no-vendor-in-the-user's-path
-    rule; the custom verifier replaces it with this route, so the whole flow shows
-    only the provider and our app.
+    Measured in the 11.10.1 spike: `callback_url` IS honored, and the return leg
+    carries `status` and `connected_account_id` as query params — enough to
+    settle the row without polling. The toolkit is NOT in the url, so it is
+    looked up from the account id rather than trusted from the query.
 
-    The session cookie is the ONLY source of identity here. A `user_id` in the
-    query is a CLAIM by whoever built the url, and it is compared against the
-    cookie, never trusted: binding a provider grant to an attacker-supplied uuid
-    is the exact bug class that put `browser_routes` on the incident list. A
-    top-level GET carries a `SameSite=Lax` cookie, which is why this is a GET and
-    why it must stay same-origin with `/app`.
+    Identity is the session cookie, as everywhere. A `connected_account_id` in a
+    url is a claim by whoever built it; reconciling means asking Composio which
+    of THIS user's accounts that id is, so a forged id settles nothing.
 
-    Measured 2026-08-25 from the dashboard's "Run test": Arcade sends exactly one
-    parameter, `flow_id`, a UUID — no `user_id`, no continuation url. The
-    `user_id` comparison below therefore never fires on Arcade's own traffic; it
-    guards the case of a hand-crafted link, which is the case worth guarding.
-
-    Verifying is only half of it. The flow finalizes when we CONFIRM the user
-    back to Arcade and then send the BROWSER onward to the `next_uri` that
-    answer carries. Returning JSON here instead — which this route did on
-    2026-08-25 — ends the flow on a dead page and binds no connection at all.
+    Answers a tiny page that closes the popup, because the panel is what the
+    person is looking at and a raw JSON body is where the previous flow used
+    to strand them.
     """
-    params = dict(request.query_params)
-    flow = params.get("flow_id")
-    unexpected = sorted(k for k in params if k not in ("flow_id", "user_id"))
-    if unexpected:
-        logger.warning("arcade user verification sent unexpected params=%s", unexpected)
-    logger.info("arcade user verification hit with params=%s", sorted(params))
+    status = str(request.query_params.get("status") or "")
+    account_id = str(request.query_params.get("connected_account_id") or "")
+    logger.info("composio consent callback: status=%s account=%s", status, bool(account_id))
 
-    cookie = request.cookies.get(str(_cfg("auth.cookie_name", "ark_session")))
-    if not cookie:
-        raise ApiError(401, "unauthenticated", "No session. Sign in, then start the connection again.")
-    try:
-        claims = jwt_utils.read_session(cookie)
-    except jwt.PyJWTError as e:
-        raise ApiError(401, "unauthenticated", f"Session rejected: {e}") from e
-    verified = str(claims["sub"])
+    settled: str | None = None
+    if status.lower() == "success" and account_id:
+        client = hands.connectors()
+        if client is not None:
+            try:
+                settled = await client.reconcile(user_id, account_id)
+            except ComposioError as e:
+                logger.warning("could not reconcile %s: %s", account_id, e)
 
-    claimed = params.get("user_id")
-    if claimed and claimed != verified:
-        # Someone handed this browser a link naming a different user. Refusing is
-        # the whole point of the route.
-        logger.warning("user verification refused: cookie says %s, url claimed %s", verified, claimed)
-        raise ApiError(403, "forbidden", "This connection link belongs to a different account.")
+    return HTMLResponse(_CLOSE_POPUP.replace("__STATUS__", "connected" if settled else "not connected"))
 
-    if not flow:
-        # Not Arcade's traffic. Say who the cookie is and finish; there is no
-        # flow to confirm and nowhere to send the browser.
-        return JSONResponse({"verified": True, "user_id": verified, "flow": None})
 
-    client = hands.arcade()
-    if client is None:
-        raise ApiError(503, "unavailable", "Connectors are not configured on this server.")
-    try:
-        answer = await client.client.confirm_user(flow, verified)
-    except ArcadeError as e:
-        # A stale or already-spent flow is a flat 400 from Arcade. The person is
-        # looking at this page, so it has to say something they can act on.
-        logger.warning("confirm_user failed for flow %s: %s", flow, e)
-        raise ApiError(502, "upstream_error", f"Arcade would not confirm this connection: {e}", retryable=True) from e
-
-    nxt = answer.get("next_uri")
-    if nxt:
-        if not str(nxt).startswith("https://"):
-            # Only ever bounce a signed-in browser onward over TLS.
-            raise ApiError(502, "upstream_error", "Arcade returned a non-https continuation url.")
-        return RedirectResponse(str(nxt), status_code=302)
-    return JSONResponse({"verified": True, "user_id": verified, "flow": flow, "auth_id": answer.get("auth_id")})
+# Announced from where it is written: the opener re-reads its rows on this
+# message rather than on a timer, so the toggle flips as the popup closes.
+_CLOSE_POPUP = """<!doctype html><meta charset="utf-8"><title>Connected</title>
+<body style="font:14px system-ui;padding:2rem;color:#333">
+<p>__STATUS__. You can close this window.</p>
+<script>
+  try { window.opener && window.opener.postMessage({source:"buddy", kind:"connection"}, "*"); } catch (e) {}
+  setTimeout(function () { window.close(); }, 400);
+</script>
+</body>"""
 
 
 @app.post("/connections/{server}/connect")
 async def connect_server(server: str, user_id: str = CurrentUser) -> dict[str, Any]:
     """Mint the consent link for one service and record the pending state. Idempotent.
 
-    Nothing is connected here and no tool is called: Arcade answers with the url
-    its OAuth flow starts at, the panel opens it in a popup, and the user comes
-    back connected or does not. Asking again before they finish returns the same
-    pending authorization rather than starting a second one.
+    Nothing is connected here and no tool is called: Composio answers with the
+    url its OAuth flow starts at, the panel opens it in a popup, and the user
+    comes back through `/connections/done` connected or does not.
     """
-    client = _require_arcade()
+    client = _require_connectors()
     _known_server(client, server)
     try:
         return await client.connect(user_id, server)
-    except ArcadeError as e:
-        raise ApiError(502, "upstream_error", f"Arcade refused: {e}", retryable=True) from e
+    except ComposioError as e:
+        raise ApiError(502, "upstream_error", f"Composio refused: {e}", retryable=True) from e
 
 
 @app.delete("/connections/{server}")
 async def disconnect_server(server: str, user_id: str = CurrentUser) -> dict[str, Any]:
-    """Revoke one service at Arcade and say what went with it.
+    """Revoke one service and say what went with it.
 
-    Arcade's connection is per provider account, so revoking Gmail revokes every
-    service signed in through the same Google account. There is no narrower
-    revoke to offer, so this returns what actually went — the panel has already
-    warned from `shares_with`, and the response is what it reconciles against.
+    A Composio connected account is per TOOLKIT, so this takes exactly the one
+    service named — unlike the provider-account grants it replaced, where
+    revoking Gmail took Calendar too. The list shape is kept anyway so the panel
+    does not have to know which backend it is talking to, and so a backend whose
+    grants ARE shared can say so without a new contract.
     Not a 204: "nothing to say" would be the one wrong thing to say here.
     """
-    client = _require_arcade()
+    client = _require_connectors()
     _known_server(client, server)
     try:
         disconnected = await client.disconnect(user_id, server)
-    except ArcadeError as e:
-        raise ApiError(502, "upstream_error", f"Arcade refused: {e}", retryable=True) from e
+    except ComposioError as e:
+        raise ApiError(502, "upstream_error", f"Composio refused: {e}", retryable=True) from e
     return {"server": server, "disconnected": disconnected}
 
 
-def _require_arcade() -> Any:
-    client = hands.arcade()
+def _require_connectors() -> Any:
+    client = hands.connectors()
     if client is None:
         raise ApiError(503, "unavailable", "MCP is not configured on this server.")
     return client
@@ -1706,7 +1674,7 @@ async def _tools_document(session_id: str, user_id: str) -> dict[str, Any]:
     ours. Counting it here and not there would put a meter in front of the human
     that disagrees with the request the model actually gets.
     """
-    client = hands.arcade()
+    client = hands.connectors()
     rows = await client.connections(user_id) if client is not None else []
     on = set(await session_tools.enabled_servers(session_id))
 

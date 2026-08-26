@@ -171,122 +171,80 @@ sandbox:
                                            # (GET /sessions/{id}/fs/file). Over it the
                                            # response is cut short and says so.
 
-# All MCP traffic flows through ONE Arcade MCP Gateway. Arcade hosts the OAuth
-# apps, holds the users' grants, and refreshes tokens; this side sends an
-# identity and never holds a credential of the user's.
+# All MCP traffic flows through ONE Composio MCP server. Composio hosts the OAuth
+# apps — MANAGED ones, already verified with each provider — and holds every
+# user's grant; this side sends an identity and never holds a credential of the
+# user's.
 mcp:
-  kind: arcade
-  # The gateway, from the Arcade dashboard (project "buddy", auth mode Arcade
-  # Headers, per-tool confirmation OFF — the 11.7 approval gate owns consent).
-  # One url for every app: the tools come back FLAT in a single list, prefixed
-  # by app, so a "server" below is a PREFIX GROUP and not a url of its own.
-  gateway_url: "https://api.arcade.dev/mcp/gw_3IErRNEhqI6uH9fdquWfocoxdcF"
-  api_key: "${ARCADE_API_KEY}"
-  # Arcade's REST API, where authorization lives. Same host and same key as the
-  # gateway; a different surface, because `POST /v1/tools/authorize` is not
-  # something the MCP protocol can express. It is how the settings panel gets a
-  # consent link WITHOUT calling a tool, and how it reads whether a service is
-  # connected — `authorize` is scope-aware, so it answers per service.
-  engine_url: "https://api.arcade.dev"
-  # A DIFFERENT HOST, and not a typo. The custom user verifier confirms a user
-  # back to Arcade at `POST {cloud_url}/api/v1/oauth/confirm_user`, which lives
-  # on cloud.arcade.dev — measured 2026-08-25, every equivalent path on
-  # api.arcade.dev is a 404. Same API key.
-  cloud_url: "https://cloud.arcade.dev"
-  protocol_version: "2025-11-25"   # what the gateway negotiated when this was measured
-
-  # Google Search is OURS, not a connector. SerpAPI-backed, with the key set as
-  # an app-level secret in Arcade's dashboard, so there is no per-user OAuth and
-  # every user's searches share our quota. It rides the gateway wire and belongs
-  # to buddy: always in the manifest, counted in `ours` for the tool meter, and
-  # absent from the session toggles and the settings panel entirely.
-  search:
-    server: "GoogleSearch"
+  kind: composio
+  # The Composio MCP server carrying every enabled toolkit (Task 11.10.2).
+  # ONE server for all seven: the tools come back FLAT in a single list,
+  # prefixed by toolkit in UPPER SNAKE (`GMAIL_FETCH_EMAILS`), so a "server"
+  # below is a PREFIX GROUP and not a url of its own.
+  server_id: "a51f26a8-dc87-4aa8-8313-81f6731707fa"
+  api_key: "${COMPOSIO_API_KEY}"
+  # The per-user url is DERIVED from these two plus the user id, not minted:
+  #   {base_url}/v3/mcp/{server_id}/mcp?user_id={uuid}
+  # Note /v3 and the trailing /mcp. The url the dashboard and SDK hand you is
+  # `/v3.1/mcp/{id}?...`, which answers 307 with a JSON BODY (no Location
+  # header) naming this one — no HTTP client follows that, so the resolved form
+  # is what we speak.
+  base_url: "https://backend.composio.dev"
+  protocol_version: "2025-11-25"   # what the server negotiated when this was measured
+  # Where the consent popup lands when Composio is done. Must match a route.
+  callback_url: "http://localhost:1121/connections/done"
 
 mcp_servers:
-  # THE SIX TOGGLEABLE CONNECTORS, and nothing else.
+  # THE SEVEN TOGGLEABLE CONNECTORS, and nothing else.
   #
-  # The config key is a label for logs and display. `server` is the Arcade app
-  # prefix — the vendor's own name, which every one of that app's tool names
-  # carries — and it is the identity `user_connections` and `session_tools` are
-  # keyed by. Renaming a key here changes nothing durable, which is the point.
+  # `server` is the Composio toolkit prefix, UPPER SNAKE — the vendor's own name,
+  # which every one of that toolkit's tool names carries — and it is the identity
+  # `user_connections` and `session_tools` are keyed by. The config key beside it
+  # is a label for logs and display; renaming it changes nothing durable.
   #
-  # `provider` is Arcade's provider account behind the service, and `scopes` is
-  # the PINNED scope list the panel asks consent for — the way every normal OAuth
-  # app hardcodes its scopes. Measured once with `scripts/probe_arcade.py` and
-  # written here; a toolkit bump that adds a scope shows up in the next probe run
-  # and this list gets a one-line edit. The old `consent_tool` mechanism is DEAD
-  # (11.10, amended 2026-08-25): the probe measured that NO single tool covers any
-  # service's scope union, so authorizing through one tool granted a subset and
-  # the rest of the app kept challenging.
+  # `auth_config_id` is Composio's MANAGED auth config for the toolkit: their
+  # already-verified OAuth app, which is the whole reason 11.10.2 exists. Scopes
+  # are NOT tunable on a managed config, so the pinned scope lists 11.10 carried
+  # are gone — see implementation_notes for what the Gmail grant actually takes.
   #
-  # An app whose toolkit reports ZERO scopes (GitHub, Notion) has no list to pin:
-  # permissions there are app-level or chosen inside the consent itself, and any
-  # authorize triggers their single consent. Omit `scopes` for those.
-  #
-  # Scope union is WITHIN a service, never across a provider: connecting Gmail is
-  # one popup carrying Gmail scopes only, even though Calendar shares the account.
-  #
-  # auto_approve waives the approval prompt: `true` for every tool on the app,
-  # or a list for those tools only. Absent, every MCP tool requires approval.
+  # auto_approve waives the approval prompt: `true` for every tool on the
+  # toolkit, or a list for those tools only. Absent, every MCP tool requires
+  # approval.
   #   auto_approve: true
-  #   auto_approve: [Linear_GetIssue]
+  #   auto_approve: [LINEAR_GET_ISSUE]
 
   gmail:
-    server: "Gmail"
+    server: "GMAIL"
     name: "Gmail"
-    provider: "buddy-google"
-    scopes:
-      - "https://www.googleapis.com/auth/gmail.compose"
-      - "https://www.googleapis.com/auth/gmail.labels"
-      - "https://www.googleapis.com/auth/gmail.modify"
-      - "https://www.googleapis.com/auth/gmail.readonly"
-      - "https://www.googleapis.com/auth/gmail.send"
-      - "https://www.googleapis.com/auth/userinfo.email"
-      - "https://www.googleapis.com/auth/userinfo.profile"
+    auth_config_id: "ac_fYGjuD5zV6Pp"
 
   github:
-    server: "Github"
+    server: "GITHUB"
     name: "GitHub"
-    provider: "arcade-github"
-    # No scopes: the GitHub toolkit reports none; its consent is app-level.
+    auth_config_id: "ac_QQSJsrpY16Kv"
 
   linear:
-    server: "Linear"
+    server: "LINEAR"
     name: "Linear"
-    provider: "arcade-linear"
-    scopes:
-      - "admin"
-      - "comments:create"
-      - "read"
-      - "write"
+    auth_config_id: "ac_IDm6vQc1DEN4"
 
   outlook:
-    server: "MicrosoftOutlookMail"
+    server: "OUTLOOK"
     name: "Microsoft Outlook Mail"
-    provider: "arcade-microsoft"
-    scopes:
-      - "Mail.Read"
-      - "Mail.Read.Shared"
-      - "Mail.ReadWrite"
-      - "Mail.ReadWrite.Shared"
-      - "Mail.Send"
-      - "Mail.Send.Shared"
-      - "MailboxSettings.Read"
-      - "User.Read"
+    auth_config_id: "ac_WZevhg_Gh860"
 
   notion:
-    server: "Notion"
+    server: "NOTION"
     name: "Notion"
-    provider: "arcade-notion"
-    # No scopes: the Notion toolkit reports none; access is picked in the consent.
+    auth_config_id: "ac_5LIKD3ppqW54"
 
   google-calendar:
-    server: "GoogleCalendar"
+    server: "GOOGLECALENDAR"
     name: "Google Calendar"
-    provider: "buddy-google"
-    scopes:
-      - "https://www.googleapis.com/auth/calendar.events"
-      - "https://www.googleapis.com/auth/calendar.readonly"
-      - "https://www.googleapis.com/auth/userinfo.email"
-      - "https://www.googleapis.com/auth/userinfo.profile"
+    auth_config_id: "ac_0gLAe6Rz7KFd"
+
+  # NEW in 11.10.2: the gateway this replaced never carried Drive.
+  google-drive:
+    server: "GOOGLEDRIVE"
+    name: "Google Drive"
+    auth_config_id: "ac_7DDigWE4KhD0"

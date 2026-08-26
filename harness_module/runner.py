@@ -718,7 +718,7 @@ async def _manifest_for(session: Session) -> registry.Manifest:
     know whether it fits, and ours always do.
     """
     try:
-        return await registry.manifest(session.user_id, mcp=hands.arcade(), session_id=session.id)
+        return await registry.manifest(session.user_id, mcp=hands.connectors(), session_id=session.id)
     except Exception:
         logger.exception("session %s: building the full manifest failed", session.id)
         return await registry.manifest(session.user_id)
@@ -935,8 +935,8 @@ def _model_options() -> dict[str, Any] | None:
 
 
 def _mcp_call():
-    """Adapts the shared Arcade client to the registry's mcp_call shape, or None if unconfigured."""
-    client = hands.arcade()
+    """Adapts the shared connector client to the registry's mcp_call shape, or None if unconfigured."""
+    client = hands.connectors()
     if client is None:
         return None
 

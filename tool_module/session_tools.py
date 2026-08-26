@@ -6,7 +6,7 @@ session can reach until it is toggled on. An absent row reads as off, so a fresh
 session gets exactly our own tools and cannot be the one that puts 164 schemas
 in a request.
 
-`server` is the Arcade app prefix — `Gmail`, `Linear` — the same identity
+`server` is the Composio toolkit prefix — `GMAIL`, `LINEAR` — the same identity
 `user_connections` is keyed by, and for the same reason: a `mcp_servers:` config
 key is an in-process label rebuilt at every startup, so nothing durable may
 reference it. It was the `mcp_url` until 11.10, when every app moved behind one
