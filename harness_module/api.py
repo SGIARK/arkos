@@ -37,6 +37,7 @@ from db.ids import as_uuid
 from harness_module import approvals, blobs, hands, jwt_utils, leases, lifecycle, runner, store, system_log, workspace
 from harness_module import session_log as slog
 from harness_module.stream import LAGGED, stream
+from harness_module.stream import attention as attention_channel
 from model_module import client as model_client
 from tool_module import registry, session_tools
 from tool_module.browser.stream import broker as frames
@@ -716,16 +717,25 @@ async def _latest_plan(session_id: str) -> dict[str, Any] | None:
     `answer` is the row's verbatim decision — `approve`, `decline`, `superseded`,
     or the feedback that was sent — so a surface can tell an approved plan from
     a dismissed one without a second request.
+
+    `steps` rides along (11.11) so the todo block can seed itself from the plan
+    the model already wrote, instead of showing an empty panel until the first
+    `todo_write`. It has to come from the SNAPSHOT rather than from the approval
+    the window happened to see, or the seed would vanish on reload — which is
+    exactly when a person is most likely to be looking for it.
     """
     history = await approvals.plan_history(session_id)
     if not history:
         return None
     newest = history[-1]
+    args = newest.tool_args or {}
+    steps = args.get("steps")
     return {
         "approval_id": newest.id,
         "version": len(history),
-        "goal": (newest.tool_args or {}).get("goal"),
+        "goal": args.get("goal"),
         "answer": newest.answer,
+        "steps": [str(step) for step in steps] if isinstance(steps, list) else [],
     }
 
 
@@ -1351,6 +1361,48 @@ async def read_result(ref: str, offset: int = 0, limit: int = 2000, user_id: str
 
 
 # --- the stream ----------------------------------------------------------------
+
+
+@app.get("/attention/stream")
+async def attention_stream(user_id: str = CurrentUser) -> StreamingResponse:
+    """Nudge this human whenever their waiting list moves. One per sign-in.
+
+    The account's attention used to depend on a MOUNTED session window bumping a
+    `pulse`: parking a gated call while sitting on the desk published into a
+    session stream nobody was reading, and the waiting list stayed frozen until
+    something happened to open the right window. This is the channel that fixes
+    that, and it is subscribed once at sign-in rather than per surface.
+
+    A frame carries no approval row on purpose. It means "read `/attention`
+    again", and the client already knows how to ask at three scopes; shipping
+    the row here would be a second way to learn the same fact, and two ways
+    drift. So there is no `Last-Event-ID` and no replay either: a missed nudge
+    costs one stale list until the next one, where a missed session EVENT would
+    cost a hole in a transcript.
+    """
+    return StreamingResponse(
+        _attention_frames(user_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+async def _attention_frames(user_id: str) -> AsyncIterator[str]:
+    """Yield a frame per signal until the client disconnects."""
+    keepalive = float(_cfg("harness.sse_keepalive_s", 15))
+    async with attention_channel.subscribe(user_id) as queue:
+        # Say hello immediately: the client fetches the list on connect, so the
+        # first frame is what makes "subscribed" and "current" the same moment.
+        yield 'event: attention\ndata: {"reason":"open"}\n\n'
+        while True:
+            try:
+                signal = await asyncio.wait_for(queue.get(), timeout=keepalive)
+            except TimeoutError:
+                # Proxies and EventSource drop a stream that stays silent.
+                yield ": keepalive\n\n"
+                continue
+            payload = json.dumps({"reason": signal.reason, "session_id": signal.session_id})
+            yield f"event: attention\ndata: {payload}\n\n"
 
 
 @app.get("/sessions/{session_id}/events")

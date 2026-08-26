@@ -45,7 +45,9 @@ KEY = api_key()
 def rest(method: str, path: str, body=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(
-        BASE + path, data=data, method=method,
+        BASE + path,
+        data=data,
+        method=method,
         headers={"x-api-key": KEY, "Content-Type": "application/json", "User-Agent": UA},
     )
     try:
@@ -65,9 +67,14 @@ def live_tools(server_id: str) -> list[str]:
     url = f"{BASE}/v3/mcp/{server_id}/mcp?user_id=roster-check"
     body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
     req = urllib.request.Request(
-        url, data=json.dumps(body).encode(),
-        headers={"x-api-key": KEY, "Content-Type": "application/json",
-                 "Accept": "application/json, text/event-stream", "User-Agent": UA},
+        url,
+        data=json.dumps(body).encode(),
+        headers={
+            "x-api-key": KEY,
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "User-Agent": UA,
+        },
     )
     with urllib.request.urlopen(req, timeout=90) as r:
         text = r.read().decode()
@@ -75,7 +82,7 @@ def live_tools(server_id: str) -> list[str]:
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
-        for line in text.splitlines():          # replies are SSE-framed
+        for line in text.splitlines():  # replies are SSE-framed
             if line.startswith("data: "):
                 payload = json.loads(line[6:])
                 break
@@ -100,9 +107,15 @@ def verify() -> int:
 def mint() -> int:
     doc, want = roster()
     name = f"buddy-prod-{len(want)}"
-    status, body = rest("POST", "/api/v3.1/mcp/servers/custom", {
-        "name": name, "toolkits": sorted(doc["toolkits"]), "allowed_tools": want,
-    })
+    status, body = rest(
+        "POST",
+        "/api/v3.1/mcp/servers/custom",
+        {
+            "name": name,
+            "toolkits": sorted(doc["toolkits"]),
+            "allowed_tools": want,
+        },
+    )
     if status >= 300:
         print(f"mint failed ({status}): {body}")
         print("If this reads like a rejected toolkit list, check the ~16 server cap with `list`.")

@@ -27,12 +27,16 @@ composer's 409.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
 
 from db import pool
 from db.ids import as_uuid as _uuid
+from harness_module.stream import AttentionSignal, attention
+
+logger = logging.getLogger(__name__)
 
 Kind = Literal["approval", "ask", "call", "plan"]
 
@@ -133,6 +137,7 @@ async def create(
         tool_name,
         json.dumps(tool_args) if tool_args is not None else None,
     )
+    await _announce(session_id, "parked")
     return _row(record)
 
 
@@ -256,6 +261,27 @@ async def get(approval_id: str, user_id: str) -> Approval | None:
     return _row(record) if record else None
 
 
+async def _announce(session_id: str, reason: str) -> None:
+    """Tell the session's owner their waiting list moved.
+
+    Published HERE, from the write, rather than relayed by whatever surface
+    happens to be mounted — the bug this exists for was a park announcing itself
+    only into a session stream, so a human sitting on the desk never heard it.
+
+    The user id is not on `approvals`; it is on the session, so this costs one
+    indexed lookup. Parks and answers are rare enough that the alternative —
+    threading a user id through every caller — buys nothing but a wider seam.
+    Failures are swallowed: a nudge that does not arrive costs one stale list,
+    and it must never be the reason a park fails to record.
+    """
+    try:
+        user_id = await pool.fetchval("SELECT user_id FROM sessions WHERE id = $1", _uuid(session_id))
+        if user_id:
+            attention.publish(str(user_id), AttentionSignal(reason=reason, session_id=session_id))
+    except Exception:  # noqa: BLE001 - a signal is never worth failing a write over
+        logger.warning("could not announce attention for session %s", session_id, exc_info=True)
+
+
 async def answer(approval_id: str, text: str) -> Approval | None:
     """Record an answer to an unanswered question.
 
@@ -271,4 +297,10 @@ async def answer(approval_id: str, text: str) -> Approval | None:
         _uuid(approval_id),
         text,
     )
-    return _row(record) if record else None
+    if not record:
+        # A concurrent answer already won. It announced; a second nudge for the
+        # same transition would say nothing new.
+        return None
+    approval = _row(record)
+    await _announce(approval.session_id, "answered")
+    return approval

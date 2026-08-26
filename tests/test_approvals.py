@@ -18,6 +18,7 @@ from agent_module.events import UserEvent
 from db import pool
 from harness_module import api, approvals, runner
 from harness_module import session_log as slog
+from harness_module import stream as stream_module
 from model_module import client as mc
 from tests.dbgate import require_db
 
@@ -342,3 +343,66 @@ async def test_a_message_never_answers_a_request_for_approval(client, model):
 
 async def _true() -> bool:
     return True
+
+
+# --- attention announces itself from the write (11.11) --------------------------
+
+
+async def test_parking_a_call_nudges_the_users_attention_channel():
+    """The bug this exists for: a park published only into a session stream.
+
+    A human sitting on the desk had nothing subscribed to that stream, so the
+    waiting list stayed frozen until a window happened to be mounted. The
+    account channel is published from the row's own write.
+    """
+    user_id = await _user()
+    session_id = await _session(user_id)
+
+    async with stream_module.attention.subscribe(user_id) as queue:
+        await approvals.create(session_id, "call-1", "call", "run it?", tool_name="t", tool_args={})
+
+        signal = await asyncio.wait_for(queue.get(), timeout=2)
+
+    assert signal.reason == "parked"
+    assert signal.session_id == session_id
+
+
+async def test_answering_nudges_the_channel_too():
+    user_id = await _user()
+    session_id = await _session(user_id)
+    parked = await approvals.create(session_id, "call-2", "call", "run it?", tool_name="t", tool_args={})
+
+    async with stream_module.attention.subscribe(user_id) as queue:
+        await approvals.answer(parked.id, approvals.APPROVE)
+
+        signal = await asyncio.wait_for(queue.get(), timeout=2)
+
+    assert signal.reason == "answered"
+    assert signal.session_id == session_id
+
+
+async def test_a_second_answer_announces_nothing():
+    """Concurrent answers resolve to one update; the loser has nothing to say."""
+    user_id = await _user()
+    session_id = await _session(user_id)
+    parked = await approvals.create(session_id, "call-3", "call", "run it?", tool_name="t", tool_args={})
+    await approvals.answer(parked.id, approvals.APPROVE)
+
+    async with stream_module.attention.subscribe(user_id) as queue:
+        assert await approvals.answer(parked.id, approvals.DECLINE) is None
+
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(queue.get(), timeout=0.3)
+
+
+async def test_another_users_channel_hears_nothing():
+    """Attention is per user; one account's park is not another's business."""
+    owner = await _user()
+    stranger = await _user()
+    session_id = await _session(owner)
+
+    async with stream_module.attention.subscribe(stranger) as queue:
+        await approvals.create(session_id, "call-4", "call", "run it?", tool_name="t", tool_args={})
+
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(queue.get(), timeout=0.3)

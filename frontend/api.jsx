@@ -280,6 +280,26 @@ const api = {
 
   /* --- the stream ------------------------------------------------------- */
 
+  /* One EventSource for the ACCOUNT, opened once at sign-in and held for the
+     whole session. A frame carries no approval row: it means "read /attention
+     again", which the caller already knows how to do at three scopes. Shipping
+     the row here would be a second way to learn the same fact, and two ways
+     drift.
+
+     This exists because the waiting list used to be keyed to a `pulse` that
+     only a MOUNTED session window could bump — so parking a call while sitting
+     on the desk changed nothing anyone could see. Returns its own unsubscribe,
+     which is what a `useEffect` cleanup wants. */
+  watchAttention(onChange) {
+    const source = new EventSource(`${API}/attention/stream`, { withCredentials: true });
+    source.addEventListener("attention", () => onChange());
+    /* No error handler beyond the default: there is no state to repair and no
+       cursor to resume from, so a drop costs one stale list until the browser
+       reconnects on its own and the server's opening frame refetches. */
+    return () => source.close();
+  },
+
+
   /* One EventSource per open session. No polling anywhere: the snapshot gives
      the tail of the log and its last seq, and the stream carries everything
      after it. On a drop the browser reconnects on its own and sends

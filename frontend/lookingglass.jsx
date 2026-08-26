@@ -510,6 +510,14 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
      reload and right in a second tab. */
   const held = session.status === "idle" && unattended;
   const cancelled = !!approvedPlan && session.status === "cancelled";
+  /* The checklist, and whether it is the model's or the plan's. A real
+     `todo_write` always wins: the first one is the model taking over its own
+     checklist, and the seed steps out of the way. */
+  const planSteps = (approvedPlan && approvedPlan.steps) || [];
+  const seededSteps = (!todo || !todo.length) && planSteps.length > 0;
+  const todoRows = seededSteps
+    ? planSteps.map((step) => ({ text: String(step), status: "pending" }))
+    : todo || [];
   // The pin outlives the run: an approved plan that finished still says where
   // it was saved. It goes only when the plan is dismissed.
   const showPin = !!approvedPlan;
@@ -735,6 +743,9 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
                       version: planCard.version || 1,
                       goal: (planCard.tool_args || {}).goal,
                       answer: "approve",
+                      // Carried so the todo block seeds the moment the plan is
+                      // approved, not on the next snapshot read.
+                      steps: (planCard.tool_args || {}).steps || [],
                     });
                   }
                   // A reply wakes the session to propose again, so the lane goes
@@ -878,15 +889,26 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
         </div>
 
         <div className="ctx-panel">
+          {/* The todo block is the MODEL's checklist, fed by `todo_write`. Until
+              the first one arrives it seeds from the approved plan's steps —
+              read from what this window already holds, so the model retypes
+              nothing — and says so in the kicker, because unchecked boxes
+              nobody has claimed yet would otherwise read as work not started.
+
+              It never says "plan" in its empty state: that copy predated the
+              plan card and borrowed its name, so a session with a plan at v6
+              read "todo · no plan yet". */}
           <div className="todo-block">
-            <span className="kicker">todo</span>
+            <span className="kicker">
+              {seededSteps ? `steps · plan.md v${approvedPlan.version || 1}` : "todo"}
+            </span>
             <div className="todo-list">
-              {!todo || !todo.length ? (
-                <span className="mute" style={{ fontSize: 11.5, fontStyle: "italic" }}>no plan yet</span>
+              {!todoRows.length ? (
+                <span className="mute" style={{ fontSize: 11.5, fontStyle: "italic" }}>no steps yet</span>
               ) : (
-                todo.map((item, i) => (
+                todoRows.map((item, i) => (
                   <label className={"todo-item" + (item.status === "completed" ? " done" : "")} key={i}>
-                    {/* The model owns the plan; this is a readout, not a control. */}
+                    {/* The model owns the checklist; this is a readout, not a control. */}
                     <input type="checkbox" checked={item.status === "completed"} readOnly />
                     <span>{item.text || item.title || String(item)}</span>
                   </label>
