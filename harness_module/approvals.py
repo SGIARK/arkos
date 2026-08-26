@@ -263,7 +263,8 @@ async def get(approval_id: str, user_id: str) -> Approval | None:
     record = await pool.fetchrow(
         """
         SELECT a.id, a.session_id, a.tool_call_id, a.kind, a.prompt, a.answer,
-               a.created_at, a.answered_at, a.tool_name, a.tool_args, a.consumed_at
+               a.created_at, a.answered_at, a.tool_name, a.tool_args, a.consumed_at,
+               a.answered_by
           FROM approvals a JOIN sessions s ON s.id = a.session_id
          WHERE a.id = $1 AND s.user_id = $2
         """,
