@@ -90,9 +90,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await sandbox_manager.sweep_slots()
     await hands.start()
     await system_log.start()
+    _shutting_down.clear()
     try:
         yield
     finally:
+        # SET FIRST. An SSE response is an in-flight request that never ends, so
+        # a graceful shutdown waits for it forever — and since 11.11 every
+        # signed-in tab holds one open for the whole session, which made a dev
+        # autoreload hang every time. The streams race their queue against this
+        # and return the moment it fires.
+        _shutting_down.set()
         await system_log.stop()
         await hands.stop()
         # The store's HTTP client belongs to this loop; closing it here is the
@@ -102,6 +109,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         model_client.reset_client()
         await pool.close()
 
+
+# Set when the app is going down, so the endless streams can end themselves.
+_shutting_down = asyncio.Event()
 
 app = FastAPI(title="Buddy", lifespan=lifespan)
 
@@ -1379,6 +1389,32 @@ async def attention_stream(user_id: str = CurrentUser) -> StreamingResponse:
     )
 
 
+async def _next_or_shutdown(queue: asyncio.Queue[Any], timeout: float) -> Any:
+    """The next item, or `_TIMEOUT`, or `_SHUTDOWN` — whichever comes first.
+
+    A plain `wait_for(queue.get())` cannot see the server going down, and an SSE
+    generator that cannot see it holds the shutdown open until something kills
+    the process.
+    """
+    getter = asyncio.ensure_future(queue.get())
+    stopping = asyncio.ensure_future(_shutting_down.wait())
+    try:
+        done, _ = await asyncio.wait({getter, stopping}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+        if getter in done:
+            return getter.result()
+        if stopping in done:
+            return _SHUTDOWN
+        return _TIMEOUT
+    finally:
+        for task in (getter, stopping):
+            if not task.done():
+                task.cancel()
+
+
+_TIMEOUT = object()
+_SHUTDOWN = object()
+
+
 async def _attention_frames(user_id: str) -> AsyncIterator[str]:
     """Yield a frame per signal until the client disconnects."""
     keepalive = float(_cfg("harness.sse_keepalive_s", 15))
@@ -1387,9 +1423,10 @@ async def _attention_frames(user_id: str) -> AsyncIterator[str]:
         # first frame is what makes "subscribed" and "current" the same moment.
         yield 'event: attention\ndata: {"reason":"open"}\n\n'
         while True:
-            try:
-                signal = await asyncio.wait_for(queue.get(), timeout=keepalive)
-            except TimeoutError:
+            signal = await _next_or_shutdown(queue, keepalive)
+            if signal is _SHUTDOWN:
+                return
+            if signal is _TIMEOUT:
                 # Proxies and EventSource drop a stream that stays silent.
                 yield ": keepalive\n\n"
                 continue
@@ -1434,9 +1471,13 @@ async def _event_stream(session_id: str, after_seq: int) -> AsyncIterator[str]:
                 yield _frame(stored)
 
             while True:
-                try:
-                    item = await asyncio.wait_for(queue.get(), timeout=keepalive)
-                except TimeoutError:
+                item = await _next_or_shutdown(queue, keepalive)
+                if item is _SHUTDOWN:
+                    # The client reconnects with Last-Event-ID and resumes from
+                    # the log, so ending here costs nothing and lets the process
+                    # actually go down.
+                    return
+                if item is _TIMEOUT:
                     # Proxies and EventSource drop a stream that stays silent.
                     yield ": keepalive\n\n"
                     continue
