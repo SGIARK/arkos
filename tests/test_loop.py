@@ -1,6 +1,7 @@
 """One LLM call per hop, structural streaming, and termination an unattended run cannot fake."""
 
 import asyncio
+import json
 import time
 
 import pytest
@@ -694,3 +695,54 @@ async def test_context_overflow_is_its_own_terminal_reason(model):
 
 async def _never(name, args):
     raise AssertionError("no tool should run")
+
+
+# --- the checklist scaffold (11.11.1) -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_unattended_hop_carries_the_checklist_instruction(model):
+    """Nothing asked the model to keep the list current, so nothing ever did."""
+    model.arm(_call(lp.FINISH_TOOL))
+
+    events, msgs = await _run(model, mode="unattended")
+
+    scaffolds = [m for m in msgs if m["role"] == "user" and "todo_write" in str(m.get("content"))]
+    assert scaffolds, "an unattended hop must carry the checklist discipline"
+    assert not [e for e in events if getattr(e, "kind", "") == "user" and "todo_write" in getattr(e, "text", "")], (
+        "the scaffold is CONTEXT, not a transcript event"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_attended_turn_gets_no_scaffold(model):
+    """Attended chat has a human reading it; the checklist is not its rhythm."""
+    model.arm(_text("hi"))
+
+    _, msgs = await _run(model, mode="attended")
+
+    assert not [m for m in msgs if m["role"] == "user" and "todo_write" in str(m.get("content"))]
+
+
+@pytest.mark.asyncio
+async def test_only_one_scaffold_is_ever_present(model):
+    """Replaced each hop, not appended: else the model reads the oldest as readily."""
+    model.arm(_call("grep"), _call("grep", id="c2"), _call(lp.FINISH_TOOL, id="c3"))
+
+    _, msgs = await _run(model, mode="unattended")
+
+    scaffolds = [m for m in msgs if m["role"] == "user" and "todo_write" in str(m.get("content"))]
+    assert len(scaffolds) == 1, f"{len(scaffolds)} scaffolds accumulated"
+
+
+@pytest.mark.asyncio
+async def test_the_scaffold_carries_what_the_model_last_wrote(model):
+    """A model that can see the list it is behind on is one that can catch it up."""
+    items = [{"text": "one", "status": "done"}, {"text": "two", "status": "pending"}]
+    model.arm(_call("todo_write", json.dumps({"items": items})), _call(lp.FINISH_TOOL, id="c2"))
+
+    _, msgs = await _run(model, mode="unattended", tools=[*TOOLS, lp.ToolSpec(name="todo_write")])
+
+    scaffold = [m for m in msgs if m["role"] == "user" and "todo_write" in str(m.get("content"))][-1]
+    assert "one" in scaffold["content"] and "two" in scaffold["content"]
+    assert "1 still open" in scaffold["content"]

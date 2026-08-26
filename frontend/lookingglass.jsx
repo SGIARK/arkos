@@ -12,6 +12,16 @@
 
 /* The design's four statuses, from ours. `work` pings because something is
    actually happening; `attn` is the one that wants a person. */
+/* `todo_write` validates `pending | in_progress | done`, and that is what the
+   model writes. This used to test for "completed", a word the tool does not
+   accept — so a checklist the model dutifully marked done rendered entirely
+   unchecked. Both are read now: "done" is the vocabulary, "completed" is
+   whatever older rows still say. */
+function isChecked(item) {
+  const status = String((item && item.status) || "");
+  return status === "done" || status === "completed";
+}
+
 function pcStatus(status) {
   if (status === "running") return "work";
   if (status === "awaiting_approval") return "attn";
@@ -518,6 +528,13 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
   const todoRows = seededSteps
     ? planSteps.map((step) => ({ text: String(step), status: "pending" }))
     : todo || [];
+  /* A COMPLETED run never shows unchecked boxes: the harness sweeps the list at
+     the terminal (11.11.1), and this is the same fact rendered — a seeded list
+     the model never wrote to would otherwise sit unchecked under a completed
+     banner and contradict it. Other terminals keep their partial list, which is
+     an honest record of where the run stopped. */
+  const doneRun = session.status === "completed";
+  const shownRows = doneRun ? todoRows.map((r) => ({ ...r, status: "done" })) : todoRows;
   // The pin outlives the run: an approved plan that finished still says where
   // it was saved. It goes only when the plan is dismissed.
   const showPin = !!approvedPlan;
@@ -903,13 +920,13 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
               {seededSteps ? `steps · plan.md v${approvedPlan.version || 1}` : "todo"}
             </span>
             <div className="todo-list">
-              {!todoRows.length ? (
+              {!shownRows.length ? (
                 <span className="mute" style={{ fontSize: 11.5, fontStyle: "italic" }}>no steps yet</span>
               ) : (
-                todoRows.map((item, i) => (
-                  <label className={"todo-item" + (item.status === "completed" ? " done" : "")} key={i}>
+                shownRows.map((item, i) => (
+                  <label className={"todo-item" + (isChecked(item) ? " done" : "")} key={i}>
                     {/* The model owns the checklist; this is a readout, not a control. */}
-                    <input type="checkbox" checked={item.status === "completed"} readOnly />
+                    <input type="checkbox" checked={isChecked(item)} readOnly />
                     <span>{item.text || item.title || String(item)}</span>
                   </label>
                 ))

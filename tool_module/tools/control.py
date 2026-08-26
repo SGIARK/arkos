@@ -233,4 +233,8 @@ PARK_KINDS: dict[str, str] = {
 }
 PARK_TOOLS = frozenset(PARK_KINDS)
 
+# The checklist tool. Named here because the runner turns its call into the
+# `todo` event — the tool itself only answers the model.
+TODO_TOOL = TodoWrite.spec.name
+
 TOOLS = [FinishTask(), Ask(), RequestApproval(), ProposePlan(), TodoWrite(), ReadResult()]

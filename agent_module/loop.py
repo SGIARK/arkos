@@ -43,6 +43,9 @@ FINISH_TOOL = "finish_task"
 # stalled. One is answered with a continuation, the second with the finish
 # nudge, and the third ends it: two injections is the whole of what the prompt
 # promises, and a fourth would just be the same hop again.
+# The checklist tool, named here rather than imported: the loop does not depend
+# on `tool_module.tools`, and this is the one name it needs from there.
+_TODO_TOOL = "todo_write"
 _BARE_TEXT_LIMIT = 3
 
 
@@ -159,6 +162,13 @@ async def run_turn(
     bare_streak = 0
     model_retries = 0
     reattempt = False
+    # The checklist as the model last wrote it, and the scaffold message that
+    # carries it. Exactly one copy lives in `messages`: it is replaced each hop
+    # rather than appended, or an unattended run accumulates one stale copy per
+    # hop and the model reads the oldest as readily as the newest.
+    todo_items: list[dict[str, Any]] = []
+    todo_calls: dict[str, list[dict[str, Any]]] = {}
+    scaffold: dict[str, Any] | None = None
 
     while True:
         if hops_used >= budgets.max_hops:
@@ -189,6 +199,17 @@ async def run_turn(
         if steer is not None:
             for said in await steer():
                 messages.append({"role": "user", "content": said})
+
+        # The checklist discipline, injected into the CONTEXT and not the log
+        # (11.11.1). An unattended run had nothing asking it to keep the list
+        # current, so runs finished with unchecked steps under a completed
+        # banner. Context rather than an event because it is a standing
+        # instruction re-stated every hop, not something that happened.
+        if mode == "unattended":
+            if scaffold is not None and scaffold in messages:
+                messages.remove(scaffold)
+            scaffold = {"role": "user", "content": prompts.checklist_scaffold(todo_items)}
+            messages.append(scaffold)
 
         hop = _Hop()
         try:
@@ -260,6 +281,17 @@ async def run_turn(
 
                 for batch in _batch_by_readonly(calls, by_name):
                     async for event in _run_batch(batch, by_name, dispatch, state, messages, store_blob):
+                        # Remembered from the CALL and committed on a successful
+                        # RESULT: the args carry the list, the result carries
+                        # whether it was accepted, and neither alone is enough.
+                        if isinstance(event, ToolCallEvent) and event.name == _TODO_TOOL:
+                            items = event.args.get("items")
+                            if isinstance(items, list):
+                                todo_calls[event.id] = [i for i in items if isinstance(i, dict)]
+                        elif isinstance(event, ToolResultEvent) and event.id in todo_calls:
+                            written = todo_calls.pop(event.id)
+                            if event.ok:
+                                todo_items = written
                         yield event
 
         except TimeoutError:

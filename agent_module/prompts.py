@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 Mode = Literal["attended", "unattended"]
 
@@ -388,4 +388,32 @@ def finish_nudge(finish_tool: str, hops_left: int) -> str:
     return (
         f"You have {hops} left and have not called {finish_tool}. "
         f"Finish the work and call {finish_tool}, or call it with a summary of what blocked you."
+    )
+
+
+def checklist_scaffold(items: list[dict[str, Any]]) -> str:
+    """The per-hop reminder that the checklist is the model's to keep current.
+
+    11.11 seeded the block from the plan's steps and waited for a `todo_write`
+    that nothing ever asked for, so autopilot runs finished with three unchecked
+    boxes under a COMPLETED banner. The discipline belongs in the hop's rhythm
+    rather than in a hope about the model's memory, so the CURRENT state goes
+    back in every hop — a model that can see the list it is behind on is a model
+    that can catch it up.
+    """
+    if not items:
+        return (
+            "You have no checklist yet. Call `todo_write` with the steps you are working "
+            "through, then keep it current as you go."
+        )
+    marks = {"done": "x", "in_progress": "~"}
+    lines = "\n".join(
+        f"  [{marks.get(str(i.get('status', 'pending')), ' ')}] {i.get('text', '')}" for i in items
+    )
+    left = sum(1 for i in items if str(i.get("status", "pending")) != "done")
+    tail = "everything is checked off" if not left else f"{left} still open"
+    return (
+        f"Your checklist right now ({tail}):\n{lines}\n"
+        "Call `todo_write` with the WHOLE list whenever a step's status changes. "
+        "Keep exactly one item in_progress."
     )

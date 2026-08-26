@@ -1140,3 +1140,64 @@ async def test_rung_1_clears_results_and_nothing_else(monkeypatch):
     # Every clearable result is gone and the view is still over the ceiling.
     assert folded.transform.dropped_refs == refs
     assert runner._estimate_tokens(folded.messages) > int(runner._input_budget() * 0.8)
+
+
+# --- the terminal checklist sweep (11.11.1) -------------------------------------
+
+
+def _sweep_sink(todo):
+    """A sink with just enough on it to run the terminal sweep."""
+    sink = runner._Sink.__new__(runner._Sink)
+    sink.session = SimpleNamespace(id="3f1d4a02-0000-4000-8000-0000000000ab", mode="unattended")
+    sink._todo = list(todo)
+    sink._queue = asyncio.Queue()
+    sink._hops = 0
+    sink._calls = {}
+    sink._park = None
+    return sink
+
+
+async def test_a_completed_run_never_leaves_unchecked_steps():
+    """The harness KNOWS the plan concluded; the model may just not have said so."""
+    sink = _sweep_sink([{"text": "one", "status": "done"}, {"text": "two", "status": "pending"}])
+
+    await sink._sweep_checklist(DoneEvent(reason="completed"))
+
+    swept = sink._queue.get_nowait()
+    assert [i["status"] for i in swept.items] == ["done", "done"]
+    assert sink._todo[1]["status"] == "done"
+
+
+async def test_a_cancelled_run_keeps_its_partial_checklist():
+    """Where it stopped is the one thing a cancelled run has to say."""
+    sink = _sweep_sink([{"text": "one", "status": "done"}, {"text": "two", "status": "pending"}])
+
+    await sink._sweep_checklist(DoneEvent(reason="cancelled"))
+
+    assert sink._queue.empty()
+    assert sink._todo[1]["status"] == "pending"
+
+
+async def test_a_failed_run_keeps_its_partial_checklist():
+    sink = _sweep_sink([{"text": "one", "status": "in_progress"}])
+
+    await sink._sweep_checklist(DoneEvent(reason="failed"))
+
+    assert sink._queue.empty()
+
+
+async def test_an_already_complete_checklist_is_not_rewritten():
+    """No event for a fact the transcript already carries."""
+    sink = _sweep_sink([{"text": "one", "status": "done"}])
+
+    await sink._sweep_checklist(DoneEvent(reason="completed"))
+
+    assert sink._queue.empty()
+
+
+async def test_a_run_with_no_checklist_sweeps_nothing():
+    sink = _sweep_sink([])
+
+    await sink._sweep_checklist(DoneEvent(reason="completed"))
+
+    assert sink._queue.empty()

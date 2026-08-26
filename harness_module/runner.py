@@ -13,7 +13,7 @@ import logging
 import posixpath
 import time
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -25,6 +25,7 @@ from agent_module.events import (
     Event,
     ReasoningEvent,
     StatusEvent,
+    TodoEvent,
     ToolCallEvent,
     ToolResultEvent,
     UserEvent,
@@ -41,7 +42,7 @@ from harness_module.stream import stream
 from tool_module import registry
 from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, ToolUnavailable
 from tool_module.sandbox import manager as sandbox_manager
-from tool_module.tools.control import PARK_KINDS
+from tool_module.tools.control import PARK_KINDS, TODO_TOOL
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,9 @@ class Folded:
     # The last event this view contains. Steering reads from here, so a message
     # that landed between the fold and the first hop is carried, not skipped.
     last_seq: int = 0
+    # The checklist the log ends on. UI-only as a message, but the terminal
+    # sweep needs it across a resume, where the runner's own copy starts empty.
+    todo: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _cleared_text(ref: str) -> str:
@@ -157,6 +161,10 @@ async def fold(
     """
     now = now or datetime.now(UTC)
     events = await _all_events(session.id)
+    todo = next(
+        (list(e.payload.get("items") or []) for e in reversed(events) if e.kind == "todo"),
+        [],
+    )
     # `core` rather than `memory`: the module is imported under that name, and a
     # local shadowing it makes the very next call to it a NameError.
     core = _capped_memory(await memory.read_memory(session.user_id))
@@ -174,7 +182,7 @@ async def fold(
     threshold = float(_cfg("context.recovery_threshold", 0.8))
     ceiling = int(budget * threshold)
     if ceiling <= 0 or _estimate_tokens(messages) <= ceiling:
-        return Folded(messages, hops_used, last_seq=last_seq)
+        return Folded(messages, hops_used, last_seq=last_seq, todo=todo)
 
     cleared: list[str] = []
     for ref in _clearable_refs(events):
@@ -185,7 +193,7 @@ async def fold(
 
     if not cleared:
         logger.warning("session %s: the view is over budget and nothing holds a ref to clear", session.id)
-        return Folded(messages, hops_used, last_seq=last_seq)
+        return Folded(messages, hops_used, last_seq=last_seq, todo=todo)
 
     if _estimate_tokens(messages) > ceiling:
         # Rung 1 clears results and nothing else, so a view dominated by the system
@@ -196,7 +204,7 @@ async def fold(
             session.id,
         )
     logger.info("session %s: cleared %d result(s) from the view", session.id, len(cleared))
-    return Folded(messages, hops_used, ViewTransformEvent(rung=1, dropped_refs=cleared), last_seq=last_seq)
+    return Folded(messages, hops_used, ViewTransformEvent(rung=1, dropped_refs=cleared), last_seq=last_seq, todo=todo)
 
 
 def _capped_memory(core: str) -> str:
@@ -549,6 +557,9 @@ async def _drive(session_id: str) -> None:
         started = time.monotonic()
         folded = await fold(session, shipped.servers)
         messages, hops_used = folded.messages, folded.hops_used
+        # Seeded so a resumed run can still sweep: the runner's own copy is
+        # populated by `emit`, which has seen nothing yet on a fresh turn.
+        sink._todo = list(folded.todo)
         system_log.record(
             "fold",
             session_id=session_id,
@@ -974,6 +985,9 @@ class _Sink:
     def __init__(self, session: Session):
         self.session = session
         self._queue: asyncio.Queue[Any] = asyncio.Queue()
+        # The checklist as the model last wrote it, for the hop scaffold
+        # and the terminal sweep. Seeded from the log on resume.
+        self._todo: list[dict[str, Any]] = []
         # asyncio.Queue has no un-get, so a merge that reads one event too many parks
         # it here for the next iteration.
         self._pushback: list[Any] = []
@@ -1284,6 +1298,16 @@ class _Sink:
                 logger.info("session %s: parking on gated call %s (%s)", self.session.id, event.id, name)
                 return  # dropped on purpose: the call stays open across the park
             name, args = self._calls.get(event.id, ("", {}))
+            if event.ok and name == TODO_TOOL:
+                # `todo_write` had no writer (11.11.1). The tool returned a
+                # sentence and nothing else: no event reached the log, so the
+                # checklist the model kept was invisible to every surface and to
+                # the fold. The call's own args ARE the list — latest-wins, whole
+                # list every time — so this is the moment it becomes a fact.
+                items = args.get("items")
+                if isinstance(items, list):
+                    self._todo = [dict(i) for i in items if isinstance(i, dict)]
+                    self._queue.put_nowait(TodoEvent(items=self._todo))
             if event.ok and name in PARK_KINDS:
                 # A park tool's own result: the call is closed, and THIS is the
                 # moment the session parks. `_calls` already knows every call of
@@ -1421,6 +1445,7 @@ class _Sink:
                 # install) is still there when the run picks back up. Leases go
                 # either way: a session that is not acting holds none.
                 await self._release_leases(keep_box=done.reason == "stopped")
+                await self._sweep_checklist(done)
                 await self._drain()
                 # The invariant refuses a `done` while a call is open.
                 closed = await slog.close_dangling(self.session.id)
@@ -1442,6 +1467,25 @@ class _Sink:
         except Exception:
             self._reap_later(done)
             raise
+
+    async def _sweep_checklist(self, done: DoneEvent) -> None:
+        """On a COMPLETED run, resolve the checklist. On any other ending, leave it.
+
+        The harness knows the plan concluded; the model may simply not have said
+        so, and a completed banner over unchecked boxes contradicts itself. Only
+        `completed` sweeps: a failed or cancelled run's half-checked list is an
+        honest record of where it stopped, and tidying that would erase the one
+        thing it has to say.
+
+        Queued rather than written directly so it lands in the same order the
+        transcript already has — before the terminal, after the work.
+        """
+        if done.reason != "completed" or not self._todo:
+            return
+        if all(str(i.get("status")) == "done" for i in self._todo):
+            return
+        self._todo = [{**item, "status": "done"} for item in self._todo]
+        self.emit(TodoEvent(items=self._todo))
 
     def _reap_later(self, done: DoneEvent) -> None:
         """Retries this terminal in the background until it lands or the attempts run out."""
