@@ -1367,18 +1367,10 @@ async def read_result(ref: str, offset: int = 0, limit: int = 2000, user_id: str
 async def attention_stream(user_id: str = CurrentUser) -> StreamingResponse:
     """Nudge this human whenever their waiting list moves. One per sign-in.
 
-    The account's attention used to depend on a MOUNTED session window bumping a
-    `pulse`: parking a gated call while sitting on the desk published into a
-    session stream nobody was reading, and the waiting list stayed frozen until
-    something happened to open the right window. This is the channel that fixes
-    that, and it is subscribed once at sign-in rather than per surface.
-
-    A frame carries no approval row on purpose. It means "read `/attention`
-    again", and the client already knows how to ask at three scopes; shipping
-    the row here would be a second way to learn the same fact, and two ways
-    drift. So there is no `Last-Event-ID` and no replay either: a missed nudge
-    costs one stale list until the next one, where a missed session EVENT would
-    cost a hole in a transcript.
+    A frame carries no approval row on purpose: it means "read `/attention`
+    again", and the client already asks at three scopes — two ways to learn one
+    fact drift. Hence no `Last-Event-ID` and no replay; a missed nudge costs one
+    stale list, where a missed session EVENT would cost a hole in a transcript.
     """
     return StreamingResponse(
         _attention_frames(user_id),

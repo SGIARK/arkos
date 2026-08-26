@@ -82,13 +82,9 @@ function App() {
 
   const bump = useCallback(() => setPulse((n) => n + 1), []);
 
-  /* The pending count in the topbar, and the alert dot on the rail.
-
-     Keyed to `user`, NOT to `pulse`. `pulse` is bumped from exactly one place —
-     a MOUNTED session window's stream handler — so while this list depended on
-     it, parking a gated call anywhere else published into a session stream
-     nobody was reading and the list stayed frozen. It is announced from where
-     the row is written now (11.11), over a per-user channel subscribed once. */
+  /* The pending count in the topbar, and the alert dot on the rail. Keyed to
+     `user`, NOT to `pulse`: the account list must not depend on any window
+     being mounted (11.11). */
   const readWaiting = useCallback(() => {
     api.attention().then(setWaiting).catch(() => {});
   }, []);
@@ -96,9 +92,8 @@ function App() {
   useEffect(() => {
     if (!user) return undefined;
     readWaiting();
-    /* One subscription for the account, held for the whole session. A frame
-       carries no row: it means "read the list again", and the first frame
-       arrives on connect so "subscribed" and "current" are the same moment. */
+    /* One subscription for the account. The first frame arrives on connect, so
+       "subscribed" and "current" are the same moment. */
     return api.watchAttention(readWaiting);
   }, [user, readWaiting]);
 

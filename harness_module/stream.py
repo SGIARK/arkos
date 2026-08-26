@@ -3,13 +3,9 @@
 The log in Postgres is the record; this pushes only. A subscriber whose queue overflows
 receives the LAGGED sentinel and re-reads from the log after its last seq.
 
-TWO CHANNELS, one rule. A session's events fan out per session, and attention
-fans out per USER — and both are published from the code that writes the row,
-never relayed by a bystander. That rule is the whole point of the second
-channel: account-level attention used to be driven by a `pulse` that only a
-MOUNTED session window could bump, so parking a call while sitting on the desk
-published to a stream nobody was reading and the waiting list stayed frozen.
-State has to announce itself from where it is written.
+TWO CHANNELS, one rule: session events fan out per session, attention fans out
+per USER, and both are published from the code that writes the row. See
+contracts, "ANNOUNCE FROM WHERE IT IS WRITTEN".
 """
 
 from __future__ import annotations
