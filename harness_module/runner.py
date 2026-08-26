@@ -179,8 +179,11 @@ async def fold(
     """
     now = now or datetime.now(UTC)
     events = await _all_events(session.id)
+    # `StoredEvent` wraps the event; the kind is on the event, not the row. And
+    # the items are typed on TodoEvent, so isinstance is the honest test rather
+    # than a string compare against a payload dict that does not exist here.
     todo = next(
-        (list(e.payload.get("items") or []) for e in reversed(events) if e.kind == "todo"),
+        (list(e.event.items) for e in reversed(events) if isinstance(e.event, TodoEvent)),
         [],
     )
     # `core` rather than `memory`: the module is imported under that name, and a
