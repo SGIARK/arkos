@@ -1661,7 +1661,13 @@ async def test_moving_between_folders_is_an_ordinary_move(client, tmp_path):
         moved = await client.post("/files/move", json={"from": "triage/a.md", "to": "archive/a.md"})
 
         assert moved.status_code == 200
-        assert [f["path"] for f in (await client.get("/files")).json()] == [
+        # SORTED, because the endpoint's order is the database's collation and
+        # that is not the same everywhere: under postgres:15's default, `a.md`
+        # sorts before `archive/.keep`; under the deployment's it is the other
+        # way round. The assertion is about WHAT is in the store after a move,
+        # and asserting an order the endpoint never promised made it fail on one
+        # of the two databases this suite is meant to run against.
+        assert sorted(f["path"] for f in (await client.get("/files")).json()) == [
             "archive/.keep",
             "archive/a.md",
         ]
