@@ -407,9 +407,7 @@ def checklist_scaffold(items: list[dict[str, Any]]) -> str:
             "through, then keep it current as you go."
         )
     marks = {"done": "x", "in_progress": "~"}
-    lines = "\n".join(
-        f"  [{marks.get(str(i.get('status', 'pending')), ' ')}] {i.get('text', '')}" for i in items
-    )
+    lines = "\n".join(f"  [{marks.get(str(i.get('status', 'pending')), ' ')}] {i.get('text', '')}" for i in items)
     left = sum(1 for i in items if str(i.get("status", "pending")) != "done")
     tail = "everything is checked off" if not left else f"{left} still open"
     return (
