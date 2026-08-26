@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_module.events import TODO_IN_PROGRESS, TODO_STATUSES, todo_is_done
+from agent_module.events import TODO_IN_PROGRESS, TODO_STATUSES, TODO_TOOL, todo_is_done
 from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, fail, ok
 
 
@@ -159,7 +159,7 @@ class ProposePlan:
 
 class TodoWrite:
     spec = ToolSpec(
-        name="todo_write",
+        name=TODO_TOOL,
         description=(
             "Replace your todo list. Send the whole list every time; it is latest-wins, not "
             "a patch. Keep exactly one item in_progress."
@@ -232,8 +232,9 @@ PARK_KINDS: dict[str, str] = {
 }
 PARK_TOOLS = frozenset(PARK_KINDS)
 
-# The checklist tool. Named here because the runner turns its call into the
-# `todo` event — the tool itself only answers the model.
-TODO_TOOL = TodoWrite.spec.name
+# Re-exported so a caller that has the tool module does not need the events one.
+# The NAME is defined in `agent_module.events`, with the shape it writes, so the
+# spec and the trackers cannot come to name different tools.
+assert TodoWrite.spec.name == TODO_TOOL, "the spec and the shared constant disagree"
 
 TOOLS = [FinishTask(), Ask(), RequestApproval(), ProposePlan(), TodoWrite(), ReadResult()]

@@ -22,6 +22,7 @@ from agent_module.events import (
     DoneEvent,
     Event,
     ReasoningEvent,
+    TodoTracker,
     ToolCallEvent,
     ToolResultEvent,
     UserEvent,
@@ -43,9 +44,6 @@ FINISH_TOOL = "finish_task"
 # stalled. One is answered with a continuation, the second with the finish
 # nudge, and the third ends it: two injections is the whole of what the prompt
 # promises, and a fourth would just be the same hop again.
-# The checklist tool, named here rather than imported: the loop does not depend
-# on `tool_module.tools`, and this is the one name it needs from there.
-_TODO_TOOL = "todo_write"
 _BARE_TEXT_LIMIT = 3
 
 
@@ -166,8 +164,7 @@ async def run_turn(
     # carries it. Exactly one copy lives in `messages`: it is replaced each hop
     # rather than appended, or an unattended run accumulates one stale copy per
     # hop and the model reads the oldest as readily as the newest.
-    todo_items: list[dict[str, Any]] = []
-    todo_calls: dict[str, list[dict[str, Any]]] = {}
+    todo = TodoTracker()
     scaffold: dict[str, Any] | None = None
 
     while True:
@@ -208,7 +205,7 @@ async def run_turn(
         if mode == "unattended":
             if scaffold is not None and scaffold in messages:
                 messages.remove(scaffold)
-            scaffold = {"role": "user", "content": prompts.checklist_scaffold(todo_items)}
+            scaffold = {"role": "user", "content": prompts.checklist_scaffold(todo.items)}
             messages.append(scaffold)
 
         hop = _Hop()
@@ -281,17 +278,10 @@ async def run_turn(
 
                 for batch in _batch_by_readonly(calls, by_name):
                     async for event in _run_batch(batch, by_name, dispatch, state, messages, store_blob):
-                        # Remembered from the CALL and committed on a successful
-                        # RESULT: the args carry the list, the result carries
-                        # whether it was accepted, and neither alone is enough.
-                        if isinstance(event, ToolCallEvent) and event.name == _TODO_TOOL:
-                            items = event.args.get("items")
-                            if isinstance(items, list):
-                                todo_calls[event.id] = [i for i in items if isinstance(i, dict)]
-                        elif isinstance(event, ToolResultEvent) and event.id in todo_calls:
-                            written = todo_calls.pop(event.id)
-                            if event.ok:
-                                todo_items = written
+                        if isinstance(event, ToolCallEvent):
+                            todo.saw_call(event.id, event.name, event.args)
+                        elif isinstance(event, ToolResultEvent):
+                            todo.saw_result(event.id, event.ok)
                         yield event
 
         except TimeoutError:

@@ -19,7 +19,6 @@ from typing import Any
 
 from agent_module import prompts
 from agent_module.events import (
-    TODO_DONE,
     BudgetEvent,
     ContentEvent,
     DoneEvent,
@@ -27,11 +26,11 @@ from agent_module.events import (
     ReasoningEvent,
     StatusEvent,
     TodoEvent,
+    TodoTracker,
     ToolCallEvent,
     ToolResultEvent,
     UserEvent,
     ViewTransformEvent,
-    todo_is_done,
 )
 from agent_module.loop import Budgets, Dispatch, cap_view, run_turn
 from config_module.loader import cfg as _cfg
@@ -44,7 +43,7 @@ from harness_module.stream import stream
 from tool_module import registry
 from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, ToolUnavailable
 from tool_module.sandbox import manager as sandbox_manager
-from tool_module.tools.control import PARK_KINDS, TODO_TOOL
+from tool_module.tools.control import PARK_KINDS
 
 logger = logging.getLogger(__name__)
 
@@ -588,7 +587,7 @@ async def _drive(session_id: str) -> None:
         messages, hops_used = folded.messages, folded.hops_used
         # Seeded so a resumed run can still sweep: the runner's own copy is
         # populated by `emit`, which has seen nothing yet on a fresh turn.
-        sink._todo = list(folded.todo)
+        sink._todo.items = list(folded.todo)
         system_log.record(
             "fold",
             session_id=session_id,
@@ -1014,9 +1013,9 @@ class _Sink:
     def __init__(self, session: Session):
         self.session = session
         self._queue: asyncio.Queue[Any] = asyncio.Queue()
-        # The checklist as the model last wrote it, for the hop scaffold
-        # and the terminal sweep. Seeded from the log on resume.
-        self._todo: list[dict[str, Any]] = []
+        # The checklist as the model last wrote it, for the terminal sweep.
+        # Seeded from the log on resume.
+        self._todo = TodoTracker()
         # asyncio.Queue has no un-get, so a merge that reads one event too many parks
         # it here for the next iteration.
         self._pushback: list[Any] = []
@@ -1378,16 +1377,13 @@ class _Sink:
                 logger.info("session %s: parking on gated call %s (%s)", self.session.id, event.id, name)
                 return  # dropped on purpose: the call stays open across the park
             name, args = self._calls.get(event.id, ("", {}))
-            if event.ok and name == TODO_TOOL:
-                # `todo_write` had no writer (11.11.1). The tool returned a
-                # sentence and nothing else: no event reached the log, so the
-                # checklist the model kept was invisible to every surface and to
-                # the fold. The call's own args ARE the list — latest-wins, whole
-                # list every time — so this is the moment it becomes a fact.
-                items = args.get("items")
-                if isinstance(items, list):
-                    self._todo = [dict(i) for i in items if isinstance(i, dict)]
-                    self._queue.put_nowait(TodoEvent(items=self._todo))
+            # `todo_write` had no writer before 11.11.1: the tool returned a
+            # sentence, no event reached the log, and the checklist the model
+            # kept was invisible to every surface and to the fold. The tracker
+            # holds the list; this is the moment it becomes a fact.
+            self._todo.saw_call(event.id, name, args)
+            if self._todo.saw_result(event.id, bool(event.ok)):
+                self._queue.put_nowait(TodoEvent(items=self._todo.items))
             if event.ok and name in PARK_KINDS:
                 # A park tool's own result: the call is closed, and THIS is the
                 # moment the session parks. `_calls` already knows every call of
@@ -1560,12 +1556,10 @@ class _Sink:
         Queued rather than written directly so it lands in the same order the
         transcript already has — before the terminal, after the work.
         """
-        if done.reason != "completed" or not self._todo:
+        if done.reason != "completed":
             return
-        if all(todo_is_done(item) for item in self._todo):
-            return
-        self._todo = [{**item, "status": TODO_DONE} for item in self._todo]
-        self.emit(TodoEvent(items=self._todo))
+        if self._todo.resolve():
+            self.emit(TodoEvent(items=self._todo.items))
 
     def _reap_later(self, done: DoneEvent) -> None:
         """Retries this terminal in the background until it lands or the attempts run out."""

@@ -136,6 +136,10 @@ class StatusEvent(Event):
 # never accepted, so a list the model dutifully marked done rendered entirely
 # unchecked. One definition, and the vocabulary lives with it.
 
+# The tool that writes it. `tool_module.tools.control` re-exports this as
+# TODO_TOOL so the spec and the trackers cannot name different tools.
+TODO_TOOL = "todo_write"
+
 TodoStatus = Literal["pending", "in_progress", "done"]
 
 TODO_STATUSES: frozenset[str] = frozenset(("pending", "in_progress", "done"))
@@ -158,6 +162,47 @@ def todo_is_done(item: dict[str, Any]) -> bool:
 class TodoEvent(Event):
     kind: ClassVar[EventKind] = "todo"
     items: list[dict[str, Any]]
+
+
+class TodoTracker:
+    """Follows `todo_write` calls past and reports the list as it stands.
+
+    The list is in the CALL's arguments and whether it was accepted is in the
+    RESULT, so neither alone is enough — which is why this is a small object
+    rather than a function. `todo_write` is latest-wins: the whole list every
+    time, so a successful call replaces rather than merges.
+
+    Written once because it was written twice: the loop kept a copy for its hop
+    scaffold and the runner kept another for its terminal sweep, and the two
+    could disagree about what the model had last said.
+    """
+
+    def __init__(self) -> None:
+        self.items: list[dict[str, Any]] = []
+        self._pending: dict[str, list[dict[str, Any]]] = {}
+
+    def saw_call(self, call_id: str, name: str, args: dict[str, Any]) -> None:
+        """Remember what a `todo_write` asked for; other tools are ignored."""
+        if name != TODO_TOOL:
+            return
+        items = args.get("items")
+        if isinstance(items, list):
+            self._pending[call_id] = [item for item in items if isinstance(item, dict)]
+
+    def saw_result(self, call_id: str, ok: bool) -> bool:
+        """Commit that call if it succeeded. True when the list changed."""
+        written = self._pending.pop(call_id, None)
+        if written is None or not ok:
+            return False
+        self.items = written
+        return True
+
+    def resolve(self) -> bool:
+        """Mark everything done. True when that changed anything."""
+        if not self.items or all(todo_is_done(item) for item in self.items):
+            return False
+        self.items = [{**item, "status": TODO_DONE} for item in self.items]
+        return True
 
 
 @dataclass(slots=True)

@@ -18,6 +18,7 @@ from agent_module.events import (
     DoneEvent,
     StatusEvent,
     TodoEvent,
+    TodoTracker,
     ToolCallEvent,
     ToolResultEvent,
     UserEvent,
@@ -1157,7 +1158,8 @@ def _sweep_sink(todo):
     """A sink with just enough on it to run the terminal sweep."""
     sink = runner._Sink.__new__(runner._Sink)
     sink.session = SimpleNamespace(id="3f1d4a02-0000-4000-8000-0000000000ab", mode="unattended")
-    sink._todo = list(todo)
+    sink._todo = TodoTracker()
+    sink._todo.items = list(todo)
     sink._queue = asyncio.Queue()
     sink._hops = 0
     sink._calls = {}
@@ -1173,7 +1175,7 @@ async def test_a_completed_run_never_leaves_unchecked_steps():
 
     swept = sink._queue.get_nowait()
     assert [i["status"] for i in swept.items] == ["done", "done"]
-    assert sink._todo[1]["status"] == "done"
+    assert sink._todo.items[1]["status"] == "done"
 
 
 async def test_a_cancelled_run_keeps_its_partial_checklist():
@@ -1183,7 +1185,7 @@ async def test_a_cancelled_run_keeps_its_partial_checklist():
     await sink._sweep_checklist(DoneEvent(reason="cancelled"))
 
     assert sink._queue.empty()
-    assert sink._todo[1]["status"] == "pending"
+    assert sink._todo.items[1]["status"] == "pending"
 
 
 async def test_a_failed_run_keeps_its_partial_checklist():
