@@ -38,6 +38,12 @@ def _as_uuid(value: Any) -> uuid.UUID | None:
         return None
 
 
+# The session columns the world tools report, spelled once. Two queries below
+# carried byte-identical copies of this list; a field added to one and not the
+# other is a tool that answers differently depending on which one you called.
+_SESSION_FIELDS = "id, project_id, title, goal, status, mode, terminal_reason, hops_used, created_at, ended_at"
+
+
 class ListProjects:
     spec = ToolSpec(
         name="list_projects",
@@ -144,9 +150,8 @@ class ListSessions:
         # A NULL parameter means "no filter", so one query serves every
         # combination of the two optional arguments.
         rows = await pool.fetch(
-            """
-            SELECT id, project_id, title, goal, status, mode, terminal_reason,
-                   hops_used, created_at, ended_at
+            f"""
+            SELECT {_SESSION_FIELDS}
               FROM sessions
              WHERE user_id = $1
                AND ($2::uuid IS NULL OR project_id = $2)
@@ -184,9 +189,8 @@ class GetSession:
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
         session = await pool.fetchrow(
-            """
-            SELECT id, project_id, title, goal, status, mode, terminal_reason,
-                   hops_used, created_at, ended_at
+            f"""
+            SELECT {_SESSION_FIELDS}
               FROM sessions WHERE id = $1 AND user_id = $2
             """,
             _as_uuid(args["session_id"]),

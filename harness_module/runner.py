@@ -74,7 +74,13 @@ def _destructive(name: str) -> bool:
 
 @dataclass(slots=True)
 class Session:
-    """The session columns a turn needs, read once at the start of the turn."""
+    """The session columns a turn needs, read once at the start of the turn.
+
+    The SELECT that fills this is generated from these fields (`_SESSION_COLUMNS`
+    below), so the query cannot come to disagree with the dataclass. Two lists
+    that happen to match today is how `Approval` broke: a column added to one and
+    not the other is a KeyError on a path no local test reaches.
+    """
 
     id: str
     user_id: str
@@ -85,6 +91,11 @@ class Session:
     created_at: datetime
     cursor_seq: int
     hops_used: int
+
+
+# Every field of `Session`, in declaration order. The field names ARE the column
+# names, which is the whole reason this can be generated rather than typed twice.
+_SESSION_COLUMNS = ", ".join(Session.__dataclass_fields__)
 
 
 # The live turn per session. At most one; a second start() is a no-op.
@@ -103,10 +114,7 @@ _reapers: set[asyncio.Task[None]] = set()
 async def load(session_id: str) -> Session | None:
     """Returns the session, or None if there is no such row."""
     row = await pool.fetchrow(
-        """
-        SELECT id, user_id, project_id, mode, status, goal, created_at, cursor_seq, hops_used
-          FROM sessions WHERE id = $1
-        """,
+        f"SELECT {_SESSION_COLUMNS} FROM sessions WHERE id = $1",
         _uuid(session_id),
     )
     if row is None:
