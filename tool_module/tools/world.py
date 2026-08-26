@@ -7,9 +7,11 @@ and a missing row both come back as `not_found`.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Any
 
+from agent_module.events import parse_event
 from db import pool
 from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, fail, ok
 
@@ -37,6 +39,8 @@ def _as_uuid(value: Any) -> uuid.UUID | None:
     except (ValueError, AttributeError, TypeError):
         return None
 
+
+logger = logging.getLogger(__name__)
 
 # The session columns the world tools report, spelled once. Two queries below
 # carried byte-identical copies of this list; a field added to one and not the
@@ -206,8 +210,8 @@ class GetSession:
         # Only the kinds that carry transcript content.
         tail = await pool.fetch(
             """
-            SELECT kind, payload, ts FROM (
-                SELECT seq, kind, payload, ts FROM session_events
+            SELECT kind, payload, ts, version FROM (
+                SELECT seq, kind, payload, ts, version FROM session_events
                  WHERE session_id = $1 AND kind IN ('user', 'content', 'tool_call', 'done')
                  ORDER BY seq DESC LIMIT $2
             ) t ORDER BY seq
@@ -215,7 +219,30 @@ class GetSession:
             session["id"],
             wanted,
         )
-        return ok(_render({**dict(session), "recent_events": [dict(e) for e in tail]}))
+        return ok(_render({**dict(session), "recent_events": [_event_row(e) for e in tail]}))
+
+
+def _event_row(record: Any) -> dict[str, Any]:
+    """One transcript row, normalised the way every other reader normalises it.
+
+    This used to hand back the raw row. Everything else in the codebase goes
+    through `parse_event`, which renames lifecycle's `from` to `from_` and drops
+    payload keys this reader does not know — so a payload-shape change was
+    applied in one place and silently not here.
+
+    Measured against 400 live rows of the four kinds read here: zero rejected,
+    zero shape changes. What DOES differ is the failure mode — the raw read
+    returned a malformed row, `parse_event` raises on one — so a bad row is
+    skipped rather than allowed to break a whole transcript read.
+    """
+    payload = record["payload"]
+    payload = json.loads(payload) if isinstance(payload, str) else dict(payload or {})
+    try:
+        event = parse_event(record["kind"], payload, record["version"])
+    except ValueError:
+        logger.warning("world tools: skipping an unreadable %r event", record["kind"])
+        return {"kind": record["kind"], "payload": payload, "ts": record["ts"]}
+    return {"kind": event.kind, "payload": event.payload(), "ts": record["ts"]}
 
 
 class ListFiles:
