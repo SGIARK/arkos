@@ -68,7 +68,6 @@ browser:
   # set BROWSERLESS_URL in the environment — the tool reads this first and falls
   # back to the variable. Same reasoning as the Supabase and e2b keys.
   cdp_url: ""
-  headless: true
   max_steps: 25                   # the vendor's own cap on how many steps it plans
   wall_clock_s: 240               # at this point it is ASKED to stop, keeping partial results
   hard_timeout_s: 300             # the wait_for backstop, for a run that ignores being asked.

@@ -4,8 +4,9 @@ Every error response carries `{code, message, retryable}`. The caller is
 identified by the session cookie; no endpoint reads a user id from a header,
 body or query string, the OAuth callback included.
 
-Auth, chat, files, attention and the MCP connections surface are served here.
-Browser frames have no route until Task 9 rebuilds the browser.
+Auth, chat, files, attention and the MCP connections surface are served here,
+along with the browser's frame side-channel — an SSE stream of JPEGs keyed
+(user, session), never appended to the log and never replayed.
 """
 
 from __future__ import annotations
