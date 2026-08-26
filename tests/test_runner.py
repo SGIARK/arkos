@@ -17,6 +17,7 @@ from agent_module.events import (
     ContentEvent,
     DoneEvent,
     StatusEvent,
+    TodoEvent,
     ToolCallEvent,
     ToolResultEvent,
     UserEvent,
@@ -1279,3 +1280,71 @@ async def test_attended_chat_still_parks_everything():
 
     with pytest.raises(ToolUnavailable):
         await sink._approve("mcp_GMAIL_FETCH_EMAILS", {})
+
+
+# --- regressions: shape changes that crashed a live server ----------------------
+
+
+async def test_fold_reads_a_session_that_has_todo_events():
+    """REGRESSION. Every turn died at fold with AttributeError: 'StoredEvent'
+    object has no attribute 'kind'.
+
+    11.11.1 added the checklist extraction and reached for `e.kind`/`e.payload`
+    — the shape of a database ROW, not of the object `_all_events` returns.
+    StoredEvent wraps the event, so the kind is on `e.event`.
+
+    Nothing local caught it because fold needs a database, so this test only
+    means anything where one exists — which is the point of it.
+    """
+    session_id = await _session()
+    await slog.append(session_id, UserEvent(text="go"))
+    await slog.append(session_id, TodoEvent(items=[{"text": "step one", "status": "pending"}]))
+    await slog.append(session_id, TodoEvent(items=[{"text": "step one", "status": "done"}]))
+    session = await runner.load(session_id)
+
+    folded = await runner.fold(session)
+
+    assert folded.todo == [{"text": "step one", "status": "done"}], "the LAST todo wins"
+
+
+async def test_fold_reads_a_session_with_no_todo_events():
+    """The empty case travels the same line and must not raise either."""
+    session_id = await _session()
+    await slog.append(session_id, UserEvent(text="go"))
+    session = await runner.load(session_id)
+
+    assert (await runner.fold(session)).todo == []
+
+
+async def test_approvals_get_returns_an_answered_row():
+    """REGRESSION. Answering any approval was a 500: KeyError 'answered_by'.
+
+    11.11.2 added the column to `_COLUMNS` and to `_row`, but `get` does not use
+    `_COLUMNS` — it joins sessions for the ownership check and spells its columns
+    by hand, so it handed `_row` a record without the field `_row` had started
+    reading. Every query feeding `_row` has to carry every column it reads.
+    """
+    session_id = await _session()
+    user_id = str(await pool.fetchval("SELECT user_id FROM sessions WHERE id = $1", uuid.UUID(session_id)))
+    row = await approvals.create(session_id, "call-regression", "call", "run it?", tool_name="t", tool_args={})
+    await approvals.answer(row.id, approvals.APPROVE)
+
+    got = await approvals.get(row.id, user_id)
+
+    assert got is not None
+    assert got.answer == approvals.APPROVE
+    assert got.answered_by is None, "a human answered it, and NULL is how that is recorded"
+    assert not got.auto_answered
+
+
+async def test_approvals_get_returns_an_auto_answered_row():
+    """The other half: the column exists so these two are distinguishable."""
+    session_id = await _session()
+    user_id = str(await pool.fetchval("SELECT user_id FROM sessions WHERE id = $1", uuid.UUID(session_id)))
+    row = await approvals.create(session_id, "call-regression-2", "call", "run it?", tool_name="t", tool_args={})
+    await approvals.answer_auto(row.id, approvals.APPROVE)
+
+    got = await approvals.get(row.id, user_id)
+
+    assert got.answered_by == approvals.AUTO
+    assert got.auto_answered, "an auto answer and a human answer must not read the same"
