@@ -29,7 +29,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from agent_module import prompts
-from agent_module.events import TodoEvent, UserEvent
+from agent_module.events import TodoEvent, UserEvent, todo_item
 from config_module.loader import cfg as _cfg
 from config_module.loader import config
 from db import pool
@@ -376,7 +376,7 @@ async def create_session(body: dict[str, Any] = JsonBody, user_id: str = Current
     await _append(session_id, UserEvent(text=goal, source="human"))
     steps = body.get("steps")
     if isinstance(steps, list) and steps:
-        items = [{"text": str(s), "status": "pending"} for s in steps]
+        items = [todo_item(step) for step in steps]
         await _append(session_id, TodoEvent(items=items))
 
     await runner.start(session_id)

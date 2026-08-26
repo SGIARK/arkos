@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent_module.events import TODO_IN_PROGRESS, TODO_STATUSES, todo_is_done
 from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, fail, ok
 
 
@@ -175,23 +176,21 @@ class TodoWrite:
         },
     )
 
-    _STATUSES = {"pending", "in_progress", "done"}
-
     def validate(self, args: dict[str, Any], ctx: ToolContext) -> str | None:
         items = args.get("items") or []
         for i, item in enumerate(items):
             if not isinstance(item, dict) or "text" not in item:
                 return f"Item {i} needs a 'text' field."
             status = item.get("status", "pending")
-            if status not in self._STATUSES:
+            if status not in TODO_STATUSES:
                 return f"Item {i} has status {status!r}; use pending, in_progress or done."
-        if sum(1 for i in items if i.get("status") == "in_progress") > 1:
+        if sum(1 for i in items if i.get("status") == TODO_IN_PROGRESS) > 1:
             return "Only one item may be in_progress."
         return None
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
         items = args["items"]
-        done = sum(1 for i in items if i.get("status") == "done")
+        done = sum(1 for i in items if todo_is_done(i))
         return ok(f"Todo list updated: {done}/{len(items)} done.")
 
 

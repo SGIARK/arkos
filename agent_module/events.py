@@ -128,6 +128,32 @@ class StatusEvent(Event):
     url: str | None = None
 
 
+# --- the checklist item, defined ONCE ------------------------------------------
+#
+# This shape used to be spelled out in five places — the tool's validator, the
+# session-create seed, the terminal sweep, and twice in the frontend — and it had
+# already drifted: the UI tested for a status `"completed"` that `todo_write`
+# never accepted, so a list the model dutifully marked done rendered entirely
+# unchecked. One definition, and the vocabulary lives with it.
+
+TodoStatus = Literal["pending", "in_progress", "done"]
+
+TODO_STATUSES: frozenset[str] = frozenset(("pending", "in_progress", "done"))
+TODO_PENDING: TodoStatus = "pending"
+TODO_IN_PROGRESS: TodoStatus = "in_progress"
+TODO_DONE: TodoStatus = "done"
+
+
+def todo_item(text: str, status: str = TODO_PENDING) -> dict[str, Any]:
+    """One checklist item, built the one way it is built."""
+    return {"text": str(text), "status": status}
+
+
+def todo_is_done(item: dict[str, Any]) -> bool:
+    """Whether an item counts as finished, for anyone counting."""
+    return str(item.get("status", "")) == TODO_DONE
+
+
 @dataclass(slots=True)
 class TodoEvent(Event):
     kind: ClassVar[EventKind] = "todo"

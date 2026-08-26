@@ -19,6 +19,7 @@ from typing import Any
 
 from agent_module import prompts
 from agent_module.events import (
+    TODO_DONE,
     BudgetEvent,
     ContentEvent,
     DoneEvent,
@@ -30,6 +31,7 @@ from agent_module.events import (
     ToolResultEvent,
     UserEvent,
     ViewTransformEvent,
+    todo_is_done,
 )
 from agent_module.loop import Budgets, Dispatch, cap_view, run_turn
 from config_module.loader import cfg as _cfg
@@ -1560,9 +1562,9 @@ class _Sink:
         """
         if done.reason != "completed" or not self._todo:
             return
-        if all(str(i.get("status")) == "done" for i in self._todo):
+        if all(todo_is_done(item) for item in self._todo):
             return
-        self._todo = [{**item, "status": "done"} for item in self._todo]
+        self._todo = [{**item, "status": TODO_DONE} for item in self._todo]
         self.emit(TodoEvent(items=self._todo))
 
     def _reap_later(self, done: DoneEvent) -> None:

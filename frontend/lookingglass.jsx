@@ -12,14 +12,21 @@
 
 /* The design's four statuses, from ours. `work` pings because something is
    actually happening; `attn` is the one that wants a person. */
-/* `todo_write` validates `pending | in_progress | done`, and that is what the
-   model writes. This used to test for "completed", a word the tool does not
-   accept — so a checklist the model dutifully marked done rendered entirely
-   unchecked. Both are read now: "done" is the vocabulary, "completed" is
-   whatever older rows still say. */
+/* The checklist item shape, mirrored from `agent_module/events.py`, which is
+   where it is defined. `todo_write` validates `pending | in_progress | done`.
+   This file used to test for "completed" — a word the tool never accepted — so
+   a list the model dutifully marked done rendered entirely unchecked. Every
+   frontend reader of the shape goes through these two. */
+const TODO_DONE = "done";
+const TODO_PENDING = "pending";
+
 function isChecked(item) {
   const status = String((item && item.status) || "");
-  return status === "done" || status === "completed";
+  return status === TODO_DONE || status === "completed";
+}
+
+function todoItem(text, status) {
+  return { text: String(text), status: status || TODO_PENDING };
 }
 
 function pcStatus(status) {
@@ -526,7 +533,7 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
   const planSteps = (approvedPlan && approvedPlan.steps) || [];
   const seededSteps = (!todo || !todo.length) && planSteps.length > 0;
   const todoRows = seededSteps
-    ? planSteps.map((step) => ({ text: String(step), status: "pending" }))
+    ? planSteps.map((step) => todoItem(step))
     : todo || [];
   /* A COMPLETED run never shows unchecked boxes: the harness sweeps the list at
      the terminal (11.11.1), and this is the same fact rendered — a seeded list
@@ -534,7 +541,7 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
      banner and contradict it. Other terminals keep their partial list, which is
      an honest record of where the run stopped. */
   const doneRun = session.status === "completed";
-  const shownRows = doneRun ? todoRows.map((r) => ({ ...r, status: "done" })) : todoRows;
+  const shownRows = doneRun ? todoRows.map((r) => ({ ...r, status: TODO_DONE })) : todoRows;
   // The pin outlives the run: an approved plan that finished still says where
   // it was saved. It goes only when the plan is dismissed.
   const showPin = !!approvedPlan;
