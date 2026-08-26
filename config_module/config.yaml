@@ -146,6 +146,46 @@ budgets:
   model_retries: 3          # consecutive hop re-attempts after the client gives up
 
 tools:
+  # DESTRUCTIVE TOOLS: what autopilot will not do on its own (11.11.2).
+  #
+  # Autopilot answers its own gates — that is what the word means — but not
+  # these. Each one does something a person cannot take back by clicking undo:
+  # a sent message has left, a trashed file needs finding, a merge rewrites
+  # history, a permission hands someone else the keys. So these park for a human
+  # even in auto, and surface on the attention stream like any other park.
+  #
+  # DATA, not code, and the same set the owner ruled on in the 11.10.2 roster
+  # review. A tool absent from this list is auto-answerable, so ADD a tool here
+  # when in doubt: the cost of a needless click is a click.
+  destructive:
+    - "GITHUB_MERGE_A_BRANCH"
+    - "GITHUB_MERGE_A_PULL_REQUEST"
+    - "GITHUB_REMOVE_REVIEW_REQUEST"
+    - "GITHUB_UPDATE_A_REFERENCE"
+    - "GMAIL_DELETE_DRAFT"
+    - "GMAIL_DELETE_LABEL"
+    - "GMAIL_FORWARD_MESSAGE"
+    - "GMAIL_MOVE_THREAD_TO_TRASH"
+    - "GMAIL_MOVE_TO_TRASH"
+    - "GMAIL_REPLY_TO_THREAD"
+    - "GMAIL_SEND_DRAFT"
+    - "GMAIL_SEND_EMAIL"
+    - "GOOGLECALENDAR_DELETE_EVENT"
+    - "GOOGLECALENDAR_REMOVE_ATTENDEE"
+    - "GOOGLEDRIVE_CREATE_PERMISSION"
+    - "GOOGLEDRIVE_EDIT_FILE"
+    - "GOOGLEDRIVE_MOVE_FILE"
+    - "GOOGLEDRIVE_TRASH_FILE"
+    - "LINEAR_ARCHIVE_ISSUE"
+    - "LINEAR_ARCHIVE_PROJECT"
+    - "NOTION_ARCHIVE_NOTION_PAGE"
+    - "NOTION_DELETE_BLOCK"
+    - "NOTION_REPLACE_PAGE_CONTENT"
+    - "OUTLOOK_DELETE_MESSAGE"
+    - "OUTLOOK_FORWARD_MESSAGE"
+    - "OUTLOOK_REPLY_EMAIL"
+    - "OUTLOOK_SEND_DRAFT"
+    - "OUTLOOK_SEND_EMAIL"
   # Web search is OURS (11.10.2): app-level SerpAPI key, no per-user OAuth, so
   # every user's searches share our quota. Falls back to $SERPAPI_API_KEY.
   serpapi_key: "${SERPAPI_API_KEY}"

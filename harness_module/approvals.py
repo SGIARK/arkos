@@ -41,8 +41,13 @@ logger = logging.getLogger(__name__)
 Kind = Literal["approval", "ask", "call", "plan"]
 
 _COLUMNS = (
-    "id, session_id, tool_call_id, kind, prompt, answer, created_at, answered_at, tool_name, tool_args, consumed_at"
+    "id, session_id, tool_call_id, kind, prompt, answer, created_at, answered_at, "
+    "tool_name, tool_args, consumed_at, answered_by"
 )
+
+# What `answered_by` holds when the harness answered its own gate. NULL is a
+# human, which is why this has a name and its absence does not.
+AUTO = "auto"
 
 # What a human sends to resolve a gated call. Free text answers a question; a
 # call is a decision, and it gets a vocabulary of exactly two words.
@@ -71,6 +76,12 @@ class Approval:
     tool_args: dict[str, Any] | None = None
     # Claimed by the wake that executed it. See `consume`.
     consumed_at: datetime | None = None
+    # NULL for a human, `auto` for autopilot answering its own gate (11.11.2).
+    answered_by: str | None = None
+
+    @property
+    def auto_answered(self) -> bool:
+        return self.answered_by == AUTO
 
     @property
     def gated_call(self) -> bool:
@@ -103,6 +114,7 @@ def _row(record: Any) -> Approval:
         # asyncpg hands back jsonb as text unless a codec is registered.
         tool_args=json.loads(args) if isinstance(args, str) else args,
         consumed_at=record["consumed_at"],
+        answered_by=record["answered_by"],
     )
 
 
@@ -280,6 +292,35 @@ async def _announce(session_id: str, reason: str) -> None:
             attention.publish(str(user_id), AttentionSignal(reason=reason, session_id=session_id))
     except Exception:  # noqa: BLE001 - a signal is never worth failing a write over
         logger.warning("could not announce attention for session %s", session_id, exc_info=True)
+
+
+async def answer_auto(approval_id: str, text: str) -> Approval | None:
+    """Answer a row as the HARNESS rather than as a human (11.11.2).
+
+    The same update `answer` makes, stamped with who made it. Autopilot answering
+    its own non-destructive gate is a real approval — real row, real answer, real
+    timestamp — and the only thing that differs from a manual one is the
+    answerer, which is exactly what `answered_by` is for.
+
+    It announces on the attention channel like any other answer. A person
+    watching the pane sees the row resolve rather than the list quietly not
+    containing something it never contained.
+    """
+    record = await pool.fetchrow(
+        f"""
+        UPDATE approvals SET answer = $2, answered_at = now(), answered_by = $3
+         WHERE id = $1 AND answered_at IS NULL
+        RETURNING {_COLUMNS}
+        """,
+        _uuid(approval_id),
+        text,
+        AUTO,
+    )
+    if not record:
+        return None
+    approval = _row(record)
+    await _announce(approval.session_id, "answered")
+    return approval
 
 
 async def answer(approval_id: str, text: str) -> Approval | None:

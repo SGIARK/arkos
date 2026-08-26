@@ -22,7 +22,7 @@ from agent_module.events import (
     UserEvent,
 )
 from db import pool
-from harness_module import runner
+from harness_module import approvals, runner
 from harness_module import session_log as slog
 from harness_module.stream import stream
 from model_module import client as mc
@@ -1201,3 +1201,81 @@ async def test_a_run_with_no_checklist_sweeps_nothing():
     await sink._sweep_checklist(DoneEvent(reason="completed"))
 
     assert sink._queue.empty()
+
+
+# --- autopilot answers its own gates (11.11.2) ----------------------------------
+
+
+def test_the_destructive_check_reads_the_name_the_gate_actually_sees():
+    """The gate sees `mcp_GMAIL_SEND_EMAIL`; config names `GMAIL_SEND_EMAIL`.
+
+    Matching the raw name alone auto-approves every destructive CONNECTOR tool,
+    silently, and the first symptom is a sent email.
+    """
+    assert runner._destructive("GMAIL_SEND_EMAIL")
+    assert runner._destructive("mcp_GMAIL_SEND_EMAIL")
+    assert not runner._destructive("mcp_GMAIL_FETCH_EMAILS")
+    assert not runner._destructive("edit_file")
+
+
+def test_every_configured_destructive_tool_is_in_the_roster():
+    """A name that matches nothing protects nothing, and reads as if it does."""
+    import json
+
+    from config_module.loader import cfg
+
+    with open("config_module/composio_tools.json") as fh:
+        roster = json.load(fh)
+    served = {t for v in roster["toolkits"].values() for t in v}
+    named = {str(n) for n in (cfg("tools.destructive", []) or [])}
+
+    assert named, "the destructive list must not be empty"
+    assert not (named - served), f"named but not served: {sorted(named - served)}"
+
+
+async def test_autopilot_answers_a_non_destructive_call_itself(monkeypatch):
+    """Autopilot means auto. A run that clicks through is not unattended."""
+    session_id = await _session(mode="unattended")
+    sink = runner._Sink.__new__(runner._Sink)
+    sink.session = SimpleNamespace(id=session_id, user_id=None, mode="unattended")
+    sink._grant_once = False
+    sink._park = None
+    sink._gated_call = "call-auto-1"
+
+    granted = await sink._approve("mcp_GMAIL_FETCH_EMAILS", {})
+
+    assert granted is True
+    assert sink._park is None, "a non-destructive call must not park in auto"
+    rows = await pool.fetch("SELECT answer, answered_by FROM approvals WHERE session_id = $1", uuid.UUID(session_id))
+    assert [r["answer"] for r in rows] == [approvals.APPROVE]
+    assert rows[0]["answered_by"] == approvals.AUTO, "the row has to say who answered it"
+
+
+async def test_autopilot_still_parks_a_destructive_call():
+    """A sent message has left. Auto does not get to decide that."""
+    session_id = await _session(mode="unattended")
+    sink = runner._Sink.__new__(runner._Sink)
+    sink.session = SimpleNamespace(id=session_id, user_id=None, mode="unattended")
+    sink._grant_once = False
+    sink._park = None
+    sink._gated_call = None
+
+    with pytest.raises(ToolUnavailable) as raised:
+        await sink._approve("mcp_GMAIL_SEND_EMAIL", {"to": "x@y.z"})
+
+    assert raised.value.error_kind == runner._GATED
+    rows = await pool.fetch("SELECT id FROM approvals WHERE session_id = $1", uuid.UUID(session_id))
+    assert not rows, "a park writes its row later, not here"
+
+
+async def test_attended_chat_still_parks_everything():
+    """Chat IS the supervised mode; nothing about it changed."""
+    session_id = await _session(mode="attended")
+    sink = runner._Sink.__new__(runner._Sink)
+    sink.session = SimpleNamespace(id=session_id, user_id=None, mode="attended")
+    sink._grant_once = False
+    sink._park = None
+    sink._gated_call = None
+
+    with pytest.raises(ToolUnavailable):
+        await sink._approve("mcp_GMAIL_FETCH_EMAILS", {})

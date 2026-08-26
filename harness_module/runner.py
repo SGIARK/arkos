@@ -47,6 +47,24 @@ from tool_module.tools.control import PARK_KINDS, TODO_TOOL
 logger = logging.getLogger(__name__)
 
 
+def _destructive(name: str) -> bool:
+    """Whether a tool is one autopilot refuses to answer for itself (11.11.2).
+
+    Config, not code: `tools.destructive` is the same set the 11.10.2 roster
+    review ruled on, and a tool ABSENT from it is auto-answerable — so the safe
+    way to be wrong is to add a name, since the cost of a needless park is one
+    click and the cost of a missing one is a sent email.
+    """
+    named = {str(n) for n in (_cfg("tools.destructive", []) or [])}
+    # The gate sees the name the MODEL sees, which for a connector tool carries
+    # the `mcp_` prefix the registry added. The config names tools as the vendor
+    # does. Matching the raw name alone would have auto-approved every
+    # destructive connector tool there is — the failure would have been silent,
+    # and its first symptom a sent email.
+    bare = name[len(registry.MCP_PREFIX) :] if name.startswith(registry.MCP_PREFIX) else name
+    return name in named or bare in named
+
+
 @dataclass(slots=True)
 class Session:
     """The session columns a turn needs, read once at the start of the turn."""
@@ -1065,6 +1083,18 @@ class _Sink:
         tool call across a park. A second gated call in the same hop is told so
         and closes normally; it is re-issued after the first is answered.
 
+        AUTOPILOT ANSWERS ITS OWN GATES (11.11.2). An unattended run is the
+        autopilot: it answers non-destructive calls itself, immediately, through
+        this same machinery — a real approvals row with a real answer, stamped
+        `answered_by: auto` so the history can tell the two answerers apart. It
+        never parks on them, which is what the word autopilot was promising and
+        not delivering. Attended chat is untouched and always manual: that IS the
+        supervised mode.
+
+        DESTRUCTIVE CALLS STILL PARK, in auto exactly as in manual. The list is
+        `tools.destructive` in config — data, not code — and it names what a
+        person cannot undo with a click: sends, deletes, merges, permissions.
+
         `approvals.attended_auto_approve` remains the escape hatch, still OFF by
         default: it turns every gated call into a silent yes.
         """
@@ -1072,6 +1102,12 @@ class _Sink:
             self._grant_once = False
             return True
         if self.session.mode == "attended" and bool(_cfg("approvals.attended_auto_approve", False)):
+            return True
+        if self.session.mode == "unattended" and not _destructive(name):
+            # Answered through the gate rather than around it: the row is
+            # written and answered here, so the transcript and the approvals
+            # history read the same as a manual approval that happened fast.
+            await self._auto_answer(name, args)
             return True
         if self._park is not None:
             raise ToolUnavailable(
@@ -1081,6 +1117,32 @@ class _Sink:
                 retryable=False,
             )
         raise ToolUnavailable(_GATED, f"{name} is waiting for the human to approve it.", retryable=False)
+
+    async def _auto_answer(self, name: str, args: dict[str, Any]) -> None:
+        """Write and answer one approvals row as the harness, for the audit trail.
+
+        The call is NOT parked, so there is no open call to bind to: the row is
+        created and answered in the same breath. A failure here is logged and
+        swallowed — the run has already been authorised by the mode it is in,
+        and losing the paper trail must not also lose the work.
+        """
+        try:
+            row = await approvals.create(
+                self.session.id,
+                self._gated_call or f"auto-{name}",
+                "call",
+                _park_prompt(name, args),
+                tool_name=name,
+                tool_args=args,
+            )
+            await approvals.answer_auto(row.id, approvals.APPROVE)
+            # Visible in the transcript, because a run that approved something on
+            # the human's behalf should say so where they are reading rather than
+            # only in a table they would have to go looking for. Not an approval
+            # CARD: a card is a question, and this one was already answered.
+            self.emit(StatusEvent(label=f"auto-approved {name}"))
+        except Exception:  # noqa: BLE001 - the audit trail is not worth the run
+            logger.warning("session %s: could not record the auto-approval of %s", self.session.id, name, exc_info=True)
 
     def drop_park(self) -> None:
         """Discards a pending park. The question is never written."""
