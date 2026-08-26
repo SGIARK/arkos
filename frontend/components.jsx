@@ -483,6 +483,19 @@ function StreamEvent({ event, questions, onAnswered, onError }) {
     }
 
     case "status":
+      /* An auto-approval is not progress, so it does not get the spinner: it is
+         a decision the run made on the human's behalf, and it reads as a badge
+         beside the tool it approved. The prefix is the harness's `_AUTO_BADGE`
+         — approvals are not an event kind, so a status event is where an
+         answered one can appear in a transcript at all. */
+      if (String(event.label || "").startsWith(AUTO_BADGE)) {
+        return (
+          <div className="ev-block ev-status ev-auto">
+            <span className="tag">auto</span>
+            {String(event.label).slice(AUTO_BADGE.length)}
+          </div>
+        );
+      }
       return (
         <div className="ev-block ev-status">
           <span className="spin" />
@@ -516,6 +529,10 @@ function StreamEvent({ event, questions, onAnswered, onError }) {
       return <div className="ev-block ev-lifecycle">{event.kind}</div>;
   }
 }
+
+/* Mirrors `_AUTO_BADGE` in harness_module/runner.py. An autopilot run answers
+   its own non-destructive gates, and this is how the transcript says so. */
+const AUTO_BADGE = "auto-approved ";
 
 /* A parked session's open question, answered where it was asked. */
 function AskBlock({ item, onAnswered, onError }) {

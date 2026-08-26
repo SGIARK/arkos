@@ -1355,3 +1355,52 @@ async def test_approvals_get_returns_an_auto_answered_row():
 
     assert got.answered_by == approvals.AUTO
     assert got.auto_answered, "an auto answer and a human answer must not read the same"
+
+
+async def test_an_auto_answered_approval_renders_the_auto_badge():
+    """The transcript's only reader of `Approval.auto_answered`.
+
+    Approvals are not an event kind, so an ANSWERED one has nowhere else to
+    appear in a transcript. The status event carries the badge, and the row —
+    not the fact that we just called answer_auto — is what decides it: if the
+    column ever stops being written, the badge stops rendering, which is the
+    failure anybody would want over a badge that lies.
+    """
+    session_id = await _session(mode="unattended")
+    sink = runner._Sink.__new__(runner._Sink)
+    sink.session = SimpleNamespace(id=session_id, user_id=None, mode="unattended")
+    sink._grant_once = False
+    sink._park = None
+    sink._gated_call = None
+    sink._queue = asyncio.Queue()
+    sink._hops = 0
+    sink._calls = {}
+    sink._todo = []
+
+    granted = await sink._approve("mcp_GMAIL_FETCH_EMAILS", {})
+
+    assert granted is True
+    labels = []
+    while not sink._queue.empty():
+        event = sink._queue.get_nowait()
+        labels.append(getattr(event, "label", None))
+    assert f"{runner._AUTO_BADGE}mcp_GMAIL_FETCH_EMAILS" in labels
+
+    row = await pool.fetchrow("SELECT answered_by FROM approvals WHERE session_id = $1", uuid.UUID(session_id))
+    assert row["answered_by"] == approvals.AUTO, "the badge and the column are one fact"
+
+
+async def test_a_human_answered_approval_renders_no_badge():
+    """A destructive call parks, so nothing is auto-approved and nothing is badged."""
+    session_id = await _session(mode="unattended")
+    sink = runner._Sink.__new__(runner._Sink)
+    sink.session = SimpleNamespace(id=session_id, user_id=None, mode="unattended")
+    sink._grant_once = False
+    sink._park = None
+    sink._gated_call = None
+    sink._queue = asyncio.Queue()
+
+    with pytest.raises(ToolUnavailable):
+        await sink._approve("mcp_GMAIL_SEND_EMAIL", {})
+
+    assert sink._queue.empty(), "a park is not an auto-approval and must not badge"

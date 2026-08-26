@@ -47,6 +47,12 @@ from tool_module.tools.control import PARK_KINDS, TODO_TOOL
 logger = logging.getLogger(__name__)
 
 
+# The prefix the transcript renders as an AUTO badge rather than as status
+# prose. Shared with the frontend by convention, which is why it is a constant
+# here and a single literal there.
+_AUTO_BADGE = "auto-approved "
+
+
 def _destructive(name: str) -> bool:
     """Whether a tool is one autopilot refuses to answer for itself (11.11.2).
 
@@ -1138,12 +1144,19 @@ class _Sink:
                 tool_name=name,
                 tool_args=args,
             )
-            await approvals.answer_auto(row.id, approvals.APPROVE)
+            answered = await approvals.answer_auto(row.id, approvals.APPROVE)
             # Visible in the transcript, because a run that approved something on
             # the human's behalf should say so where they are reading rather than
-            # only in a table they would have to go looking for. Not an approval
-            # CARD: a card is a question, and this one was already answered.
-            self.emit(StatusEvent(label=f"auto-approved {name}"))
+            # only in a table they would have to go looking for.
+            #
+            # Driven by `auto_answered` rather than by "we just called
+            # answer_auto": the row is the record, and reading it back is what
+            # makes the badge in the transcript and the column in the database
+            # the same fact. Nothing else reads that property, so if it ever
+            # stops being written this line stops rendering, which is the
+            # failure anybody would want.
+            if answered is not None and answered.auto_answered:
+                self.emit(StatusEvent(label=f"{_AUTO_BADGE}{name}"))
         except Exception:  # noqa: BLE001 - the audit trail is not worth the run
             logger.warning("session %s: could not record the auto-approval of %s", self.session.id, name, exc_info=True)
 
