@@ -225,11 +225,17 @@ class ReadResult:
 # The runner parks the session after one of these returns, taking the park kind
 # from this map. Each call is closed by its own result first: a transcript with
 # an open tool_call cannot be folded back into messages.
+# Which park tool writes which approval kind. The VALUES are `approvals.Kind`
+# members and are checked against it below, because a kind spelled here that the
+# table's CHECK constraint rejects is an insert that fails at the moment a run
+# parks — the least recoverable moment there is.
 PARK_KINDS: dict[str, str] = {
     Ask.spec.name: "ask",
     RequestApproval.spec.name: "approval",
     ProposePlan.spec.name: "plan",
 }
+# Checked against `approvals.Kind` in the harness, which imports both. A tool
+# module must not depend on the harness, so the assertion lives there.
 PARK_TOOLS = frozenset(PARK_KINDS)
 
 # Re-exported so a caller that has the tool module does not need the events one.

@@ -6,6 +6,7 @@ Runs against a real Postgres with migration 0 applied; the model is mocked.
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -406,3 +407,31 @@ async def test_another_users_channel_hears_nothing():
 
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(queue.get(), timeout=0.3)
+
+
+async def test_the_kind_vocabulary_matches_the_tables_check_constraint():
+    """`Kind` and the CHECK constraint are the same vocabulary in two languages.
+
+    Nothing can import a constraint, so this reads it back. A kind in the Literal
+    that the constraint rejects is an insert that fails at the moment a run
+    parks; a kind the constraint allows that the Literal omits is a row nothing
+    in Python can name.
+    """
+    from typing import get_args
+
+    from harness_module.approvals import Kind
+
+    clause = await pool.fetchval(
+        """
+        SELECT pg_get_constraintdef(oid) FROM pg_constraint
+         WHERE conrelid = 'approvals'::regclass AND contype = 'c'
+           AND pg_get_constraintdef(oid) LIKE '%kind%'
+        """
+    )
+    assert clause, "the approvals table has no kind CHECK constraint"
+    in_db = set(re.findall(r"'(\w+)'", clause))
+
+    assert in_db == set(get_args(Kind)), (
+        f"only in the constraint: {sorted(in_db - set(get_args(Kind)))}; "
+        f"only in Python: {sorted(set(get_args(Kind)) - in_db)}"
+    )
