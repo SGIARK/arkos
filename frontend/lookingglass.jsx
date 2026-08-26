@@ -125,8 +125,8 @@ function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJ
   if (openSession) {
     return (
       /* Keyed by the session: every piece of local state in there — the plan
-         lane's drafting flag, the resume note, the dismissed version — is about
-         ONE session, and reusing the instance across two carried it over. */
+         lane's drafting flag, the plan approved in this window — is about ONE
+         session, and reusing the instance across two carried it over. */
       <SessionDetail
         key={openSession}
         sessionId={openSession}
@@ -415,41 +415,55 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
   const [headRename, setHeadRename] = useState(false);
   const [headText, setHeadText] = useState("");
   const tail = useRef(null);
+  const composer = useRef(null);
+
+  /* THE COMPOSER'S HEIGHT IS ITS CONTENT'S (11.12). `auto` first so the box can
+     SHRINK — `scrollHeight` never reports less than the height already set, so
+     without the reset a box that grew could never come back down after a
+     delete. The cap and the internal scroll are the stylesheet's; this only
+     reports how tall the text wants to be. */
+  const grow = (el) => {
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  };
+
+  /* One send path for both doors into it — the form's submit and Enter — so
+     they cannot drift apart. Trim decides whether there is anything to send;
+     what is SENT is the trimmed text, newlines and all. Resetting the height
+     is part of sending: the value going empty does not re-run `grow`. */
+  const submit = () => {
+    const said = text.trim();
+    if (!said) return;
+    send(said);
+    setText("");
+    const el = composer.current;
+    if (el) {
+      el.style.height = "auto";
+      el.focus();
+    }
+  };
 
   /* The plan lane. Two pieces of local state, and each is a thing the server
      genuinely does not know:
        drafting  — the play button was pressed, or a reply was sent, and the
                    turn drafting the next plan is in flight. There is no plan
                    row to read yet.
-       dismissed — a dismissed plan, kept visible as "nothing ran" until the
-                   next thing happens. The row is closed; only this window
-                   cares.
+     (There is no second piece any more: the dismissed-plan flag went with the
+     pin in 11.12.)
      The open plan itself is NOT held here. It is `questions`, and it is on
      screen exactly while the server says a plan is waiting: replying closes the
      row, the card goes with it, and the next plan arrives as a new card. */
   const [drafting, setDrafting] = useState(false);
-  // The last note that resumed a held run, echoed beside the plan so the reason
-  // the run picked back up is visible next to what it picked up.
-  const [resumeNote, setResumeNote] = useState("");
-  // The plan approved in THIS window. The snapshot's `plan` is the same fact
-  // from the server and is what survives a reload, but it was read before the
-  // approval, so the pinned card would not appear until then without this.
+  /* The plan approved in THIS window. The snapshot's `plan` is the same fact
+     from the server and is what survives a reload, but it was read before the
+     approval, so the panel's steps would not seed until then without this.
+     There is no pin and no dismiss any more (11.12): the pin was a THIRD
+     rendering of facts that already have one home each — status in the header,
+     goal and steps in the panel, the propose and approve cards inline where
+     they happened, `plan.md` in working files — and a dismiss was a second
+     authority over the visibility of the one that lingered. */
   const [approvedHere, setApprovedHere] = useState(null);
-  /* Dismissing a finished plan clears it from THIS surface and nothing else:
-     the row is a permanent fact and is never deleted. Kept per browser rather
-     than in memory, because a reload resurrecting a plan you dismissed reads as
-     the dismissal not having worked. */
-  const dismissKey = `ark-plan-dismissed-${sessionId}`;
-  const [dismissedVersion, setDismissedVersion] = useState(() => {
-    const stored = Number(localStorage.getItem(dismissKey));
-    return Number.isFinite(stored) && stored > 0 ? stored : 0;
-  });
-  const dismissPlan = (version) => {
-    localStorage.setItem(dismissKey, String(version || 1));
-    setDismissedVersion(version || 1);
-    setApprovedHere(null);
-    setResumeNote("");
-  };
 
   /* Renaming the project from its own window. Keyed off the SNAPSHOT's ids
      rather than the grid's navigation state, so it works in a window opened
@@ -482,7 +496,6 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
     if (openPlan) {
       setDrafting(false);
       setApprovedHere(null);
-      setResumeNote("");
     }
   }, [openPlan]);
   useEffect(() => {
@@ -499,8 +512,6 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
 
   const running = session.status === "running";
   const unattended = session.mode === "unattended";
-  // Where an approved plan lands: the FIRST folder this session writes.
-  const planFolder = (session.folders || [])[0] || null;
   /* The snapshot first, the navigation state second: a window opened from the
      desk has no `project` prop, and the header should not depend on how you
      got here. Null for a session with no project — the home chat is one. */
@@ -515,9 +526,8 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
   /* Everything below reads the server's `plan` — its `answer` is what became of
      it — with one local override for the approval made in THIS window, which the
      snapshot was read before. Dismissing hides whatever version was dismissed. */
-  const serverPlan = session.plan && session.plan.version > dismissedVersion ? session.plan : null;
+  const serverPlan = session.plan || null;
   const approvedPlan = approvedHere || (serverPlan && serverPlan.answer === "approve" ? serverPlan : null);
-  const abandonedPlan = serverPlan && serverPlan.answer === "decline" ? serverPlan : null;
 
   /* THE FACES KEY OFF STATUS, never off an endpoint's 202. A stopped run is
      `idle` with the mode still `unattended` — the stop kept it, which is what
@@ -542,10 +552,6 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
      an honest record of where the run stopped. */
   const doneRun = session.status === "completed";
   const shownRows = doneRun ? todoRows.map((r) => ({ ...r, status: TODO_DONE })) : todoRows;
-  // The pin outlives the run: an approved plan that finished still says where
-  // it was saved. It goes only when the plan is dismissed.
-  const showPin = !!approvedPlan;
-  const stopStep = session.hops_used || 1;
   /* ▶ is offered when nothing is pending on the human and nothing is in flight:
      an idle session, a finished one, a dismissed plan, or a cancelled run
      (where it reads "resume"). A held run has its own two faces instead. */
@@ -568,7 +574,6 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
     api
       .resume(sessionId)
       .then(() => {
-        setResumeNote("");
         refreshSession();
         if (onPulse) onPulse();
       })
@@ -702,6 +707,20 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
               stop
             </button>
           )}
+          {/* A HELD RUN'S TWO ACTIONS, and their only home (11.12). They used
+              to sit on a banner below the transcript as well as here, which is
+              two authorities over the same press. Resume first: it is the one
+              that keeps the work, and cancel is the one that spends it. */}
+          {held && (
+            <button
+              className="run-btn"
+              title="picks the run back up from where it stopped. the plan still stands and the computer is kept."
+              onClick={() => resumeHeld()}
+            >
+              <span className="glyph">▶</span>
+              resume
+            </button>
+          )}
           {held && (
             <button
               className="cancel-btn"
@@ -740,11 +759,13 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
                 <div className="said">{p.text}</div>
               </div>
             ))}
-            {/* ---- the plan lane. Six faces, never two at once: drafting,
-                    the open card, the running plan, a held run, a spent one, a
-                    dismissed one. It lives INSIDE the transcript and scrolls
-                    with it — a docked strip overlaid the conversation, and the
-                    transcript is meant to be the only surface. ---- */}
+            {/* ---- the plan lane. TWO faces since 11.12, never both at once:
+                    drafting, and the open card — the two moments a plan is
+                    still being decided. It had six, and the other four were
+                    each a second rendering of something the header, the panel
+                    or the transcript already showed. It lives INSIDE the
+                    transcript and scrolls with it — a docked strip overlaid the
+                    conversation, and the transcript is the only surface. ---- */}
             {drafting && !planCard && (
               <div className="plan-drafting">
                 <Spinner />
@@ -782,102 +803,21 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
                 }}
               />
             )}
+            {/* NOTHING PLAN-SHAPED BELOW THE FEED (11.12). What used to sit
+                here — the pinned plan, the resume-note echo, the held banner,
+                the spent and dismissed banners — was a second and third
+                rendering of facts that already have exactly one home: the run's
+                status and hop count in the header, the goal and steps in the
+                panel's checklist, the propose and approve cards inline at the
+                point in history where they happened, and `plan.md` itself in
+                working files. Duplicated renderings drift, and the pin's did:
+                it asked only whether a plan had EVER been approved, so it
+                outlived every run it described. The ACTIONS those banners
+                carried are not lost — they are in the header, one home each:
+                a held run's resume and cancel are the two buttons beside the
+                status, and a cancelled run's re-propose is the same ▶ that
+                reads "resume" and drafts a continuation. */}
 
-            {/* The approved plan, collapsed to one line and the file it became.
-                `plan.md` is not a phrase here — the run really does start from
-                it. Held, the dot goes amber and stops pinging: a stopped run is
-                alive, and it should not look like one that is working. */}
-            {showPin && (
-              <div className={"plan-pinned" + (held ? " held" : "")}>
-                <span className="pin-dot" />
-                <span className="goal">{approvedPlan.goal}</span>
-                <span className="ver">v{approvedPlan.version}</span>
-                {/* The real file, at its real path — the run starts from it, so
-                    the chip opens it rather than naming it. It lands in the
-                    session's FIRST linked folder (11.9), which is the first
-                    one the session claimed. */}
-                <span
-                  className={"file" + (planFolder && onOpenFile ? " open" : "")}
-                  title={planFolder ? `${planFolder}/plan.md` : "plan.md"}
-                  onClick={() => planFolder && onOpenFile && onOpenFile(`${planFolder}/plan.md`)}
-                >
-                  plan.md
-                </span>
-                <span className="state">
-                  {held ? "stopped" : planFolder ? `saved in ${planFolder}/` : "saved to the store"}
-                </span>
-              </div>
-            )}
-
-            {/* Why the run picked back up, next to what it picked up. */}
-            {!held && resumeNote && showPin && (
-              <div className="plan-resumed">
-                <span className="lede">resumed with your note</span>
-                <span className="said">"{resumeNote}"</span>
-              </div>
-            )}
-
-            {held && (
-              <div className="plan-stopped">
-                <span className="square" />
-                <span className="said">
-                  stopped at step {stopStep}. the plan still stands and the computer is kept —
-                  resume, or say what to do instead.
-                </span>
-                <button className="go" onClick={resumeHeld}>
-                  resume
-                </button>
-                <button className="link danger" onClick={cancelHeld}>
-                  cancel
-                </button>
-              </div>
-            )}
-
-            {cancelled && (
-              <div className="plan-spent">
-                <span className="said">
-                  run cancelled at step {stopStep}. the plan's approval is spent.
-                </span>
-                <span className="grow" />
-                <button
-                  className="link"
-                  onClick={() => {
-                    setDrafting(true);
-                    api.approve(sessionId).catch((e) => {
-                      setDrafting(false);
-                      onError(e);
-                    });
-                  }}
-                >
-                  draft a continuation
-                </button>
-                <button className="link mute" onClick={() => dismissPlan(approvedPlan.version)}>
-                  dismiss
-                </button>
-              </div>
-            )}
-
-            {abandonedPlan && !planCard && !drafting && (
-              <div className="plan-spent">
-                <span className="said">plan v{abandonedPlan.version} dismissed, nothing ran</span>
-                <span className="grow" />
-                <button
-                  className="link"
-                  onClick={() => {
-                    setDrafting(true);
-                    api.approve(sessionId).catch((e) => {
-                      setDrafting(false);
-                      onError(e);
-                    });
-                  }}
-                >
-                  draft again
-                </button>
-                <button className="link mute" onClick={() => dismissPlan(abandonedPlan.version)}>
-                  dismiss
-                </button>
-              </div>
-            )}
 
             <div ref={tail} />
           </div>
@@ -886,21 +826,39 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
             className="lg-composer"
             onSubmit={(e) => {
               e.preventDefault();
-              const said = text.trim();
-              if (!said) return;
-              // A held run resumes on what is typed here — kind `resume` is the
-              // one park the composer may answer — and the note is the next
-              // thing the model reads, so it is worth saying that it landed.
-              if (held) setResumeNote(said);
-              send(said);
-              setText("");
+              submit();
             }}
           >
             <SessionTools sessionId={sessionId} onError={onError} />
             <span className="prompt">ark&gt;</span>
-            <input
+            {/* A TEXTAREA, auto-sized to its content (11.12). It was an
+                `<input>`, which is one line whatever it holds: pasting an email
+                ran the text off into the ether, unreadable and uneditable before
+                send. The height is set from `scrollHeight` on every change —
+                reset to `auto` first, or the box can only ever grow, since
+                scrollHeight is bounded below by the height already set — and the
+                cap lives in the stylesheet as a `max-height`, so past it the box
+                stops growing and scrolls INTERNALLY rather than eating the
+                transcript.
+
+                Enter still sends, because this is a prompt and not a document.
+                Shift+Enter is the newline, and a pasted newline is kept: the
+                value goes to the server as typed, and only `trim` touches it. */}
+            <textarea
+              ref={composer}
+              rows={1}
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => {
+                setText(e.target.value);
+                grow(e.target);
+              }}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter" || e.shiftKey) return;
+                // A newline mid-composition is the IME's, not a send.
+                if (e.nativeEvent && e.nativeEvent.isComposing) return;
+                e.preventDefault();
+                submit();
+              }}
               /* A stopped run resumes on what is typed here — kind `resume` is
                  exempt from the composer's 409, because the plan it holds on is
                  already approved. Saying so is the difference between a held run

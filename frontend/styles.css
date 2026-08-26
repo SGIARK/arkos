@@ -643,6 +643,32 @@ kbd {
 .lg-body { flex: 1; display: grid; grid-template-columns: 1fr 300px; grid-template-rows: 1fr; min-height: 0; overflow: hidden; }
 .stream-wrap { min-height: 0; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
 .stream { flex: 1; min-width: 0; overflow-y: auto; padding: 26px 40px 20px; display: flex; flex-direction: column; gap: 16px; }
+
+/* THE PAGE NEVER SCROLLS SIDEWAYS (11.12). Said once, here, rather than patched
+   onto each block as it is caught: the transcript carries text nobody chose —
+   a 200-character OAuth URL in model prose, a base64 blob in a tool result — and
+   `white-space: pre-wrap` alone will not break a token with no space in it, so
+   one unbreakable string pushed past the column and grew the whole pane a
+   horizontal scrollbar.
+
+   Two halves, and both are needed. CONTENT WRAPS: `anywhere` rather than
+   `break-word` because only `anywhere` also shrinks the block's intrinsic
+   minimum width, which is what stops a flex child being sized by its longest
+   unbreakable word in the first place. CONTAINERS CLIP: the feed refuses
+   horizontal overflow outright, so anything this rule cannot break — a wide
+   image, a future embed — is clipped rather than allowed to widen the pane.
+   Add a text block to the transcript and it is covered by being inside it. */
+.stream { overflow-x: hidden; }
+.msg .bubble,
+.ev-assist p,
+.ev-user .said,
+.ev-tool .args,
+.ev-result pre,
+.ev-reasoning pre,
+.ev-status,
+.plan-drafting {
+  overflow-wrap: anywhere;
+}
 .ev-block { max-width: 760px; }
 .ev-assist { font-size: 13px; line-height: 1.7; color: var(--ink-soft); }
 .ev-assist .who { display: block; font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-mute); margin-bottom: 6px; }
@@ -677,10 +703,28 @@ kbd {
 .ev-ask .opts { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .ev-ask .opt { font-size: 11px; border: 1px solid var(--accent-line); color: var(--accent); background: var(--surface); padding: 5px 11px; border-radius: 100px; cursor: pointer; transition: all .15s var(--ease); }
 .ev-ask .opt:hover { background: var(--accent); color: var(--surface); border-color: var(--accent); }
-.lg-composer { position: relative; border-top: 1px solid var(--line); background: var(--surface); display: flex; align-items: center; gap: 12px; padding: 12px 40px; flex-shrink: 0; }
-.lg-composer .prompt { color: var(--accent); font-size: 13px; user-select: none; flex-shrink: 0; }
-.lg-composer input { flex: 1; background: transparent; border: none; outline: none; color: var(--ink); font-family: var(--mono); font-size: 13px; }
-.lg-composer input::placeholder { color: var(--ink-mute); }
+/* The composer grows with what is in it (11.12). `align-items: flex-start` and
+   the glyph's own line-height keep `ark>` and the tools chip level with the
+   FIRST line as the box grows, rather than drifting to the middle of a
+   forty-line paste. */
+.lg-composer { position: relative; border-top: 1px solid var(--line); background: var(--surface); display: flex; align-items: flex-start; gap: 12px; padding: 12px 40px; flex-shrink: 0; }
+.lg-composer .prompt { color: var(--accent); font-size: 13px; user-select: none; flex-shrink: 0; line-height: 22px; }
+.lg-composer > .attach, .lg-composer > .tb-chip { margin-top: 1px; }
+/* The height is set by the `grow` handler in the component and capped here, so
+   past the cap the box scrolls INSIDE itself and the transcript keeps the rest
+   of the window. Deliberately NOT `field-sizing: content` as well: two things
+   sizing one box is the same mistake as two things deciding what is visible,
+   and the inline height the handler writes would win over it anyway on the
+   browsers that support it. `resize: none` because the height is the content's
+   to decide, not a corner grip's. */
+.lg-composer textarea {
+  flex: 1; min-width: 0; background: transparent; border: none; outline: none;
+  color: var(--ink); font-family: var(--mono); font-size: 13px; line-height: 22px;
+  padding: 0; margin: 0; resize: none; overflow-y: auto;
+  min-height: 22px; max-height: 33vh;
+  overflow-wrap: anywhere;
+}
+.lg-composer textarea::placeholder { color: var(--ink-mute); }
 .lg-composer .attach { font-size: 10.5px; color: var(--ink-mute); border: 1px solid var(--line); padding: 4px 10px; border-radius: 100px; cursor: pointer; flex-shrink: 0; background: var(--surface); }
 .lg-composer .attach:hover { color: var(--ink); border-color: var(--ink-faint); }
 
@@ -1200,63 +1244,21 @@ kbd {
 }
 .plan-chip .dir { text-transform: none; letter-spacing: 0; color: var(--ink-mute); }
 
-.plan-drafting, .plan-pinned, .plan-spent, .plan-stopped {
-  flex-shrink: 0; max-width: 760px; min-width: 0; display: flex; align-items: center; gap: 12px;
-}
+/* The plan lane is TWO faces now (11.12): drafting, and the open card. The
+   pinned plan, its resume-note echo, and the held/spent/dismissed banners are
+   deleted — every fact they drew has one home elsewhere, and their actions are
+   the buttons beside the status in the header. */
 .plan-drafting {
+  flex-shrink: 0; max-width: 760px; min-width: 0; display: flex; align-items: center; gap: 12px;
   border: 1px solid var(--line); background: var(--surface); border-radius: 9px;
   padding: 16px 20px; font-size: 12.5px; color: var(--ink-soft);
 }
-.plan-spent {
-  border: 1px dashed var(--line); border-radius: 8px; padding: 10px 16px;
-  font-size: 11.5px; color: var(--ink-mute); font-style: italic; opacity: .85;
-}
-.plan-spent .said { min-width: 0; }
 .link {
   flex-shrink: 0; font-size: 10.5px; color: var(--ink-soft); background: none; border: none;
   cursor: pointer; font-family: var(--mono); font-style: normal;
   text-decoration: underline; text-underline-offset: 2px;
 }
 .link:hover { color: var(--ink); }
-.link.mute { color: var(--ink-mute); }
-.link.danger { color: var(--stop); font-size: 11px; padding: 5px 6px; }
-
-.plan-pinned {
-  border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 11px 16px;
-}
-.plan-pinned .pin-dot {
-  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: var(--accent);
-  animation: ping 2.4s var(--ease) infinite;
-}
-.plan-pinned.held .pin-dot { background: var(--work); border-radius: 1.5px; width: 8px; height: 8px; animation: none; }
-.plan-pinned .goal { min-width: 0; font-size: 12px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.plan-pinned .ver { flex-shrink: 0; font-size: 10.5px; color: var(--ink-mute); font-variant-numeric: tabular-nums; }
-.plan-pinned .file { flex-shrink: 0; font-size: 10.5px; color: var(--accent); cursor: default; }
-/* It opens the real file when there is a folder to open it in. */
-.plan-pinned .file.open { cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
-.plan-pinned .state { flex-shrink: 0; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-mute); }
-.plan-pinned.held .state { color: var(--work); }
-
-.plan-resumed {
-  flex-shrink: 0; max-width: 760px; display: flex; align-items: baseline; gap: 9px;
-  font-size: 11.5px; color: var(--ink-mute);
-}
-.plan-resumed .lede { color: var(--accent); flex-shrink: 0; }
-.plan-resumed .said { font-style: italic; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.plan-stopped {
-  border: 1px solid color-mix(in oklab, var(--work) 35%, transparent);
-  background: var(--surface); border-radius: 8px; padding: 11px 16px;
-  font-size: 12px; color: var(--ink-soft);
-}
-.plan-stopped .square { color: var(--work); }
-.plan-stopped .said { min-width: 0; flex: 1; }
-.plan-stopped .go {
-  flex-shrink: 0; font-size: 11px; border: 1px solid var(--ink); background: var(--ink);
-  color: var(--paper); padding: 5px 13px; border-radius: 6px; cursor: pointer;
-  font-family: var(--mono); transition: all .18s var(--ease);
-}
-.plan-stopped .go:hover { background: var(--accent); border-color: var(--accent); }
 
 .plan-card {
   flex-shrink: 0; width: 100%; max-width: 620px; min-width: 0;
