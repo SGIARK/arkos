@@ -783,15 +783,21 @@ async def test_the_escape_hatch_still_works_when_it_is_asked_for(monkeypatch):
     assert await session._approve("mcp_GoogleCalendar_CreateEvent", {}) is True
 
 
-async def test_an_unattended_gate_parks_too_rather_than_refusing():
+async def test_an_unattended_destructive_gate_parks_rather_than_refusing():
     """It used to return False, which the caller renders as "the human declined"
     — so the model went looking for another route to the same effect. Nobody
     declined; nobody was asked. Parking for hours is what unattended parking is
-    for, and the park is identical in both modes."""
+    for, and the park is identical in both modes.
+
+    Amended for 11.11.2: an unattended run now ANSWERS its own non-destructive
+    gates, so the tool here has to be a destructive one for there to be a park
+    to test. The point the test was making is unchanged — a park is not a
+    refusal — it just applies to the calls autopilot still refuses to make for
+    itself."""
     session = _fake_session(mode="unattended")
 
     with pytest.raises(ToolUnavailable) as raised:
-        await session._approve("mcp_GoogleCalendar_CreateEvent", {})
+        await session._approve("mcp_GMAIL_SEND_EMAIL", {})
 
     assert raised.value.error_kind == runner._GATED
 
@@ -826,6 +832,7 @@ def _fake_session(mode: str):
     # field to the sink means adding it here, which is the cost of the shortcut.
     sink._grant_once = False
     sink._park = None
+    sink._gated_call = None
     return sink
 
 

@@ -212,7 +212,7 @@ async def test_an_unconnected_toolkit_is_refused_before_the_wire(db):
 
     result = await hands.call("GMAIL_FETCH_EMAILS", {}, _ctx(user_id))
 
-    assert result.error == "auth_required"
+    assert result.error_kind == "auth_required"
     assert not client.calls, "an unconnected toolkit must not reach the wire at all"
 
 
@@ -225,7 +225,7 @@ async def test_a_connected_toolkit_dispatches(db):
 
     result = await hands.call("GMAIL_FETCH_EMAILS", {}, _ctx(user_id))
 
-    assert result.error is None
+    assert result.ok
     assert client.calls == [(user_id, "GMAIL_FETCH_EMAILS")]
 
 
@@ -242,7 +242,7 @@ async def test_a_revoked_grant_mid_session_flips_the_row_to_reconnect(db):
 
     result = await hands.call("GMAIL_FETCH_EMAILS", {}, _ctx(user_id))
 
-    assert result.error == "auth_required"
+    assert result.error_kind == "auth_required"
     assert not result.retryable, "retrying into a dead grant is the loop this exists to stop"
     rows = await conns.load(user_id)
     assert rows["GMAIL"].status == conns.RECONNECT
@@ -253,7 +253,7 @@ async def test_composios_own_helper_tools_are_not_reachable(db):
 
     result = await hands.call("COMPOSIO_SEARCH_TOOLS", {}, _ctx(_user()))
 
-    assert result.error == "not_found"
+    assert result.error_kind == "not_found"
 
 
 async def test_an_unknown_prefix_is_not_found(db):
@@ -261,7 +261,7 @@ async def test_an_unknown_prefix_is_not_found(db):
 
     result = await hands.call("SLACK_SEND_MESSAGE", {}, _ctx(_user()))
 
-    assert result.error == "not_found"
+    assert result.error_kind == "not_found"
 
 
 # --- consent -------------------------------------------------------------------

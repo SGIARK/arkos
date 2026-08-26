@@ -1758,8 +1758,13 @@ async def test_moving_a_path_the_store_does_not_have_is_absent(client, tmp_path)
 # --- the consent callback (11.10.2) --------------------------------------------
 
 
-class _FakeConnectors:
-    """Stands in for the Composio client's reconcile leg."""
+class _FakeCallback:
+    """Stands in for the Composio client's reconcile leg.
+
+    Distinct from `_FakeConnectors` above, which stands in for the connections
+    half. Two fakes named the same thing meant the later definition shadowed the
+    earlier one and eight tool-budget tests lost the method they were calling.
+    """
 
     def __init__(self, settles=None, blow_up=False):
         self.settles = settles
@@ -1776,7 +1781,7 @@ class _FakeConnectors:
 async def test_the_callback_settles_the_connection(monkeypatch, client):
     """Composio lands the browser here with a status and an account id."""
     user_id = await _signed_in(client)
-    fake = _FakeConnectors(settles="GMAIL")
+    fake = _FakeCallback(settles="GMAIL")
     monkeypatch.setattr(api.hands, "connectors", lambda: fake)
 
     response = await client.get("/connections/done", params={"status": "success", "connected_account_id": "ca_1"})
@@ -1792,7 +1797,7 @@ async def test_the_callback_settles_the_connection(monkeypatch, client):
 async def test_the_callback_reconciles_against_the_cookie_user(monkeypatch, client):
     """The account id in the url is a claim; whose it is comes from Composio."""
     user_id = await _signed_in(client)
-    fake = _FakeConnectors(settles=None)
+    fake = _FakeCallback(settles=None)
     monkeypatch.setattr(api.hands, "connectors", lambda: fake)
 
     response = await client.get(
@@ -1806,7 +1811,7 @@ async def test_the_callback_reconciles_against_the_cookie_user(monkeypatch, clie
 
 async def test_a_failed_consent_settles_nothing(monkeypatch, client):
     await _signed_in(client)
-    fake = _FakeConnectors(settles="GMAIL")
+    fake = _FakeCallback(settles="GMAIL")
     monkeypatch.setattr(api.hands, "connectors", lambda: fake)
 
     response = await client.get("/connections/done", params={"status": "failed"})
@@ -1818,7 +1823,7 @@ async def test_a_failed_consent_settles_nothing(monkeypatch, client):
 async def test_an_upstream_refusal_still_closes_the_popup(monkeypatch, client):
     """The person is looking at this page; a 500 here strands them mid-flow."""
     await _signed_in(client)
-    monkeypatch.setattr(api.hands, "connectors", lambda: _FakeConnectors(blow_up=True))
+    monkeypatch.setattr(api.hands, "connectors", lambda: _FakeCallback(blow_up=True))
 
     response = await client.get("/connections/done", params={"status": "success", "connected_account_id": "ca_1"})
 
