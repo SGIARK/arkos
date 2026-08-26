@@ -746,3 +746,65 @@ async def test_the_scaffold_carries_what_the_model_last_wrote(model):
     scaffold = [m for m in msgs if m["role"] == "user" and "todo_write" in str(m.get("content"))][-1]
     assert "one" in scaffold["content"] and "two" in scaffold["content"]
     assert "1 still open" in scaffold["content"]
+
+
+# --- intent outranks mechanism (11.11.2.5) --------------------------------------
+
+
+async def _cancel_during_hop(intent):
+    """Run a turn, cancel it mid-model, and collect what the loop yielded."""
+    seen = []
+
+    async def slow(messages, tools=None, **kw):
+        yield mc.TextDelta(text="working")
+        await asyncio.sleep(30)
+
+    def generate(messages, tools=None, **kw):
+        return slow(messages, tools, **kw)
+
+    async def drive():
+        async for event in lp.run_turn(
+            [{"role": "user", "content": "go"}],
+            TOOLS,
+            _budgets(),
+            "unattended",
+            dispatch=_dispatch(),
+            teardown_intent=(lambda: intent) if intent is not None else None,
+        ):
+            seen.append(event)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(mc, "generate", generate)
+        mp.setattr(lp.model_client, "generate", generate)
+        task = asyncio.create_task(drive())
+        await asyncio.sleep(0.2)
+        task.cancel()
+        await asyncio.wait({task})
+    return [e.reason for e in seen if isinstance(e, lp.DoneEvent)]
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_stop_makes_the_loop_write_no_terminal():
+    """A stop and a cancel arrive identically — as a CancelledError.
+
+    The loop cannot read its own cancellation and know what it meant, so it asks
+    what the presser recorded. Writing `cancelled` here regardless is what broke
+    Stop: this terminal reached the log first and the caller's `stopped` became a
+    no-op, so Stop cancelled the run and threw away the approved plan.
+    """
+    assert await _cancel_during_hop("stopped") == [], "a stop is landed by the caller, not here"
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_cancel_still_writes_its_terminal():
+    assert await _cancel_during_hop("cancelled") == ["cancelled"]
+
+
+@pytest.mark.asyncio
+async def test_an_unrecorded_cancellation_is_read_as_a_cancel():
+    """A process coming down, a cancellation from somewhere else entirely.
+
+    A terminal that says the run ended beats an idle session nobody is driving,
+    so the absence of an intent reads as a cancel — the safe direction.
+    """
+    assert await _cancel_during_hop(None) == ["cancelled"]

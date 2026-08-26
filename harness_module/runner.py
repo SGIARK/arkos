@@ -619,6 +619,9 @@ async def _drive(session_id: str) -> None:
             options=_model_options(),
             store_blob=sink.store_blob,
             steer=_steering(session_id, folded.last_seq),
+            # The loop cannot tell a stop from a cancel — both arrive as a
+            # CancelledError — so it asks what the presser recorded (11.11.2.5).
+            teardown_intent=lambda: _teardown.get(session_id),
         ):
             if isinstance(event, DoneEvent) and sink.parked:
                 # The run ended in the same hop that raised a question. The

@@ -84,6 +84,12 @@ StoreBlob = Callable[[str], Awaitable[str]]
 # What the human has said since this was last called. Empty is the common answer.
 Steer = Callable[[], Awaitable[list[str]]]
 
+# Reads what the teardown that is cancelling this turn recorded that it MEANT:
+# `"stopped"`, `"cancelled"`, or None when nothing recorded anything (a process
+# coming down, a cancellation from somewhere else entirely). The loop consults
+# it rather than importing the harness, which owns the intent.
+TeardownIntent = Callable[[], str | None]
+
 
 @dataclass(slots=True)
 class _PartialCall:
@@ -119,6 +125,7 @@ async def run_turn(
     options: dict[str, Any] | None = None,
     store_blob: StoreBlob | None = None,
     steer: Steer | None = None,
+    teardown_intent: TeardownIntent | None = None,
 ) -> AsyncIterator[Event]:
     """Run one turn to its end, yielding events as they happen.
 
@@ -302,8 +309,20 @@ async def run_turn(
             yield DoneEvent(reason="model_error")
             return
         except asyncio.CancelledError:
-            # The run's last event, emitted before the cancellation propagates.
-            yield DoneEvent(reason="cancelled")
+            # INTENT OUTRANKS MECHANISM (11.11.2.5). A cancellation is how a stop
+            # and a cancel are BOTH delivered — the mechanism is identical — so
+            # the loop cannot read its own CancelledError and know what it meant.
+            # Whoever pressed the button recorded what they meant; that is the
+            # authority, and this asks rather than assuming.
+            #
+            # Writing `cancelled` here regardless is what broke Stop: this
+            # terminal reached the log first, latched, and the caller's
+            # `stopped` became a no-op — so Stop cancelled the run, threw away
+            # the approved plan, and handed the mode back to attended.
+            if (teardown_intent() if teardown_intent is not None else None) != "stopped":
+                # The run's last event, emitted before the cancellation
+                # propagates. A stop writes nothing here: the caller lands it.
+                yield DoneEvent(reason="cancelled")
             raise
 
         model_retries = 0
