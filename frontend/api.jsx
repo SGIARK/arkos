@@ -17,8 +17,19 @@ const API = location.origin;
    router writes the hash: the OAuth token and the route share location.hash,
    and whoever writes second wins. Stripping also keeps a live access token out
    of the address bar. */
-const _landing = (function captureAuthFragment() {
+const _landing = (function captureAuthLanding() {
   const hash = location.hash || "";
+  const query = new URLSearchParams(location.search || "");
+  /* Supabase sends links in two shapes depending on the template: the default
+     `{{ .ConfirmationURL }}` redirects and lands with a fragment, while a
+     `{{ .TokenHash }}` template lands with `?token_hash=&type=` and needs
+     `verifyOtp`. Both are handled — the templates are the owner's and this code
+     cannot see which shape they use. */
+  if (query.get("token_hash")) {
+    const type = query.get("type") || "";
+    history.replaceState(null, "", location.pathname);
+    return { recovery: type === "recovery", otp: query.get("token_hash"), otpType: type };
+  }
   if (!hash.includes("access_token=") && !hash.includes("error=")) return {};
   history.replaceState(null, "", location.pathname + location.search);
   const p = new URLSearchParams(hash.slice(1));
@@ -28,8 +39,27 @@ const _landing = (function captureAuthFragment() {
     token: p.get("access_token") || "",
     refresh: p.get("refresh_token") || "",
     failed: p.get("error_description") || p.get("error") || "",
+    // The one error worth its own copy: a reset link that has been used or has
+    // aged out, which is otherwise painted as a sign-in failure.
+    expired: p.get("error_code") === "otp_expired",
   };
 })();
+
+/* Errors that mean NO MAIL WENT OUT and why must not be said aloud: the
+   address is already registered, or we are inside the per-user window. Both
+   answer the question "does this address have an account?", so they end on the
+   same screen as a successful send instead of under the form. Anything else —
+   a malformed address, a weak password — is about what was typed and is shown. */
+function _isUndisclosableSendOutcome(error) {
+  if (!error) return false;
+  if (error.status === 429) return true;
+  const code = String(error.code || "");
+  if (["over_email_send_rate_limit", "email_exists", "user_already_exists", "over_request_rate_limit"].includes(code)) {
+    return true;
+  }
+  const said = String(error.message || "").toLowerCase();
+  return /after \d+ seconds|rate limit|already registered|already exists/.test(said);
+}
 
 /* Supabase's client, built from GET /auth/config on first use. Only sign-in
    touches it; every other call in this file is to our own API. */
@@ -73,7 +103,11 @@ async function exchange(token) {
   });
   if (!response.ok) {
     const shape = await response.json().catch(() => ({}));
-    throw new ApiError(shape.code || "sign_in_failed", shape.message || "The server rejected the token.");
+    /* ALWAYS `sign_in_failed`, never the server's own code. Every rejection
+       here is `unauthenticated`, which is also what a signed-out `me()` says —
+       and the boot must show one and not the other, or a token the server
+       refuses leaves a blank form and no explanation. */
+    throw new ApiError("sign_in_failed", shape.message || "The server rejected the sign-in.");
   }
   return api.me();
 }
@@ -178,6 +212,8 @@ const api = {
         emailRedirectTo: API + "/app/",
       },
     });
+    // Nothing was sent, and saying why would answer "does this address exist?".
+    if (error && _isUndisclosableSendOutcome(error)) return { confirm: true };
     if (error) throw new ApiError("sign_up_failed", error.message);
     const token = data && data.session && data.session.access_token;
     /* A session here means the dashboard's "Confirm email" toggle is OFF, so
@@ -218,6 +254,18 @@ const api = {
       console.log("[auth] recovery link — opening the new-password screen");
       return null;
     }
+    if (_landing.otp) {
+      console.log("[auth] token_hash link (", _landing.otpType, ") — verifying");
+      const client = await supabaseClient();
+      const { data, error } = await client.auth.verifyOtp({
+        token_hash: _landing.otp,
+        type: _landing.otpType || "email",
+      });
+      if (error) throw new ApiError("sign_in_failed", "That link has expired. Ask for another.");
+      const token = data && data.session && data.session.access_token;
+      if (!token) return null;
+      return exchange(token);
+    }
     if (!_landing.token) {
       console.log("[auth] no fragment on", location.pathname, "— nothing to exchange");
       return null;
@@ -228,7 +276,12 @@ const api = {
 
   /* This load came from a reset link, so the app owes a new-password screen
      rather than a session. */
-  recoveryPending: () => !!_landing.recovery && !!_landing.token,
+  recoveryPending: () => !!_landing.recovery && !!(_landing.token || _landing.otp),
+
+  /* A reset link that was already used or has aged out. Its own copy, because
+     painting it as a sign-in failure tells the person nothing about the link
+     they just clicked. */
+  linkExpired: () => !!_landing.expired,
 
   /* Send the reset mail. Resolves the same way whether or not the address has
      an account: Supabase does not say, and neither may we. */
@@ -237,7 +290,7 @@ const api = {
     const { error } = await client.auth.resetPasswordForEmail(email, {
       redirectTo: API + "/app/",
     });
-    if (error) throw new ApiError("reset_failed", error.message);
+    if (error && !_isUndisclosableSendOutcome(error)) throw new ApiError("reset_failed", error.message);
   },
 
   /* Finish the reset. The recovery token is only good for this: it is put in
@@ -246,20 +299,29 @@ const api = {
      person is signed in in one step. */
   async completeReset(password) {
     const client = await supabaseClient();
-    const { error: sessionError } = await client.auth.setSession({
-      access_token: _landing.token,
-      refresh_token: _landing.refresh,
-    });
-    if (sessionError) {
-      throw new ApiError("reset_failed", "This reset link has expired. Ask for another.");
+    if (_landing.otp) {
+      const { error } = await client.auth.verifyOtp({ token_hash: _landing.otp, type: "recovery" });
+      if (error) throw new ApiError("link_expired", "That reset link has expired. Ask for another.");
+    } else {
+      const { error } = await client.auth.setSession({
+        access_token: _landing.token,
+        refresh_token: _landing.refresh,
+      });
+      if (error) throw new ApiError("link_expired", "That reset link has expired. Ask for another.");
     }
-    const { data, error } = await client.auth.updateUser({ password });
+    const { error } = await client.auth.updateUser({ password });
     if (error) throw new ApiError("reset_failed", error.message);
     const { data: fresh } = await client.auth.getSession();
     const token = (fresh && fresh.session && fresh.session.access_token) || _landing.token;
+    console.log("[auth] password changed — exchanging for the cookie");
+    /* The password is ALREADY changed by here. Cleared only after the exchange
+       lands, so a failure leaves the screen up to say so rather than dropping
+       the person onto a form where their old password no longer works. */
+    const me = await exchange(token).catch(() => {
+      throw new ApiError("reset_done_no_session", "Your password was changed. Sign in with the new one.");
+    });
     _landing.recovery = false;
-    console.log("[auth] password changed for", (data && data.user && data.user.email) || "the account");
-    return exchange(token);
+    return me;
   },
 
   /* Ask for the confirmation mail again. Supabase rate-limits this per user;
@@ -271,7 +333,7 @@ const api = {
       email,
       options: { emailRedirectTo: API + "/app/" },
     });
-    if (error) throw new ApiError("resend_failed", error.message);
+    if (error && !_isUndisclosableSendOutcome(error)) throw new ApiError("resend_failed", error.message);
   },
 
   async signOut() {

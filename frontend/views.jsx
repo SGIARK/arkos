@@ -568,9 +568,12 @@ function scopeNames(scopes) {
 /* Sign-up, sign-in and Google are three ways to get a Supabase token and one
    way to be signed in: `api` trades any of them for our cookie via
    `POST /auth/session`, the only endpoint that reads a bearer. */
-function Login({ gone, onSignedIn, problem: arrived }) {
+function Login({ gone, onSignedIn, problem: arrived, startMode }) {
   // in | up | forgot
-  const [mode, setMode] = useState("in");
+  const [mode, setMode] = useState(startMode || "in");
+  // An error carried in from the boot belongs to the screen as it opened, not
+  // to whatever the person does next.
+  const [stale, setStale] = useState(false);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -585,7 +588,7 @@ function Login({ gone, onSignedIn, problem: arrived }) {
 
   const up = mode === "up";
   const forgot = mode === "forgot";
-  const shown = problem || arrived;
+  const shown = problem || (stale ? null : arrived);
 
   useEffect(() => {
     if (!gone && first.current) first.current.focus();
@@ -594,7 +597,7 @@ function Login({ gone, onSignedIn, problem: arrived }) {
   const ready = forgot
     ? email.trim()
     : up
-      ? name.trim() && email.trim() && password
+      ? name.trim() && email.trim() && password.length >= MIN_PASSWORD
       : email.trim() && password;
 
   async function submit() {
@@ -623,12 +626,15 @@ function Login({ gone, onSignedIn, problem: arrived }) {
   }
 
   async function google() {
+    if (busy) return;
+    setBusy(true);
     setProblem(null);
     try {
       // Navigates the tab away; nothing after this runs on success.
       await api.signInWithGoogle();
     } catch (e) {
       setProblem(e.message || "could not start google sign-in");
+      setBusy(false);
     }
   }
 
@@ -704,6 +710,7 @@ function Login({ gone, onSignedIn, problem: arrived }) {
                     onClick={() => {
                       setMode("forgot");
                       setProblem(null);
+                      setStale(true);
                     }}
                   >
                     forgot
@@ -713,7 +720,7 @@ function Login({ gone, onSignedIn, problem: arrived }) {
               <input
                 type="password"
                 value={password}
-                placeholder="••••••••"
+                placeholder={up ? `at least ${MIN_PASSWORD} characters` : "••••••••"}
                 autoComplete={up ? "new-password" : "current-password"}
                 onChange={(e) => setPassword(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && submit()}
@@ -752,6 +759,7 @@ function Login({ gone, onSignedIn, problem: arrived }) {
                 onClick={() => {
                   setMode("in");
                   setProblem(null);
+                  setStale(true);
                 }}
               >
                 back to sign in
@@ -764,6 +772,7 @@ function Login({ gone, onSignedIn, problem: arrived }) {
                   onClick={() => {
                     setMode(up ? "in" : "up");
                     setProblem(null);
+                    setStale(true);
                   }}
                 >
                   {up ? "sign in" : "make one"}
@@ -784,21 +793,25 @@ function Login({ gone, onSignedIn, problem: arrived }) {
    not the address exists; the two flows say different things, because
    anti-enumeration is about telling exists from not-exists WITHIN a flow, not
    about signup and reset sounding alike. */
+// Supabase's own per-user interval, so the button can say why it is dim
+// instead of failing at the server.
+const RESEND_WAIT = 60;
+// One password rule, stated wherever a password is typed.
+const MIN_PASSWORD = 8;
+
 function MailSent({ kind, email, onBack }) {
   const reset = kind === "reset";
-  const [cooling, setCooling] = useState(0);
+  /* Starts COOLING. This mounts at second 0 of Supabase's per-user window —
+     the mail was just sent — so a button enabled here is a button that cannot
+     work, and its refusal would name the window and thereby the account. */
+  const [cooling, setCooling] = useState(RESEND_WAIT);
   const [note, setNote] = useState(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (!cooling) return undefined;
     const id = setInterval(() => setCooling((n) => (n > 0 ? n - 1 : 0)), 1000);
     return () => clearInterval(id);
-  }, [cooling]);
-
-  // Supabase's own per-user interval. Held here so the button can say why it
-  // is dim instead of failing at the server.
-  const RESEND_WAIT = 60;
+  }, []);
 
   async function again() {
     if (cooling || busy) return;
@@ -810,9 +823,10 @@ function MailSent({ kind, email, onBack }) {
       setNote("sent again — check your inbox and your spam folder.");
       setCooling(RESEND_WAIT);
     } catch (e) {
-      // A rate-limit refusal is not a failure worth alarming anyone about; it
-      // is the same wait, arriving from the other side.
-      setNote(e.message || "could not send it again just now.");
+      /* FIXED COPY, never the provider's. Its refusals name the per-user
+         window, which answers "does this address exist?" — the question this
+         whole screen exists not to answer. */
+      setNote("if there is anything to send, it is on its way. try again in a minute.");
       setCooling(RESEND_WAIT);
     } finally {
       setBusy(false);
@@ -853,7 +867,7 @@ function MailSent({ kind, email, onBack }) {
 /* The recovery landing. The link carries a token good for exactly one thing —
    changing the password — so this screen is the whole of what it can do, and
    it is reachable only with that token in hand. */
-function ResetPassword({ onSignedIn }) {
+function ResetPassword({ onSignedIn, onGiveUp }) {
   const [password, setPassword] = useState("");
   const [again, setAgain] = useState("");
   const [busy, setBusy] = useState(false);
@@ -865,7 +879,9 @@ function ResetPassword({ onSignedIn }) {
   }, []);
 
   const mismatch = again.length > 0 && password !== again;
-  const ready = password.length >= 8 && password === again;
+  const ready = password.length >= MIN_PASSWORD && password === again;
+  // The password really changed; only the cookie did not.
+  const changed = !!problem && problem.startsWith("Your password was changed");
 
   async function submit() {
     if (!ready || busy) return;
@@ -896,7 +912,7 @@ function ResetPassword({ onSignedIn }) {
                 ref={first}
                 type="password"
                 value={password}
-                placeholder="at least 8 characters"
+                placeholder={`at least ${MIN_PASSWORD} characters`}
                 autoComplete="new-password"
                 onChange={(e) => setPassword(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && submit()}
@@ -920,7 +936,12 @@ function ResetPassword({ onSignedIn }) {
             </button>
           </div>
           {mismatch && <p className="auth-note quiet">those two do not match yet.</p>}
-          {problem && <p className="auth-problem">{problem}</p>}
+          {problem && <p className={changed ? "auth-note quiet" : "auth-problem"}>{problem}</p>}
+          <div className="auth-switch">
+            <span className="auth-link" onClick={onGiveUp}>
+              back to sign in
+            </span>
+          </div>
         </div>
       </div>
     </div>

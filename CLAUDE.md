@@ -112,7 +112,8 @@ Never re-run a consumed-but-unclosed call: repair it as interrupted.
 
 **The designs live under `designs/`** — checked-in copies of the Claude Design
 project, one directory per canvas (`new-frontend/` is the 11.4 frame,
-`planning-card/`, `filesystem_revamp/`, `settings-usage/`, `sign-up/`). Where a
+`planning-card/`, `filesystem_revamp/`, `settings-usage/`, `sign-up/`,
+`email-templates/`). Where a
 design and `frontend/` disagree, the design wins and `frontend/` is amended, not
 the other way round.
 

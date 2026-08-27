@@ -10,6 +10,8 @@ function App() {
   const [gone, setGone] = useState(false);
   // A refusal carried back on the OAuth fragment; only the sign-in screen shows it.
   const [authProblem, setAuthProblem] = useState(null);
+  // Abandoning the reset screen must leave somewhere to go.
+  const [recoveryDone, setRecoveryDone] = useState(false);
   const [view, setView] = useState(() => {
     const hash = decodeURIComponent(location.hash.replace("#", ""));
     const named = NAV_ALIAS[hash] || hash;
@@ -47,7 +49,9 @@ function App() {
       } catch (e) {
         if (dead) return;
         setUser(null);
-        if (e && e.code === "sign_in_failed") setAuthProblem(e.message);
+        if (e && e.code === "sign_in_failed") {
+          setAuthProblem(api.linkExpired() ? "that reset link has expired — ask for another" : e.message);
+        }
       } finally {
         if (!dead) setBooting(false);
       }
@@ -101,10 +105,20 @@ function App() {
   }
 
   if (booting) return <div className="login" />;
-  /* A reset link outranks everything: it lands signed out, carries a token good
-     only for a password change, and must not fall through to the sign-in form. */
-  if (!user && api.recoveryPending()) return <ResetPassword onSignedIn={signIn} />;
-  if (!user) return <Login gone={gone} onSignedIn={signIn} problem={authProblem} />;
+  /* A reset link outranks EVERYTHING, including an existing session. Guarding
+     this on `!user` meant that clicking it while still signed in dropped the
+     token and opened the app as normal — the one person who asked to change
+     their password, silently refused. */
+  if (api.recoveryPending() && !recoveryDone) return <ResetPassword onSignedIn={signIn} onGiveUp={() => setRecoveryDone(true)} />;
+  if (!user)
+    return (
+      <Login
+        gone={gone}
+        onSignedIn={signIn}
+        problem={authProblem}
+        startMode={api.linkExpired() ? "forgot" : "in"}
+      />
+    );
 
   const views = {
     desk: <DeskView onError={onError} waiting={waiting} onOpenSession={(id) => { setJump(id); setView("projects"); }} />,

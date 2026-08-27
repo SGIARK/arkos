@@ -736,7 +736,10 @@ kbd {
    unbreakable word in the first place. CONTAINERS CLIP: the feed refuses
    horizontal overflow outright, so anything this rule cannot break — a wide
    image, a future embed — is clipped rather than allowed to widen the pane.
-   Add a text block to the transcript and it is covered by being inside it. */
+   The CLIP covers anything inside the feed. The WRAP is an explicit selector
+   list, so a NEW transcript text class must be added to it — the page still
+   cannot scroll sideways either way, but a block left off wraps at word
+   boundaries only. */
 .stream { overflow-x: hidden; }
 .msg .bubble,
 .ev-assist p,
@@ -1285,8 +1288,8 @@ kbd {
    conversation; the transcript is meant to be the only surface, and nothing
    here is docked or floats.
 
-   Six faces, never two at once: drafting, the open card, the running plan, a
-   held run, a spent one, a dismissed one. Measures come from the export.
+   Two faces since 11.12, never both at once: drafting and the open card. The
+   pin and the held/spent/dismissed banners are gone. Measures come from the export.
    Colours do not: every one is a token, so the lane follows the theme rather
    than pinning the paper background it was drawn on.
    ========================================================= */
