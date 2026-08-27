@@ -26,11 +26,15 @@ function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJ
   const [projects, setProjects] = useState(null);
   const waiting = pending || [];
   const [openProject, setOpenProject] = useState(null);
-  const [sessions, setSessions] = useState([]);
+  // NULL until the list has been read: an empty array means the project
+  // genuinely has none, and only then does the composer take the surface.
+  const [sessions, setSessions] = useState(null);
   const [openSession, setOpenSession] = useState(null);
   const [making, setMaking] = useState(false);
   const [renaming, setRenaming] = useState(null);
   const [renameText, setRenameText] = useState("");
+  // Asked for a new session in a project that already has some.
+  const [starting, setStarting] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -86,7 +90,8 @@ function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJ
 
   const open = async (project) => {
     setOpenProject(project);
-    setSessions([]);
+    setSessions(null);
+    setStarting(false);
     try {
       const list = await api.projectSessions(project.id);
       setSessions(list);
@@ -112,6 +117,27 @@ function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJ
     );
   }
 
+  /* Zero sessions means the composer, not a placeholder: there is nothing to
+     list and the only useful thing here is to say what you want done. */
+  if (openProject && (starting || (sessions !== null && !sessions.length))) {
+    return (
+      <StartSession
+        project={openProject}
+        onError={onError}
+        onBack={() => {
+          setStarting(false);
+          if (sessions && sessions.length) return;
+          setOpenProject(null);
+        }}
+        onStarted={(id) => {
+          setStarting(false);
+          setOpenSession(id);
+          if (onPulse) onPulse();
+        }}
+      />
+    );
+  }
+
   if (openProject) {
     return (
       <div className="lg-view">
@@ -123,11 +149,14 @@ function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJ
             <b>{openProject.title}</b>
           </span>
           <span className="grow" />
+          <button className="pg-new" title="new session" onClick={() => setStarting(true)}>
+            +
+          </button>
         </div>
         <div className="projects-grid">
           <div className="stack" style={{ maxWidth: 760 }}>
-            {!sessions.length && <Empty glyph="○">nothing has run in this project yet</Empty>}
-            {sessions.map((s) => (
+            {sessions === null && <Empty>reading…</Empty>}
+            {(sessions || []).map((s) => (
               <div className="row" key={s.session_id} onClick={() => setOpenSession(s.session_id)}>
                 <span className="label">
                   {s.status === "running" ? <Spinner /> : <Dot status={s.status} />}
@@ -142,6 +171,9 @@ function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJ
                 </span>
               </div>
             ))}
+            <div className="proj-new" onClick={() => setStarting(true)}>
+              new session
+            </div>
           </div>
         </div>
       </div>
@@ -351,6 +383,142 @@ function NewProject({ onClose, onMade, onError }) {
 
 /* One session, live — reached from a project or from the desk's running list.
    A session need not belong to a project at all. */
+/* THE COMPOSER, used by a live session and by one that does not exist yet.
+
+   Extracted in 12.2.6 rather than copied: the Enter/Shift+Enter rule, the IME
+   guard and the auto-grow are behaviour, and behaviour has one implementation.
+   `chip` is whatever belongs left of the prompt — the tool budget for a live
+   session, nothing for a project whose first message will create one. */
+function Composer({ placeholder, onSend, chip = null, autoFocus = false }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const box = useRef(null);
+
+  useEffect(() => {
+    if (autoFocus && box.current) box.current.focus();
+  }, [autoFocus]);
+
+  /* `auto` first so the box can SHRINK: scrollHeight never reports less than
+     the height already set. */
+  const grow = (el) => {
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  };
+
+  const submit = async () => {
+    const said = text.trim();
+    if (!said || busy) return;
+    setBusy(true);
+    try {
+      // Cleared only on success: a send that failed must not eat what was typed.
+      if ((await onSend(said)) !== false) {
+        setText("");
+        if (box.current) box.current.style.height = "auto";
+      }
+    } finally {
+      setBusy(false);
+      if (box.current) box.current.focus();
+    }
+  };
+
+  return (
+    <form
+      className="lg-composer"
+      onSubmit={(e) => {
+        e.preventDefault();
+        submit();
+      }}
+    >
+      {chip}
+      <span className="prompt">buddy&gt;</span>
+      {/* Enter sends, Shift+Enter is a newline; the height cap is the
+          stylesheet's `max-height`. */}
+      <textarea
+        ref={box}
+        rows={1}
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value);
+          grow(e.target);
+        }}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter" || e.shiftKey) return;
+          // A newline mid-composition is the IME's, not a send.
+          if (e.nativeEvent && e.nativeEvent.isComposing) return;
+          e.preventDefault();
+          submit();
+        }}
+        placeholder={placeholder}
+        spellCheck={false}
+        autoComplete="off"
+      />
+    </form>
+  );
+}
+
+/* A PROJECT WITH NOWHERE TO TYPE was the bug (12.2.6): nothing in the frontend
+   ever called `POST /sessions`, so a fresh account opened its project onto a
+   placeholder and was stranded. The first message is what creates the session —
+   there is no "create" button, because an empty session is not a thing anyone
+   wants, and `POST /sessions` takes the goal in the same call. */
+function StartSession({ project, onStarted, onError, onBack }) {
+  const [starting, setStarting] = useState(false);
+
+  const begin = async (goal) => {
+    setStarting(true);
+    try {
+      const made = await api.start(goal, project.id);
+      onStarted(made.session_id);
+      return true;
+    } catch (e) {
+      onError(e);
+      // Keeps what was typed: the send failed, so the words are still owed.
+      return false;
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  return (
+    <div className="lg-view">
+      <div className="lg-ctxline">
+        <button className="back-btn" onClick={onBack}>
+          ← projects
+        </button>
+        <span className="path">
+          <b>{project.title}</b>
+        </span>
+        <span className="grow" />
+      </div>
+      <div className="lg-body">
+        <div className="stream-wrap">
+          <div className="stream">
+            <div className="start-note">
+              <span className="kicker">new session</span>
+              <p>
+                say what you want done. buddy drafts and works in <b>{project.title}</b>, and asks before
+                anything leaves your account.
+              </p>
+            </div>
+            {starting && (
+              <div className="plan-drafting">
+                <Spinner />
+                <span>starting…</span>
+              </div>
+            )}
+          </div>
+          <Composer
+            autoFocus
+            placeholder="what should buddy do?"
+            onSend={begin}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFile }) {
   const stream = useStream(sessionId, onError, onPulse);
   const {
@@ -365,34 +533,10 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
     refreshQuestions,
     refreshSession,
   } = stream;
-  const [text, setText] = useState("");
-  const [tab, setTab] = useState(() => localStorage.getItem("ark-canvas") || "files");
+  const [tab, setTab] = useState(() => localStorage.getItem("buddy-canvas") || "files");
   const [headRename, setHeadRename] = useState(false);
   const [headText, setHeadText] = useState("");
   const tail = useRef(null);
-  const composer = useRef(null);
-
-  /* `auto` first so the box can shrink: `scrollHeight` never reports less than
-     the height already set. The cap and internal scroll are the stylesheet's. */
-  const grow = (el) => {
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-  };
-
-  /* Resetting the height belongs here: the value going empty does not re-run
-     `grow`. */
-  const submit = () => {
-    const said = text.trim();
-    if (!said) return;
-    send(said);
-    setText("");
-    const el = composer.current;
-    if (el) {
-      el.style.height = "auto";
-      el.focus();
-    }
-  };
 
   /* `drafting` is the one fact the server has no row for: a plan turn is in
      flight. The open plan itself is not held here — it is `questions`. */
@@ -419,7 +563,7 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
   };
 
   useEffect(() => {
-    localStorage.setItem("ark-canvas", tab);
+    localStorage.setItem("buddy-canvas", tab);
   }, [tab]);
 
   const openPlan = questions.find((q) => q.kind === "plan") || null;
@@ -684,39 +828,13 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
             <div ref={tail} />
           </div>
 
-          <form
-            className="lg-composer"
-            onSubmit={(e) => {
-              e.preventDefault();
-              submit();
-            }}
-          >
-            <SessionTools sessionId={sessionId} onError={onError} />
-            <span className="prompt">buddy&gt;</span>
-            {/* Enter sends, Shift+Enter is a newline; the height cap is the
-                stylesheet's `max-height`. */}
-            <textarea
-              ref={composer}
-              rows={1}
-              value={text}
-              onChange={(e) => {
-                setText(e.target.value);
-                grow(e.target);
-              }}
-              onKeyDown={(e) => {
-                if (e.key !== "Enter" || e.shiftKey) return;
-                // A newline mid-composition is the IME's, not a send.
-                if (e.nativeEvent && e.nativeEvent.isComposing) return;
-                e.preventDefault();
-                submit();
-              }}
-              /* A stopped run resumes on what is typed here: kind `resume` is
-                 exempt from the composer's 409. */
-              placeholder={held ? "type to resume. your note is the next thing buddy reads" : "suggest or steer this session…"}
-              spellCheck={false}
-              autoComplete="off"
-            />
-          </form>
+          <Composer
+            chip={<SessionTools sessionId={sessionId} onError={onError} />}
+            /* A stopped run resumes on what is typed here: kind `resume` is
+               exempt from the composer's 409. */
+            placeholder={held ? "type to resume. your note is the next thing buddy reads" : "suggest or steer this session…"}
+            onSend={(said) => send(said)}
+          />
         </div>
 
         <div className="ctx-panel">

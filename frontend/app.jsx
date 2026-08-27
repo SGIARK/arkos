@@ -4,7 +4,7 @@ const NAV = ["desk", "approvals", "files", "projects"];
 const NAV_ALIAS = { computer: "files", "looking glass": "projects" };
 
 function App() {
-  const [theme, setTheme] = useState(() => localStorage.getItem("ark-theme") || "light");
+  const [theme, setTheme] = useState(() => localStorage.getItem("buddy-theme") || "light");
   const [user, setUser] = useState(null);
   const [booting, setBooting] = useState(true);
   const [gone, setGone] = useState(false);
@@ -29,7 +29,7 @@ function App() {
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
-    localStorage.setItem("ark-theme", theme);
+    localStorage.setItem("buddy-theme", theme);
   }, [theme]);
 
   useEffect(() => {

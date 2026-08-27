@@ -1326,6 +1326,12 @@ kbd {
 }
 .plan-chip .dir { text-transform: none; letter-spacing: 0; color: var(--ink-mute); }
 
+/* The first thing a project with no session shows. Deliberately quiet: the
+   composer below it is the control, and this only says what typing will do. */
+.start-note { flex-shrink: 0; max-width: 620px; }
+.start-note .kicker { display: block; font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-mute); margin-bottom: 10px; }
+.start-note p { margin: 0; font-size: 13px; line-height: 1.7; color: var(--ink-soft); }
+
 /* The plan lane is TWO faces now (11.12): drafting, and the open card. The
    pinned plan, its resume-note echo, and the held/spent/dismissed banners are
    deleted — every fact they drew has one home elsewhere, and their actions are
