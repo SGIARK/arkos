@@ -1,12 +1,8 @@
 """The HTTP surface: session snapshots, the event stream, and commands.
 
-Every error response carries `{code, message, retryable}`. The caller is
-identified by the session cookie; no endpoint reads a user id from a header,
-body or query string, the OAuth callback included.
-
-Auth, chat, files, attention and the MCP connections surface are served here,
-along with the browser's frame side-channel — an SSE stream of JPEGs keyed
-(user, session), never appended to the log and never replayed.
+Every error response is `{code, message, retryable}`, and the caller is
+identified by the session cookie only — never by a user id in a header, body or
+query string, the OAuth callback included.
 """
 
 from __future__ import annotations
@@ -82,37 +78,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if not _cfg("app.public_url", ""):
         logger.warning("app.public_url is unset: mutations are not origin-checked and OAuth has no return url")
 
-    # Runs before any session can start: `start` refuses a session whose row
+    # Must run before any session can start: `start` refuses a session whose row
     # still says running.
     with contextlib.suppress(Exception):
         await lifecycle.sweep_interrupted()
-    # Slots held by a process that died: reclaimed here rather than at whatever
-    # hour their expiry happens to pass.
     with contextlib.suppress(Exception):
         await sandbox_manager.sweep_slots()
     await hands.start()
     await system_log.start()
-    # NOT in the `finally` below, which is far too late: uvicorn drains open
-    # connections BEFORE it runs the lifespan's shutdown, so a stream waiting to
-    # be told to stop waits for a message that only arrives after the wait it is
-    # blocking. Measured — the log reaches "Waiting for connections to close"
-    # and never reaches "Waiting for application shutdown".
-    #
-    # The signal is the earliest moment the process knows it is leaving, so the
-    # streams are told there, before the drain begins (11.11.4).
+    # NOT in the `finally` below: uvicorn drains open connections BEFORE it runs
+    # the lifespan's shutdown, so a stream waiting to be told to stop blocks the
+    # drain that would deliver the message. The signal is the earliest moment.
     _end_streams_on_signal()
     try:
         yield
     finally:
-        # Belt and braces: a shutdown that arrives some other way (a test
-        # calling the lifespan directly, a runner that does not signal) still
-        # ends the streams, and doing it twice is harmless.
+        # Idempotent second call, for a shutdown that arrives without a signal.
         shutdown_streams()
         await system_log.stop()
         await hands.stop()
-        # The store's HTTP client belongs to this loop; closing it here is the
-        # tidy end of a lifetime that is already scoped to the loop rather than
-        # to the process (11.8.8).
+        # The store's HTTP client is scoped to this loop, so it closes here.
         await blobs.close_clients()
         model_client.reset_client()
         await pool.close()
@@ -121,15 +106,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def _end_streams_on_signal() -> None:
     """Tell every open stream to end the moment a shutdown signal arrives.
 
-    Chained rather than installed: `add_signal_handler` keeps ONE handler per
-    signal, so replacing uvicorn's would mean the server never learns to stop.
-    Ours runs first and then delegates, which is the whole trick — the streams
-    end while uvicorn is still deciding to shut down, so the drain it does next
-    has nothing left to wait for.
-
-    Best-effort by design. On a loop with no signal support, or a platform
-    without these signals, this does nothing and the lifespan's own call still
-    runs; the dev flag remains as the last resort it was always meant to be.
+    Chained rather than installed — one handler per signal, so replacing
+    uvicorn's would mean the server never learns to stop. Best-effort.
     """
     for signame in ("SIGTERM", "SIGINT"):
         sig = getattr(signal, signame, None)
@@ -191,13 +169,7 @@ async def current_user(request: Request) -> str:
 
 
 def _check_origin(request: Request) -> None:
-    """Reject a mutation whose Origin header names another origin.
-
-    The message names both sides. `http://127.0.0.1:1121` and
-    `http://localhost:1121` are the same server and different origins, and a
-    bare "not allowed" leaves someone comparing two strings they cannot see.
-    `app.public_url` is public by definition, so saying it costs nothing.
-    """
+    """Reject a mutation whose Origin header names another origin."""
     origin = request.headers.get("origin")
     if origin is None:
         # Same-origin fetches and non-browser clients send no Origin header.
@@ -265,17 +237,10 @@ async def create_auth_session(authorization: str | None = Header(default=None)) 
 
 
 def _display_name(claims: dict[str, Any]) -> str | None:
-    """What the buddy should call this person, out of the SIGNED token (12.1).
+    """What the buddy should call this person, from the SIGNED token only.
 
-    From `user_metadata`, never from a request body: the token is signed and a
-    body is not, so reading it here is the difference between a name Supabase
-    vouches for and a name anyone with a session could set. `name` is what our
-    own sign-up form writes; `full_name` is what Google's OIDC profile carries.
-    Both, in that order, because a person who typed a name meant it.
-
-    Returns None rather than a fallback. The column is COALESCEd on upsert, so
-    None leaves whatever is already there — which is what makes signing in
-    through Google later safe for a name someone typed at sign-up.
+    `name` is what our sign-up form writes, `full_name` what Google's OIDC
+    profile carries. None rather than a fallback: the column is COALESCEd.
     """
     meta = claims.get("user_metadata")
     if not isinstance(meta, dict):
@@ -283,7 +248,7 @@ def _display_name(claims: dict[str, Any]) -> str | None:
     for key in ("name", "full_name"):
         value = meta.get(key)
         if isinstance(value, str) and value.strip():
-            # Capped because it is rendered, and a 4KB "name" is not a name.
+            # Capped because it is rendered.
             return value.strip()[:120]
     return None
 
@@ -291,19 +256,8 @@ def _display_name(claims: dict[str, Any]) -> str | None:
 async def _ensure_home_session(user_id: str) -> str:
     """Give a user their standing chat, once.
 
-    The app opens this session by default, which is the whole of what makes it
-    home: the row is an ordinary attended session, free to sit idle forever or
-    run like any other. Created here because first login is the only moment that
-    knows a user is new, and guarded by `home_session_id IS NULL` so a second
-    login never makes a second one.
-
-    It has NO PROJECT (11.9). It used to mint one called "Chat", because a
-    project was the only way to hold a directory and a session needed a
-    directory. No project holds a directory now — folders are the store's and
-    projects link them — so the shadow project is not cleaned up, it is unmade.
-    A chat that has not been given work has nothing durable to write into, which
-    is the truth about it: asking it for work makes a project, and that is when
-    a folder appears.
+    An ordinary attended session with NO PROJECT, guarded by
+    `home_session_id IS NULL` so a second login never makes a second one.
     """
     existing = await pool.fetchval("SELECT home_session_id FROM users WHERE id = $1", _uuid(user_id, "user"))
     if existing is not None:
@@ -318,7 +272,7 @@ async def _ensure_home_session(user_id: str) -> str:
         _uuid(user_id, "user"),
     )
     # Conditional, so two first logins racing leave one session as home and the
-    # other as an ordinary empty one rather than overwriting each other.
+    # other as an ordinary empty one.
     claimed = await pool.fetchval(
         """
         UPDATE users SET home_session_id = $2
@@ -337,10 +291,8 @@ async def _ensure_home_session(user_id: str) -> str:
 async def auth_config() -> dict[str, Any]:
     """What the sign-in view needs to talk to Supabase. Public, and necessarily so.
 
-    The anon key is public by design — it identifies the project, authorizes
-    nothing on its own, and every row it can reach is behind RLS or behind this
-    API. It is served rather than baked into the page because it differs per
-    deployment and the page is a checked-in file.
+    The anon key identifies the project and authorizes nothing on its own; it is
+    served rather than baked in because it differs per deployment.
     """
     return {"supabase_url": blobs.project_url() or "", "anon_key": _anon_key()}
 
@@ -356,9 +308,8 @@ async def delete_auth_session() -> Response:
 async def auth_me(user_id: str = CurrentUser) -> dict[str, Any]:
     """Who is calling, and which session the app opens for them.
 
-    `home_session_id` rides along because the page needs it on the first render
-    and there is no other request that would carry it. It is null only for a
-    user whose home session was deleted; the next sign-in makes another.
+    `home_session_id` is null only for a user whose home session was deleted;
+    the next sign-in makes another.
     """
     row = await pool.fetchrow(
         "SELECT id, email, display_name, home_session_id FROM users WHERE id = $1",
@@ -369,9 +320,7 @@ async def auth_me(user_id: str = CurrentUser) -> dict[str, Any]:
     return {
         "user_id": str(row["id"]),
         "email": row["email"],
-        # Null when nobody has said (12.1) — every account older than the column,
-        # and any Google profile with no name on it. The caller falls back to the
-        # email, which is what it showed before there was a name to show.
+        # Null when no name is known; the caller falls back to the email.
         "display_name": row["display_name"],
         "home_session_id": str(row["home_session_id"]) if row["home_session_id"] else None,
     }
@@ -395,15 +344,8 @@ async def health() -> dict[str, Any]:
 async def create_session(body: dict[str, Any] = JsonBody, user_id: str = CurrentUser) -> dict[str, Any]:
     """Open a session on a goal and start its first turn.
 
-    A session is created attended, so only the new-session rate quota applies
-    here; the unattended concurrency quota is checked on approve.
-
-    `claims` names what the session may see, as `[{folder, subpath?, mode?}]`.
-    Absent, it gets a write claim on every folder its project links. The set is
-    fixed here for the session's life: deciding it up front is what lets the
-    leases be taken in one go rather than acquired into a deadlock halfway
-    through, and it is why a folder linked later reaches the agent at the next
-    session rather than under this one.
+    `claims` is `[{folder, subpath?, mode?}]`; absent, it is a write claim on
+    every folder the project links. The set is fixed for the session's life.
     """
     goal = str(body.get("goal") or "").strip()
     if not goal:
@@ -420,9 +362,8 @@ async def create_session(body: dict[str, Any] = JsonBody, user_id: str = Current
         if owned is None:
             raise ApiError(404, "not_found", "No such project.")
     else:
-        # A session asked for with no project is a new piece of work, so it gets
-        # a project and the project gets a folder to keep the work in. The home
-        # chat is the other case and gets neither: nobody asked it for anything.
+        # No project asked for means new work: it gets a project, and the
+        # project gets a folder to keep the work in.
         project_id = await _new_project(user_id, _title(goal))
         await _link_folder(project_id, await _make_folder(user_id, store.slug(_title(goal), "project")))
 
@@ -454,13 +395,7 @@ async def create_session(body: dict[str, Any] = JsonBody, user_id: str = Current
 
 @app.get("/sessions")
 async def list_sessions(status: str | None = None, user_id: str = CurrentUser) -> list[dict[str, Any]]:
-    """The user's sessions across every project, newest activity first.
-
-    `status` narrows it — `?status=running` is what the rail asks for. The
-    per-project list does not compose into this: a rail spanning both tabs is a
-    cross-project view, and asking it project by project is N requests for a
-    sidebar.
-    """
+    """The user's sessions across every project, newest activity first."""
     if status is not None and status not in lifecycle.ALL_STATUSES:
         raise ApiError(400, "invalid_request", f"{status!r} is not a session status.")
 
@@ -495,31 +430,24 @@ async def get_session(session_id: str, user_id: str = CurrentUser) -> dict[str, 
     """Return the session and the tail of its transcript, for a just-opened view."""
     row = await _owned_session(session_id, user_id)
     events = await slog.recent_events(session_id, limit=int(_cfg("harness.snapshot_events", 200)))
-    # Read ONCE. `folders` is a projection of the claims, and asking for them
-    # twice is two queries that can disagree with each other.
+    # Read ONCE: `folders` below is a projection of these claims, and two reads
+    # can disagree with each other.
     claims = await _claims_of(session_id)
     return {
         **_session_core(row),
         "project_id": str(row["project_id"]) if row["project_id"] else None,
-        # The project's LABEL, so the window's header reads the same however it
-        # was opened. It used to come from the grid's navigation state, which is
-        # absent when a session is opened from the desk — and the header then
-        # fell back to the session's own title.
+        # The project's LABEL, so the header reads the same however it was opened.
         "project_title": await pool.fetchval(
             "SELECT title FROM projects WHERE id = $1", _uuid(row["project_id"], "project")
         )
         if row["project_id"]
         else None,
-        # The FOLDERS this session writes, in link order — where the work
-        # actually lands. Not `project_slug`: a project links folders rather than
-        # owning one, so there is no single directory to name, and the session
-        # header stopped drawing directory chips when there could be several
-        # (11.9). The pane and the plan card say where work goes.
+        # The FOLDERS this session writes, in link order — where the work lands.
+        # A project links folders rather than owning one, so there is no single
+        # directory to name.
         "folders": [claim["folder"] for claim in claims],
-        # The session's newest plan, so the collapsed card an approved run pins
-        # is exact. Counting `propose_plan` calls in `recent_events` was the
-        # alternative and it drifts: that window is capped, so a long session
-        # renders a version the server does not agree with, or none at all.
+        # The session's newest plan, exact: `recent_events` is capped, so
+        # counting `propose_plan` calls in it drifts on a long session.
         "plan": await _latest_plan(session_id),
         # What this session may see and write, fixed at creation.
         "claims": claims,
@@ -548,7 +476,6 @@ async def list_projects(user_id: str = CurrentUser) -> list[dict[str, Any]]:
             "id": str(r["id"]),
             "title": r["title"],
             "updated_at": r["updated_at"].isoformat(),
-            # Rolled up in the query above, so the project grid costs one round trip.
             "status_rollup": _rollup(r),
             "sessions": r["sessions"],
         }
@@ -560,21 +487,8 @@ async def list_projects(user_id: str = CurrentUser) -> list[dict[str, Any]]:
 async def create_project(body: dict[str, Any] = JsonBody, user_id: str = CurrentUser) -> dict[str, Any]:
     """Make a project deliberately, rather than as a side effect of starting a session.
 
-    `folders` is what it LINKS: any number of folders that already exist in the
-    caller's store, by name. A project owns no folder and never did anything to
-    the files under one — linking is a fact about which work reads and writes
-    where, and unlinking would leave every file exactly where it is.
-
-    Picking none is the none-case, and it is not "no files": a folder named
-    after the project is made for it (uniquified, because folder names are
-    unique per user) and linked, so it appears in the Files tab as an ordinary
-    folder like any other. It is kept alive by a sentinel, which is how any
-    named-but-unfilled folder exists.
-
-    This replaced `seed_from`, which COPIED tree rows from one project's
-    directory into another's. There is one store now, so the copy has nothing to
-    do: pointing two projects at the same folder is linking it twice, and the
-    file is one file rather than two rows with one blob under them.
+    `folders` LINKS folders that already exist in the caller's store, by name;
+    with none given, a folder named after the project is made and linked.
     """
     title = str(body.get("title") or "").strip()
     if not title:
@@ -598,10 +512,8 @@ async def create_project(body: dict[str, Any] = JsonBody, user_id: str = Current
     for folder in linked:
         await _link_folder(project_id, folder)
 
-    # Sentinels are excluded for the same reason `store.folders` excludes them:
-    # a folder that has been named and not filled holds nothing, and reporting
-    # the file that keeps it alive as content is reporting a file nobody put
-    # there.
+    # Sentinels excluded, as in `store.folders`: the file that keeps an empty
+    # folder alive is not content.
     files = await pool.fetchval(
         """
         SELECT count(*) FROM files
@@ -624,11 +536,8 @@ async def link_project_folder(
 ) -> dict[str, Any]:
     """Link one more store folder to this project.
 
-    The UI shows it at once and the AGENT sees it from the NEXT session, because
-    claims are fixed for a session's life (`workspace.claims_for`). That is not a
-    lag to be papered over: a folder appearing under a run mid-hop is a mount and
-    a lease the model was never told about, and a fact recorded at session start
-    is one it can be told. Linking twice is the same link.
+    The AGENT sees it from the NEXT session: claims are fixed for a session's
+    life (`workspace.claims_for`). Linking twice is the same link.
     """
     await _owned_project(project_id, user_id)
     folder = str(body.get("folder") or "").strip().strip("/")
@@ -647,14 +556,7 @@ async def rename_project(
     body: dict[str, Any] = JsonBody,
     user_id: str = CurrentUser,
 ) -> dict[str, Any]:
-    """Rename a project. The title is a LABEL and nothing durable is keyed by it.
-
-    No folder moves, and now there is nothing a rename could even reach for: a
-    project LINKS folders and the folders are the store's, derived from the
-    paths of files that exist. The Files tab's headers are those segments, so
-    renaming a project cannot change one — which is the bug this replaced, where
-    the headers were project titles and a rename renamed the filesystem.
-    """
+    """Rename a project. The title is a LABEL and nothing durable is keyed by it."""
     await _owned_project(project_id, user_id)
     title = str(body.get("title") or "").strip()
     if not title:
@@ -667,8 +569,7 @@ async def rename_project(
     return {
         "id": str(row["id"]),
         "title": row["title"],
-        # The links, so a surface can show where the work actually lands. The
-        # rename did not touch them and cannot.
+        # The links, so a surface can show where the work actually lands.
         "folders": await _folders_of(project_id),
         "updated_at": row["updated_at"].isoformat(),
     }
@@ -676,12 +577,7 @@ async def rename_project(
 
 @app.get("/projects/{project_id}/sessions")
 async def list_project_sessions(project_id: str, user_id: str = CurrentUser) -> list[dict[str, Any]]:
-    """The project's sessions, most recently active first.
-
-    How the grid gets from a bubble to a window: `GET /projects` rolls a project
-    up to one dot and one count, which is the right shape for the grid and no
-    use at all for opening what it counted.
-    """
+    """The project's sessions, most recently active first."""
     await _owned_project(project_id, user_id)
     rows = await pool.fetch(
         """
@@ -718,18 +614,8 @@ async def attention(
 ) -> list[dict[str, Any]]:
     """Every question waiting on this human, oldest first.
 
-    One query at three scopes: no filter is the whole account (the Command
-    Center), `project_id` is that project's list, `session_id` is the one
-    window. The same row appears in all three — an approval is a state of the
-    session, not something a surface owns — and answering it anywhere writes
-    the same response and wakes the session at its cursor.
-
-    Approvals and asks are the same row and the same wait; what differs is the
-    answer, so the caller is told `kind` and nothing else branches here.
-
-    A `plan` row carries one field the others do not: `version`, which is a fact
-    about the session's plan HISTORY rather than about this row. It is read in
-    one extra query, and only when a plan is actually waiting.
+    One query at three scopes: no filter is the whole account, `project_id` that
+    project, `session_id` one window. Only a `plan` row carries `version`.
     """
     if project_id is not None:
         await _owned_project(project_id, user_id)
@@ -763,8 +649,7 @@ async def attention(
             "project_title": r["project_title"],
             "kind": r["kind"],
             "prompt": r["prompt"],
-            # Only a `call` carries these: the tool that runs if it is approved,
-            # so the human decides on the call rather than a description of it.
+            # Only a `call` carries these: the tool that runs if it is approved.
             "tool_name": r["tool_name"],
             "tool_args": json.loads(r["tool_args"]) if isinstance(r["tool_args"], str) else r["tool_args"],
             "created_at": r["created_at"].isoformat(),
@@ -777,14 +662,8 @@ async def attention(
 async def _plan_context(session_id: str) -> dict[str, Any]:
     """Which version of this session's plan the open row is.
 
-    The version of a plan IS its position in the session's history — there is no
-    counter column, because a counter that disagreed with the rows would be a
-    second source of truth for the same fact.
-
-    The previous version's args and the reply that produced this one were sent
-    too, for a "changed since v{n-1}" list on the card. They are not any more:
-    edits stack, so by v3 the list was longer than the plan and said less. A
-    reply is answered by a whole new plan, and the plan is what the human reads.
+    A plan's version IS its position in the session's history; there is no
+    counter column.
     """
     history = await approvals.plan_history(session_id)
     return {"version": len(history)} if history else {}
@@ -793,15 +672,9 @@ async def _plan_context(session_id: str) -> dict[str, Any]:
 async def _latest_plan(session_id: str) -> dict[str, Any] | None:
     """The session's newest plan and what became of it, or None if it has none.
 
-    `answer` is the row's verbatim decision — `approve`, `decline`, `superseded`,
-    or the feedback that was sent — so a surface can tell an approved plan from
-    a dismissed one without a second request.
-
-    `steps` rides along (11.11) so the todo block can seed itself from the plan
-    the model already wrote, instead of showing an empty panel until the first
-    `todo_write`. It has to come from the SNAPSHOT rather than from the approval
-    the window happened to see, or the seed would vanish on reload — which is
-    exactly when a person is most likely to be looking for it.
+    `answer` is the row's verbatim decision: `approve`, `decline`, `superseded`,
+    or the feedback that was sent. `steps` comes from the snapshot, not the
+    approval the window saw, so the todo seed survives a reload.
     """
     history = await approvals.plan_history(session_id)
     if not history:
@@ -820,19 +693,16 @@ async def _latest_plan(session_id: str) -> dict[str, Any] | None:
 
 # --- the store ------------------------------------------------------------------
 #
-# ONE flat namespace per user, and a folder is a top-level segment of it. These
-# routes are the store itself; the project-scoped one below is a VIEW of it,
-# narrowed to what one project links.
+# ONE flat namespace per user, and a folder is a top-level segment of it. The
+# project-scoped route below is a VIEW of it, narrowed to what one project links.
 
 
 @app.get("/folders")
 async def list_folders(user_id: str = CurrentUser) -> list[dict[str, Any]]:
     """Every folder in the caller's store, with how many files are under it.
 
-    What the create modal's checklist and the `+ link` picker read. There is no
-    folders table to query: this is the first segment of every path the user
-    has, grouped — which is why a folder cannot be stale, and why one appears
-    the moment a file lands under a new first segment.
+    There is no folders table: this is the first segment of every path the user
+    has, grouped, so a folder appears the moment a file lands under it.
     """
     return [{"name": f.name, "files": f.files} for f in await store.folders(user_id)]
 
@@ -841,10 +711,8 @@ async def list_folders(user_id: str = CurrentUser) -> list[dict[str, Any]]:
 async def create_folder(body: dict[str, Any] = JsonBody, user_id: str = CurrentUser) -> dict[str, Any]:
     """Make a folder durable the moment it is named.
 
-    A folder is not a row — it is a path segment — so what lands is a zero-byte
-    sentinel inside it. Holding the folder in the browser until a file arrived
-    would put the truth in two places, and the first reload would disagree with
-    one of them.
+    A folder is not a row but a path segment, so what lands is a zero-byte
+    sentinel inside it.
     """
     try:
         folder = store.safe_path(str(body.get("path") or ""))
@@ -884,9 +752,7 @@ async def list_files(user_id: str = CurrentUser) -> list[dict[str, Any]]:
 async def read_file(file_id: str, user_id: str = CurrentUser) -> dict[str, Any]:
     """One file's contents, read from the store without waking anything.
 
-    Text is returned decoded; anything that is not UTF-8 says so rather than
-    arriving as mojibake, because a reader pane that renders a PNG as characters
-    is worse than one that admits it cannot.
+    Text is returned decoded; anything that is not UTF-8 comes back `binary`.
     """
     row = await pool.fetchrow(
         "SELECT path, content_hash, size, mtime FROM files WHERE id = $1 AND user_id = $2",
@@ -915,13 +781,8 @@ async def upload_file(
 ) -> dict[str, Any]:
     """Put a file in the store, and in any box already holding its folder.
 
-    The store is where the file lands, so it exists whether or not anything is
-    awake. A running session whose claim covers the path is written through and
-    reads it the same turn; every other session gets it at its next materialize.
-
-    A path is REQUIRED to name a folder, because every file in the store is in
-    one: the folder is the first segment, so a bare filename would be its own
-    folder holding nothing.
+    A running session whose claim covers the path is written through and reads it
+    the same turn. The path must name a folder: the folder is its first segment.
     """
     try:
         stored_path = store.in_folder(store.safe_path(path or file.filename or ""))
@@ -944,19 +805,10 @@ async def upload_file(
 
 @app.post("/files/move")
 async def move_file(body: dict[str, Any] = JsonBody, user_id: str = CurrentUser) -> dict[str, Any]:
-    """Move a file or a whole subtree inside the store.
+    """Move a file or a whole subtree inside the store, in one transaction.
 
-    The store is the record and moves in one transaction. It is REFUSED while a
-    running session holds the write lease on either end (`409 folder_busy`),
-    which is what lets this be a row edit and nothing else: with no live box
-    working the folder there is nothing to correct, and with one there is no
-    correcting it from here. Until 11.8.8 the move was pushed into every live
-    box with remote `mv`/`rm` so a flush would not undo it — a protocol chasing
-    a cache, replaced by one lease check.
-
-    Moving BETWEEN folders is an ordinary move: one namespace, no copy. Moving a
-    FOLDER is refused — that is a rename, and it has its own route. A DIRECTORY
-    may be moved out to the top level, where it becomes a folder of its own.
+    Refused `409 folder_busy` while a running session holds the write lease on
+    either end. Moving a FOLDER is refused — that is a rename, with its own route.
     """
     try:
         src = store.safe_path(str(body.get("from") or ""))
@@ -990,21 +842,9 @@ async def move_file(body: dict[str, Any] = JsonBody, user_id: str = CurrentUser)
 async def rename_file(body: dict[str, Any] = JsonBody, user_id: str = CurrentUser) -> dict[str, Any]:
     """Rename anything in the store: a file, a directory, or a top-level folder.
 
-    A rename changes what a thing is CALLED and not where it is, so `name` is a
-    name — a `/` in it is refused rather than quietly making this a move, which
-    has its own route and its own rules.
-
-    Renaming a top-level FOLDER carries the projects that link it and the claims
-    that mount it along with the paths, in one transaction. It is refused
-    (`409 folder_busy`) while a live box has that folder materialized: the
-    session's claims and its manifest live in the runner's memory as well as in
-    the database, so a box left at `~/store/<old>/` would flush its work back
-    under the old name and resurrect the folder — losing everything written
-    since it was materialized. Stopping the run first is the answer, and saying
-    so is better than a rename that half-happens.
-
-    Nothing else is disturbed: blobs are content-addressed and immutable, so not
-    one byte is re-uploaded, and every open reader keeps its `file_id`.
+    `name` is a name; a `/` in it is refused. A top-level rename carries the
+    project links and claims along in one transaction, and is refused
+    `409 folder_busy` while a live box has that folder materialized.
     """
     try:
         path = store.safe_path(str(body.get("path") or ""))
@@ -1044,20 +884,11 @@ async def rename_file(body: dict[str, Any] = JsonBody, user_id: str = CurrentUse
 async def _folder_is_free(user_id: str, folder: str) -> str | None:
     """Refuse a destructive change to a folder a running session is writing.
 
-    PREVENTION, where 11.9 had synchronization. A move used to be propagated
-    into every live box with remote `mv` and `rm` so that a flush would not undo
-    it — a coherency protocol chasing a moving cache, and the scariest path in
-    the subsystem. The lease already answers the question those commands were
-    repairing: a session takes `folder:{user}:{name}` for the whole time it is
-    writing that folder, so if nobody holds it there is no box to diverge, and
-    if somebody does, the honest answer is to say so.
-
-    One query, and it replaces `move_through`, `boxes_holding` and the
-    stale-session accounting between them. Read claims take no lease and need
-    none: their flush discards, so they cannot put anything back.
+    A session holds `folder:{user}:{name}` for as long as it writes that folder.
+    Read claims take no lease and need none: their flush discards.
 
     Raises:
-        ApiError: 409, naming the folder.
+        ApiError: 409 folder_busy, naming the folder.
     """
     holder = await leases.holder(f"folder:{user_id}:{folder}")
     if holder is not None:
@@ -1073,14 +904,8 @@ async def _folder_is_free(user_id: str, folder: str) -> str | None:
 async def delete_file(body: dict[str, Any] = JsonBody, user_id: str = CurrentUser) -> dict[str, Any]:
     """Delete a file or a whole subtree, and hand back the way to take it back.
 
-    The rows go; the BLOBS do not, because they are content-addressed,
-    immutable and never collected. Undo is therefore exact — the same content
-    under the same id — rather than a best effort.
-
-    A folder exists exactly as long as a file exists under it, so a delete that
-    empties one takes the folder with it, and the project links that named it go
-    into the same batch so they come back together. `folders` in the response is
-    what ceased to exist, which is what a surface has to stop drawing.
+    The rows go; the content-addressed BLOBS do not, so undo is exact. A delete
+    that empties a folder takes the folder and its project links into the batch.
     """
     try:
         path = store.safe_path(str(body.get("path") or ""))
@@ -1107,10 +932,8 @@ async def delete_file(body: dict[str, Any] = JsonBody, user_id: str = CurrentUse
 async def undo_delete(body: dict[str, Any] = JsonBody, user_id: str = CurrentUser) -> dict[str, Any]:
     """Put back exactly what one delete removed, links included.
 
-    `batch` names the gesture, so undo restores what that click took and not
-    whatever happened to be deleted most recently. `409` when something has
-    since been put at one of those paths: it was put there afterwards and is not
-    this batch's to overwrite.
+    `batch` names the gesture. `409` when something has since been put at one of
+    those paths.
     """
     batch = str(body.get("batch") or "").strip()
     try:
@@ -1148,10 +971,7 @@ async def undo_delete(body: dict[str, Any] = JsonBody, user_id: str = CurrentUse
 async def list_project_files(project_id: str, user_id: str = CurrentUser) -> list[dict[str, Any]]:
     """The files under this project's linked folders — the working-files pane.
 
-    A VIEW of the store, not a tree of its own: the rows are `files` rows and
-    the paths are store paths, so clicking one in the pane and finding it in the
-    Files tab is the same file at the same path rather than two listings that
-    have to agree.
+    A VIEW of the store, not a tree of its own: `files` rows at store paths.
     """
     await _owned_project(project_id, user_id)
     rows = await pool.fetch(
@@ -1176,8 +996,8 @@ async def post_message(
 ) -> dict[str, Any]:
     """Append a message to a session, starting a turn if one is not running.
 
-    A running session picks the event up at its next hop, so the response is
-    202 and carries no reply.
+    A running session picks the event up at its next hop, so the 202 carries no
+    reply.
     """
     text = str(body.get("text") or "").strip()
     if not text:
@@ -1187,8 +1007,8 @@ async def post_message(
         return await _answer_by_message(session_id, text)
 
     if not runner.is_running(session_id):
-        # Calls left open by a dead run are closed before the message is
-        # appended, so no user event lands between a call and its result.
+        # Before the append, so no user event lands between a call left open by
+        # a dead run and its result.
         stream.publish_all(session_id, await slog.close_dangling(session_id))
 
     await _append(session_id, UserEvent(text=text, source="human"))
@@ -1204,20 +1024,9 @@ async def respond_to_approval(
 ) -> dict[str, Any]:
     """Answer an open question, decide a gated call, or answer a plan.
 
-    The kinds are answered differently because they mean different things.
-    A question (`ask`, `approval`) takes prose, which is appended as a `user`
-    event for the model to read. A `call` takes exactly `approve` or `decline`:
-    it is a decision about a tool call that is still open in the transcript, and
-    the resumed run executes or closes that call itself. Nothing is appended as
-    a user message for a call — the model was not asked a question, and telling
-    it "approve" as though the human had spoken would be a second, false record
-    of what happened.
-
-    A `plan` takes THREE answers, because a plan is replied to and a call is
-    not. The approve word saves the approved args as `plan.md` and starts the
-    unattended run; the decline word closes the park and leaves an attended
-    chat; anything else is a reply, which closes this plan and asks for the next
-    one. This is the only place a session's mode flips to unattended.
+    Prose answers a question; a `call` takes exactly `approve`/`decline` and
+    appends nothing; a `plan` also takes a reply, which asks for the next one.
+    Approving a plan is the only place a session's mode flips to unattended.
     """
     text = str(body.get("answer") or "").strip()
     if not text:
@@ -1255,34 +1064,25 @@ async def respond_to_approval(
 async def _answer_plan(approval: approvals.Approval, text: str, user_id: str) -> dict[str, Any]:
     """Approve, decline or workshop a proposed plan.
 
-    The quota is checked BEFORE the row is answered: a user at their unattended
-    limit should get a 429 and keep their plan, not lose it to an approval that
-    then cannot start anything.
+    The quota is checked BEFORE the row is answered, so a 429 leaves the plan
+    intact.
     """
     verdict = text.strip().lower()
     args = approval.tool_args or {}
     row = await _owned_session(approval.session_id, user_id)
     decision = verdict in (approvals.APPROVE, approvals.DECLINE)
-    # The two words are stored NORMALIZED, so the row says what was decided
-    # rather than how it was typed: "Approve" starting a run while the row read
-    # unapproved would make the consent table disagree with what happened, on
-    # the one table whose entire job is binding consent. Feedback is prose and
-    # is stored exactly as written.
+    # The two words are stored NORMALIZED, so the consent row says what was
+    # decided rather than how it was typed. Feedback is stored as written.
     recorded = verdict if decision else text
 
     if verdict == approvals.APPROVE:
         if await runner.plan_folder(approval.session_id) is None:
-            # The prompt tells an unattended run its plan is `plan.md` at the
-            # root of its first linked folder. A session that claims no folder
-            # has nowhere to write it, and starting anyway would make that
-            # promise a lie. Checked BEFORE the row is answered, like the quota.
+            # The prompt promises the run a `plan.md` in its first linked
+            # folder. Checked BEFORE the row is answered, like the quota.
             raise ApiError(409, "no_folder", "A plan is saved in a folder, and this session was given none.")
         if row["mode"] != "unattended":
-            # Sessions are created attended and the play button no longer flips
-            # the mode, so this is the only point at which a user's unattended
-            # load grows — and it does not grow at all when the session
-            # proposing is already unattended, which is why that case is exempt
-            # rather than counting itself and refusing at a limit of one.
+            # The only point at which a user's unattended load grows; an
+            # already-unattended session is exempt because it grows nothing.
             await _check_unattended_quota(user_id)
 
     answered = await approvals.answer(approval.id, recorded)
@@ -1291,32 +1091,25 @@ async def _answer_plan(approval: approvals.Approval, text: str, user_id: str) ->
 
     if verdict == approvals.APPROVE:
         version = len(await approvals.plan_history(answered.session_id))
-        # What was approved is what is saved. Written before the run starts, so
-        # the first materialize copies it into the box with everything else.
+        # Written before the run starts, so the first materialize carries it
+        # into the box.
         await runner.save_plan(answered.session_id, args, version)
         # Mode and status move in ONE conditional UPDATE, inside `start`.
         started = await runner.start(answered.session_id, mode="unattended", reason="plan_approved")
         if not started:
-            # The session moved under us. Put the card back rather than leaving a
-            # plan stamped approved that nothing ran and nothing can approve
-            # again — the human's only other recourse being to get the whole plan
-            # proposed afresh.
+            # Reopen rather than leave a plan stamped approved that nothing ran
+            # and nothing can approve again.
             logger.warning("session %s: an approved plan could not start it", answered.session_id)
             await approvals.reopen(answered.id)
             raise ApiError(409, "not_idle", "The session moved before the plan could start it.")
         return {"accepted": True, "session_id": answered.session_id, "started": True, "mode": "unattended"}
 
     if verdict == approvals.DECLINE:
-        # Nothing ran and nothing is owed to the model: the park simply closes
-        # and the session goes back to being a chat.
         await lifecycle.transition(answered.session_id, "awaiting_approval", "idle", "plan_declined")
         return {"accepted": True, "session_id": answered.session_id, "started": False, "mode": "attended"}
 
-    # A reply. It lands as the human's own turn — they typed it — followed by the
-    # instruction that makes it produce a PLAN rather than a paragraph. Without
-    # that second event the model reads the reply, answers it inline, and the
-    # session goes idle with the card gone and nothing to approve: the run the
-    # human was setting up quietly stops existing.
+    # A reply lands as the human's own turn, followed by the instruction that
+    # makes the next turn produce a PLAN rather than a paragraph.
     await _append(answered.session_id, UserEvent(text=text, source="human"))
     await _append(answered.session_id, UserEvent(text=prompts.plan_reply(), source="system"))
     started = await runner.start(answered.session_id, reason="plan_reply")
@@ -1327,42 +1120,25 @@ async def _answer_plan(approval: approvals.Approval, text: str, user_id: str) ->
 async def approve_session(session_id: str, user_id: str = CurrentUser) -> dict[str, Any]:
     """Ask for a plan for this session. It does NOT start an unattended run.
 
-    The button used to flip the mode here and hand the model a transcript, which
-    is not a task: the 2026-08-20 Marketplace run went unattended with the
-    model's own unanswered question as the last event and burned its budget
-    greeting nobody. Now pressing it appends a `user{source: system}` handoff and
-    starts an ORDINARY ATTENDED TURN, whose job is to call `propose_plan`.
-
-    So the mode flips in exactly one place — approving that plan — and both
-    entries to an unattended run, this button and the model proposing off its own
-    judgement, are the same tool and the same card. Pressed on a session with no
-    conversation at all, this still yields a plan card: the handoff copy forbids
-    asking in prose, so the gaps arrive as `missing` and the card opens as the
-    intake form.
+    Appends a `user{source: system}` handoff and starts an ORDINARY ATTENDED
+    turn whose job is to call `propose_plan`; the mode flips only on approval.
     """
     row = await _owned_session(session_id, user_id)
     if row["mode"] == "unattended":
         raise ApiError(409, "already_unattended", "This session is already running unattended.")
-    # A TERMINAL session is a legal starting point, and it is the important one:
-    # pressing this on a cancelled run is how a continuation gets drafted. The
-    # handoff copy tells the model to read plan.md and the transcript and resume
-    # from what is verifiably done rather than planning the work twice. The
-    # `terminal -> running` reopen already exists for exactly this.
+    # A TERMINAL session is a legal starting point: pressing this on a cancelled
+    # run is how a continuation gets drafted.
     if row["status"] not in ("idle", "pending") and row["status"] not in lifecycle.TERMINAL:
         raise ApiError(409, "not_idle", f"A session in {row['status']!r} cannot be handed over.")
 
-    # The plan state is INJECTED. Sending the model to read `plan.md` was a tool
-    # call for a fact the harness already had — and a guaranteed FileNotFound
-    # after a declined plan, since nothing had written the file.
+    # The plan state is INJECTED rather than read by the model: after a declined
+    # plan there is no file to read.
     handoff = prompts.plan_handoff(await runner.read_plan(session_id))
     await _append(session_id, UserEvent(text=handoff, source="system"))
     started = await runner.start(session_id, reason="plan_requested")
     if not started:
-        # A 202 with started:false would leave the surface waiting on a plan that
-        # nothing is drafting, and the handoff instruction sitting in the
-        # transcript with no hop to read it — the exact shape this card exists to
-        # remove. The event stays: the next turn this session runs will read it
-        # and propose, which is what was asked for.
+        # The handoff event stays: the next turn this session runs reads it and
+        # proposes.
         raise ApiError(409, "not_idle", "The session moved before it could be started.")
     return {"accepted": True, "started": True, "mode": "attended"}
 
@@ -1372,17 +1148,7 @@ async def stop_session(session_id: str, user_id: str = CurrentUser) -> dict[str,
     """Hold a running turn, without ending it.
 
     The same teardown as cancel, landing differently: `done{stopped}`,
-    `running -> idle`, the mode KEPT — so the plan the run was approved from is
-    still approved, the box is hibernated rather than reaped, and picking it
-    back up costs nothing. In-flight calls close through the interrupted
-    synthesis every ending already runs.
-
-    Immediate. 11.8.6 held at a hop boundary behind a flag, a dispatch registry
-    and a grace timer that degraded into a cancel; every one of those was a race
-    with a loop that runs on event time, and the complexity was the bug.
-
-    `409 not_running` for anything else: an idle or parked session is already
-    not acting, and there is nothing to hold.
+    `running -> idle`, the mode KEPT, the box hibernated rather than reaped.
     """
     row = await _owned_session(session_id, user_id)
     if row["status"] != "running":
@@ -1394,19 +1160,8 @@ async def stop_session(session_id: str, user_id: str = CurrentUser) -> dict[str,
 async def resume_session(session_id: str, user_id: str = CurrentUser) -> dict[str, Any]:
     """Pick a stopped run back up, with nothing added.
 
-    A plain start. The stop kept the mode, so an idle session that is still
-    unattended resumes UNATTENDED, from its plan, with its hop budget
-    re-counted from the `done{stopped}` like every other `done`. There is no
-    approvals row to answer and no handoff to inject: resuming is the absence of
-    a change, which is why this endpoint does nothing but start the turn.
-
-    Saying something instead of pressing this is `POST /messages` — the words
-    land in the fold and the run reads them next hop. That is the only
-    difference between the two.
-
-    `409 not_idle` for a session that is running, parked or terminal: a running
-    one needs no resuming, and a terminal one is restarted through the plan
-    gate, which is where a spent plan is re-approved.
+    A plain start: the stop kept the mode, so an idle session that is still
+    unattended resumes UNATTENDED, from its plan.
     """
     row = await _owned_session(session_id, user_id)
     if row["status"] != "idle":
@@ -1421,9 +1176,8 @@ async def resume_session(session_id: str, user_id: str = CurrentUser) -> dict[st
 async def cancel_session(session_id: str, user_id: str = CurrentUser) -> dict[str, Any]:
     """End a run for good, from running or from a stop.
 
-    Cancelling a STOPPED session is the second press: there is no live turn, so
-    the terminal is written directly — `done{cancelled}`, and the mode handed
-    back to attended, which is what spends the plan.
+    With no live turn the terminal is written directly: `done{cancelled}`, and
+    the mode handed back to attended, which is what spends the plan.
     """
     await _owned_session(session_id, user_id)
     return {"cancelled": await runner.cancel(session_id)}
@@ -1446,10 +1200,8 @@ async def read_result(ref: str, offset: int = 0, limit: int = 2000, user_id: str
 async def attention_stream(user_id: str = CurrentUser) -> StreamingResponse:
     """Nudge this human whenever their waiting list moves. One per sign-in.
 
-    A frame carries no approval row on purpose: it means "read `/attention`
-    again", and the client already asks at three scopes — two ways to learn one
-    fact drift. Hence no `Last-Event-ID` and no replay; a missed nudge costs one
-    stale list, where a missed session EVENT would cost a hole in a transcript.
+    A frame carries no approval row: it means "read `/attention` again". Hence
+    no `Last-Event-ID` and no replay — a missed nudge costs one stale list.
     """
     return StreamingResponse(
         _attention_frames(user_id),
@@ -1462,8 +1214,8 @@ async def _attention_frames(user_id: str) -> AsyncIterator[str]:
     """Yield a frame per signal until the client disconnects."""
     keepalive = float(_cfg("harness.sse_keepalive_s", 15))
     async with attention_channel.subscribe(user_id) as queue:
-        # Say hello immediately: the client fetches the list on connect, so the
-        # first frame is what makes "subscribed" and "current" the same moment.
+        # The client fetches the list on connect, so this first frame is what
+        # makes "subscribed" and "current" the same moment.
         yield 'event: attention\ndata: {"reason":"open"}\n\n'
         while True:
             try:
@@ -1473,9 +1225,8 @@ async def _attention_frames(user_id: str) -> AsyncIterator[str]:
                 yield ": keepalive\n\n"
                 continue
             if signal is CLOSED:
-                # The server is leaving. Ending here is a clean end-of-stream;
-                # the client reconnects on its own and the opening frame
-                # refetches, so a restart heals without anyone doing anything.
+                # A clean end-of-stream; the client reconnects on its own and
+                # its opening frame refetches.
                 return
             payload = json.dumps({"reason": signal.reason, "session_id": signal.session_id})
             yield f"event: attention\ndata: {payload}\n\n"
@@ -1526,8 +1277,7 @@ async def _event_stream(session_id: str, after_seq: int) -> AsyncIterator[str]:
                     continue
                 if item is CLOSED:
                     # The client reconnects with Last-Event-ID and resumes from
-                    # the log, so ending here costs nothing and lets the process
-                    # actually go down.
+                    # the log.
                     return
 
                 if item is LAGGED:
@@ -1557,10 +1307,8 @@ async def _event_stream(session_id: str, after_seq: int) -> AsyncIterator[str]:
 async def _backlog(session_id: str, after_seq: int) -> AsyncIterator[slog.StoredEvent]:
     """Yield every event after `after_seq`, a page at a time until the log runs out.
 
-    One page is not the backlog. A reader rejoining a long session with
-    `Last-Event-ID` is exactly the case that exceeds it, and `sent` only moves
-    forward, so anything skipped here cannot be recovered on this connection —
-    the transcript would be whole in the log and full of holes on screen.
+    One page is not the backlog, and the caller's `sent` only moves forward:
+    anything skipped here cannot be recovered on this connection.
     """
     cursor = after_seq
     while True:
@@ -1576,10 +1324,9 @@ def _frame(stored: slog.StoredEvent) -> str:
     return f"id: {stored.seq}\nevent: {stored.event.kind}\ndata: {json.dumps(_wire(stored), default=str)}\n\n"
 
 
-# The envelope keys the client strips before flattening `payload` up a level
-# (`asEvent` in frontend/api.jsx). A payload field named one of these would be
-# silently overwritten by the envelope and the event would arrive wrong with no
-# error anywhere — so `test_events` proves no event can carry one.
+# The keys the client strips before flattening `payload` up a level (`asEvent`
+# in frontend/api.jsx): a payload field named one of these is silently
+# overwritten by the envelope, so `test_events` proves no event can carry one.
 ENVELOPE_KEYS = frozenset(("seq", "ts", "kind", "version", "payload"))
 
 
@@ -1597,9 +1344,7 @@ async def browser_frames(session_id: str, user_id: str = CurrentUser) -> Streami
     """Watch what the browser is looking at, while it looks.
 
     A side-channel, not the event stream: frames are never appended, never
-    replayed and carry no seq. Keyed by (user, session) and ownership-checked
-    like everything else — the implementation this replaces trusted a user id
-    from the query string, which is the violation the deletion closed.
+    replayed and carry no seq. Keyed by (user, session), ownership-checked.
     """
     await _owned_session(session_id, user_id)
     return StreamingResponse(
@@ -1610,8 +1355,7 @@ async def browser_frames(session_id: str, user_id: str = CurrentUser) -> Streami
 
 
 async def _frame_stream(user_id: str, session_id: str) -> AsyncIterator[str]:
-    """Yield frames until the viewer goes away. Keepalives, because a browser
-    run can think for a while between pictures."""
+    """Yield frames until the viewer goes away, with keepalives between pictures."""
     keepalive = float(_cfg("harness.sse_keepalive_s", 15))
     async with frames.subscribe(user_id, session_id) as queue:
         while True:
@@ -1627,19 +1371,9 @@ async def _frame_stream(user_id: str, session_id: str) -> AsyncIterator[str]:
 async def list_connections(user_id: str = CurrentUser) -> list[dict[str, Any]]:
     """List every configured connector and this user's standing with it.
 
-    Status is read from Composio rather than from our rows, because our rows are
-    a cache of Composio's answer and this is the moment the human is looking. One
-    listing answers for every toolkit at once, and a Composio connected account
-    is per TOOLKIT — so unlike the provider-account grants this replaced, reading
-    Gmail says nothing about Calendar and disconnecting one leaves the other.
-
-    Each row carries what the next click will do: `setup_url` where one has been
-    minted, and `account_id`, the handle a revoke needs. There is no `scopes` —
-    a managed auth config fixes them and we cannot tune or report them — and
-    `shares_with` is always empty, because a Composio grant is per toolkit and
-    nothing goes with a disconnect. It ships anyway so the panel reads one shape
-    whatever the backend, and so a backend whose grants ARE shared could say so
-    without a new contract.
+    Status comes from Composio, not our rows, and a Composio account is per
+    TOOLKIT. There is no `scopes` (a managed auth config fixes them) and
+    `shares_with` is always empty; it ships so the panel reads one shape.
     """
     client = hands.connectors()
     if client is None:
@@ -1651,18 +1385,9 @@ async def list_connections(user_id: str = CurrentUser) -> list[dict[str, Any]]:
 async def connection_done(request: Request, user_id: str = CurrentUser) -> Response:
     """Where Composio lands the browser when consent finishes.
 
-    Measured in the 11.10.1 spike: `callback_url` IS honored, and the return leg
-    carries `status` and `connected_account_id` as query params — enough to
-    settle the row without polling. The toolkit is NOT in the url, so it is
-    looked up from the account id rather than trusted from the query.
-
-    Identity is the session cookie, as everywhere. A `connected_account_id` in a
-    url is a claim by whoever built it; reconciling means asking Composio which
-    of THIS user's accounts that id is, so a forged id settles nothing.
-
-    Answers a tiny page that closes the popup, because the panel is what the
-    person is looking at and a raw JSON body is where the previous flow used
-    to strand them.
+    The return leg carries `status` and `connected_account_id` as query params;
+    the toolkit is NOT in the url and is looked up from the account id. Identity
+    is the session cookie, so a forged account id settles nothing.
     """
     status = str(request.query_params.get("status") or "")
     account_id = str(request.query_params.get("connected_account_id") or "")
@@ -1680,8 +1405,7 @@ async def connection_done(request: Request, user_id: str = CurrentUser) -> Respo
     return HTMLResponse(_CLOSE_POPUP.replace("__STATUS__", "connected" if settled else "not connected"))
 
 
-# Announced from where it is written: the opener re-reads its rows on this
-# message rather than on a timer, so the toggle flips as the popup closes.
+# The opener re-reads its rows on this postMessage rather than on a timer.
 _CLOSE_POPUP = """<!doctype html><meta charset="utf-8"><title>Connected</title>
 <body style="font:14px system-ui;padding:2rem;color:#333">
 <p>__STATUS__. You can close this window.</p>
@@ -1696,14 +1420,9 @@ _CLOSE_POPUP = """<!doctype html><meta charset="utf-8"><title>Connected</title>
 async def connect_server(server: str, user_id: str = CurrentUser) -> dict[str, Any]:
     """Mint the consent link for one service and record the pending state.
 
-    Nothing is connected here and no tool is called: Composio answers with the
-    url its OAuth flow starts at, the panel opens it in a popup, and the user
-    comes back through `/connections/done` connected or does not.
-
-    Safe to press twice, but not idempotent in what it returns: already
-    connected, it mints nothing and answers `status: connected` with a null
-    `setup_url`; otherwise every press mints a FRESH link rather than handing
-    back the unfinished one.
+    Nothing is connected here. Already connected, it mints nothing and answers
+    `status: connected` with a null `setup_url`; otherwise every press mints a
+    FRESH link rather than handing back the unfinished one.
     """
     client = _require_connectors()
     _known_server(client, server)
@@ -1718,11 +1437,7 @@ async def disconnect_server(server: str, user_id: str = CurrentUser) -> dict[str
     """Revoke one service and say what went with it.
 
     A Composio connected account is per TOOLKIT, so this takes exactly the one
-    service named — unlike the provider-account grants it replaced, where
-    revoking Gmail took Calendar too. The list shape is kept anyway so the panel
-    does not have to know which backend it is talking to, and so a backend whose
-    grants ARE shared can say so without a new contract.
-    Not a 204: "nothing to say" would be the one wrong thing to say here.
+    service named; the list shape is kept so the panel need not know the backend.
     """
     client = _require_connectors()
     _known_server(client, server)
@@ -1743,8 +1458,7 @@ def _require_connectors() -> Any:
 def _known_server(client: Any, server: str) -> None:
     """Refuse a prefix that is not one of the configured connectors.
 
-    Google Search fails this on purpose: it is one of ours, it has no grant to
-    make, and connecting or disconnecting it is not a thing that exists.
+    Google Search fails this on purpose: it is one of ours and has no grant.
     """
     if not client.is_connector(server):
         raise ApiError(404, "not_found", f"No server {server!r} is configured.")
@@ -1757,12 +1471,8 @@ def _known_server(client: Any, server: str) -> None:
 async def session_tools_state(session_id: str, user_id: str = CurrentUser) -> dict[str, Any]:
     """The tool budget for one session: the meter's numbers and a row per connected server.
 
-    `budget` is `llm.max_tools - ours`, so the meter moves on its own when we add
-    a tool of our own — ours are always loaded and never spend the human's
-    allowance. `used` is the tool count of the servers this session has been
-    given. Google Search is in `ours` and in none of the rows: it is one of ours
-    that happens to reach the web over the gateway, so it spends our side of the
-    meter and there is nothing about it to toggle.
+    `budget` is `llm.max_tools - ours`; `used` is the tool count of the servers
+    this session has been given. Google Search is in `ours` and in no row.
     """
     await _owned_session(session_id, user_id)
     return await _tools_document(session_id, user_id)
@@ -1777,13 +1487,8 @@ async def set_session_tool(
 ) -> dict[str, Any]:
     """Give this session a server, or take it away. Returns the whole document.
 
-    The refusals are the point of the endpoint. A toggle that would put the
-    manifest over `llm.max_tools` is refused HERE, with the numbers in the
-    message, rather than being recorded and discovered later as a `bad_request`
-    from the provider with nothing near the connection that caused it. The panel
-    refuses it too, before the request; this is the half that holds when the
-    panel is stale, and it is what makes the recorded state a state the system
-    could actually ship.
+    A toggle that would put the manifest over `llm.max_tools` is refused HERE,
+    with the numbers in the message; the panel refuses it too, before the request.
     """
     await _owned_session(session_id, user_id)
     if "enabled" not in body:
@@ -1813,10 +1518,8 @@ async def set_session_tool(
 
     await session_tools.set_enabled(session_id, row["server"], wanted)
 
-    # Recomputed locally rather than rebuilt: the only thing that changed is one
-    # server's `enabled`, and everything else in the document was true a
-    # millisecond ago. Rebuilding it re-ran the whole read for a second time on
-    # every click.
+    # Recomputed locally rather than rebuilt: only one server's `enabled` moved,
+    # and rebuilding re-ran the whole read on every click.
     servers = [{**r, "enabled": wanted if r["server"] == row["server"] else r["enabled"]} for r in document["servers"]]
     return {
         **document,
@@ -1828,16 +1531,11 @@ async def set_session_tool(
 async def _tools_document(session_id: str, user_id: str, *, refresh: bool = False) -> dict[str, Any]:
     """Build the meter and the server rows from config, the connections and the toggles.
 
-    `ours` counts what `registry.manifest` counts, which is not the same as what
-    `tool_module/tools/` holds: Google Search comes over the gateway and is still
-    ours. Counting it here and not there would put a meter in front of the human
-    that disagrees with the request the model actually gets.
+    `ours` must count what `registry.manifest` counts, which is not what
+    `tool_module/tools/` holds: Google Search comes over the gateway and is ours.
     """
-    # NOT refreshed by default. This runs on every toggle render and every
-    # toggle write, and it needs `status` and `tool_count` — both already in the
-    # rows the settings panel refreshes. Asking the vendor here cost 305ms of
-    # REST and a seven-row write transaction per click, for a freshness nothing
-    # downstream read.
+    # NOT refreshed by default: this runs on every toggle render and write, and
+    # asking the vendor costs ~305ms plus a write transaction per click.
     client = hands.connectors()
     rows = await client.connections(user_id, refresh=refresh) if client is not None else []
     on = set(await session_tools.enabled_servers(session_id))
@@ -1870,9 +1568,7 @@ async def list_sandbox_dir(
 ) -> dict[str, Any]:
     """List a directory on the session's live sandbox disk.
 
-    Ownership-checked the way the frame stream is, and it never boots anything:
-    a box that has parked or been reaped reads as 404, because starting compute
-    so that somebody can look at a folder is not a thing a browse should do.
+    Never boots anything: a box that has parked or been reaped reads as 404.
     """
     await _owned_session(session_id, user_id)
     try:
@@ -1888,11 +1584,8 @@ async def list_sandbox_dir(
 async def read_sandbox_file(session_id: str, path: str, user_id: str = CurrentUser) -> dict[str, Any]:
     """One file from the session's live sandbox disk, on the same terms as the listing.
 
-    Text is returned decoded and anything that is not UTF-8 says so rather than
-    arriving as mojibake — the same bargain `GET /projects/{id}/files/{file_id}`
-    makes about the store. A file past `sandbox.browse_max_bytes` comes back cut
-    short and SAYS it was, because half a file rendered as a whole one is the
-    kind of quiet lie a reader pane should never tell.
+    Non-UTF-8 comes back `binary`, and a file past `sandbox.browse_max_bytes`
+    comes back cut short with `truncated` set.
     """
     await _owned_session(session_id, user_id)
     cap = int(_cfg("sandbox.browse_max_bytes", 1048576))
@@ -1923,11 +1616,10 @@ def _no_box(session_id: str) -> ApiError:
 
 
 async def _touch_project(project_id: str) -> None:
-    """Mark a project as changed. Written inline at three call sites before.
+    """Mark a project as changed.
 
     Separate from `lifecycle.touch_project`, which takes a connection and a
-    SESSION id because it runs inside the transaction that moves a session. This
-    one is for the routes that have a project id and no transaction to join.
+    SESSION id because it runs inside the transaction that moves a session.
     """
     await pool.execute("UPDATE projects SET updated_at = now() WHERE id = $1", _uuid(project_id, "project"))
 
@@ -1935,10 +1627,8 @@ async def _touch_project(project_id: str) -> None:
 async def _touch_linked_projects(user_id: str, folder: str) -> None:
     """Mark every project that links this folder as changed.
 
-    A file route no longer knows which project it is acting for, because it is
-    not acting for one: it writes to the store, and a project is whatever links
-    the folder the write landed in. Nought, one or several — the grid's "when"
-    is about work, and work is what a linked folder holds.
+    Nought, one or several: a file route writes to the store, and a project is
+    whatever links the folder the write landed in.
     """
     await pool.execute(
         """
@@ -1984,22 +1674,14 @@ async def _link_folder(project_id: str, folder: str) -> None:
 async def _make_folder(user_id: str, base: str) -> str:
     """Reserve a new, empty folder named after `base` and return the name it got.
 
-    The none-case of creating a project. Picking the name and reserving it are
-    ONE operation in the store, under a lock — they were two here, which is how
-    two projects created at the same moment could both be told they had `notes`.
+    Picking the name and reserving it are ONE operation in the store, under a
+    lock, so two projects created at once cannot be given the same name.
     """
     return await store.unique_folder(user_id, base)
 
 
 def _session_core(row: Any) -> dict[str, Any]:
-    """The fields every session projection carries, shaped once.
-
-    Three endpoints return a session and each built these seven by hand, so a
-    field added to one drifted from the others silently. What differs BETWEEN
-    the projections — a project title here, an open-question count there, the
-    transcript tail in the snapshot — stays at the call site, because that is
-    the part that is genuinely different.
-    """
+    """The fields every session projection carries, shaped once."""
     return {
         "session_id": str(row["id"]),
         "title": row["title"],
@@ -2015,11 +1697,8 @@ def _session_core(row: Any) -> dict[str, Any]:
 async def _new_project(user_id: str, title: str) -> Any:
     """Create a project row. It links no folder yet; the caller does that.
 
-    `slug` survives as nothing but the default NAME for the folder the none-case
-    makes, and it is no longer uniquified here: folder names are unique per
-    user because they are segments of unique paths, and `store.unique_folder`
-    resolves a collision against the folders that actually exist rather than
-    against a column that stopped describing them.
+    `slug` is only the default NAME for the folder the none-case makes, and is
+    not uniquified here — `store.unique_folder` resolves collisions.
     """
     return await pool.fetchval(
         "INSERT INTO projects (user_id, title, slug) VALUES ($1, $2, $3) RETURNING id",
@@ -2065,8 +1744,7 @@ async def _read_within_quota(file: UploadFile) -> bytes:
     """Read an upload, refusing it as soon as it passes `quotas.upload_max_mb`.
 
     Chunked and checked as it goes, so an oversized upload is refused rather
-    than held in memory first. Zero bytes is a file like any other — a
-    `.gitkeep`, a placeholder — and is stored as one.
+    than held in memory first. Zero bytes is a file like any other.
     """
     limit = int(_cfg("quotas.upload_max_mb", 25)) * 1024 * 1024
     chunks: list[bytes] = []
@@ -2082,9 +1760,7 @@ async def _read_within_quota(file: UploadFile) -> bytes:
 async def _check_rate_quota(user_id: str) -> None:
     """Enforce the sliding window on new sessions, before anything is written.
 
-    The home session is excluded: it is created by first login rather than
-    asked for, and a quota on what a person does should not be spent by the
-    server greeting them.
+    The home session is excluded: it is created by first login, not asked for.
     """
     limit = int(_cfg("quotas.new_sessions_per_hour", 20))
     recent = await pool.fetchval(
@@ -2102,37 +1778,16 @@ async def _check_rate_quota(user_id: str) -> None:
 
 
 # What a composer message is refused with, per park kind. `ask` is absent on
-# purpose: it is the one park a typed message legitimately answers, because it
-# asked a question.
+# purpose: it is the one park a typed message legitimately answers.
 _WAITING_ON = {"call": "a tool call", "approval": "an approval", "plan": "a plan"}
 
 
 async def _answer_by_message(session_id: str, text: str) -> dict[str, Any]:
     """Route a composer message sent to a parked session.
 
-    A question raised by `ask` is answered by the message, and the session
-    wakes. Consent is NOT: an `approval` and a gated `call` are both answered
-    only through `/approvals/{id}/respond`, where the thing being agreed to is
-    on screen.
-
-    A `call` falling through here was the sharp edge. `approvals.approved` is an
-    allow-list, so any prose that is not the approve word reads as a decline —
-    "sounds good, go ahead" typed in the composer would have silently declined a
-    call the human never saw, which undoes the whole point of binding consent to
-    the call.
-
-    A `plan` is refused for the same reason and one more: the card's own input is
-    where a reply becomes the next version, and "yes do that" typed in the
-    composer would read as a reply rather than as the approval it meant.
-
-    A STOPPED run is not a park at all since 11.8.7, so nothing here is exempted
-    for it: the stop landed the session `idle` with its mode kept, and an idle
-    session with no open question takes the ordinary path below — the message is
-    appended and the turn starts, unattended, with the words in the fold. Typing
-    "skip the browser, do it another way" into a stopped run resumes it with
-    that instruction, and it does so through the code every message already
-    uses rather than through a park kind, a respond arm and a 409 exemption
-    built to say the same thing.
+    An `ask` is answered by the message and the session wakes. Consent is NOT:
+    an `approval`, a gated `call` and a `plan` are answered only through
+    `/approvals/{id}/respond`, where the thing being agreed to is on screen.
     """
     open_questions = await approvals.open_for(session_id)
     if open_questions and open_questions[0].kind in _WAITING_ON:
@@ -2153,13 +1808,8 @@ async def _answer_by_message(session_id: str, text: str) -> dict[str, Any]:
 async def _record_claims(session_id: str, project_id: Any, declared: Any, user_id: str) -> None:
     """Record which FOLDERS this session may touch, fixed for its life.
 
-    Absent, it claims every folder its project links, all write — which is what
-    "every session spawned in the project receives them" means, and why a link
-    added later reaches the agent at the NEXT session: this runs once, at
-    creation, and nothing rewrites it.
-
-    A session with no project claims nothing and mounts nothing. That is the
-    home chat, and it is honest: there is no folder it was given.
+    Absent, it claims every folder its project links, all write. This runs once,
+    at creation, and nothing rewrites it; a session with no project claims none.
     """
     rows: list[tuple[str, str, str]] = []
     if isinstance(declared, list) and declared:
@@ -2179,10 +1829,8 @@ async def _record_claims(session_id: str, project_id: Any, declared: Any, user_i
     elif project_id is not None:
         rows = [(folder, "/", "write") for folder in await _folders_of(str(project_id))]
 
-    # `ord` is the order they were GIVEN, which for the default case is the order
-    # the project linked them. It is an explicit column rather than a timestamp
-    # because the answer has to be stable: `plan.md` goes to the FIRST folder,
-    # and "first" cannot depend on how close together two inserts landed.
+    # `ord` is the order they were GIVEN, and an explicit column rather than a
+    # timestamp because it must be stable: `plan.md` goes to the FIRST folder.
     for position, (folder, subpath, mode) in enumerate(rows):
         await pool.execute(
             """
@@ -2230,7 +1878,7 @@ def _budgets_for(mode: str) -> int:
 def _anon_key() -> str:
     """The publishable Supabase key, under either of its two names.
 
-    `sb_publishable_...` is the current format; `SUPABASE_ANON_KEY` is the legacy
+    `sb_publishable_...` is the current format, `SUPABASE_ANON_KEY` the legacy
     JWT-shaped one. Neither authorizes anything on its own.
     """
     return os.environ.get("SUPABASE_PUBLISHABLE_KEY") or os.environ.get("SUPABASE_ANON_KEY") or ""
@@ -2262,10 +1910,8 @@ def _int_or(value: Any, default: int) -> int:
 def _uuid(value: Any, what: str) -> uuid.UUID:
     """Coerce an id from the wire, or 404 with the noun in it.
 
-    The coercion is `db.ids.as_uuid`; what is local is the ANSWER. A malformed
-    id over HTTP is indistinguishable from one that simply does not exist, and
-    saying "no such project" leaks nothing while "invalid UUID" tells a prober
-    it guessed the shape right.
+    A malformed id answers `not_found` rather than a 400: "invalid UUID" tells a
+    prober it guessed the shape right.
     """
     try:
         return as_uuid(value)
@@ -2276,16 +1922,28 @@ def _uuid(value: Any, what: str) -> uuid.UUID:
 # --- the app itself --------------------------------------------------------------
 
 # Mounted last, so no API route can be shadowed by a file with the same name.
-#
-# Same origin as the API, and that is a requirement rather than a convenience:
-# the session cookie is SameSite=Lax, which a cross-site `EventSource` does not
-# carry, so a frontend served from anywhere else gets 401 on every stream connect
-# while the tests — which call `_event_stream` directly — stay green.
+# Must share the API's origin: the session cookie is SameSite=Lax, which a
+# cross-site `EventSource` does not carry.
 _FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
 
+
+class _Frontend(StaticFiles):
+    """StaticFiles that refuses to let index.html be cached.
+
+    HTML is `no-store`; assets keep the ordinary validators, since `?v=N`
+    cache-busts them. Keyed off content type, so the html=True fallback counts.
+    """
+
+    async def get_response(self, path: str, scope: Any) -> Response:
+        response = await super().get_response(path, scope)
+        if str(response.headers.get("content-type", "")).startswith("text/html"):
+            response.headers["Cache-Control"] = "no-store, must-revalidate"
+        return response
+
+
 if _FRONTEND.is_dir():
-    # `html=True` serves index.html at /app and for any path the build does not
-    # have a file for, which is what a client-routed page needs.
-    app.mount("/app", StaticFiles(directory=_FRONTEND, html=True), name="app")
+    # `html=True` serves index.html for any path the build has no file for,
+    # which is what a client-routed page needs.
+    app.mount("/app", _Frontend(directory=_FRONTEND, html=True), name="app")
 else:  # pragma: no cover - only a broken checkout or a partial image
     logger.error("no frontend/ directory at %s; /app will 404", _FRONTEND)

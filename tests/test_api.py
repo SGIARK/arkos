@@ -1,7 +1,7 @@
 """The HTTP surface: the cookie is the only way in, and every read is scoped to its owner.
 
-Runs against a real Postgres with migration 0 applied. The SSE generator is driven
-directly, because httpx's ASGITransport buffers streamed responses.
+Needs a real Postgres with migration 0 applied. SSE generators are driven directly
+because httpx's ASGITransport buffers streamed responses.
 """
 
 from __future__ import annotations
@@ -33,16 +33,11 @@ _seeded: list[uuid.UUID] = []
 async def _db(monkeypatch, tmp_path):
     await require_db()
 
-    # Blobs on disk, for the WHOLE module rather than per test. Since 11.9,
-    # making a project reserves its folder by writing the `.keep` sentinel, so a
-    # test that creates one writes bytes even when it is not about files — and
-    # `SupabaseBlobs` caches one httpx client, which pytest-asyncio then hands a
-    # closed event loop from the next test. The per-test `use_blobs` calls below
-    # stay: they say which tests are about the store, and installing the same
-    # backend twice is free.
+    # Filesystem blobs for the WHOLE module: making a project writes its `.keep`,
+    # and a cached `SupabaseBlobs` client would outlive its event loop.
     store.use_blobs(store.FilesystemBlobs(tmp_path))
 
-    # The loop is out of scope here, so start is stubbed and no turn runs.
+    # The loop is out of scope here: start is stubbed, so no turn runs.
     started: list[str] = []
     start_calls: list[dict] = []
 
@@ -213,14 +208,12 @@ async def test_auth_me_reports_the_signed_in_user(client):
 
     assert body["user_id"] == user_id
     assert body["email"] == "a@example.com"
-    # The page needs it on the first render and nothing else would carry it.
     assert body["home_session_id"], "the app has nowhere to land without this"
-    # Nobody said, so there is nothing to say. The caller falls back to email.
     assert body["display_name"] is None
 
 
 async def test_the_name_from_sign_up_metadata_is_what_the_buddy_calls_you(client):
-    """12.1: the name rides the SIGNED token as user_metadata, never a body."""
+    """The name rides the SIGNED token as user_metadata, never a request body."""
     user_id = str(uuid.uuid4())
     token = _supabase_token(user_id, user_metadata={"name": "Nathaniel"})
 
@@ -240,8 +233,7 @@ async def test_google_supplies_the_name_as_full_name(client):
 
 
 async def test_a_later_sign_in_without_a_name_does_not_erase_the_one_you_typed(client):
-    """The mixed case: sign up with a password, then sign in through a provider
-    whose profile carries no name. COALESCE is what keeps the typed one."""
+    """A later sign-in whose profile carries no name must not erase the typed one."""
     user_id = str(uuid.uuid4())
     named = _supabase_token(user_id, user_metadata={"name": "Nathaniel"})
     await client.post("/auth/session", headers={"Authorization": f"Bearer {named}"})
@@ -253,8 +245,7 @@ async def test_a_later_sign_in_without_a_name_does_not_erase_the_one_you_typed(c
 
 
 async def test_a_blank_or_absent_name_is_not_a_name(client):
-    """Whitespace is not a name, and an absent one must not write an empty string:
-    the fallback to email keys off NULL."""
+    """Whitespace is not a name: the fallback to email keys off NULL, not an empty string."""
     user_id = str(uuid.uuid4())
     token = _supabase_token(user_id, user_metadata={"name": "   "})
 
@@ -264,8 +255,7 @@ async def test_a_blank_or_absent_name_is_not_a_name(client):
 
 
 async def test_signing_in_again_keeps_exactly_one_home_session(client):
-    """12.1's acceptance: however you got the token — password or Google — a
-    second arrival must not mint a second home."""
+    """However the token was obtained, a second arrival must not mint a second home."""
     user_id = str(uuid.uuid4())
     token = _supabase_token(user_id, user_metadata={"full_name": "Ada"})
 
@@ -308,8 +298,6 @@ async def test_creating_a_session_opens_a_project_and_starts_the_turn(client):
     )
     assert (row["status"], row["mode"]) == ("pending", "attended"), "a new session is created attended"
     assert str(row["project_id"]) == body["project_id"]
-    # Asked for with no project, so it gets one, and the project gets a folder
-    # to keep the work in.
     snapshot = (await client.get(f"/sessions/{body['session_id']}")).json()
     assert snapshot["folders"] == ["file-my-taxes"]
 
@@ -389,11 +377,7 @@ async def test_a_message_closes_a_dead_runs_open_call_before_it_lands(client):
 
 
 async def test_a_composer_message_to_a_park_with_no_open_question_wakes_it(client):
-    """A session parked with nothing to answer is unstuck by a message.
-
-    Which park kinds accept a message, and which refuse, is covered in
-    tests/test_approvals.py against a real park.
-    """
+    """A session parked with nothing to answer is unstuck by a message."""
     user_id = await _signed_in(client)
     session_id = await _session_for(user_id, status="awaiting_approval")
 
@@ -409,12 +393,8 @@ async def test_a_composer_message_to_a_park_with_no_open_question_wakes_it(clien
 
 
 async def test_play_asks_for_a_plan_and_does_not_flip_the_mode(client):
-    """The play button hands the model a TASK, not a transcript (11.8.5).
-
-    It used to flip the mode here and start an unattended run off whatever the
-    conversation happened to end on. Now it appends the handoff and starts an
-    ordinary attended turn whose job is to call `propose_plan`; the mode moves in
-    exactly one place, and that is approving the plan that turn produces.
+    """The play button hands the model a TASK, not a transcript: the mode moves only
+    when the plan that turn produces is approved.
     """
     user_id = await _signed_in(client)
     session_id = await _session_for(user_id, status="idle", mode="attended")
@@ -457,12 +437,7 @@ async def test_approving_twice_is_refused(client):
 
 
 async def test_the_unattended_quota_does_not_bind_at_play(client, monkeypatch):
-    """Drafting a plan is an attended turn, so it costs nothing against the cap.
-
-    The quota moved to the one place a session's unattended load actually grows —
-    approving a plan — and `test_plan_gate` pins it there. Charging it here would
-    refuse to even DRAFT a plan for someone at their limit.
-    """
+    """Drafting a plan is an attended turn, so it costs nothing against the cap."""
     user_id = await _signed_in(client)
     monkeypatch.setattr(api, "_cfg", lambda key, default: 1 if key == "quotas.max_unattended_sessions" else default)
     await _session_for(user_id, status="running", mode="unattended")
@@ -498,8 +473,7 @@ async def test_projects_roll_up_to_one_dot_each(client):
 
     body = (await client.get("/projects")).json()
 
-    # Only "Taxes": the home session mints no project any more (11.9), so a
-    # fresh account's grid holds exactly what was made deliberately.
+    # Only "Taxes": the home session mints no project, so nothing else is here.
     assert [p["title"] for p in body] == ["Taxes"]
     assert body[0]["status_rollup"] == "awaiting_approval", "the most urgent thing in the project wins the dot"
 
@@ -713,8 +687,7 @@ async def test_signing_in_again_lands_in_the_same_home_session(client):
 
 
 async def test_a_fresh_account_owns_no_project_and_no_folder(client):
-    """A project existed only to hold a directory. No directory is held, so the
-    home chat's shadow project is not cleaned up — it is unmade (11.9)."""
+    """A fresh account owns nothing: the home chat mints neither project nor folder."""
     user_id = str(uuid.uuid4())
     _seeded.append(uuid.UUID(user_id))
     await _sign_in_as(client, user_id)
@@ -750,8 +723,7 @@ async def test_one_question_shows_at_all_three_scopes_and_resolves_from_any(clie
     assert [a["approval_id"] for a in in_project] == [opened.id]
     assert [a["approval_id"] for a in in_window] == [opened.id]
 
-    # Resolved from the window; it leaves every scope at once, because there is
-    # one row.
+    # One row, so resolving from the window clears every scope at once.
     answered = await client.post(f"/approvals/{opened.id}/respond", json={"answer": "the joint one"})
 
     assert answered.status_code == 202
@@ -772,7 +744,7 @@ async def test_attention_in_another_users_window_reads_as_absent(client):
 
 
 async def test_an_uploaded_file_is_in_the_project_and_in_the_next_sandbox(client, tmp_path):
-    """The card's end-to-end: upload a file, a session reads it from its box."""
+    """End to end: upload a file, and a session reads it from its box."""
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     try:
         user_id = await _signed_in(client)
@@ -787,15 +759,13 @@ async def test_an_uploaded_file_is_in_the_project_and_in_the_next_sandbox(client
         listed = (await client.get(f"/projects/{project_id}/files")).json()
 
         assert uploaded.status_code == 201
-        # The `.keep` rides along: it is a real row, which is what makes the
-        # folder exist before anything is in it. Surfaces filter it; the wire
-        # does not, because materialize and flush carry files and only files.
+        # `.keep` is a real row — it is what makes the folder exist. Surfaces
+        # filter it; the wire does not, because it carries files and only files.
         assert [f["path"] for f in listed] == [
             "do-the-taxes/.keep",
             "do-the-taxes/receipts.csv",
         ]
 
-        # And it is what materialize would put in the box.
         entry = next(e for e in await store.read_tree(user_id) if e.path.endswith("receipts.csv"))
         assert await store.get_blob(entry.content_hash) == b"date,amount\n2026-08-18,12"
     finally:
@@ -873,6 +843,23 @@ async def test_auth_config_is_readable_signed_out(client):
     assert isinstance(body["anon_key"], str)
 
 
+@pytest.mark.parametrize("path", ["/app/", "/app/index.html"])
+async def test_the_page_itself_is_never_cached(client, path):
+    """index.html must be no-store: the hand-rolled `?v=N` bust cannot bootstrap itself."""
+    response = await client.get(path)
+
+    assert response.status_code == 200
+    assert "no-store" in response.headers.get("cache-control", "")
+
+
+async def test_the_assets_keep_their_validators(client):
+    """`?v=N` is answer enough for the assets, so nothing here forces a re-fetch."""
+    response = await client.get("/app/api.jsx?v=1")
+
+    assert response.status_code == 200
+    assert "no-store" not in response.headers.get("cache-control", "")
+
+
 # --- ownership ------------------------------------------------------------------
 
 
@@ -892,8 +879,7 @@ async def test_authz_scoping(client):
     assert (await client.post(f"/sessions/{their_session}/messages", json={"text": "hi"})).status_code == 404
     assert (await client.post(f"/sessions/{their_session}/cancel")).status_code == 404
     assert (await client.get(f"/results/{their_ref}")).status_code == 404
-    # Only their own — and this account has made none, since the home session
-    # mints no project (11.9). Theirs is not here either way.
+    # This account has made no project of its own: the home session mints none.
     assert [p["title"] for p in (await client.get("/projects")).json()] == []
 
 
@@ -1074,7 +1060,7 @@ async def test_a_published_status_can_be_fetched_by_the_seq_it_announced():
 
 
 async def test_the_frame_stream_requires_owning_the_session(client):
-    """The implementation this replaces took a user id from the query string."""
+    """The frame stream is scoped by the cookie's user, never by a query parameter."""
     theirs = str(uuid.uuid4())
     _seeded.append(uuid.UUID(theirs))
     await pool.execute("INSERT INTO users (id) VALUES ($1)", uuid.UUID(theirs))
@@ -1103,7 +1089,7 @@ async def _read_frames(stream, user_id, session_id):
     await gen.aclose()
 
 
-# --- the tool budget (11.4): what this session may reach ---------------------------
+# --- the tool budget: what this session may reach ----------------------------------
 
 
 class _FakeConnectors:
@@ -1175,8 +1161,7 @@ async def test_a_toggle_is_recorded_and_read_back(client, mcp):
 
 
 async def test_a_toggle_over_the_cap_is_refused_with_the_numbers(client, mcp):
-    """The 400 that started this card came back from the provider with nothing
-    near the connection that caused it. This one names both sides."""
+    """The refusal names both numbers: the cap and what the server would have added."""
     mcp([_server("huge", tools=9000)])
     user_id = await _signed_in(client)
     session_id = await _session_for(user_id)
@@ -1245,7 +1230,7 @@ async def test_the_toggles_are_per_session(client, mcp):
     assert (await client.get(f"/sessions/{other}/tools")).json()["used"] == 0
 
 
-# --- the session's live disk (11.4) ------------------------------------------------
+# --- the session's live disk -------------------------------------------------------
 
 
 class _FakeBox:
@@ -1280,8 +1265,8 @@ def awake(monkeypatch):
 
     def use(session_id, blobs=None):
         manager = api.sandbox_manager.manager()
-        # The copy is installed FIRST, so teardown puts back a map this never
-        # touched: the manager is process-wide and outlives the test.
+        # Copy first: the manager is process-wide, so teardown must restore a map
+        # this never touched.
         live = dict(manager._live)
         monkeypatch.setattr(manager, "_live", live)
         live[session_id] = _FakeBox(blobs or {})
@@ -1360,7 +1345,7 @@ async def test_the_disk_endpoints_are_scoped_to_the_session_owner(client, awake)
     assert read.status_code == 404
 
 
-# --- projects made and renamed deliberately (11.8) ---------------------------------
+# --- projects made and renamed deliberately ----------------------------------------
 
 
 async def test_a_project_created_with_no_links_makes_a_folder_of_its_own(client, tmp_path):
@@ -1376,7 +1361,6 @@ async def test_a_project_created_with_no_links_makes_a_folder_of_its_own(client,
         assert made.json()["folders"] == ["weekend-reading"]
         assert made.json()["files"] == 0, "the sentinel is structure, not content"
         assert "weekend reading" in [p["title"] for p in (await client.get("/projects")).json()]
-        # And it is an ordinary folder in the Files tab like any other.
         assert (await client.get("/folders")).json() == [{"name": "weekend-reading", "files": 0}]
     finally:
         store.use_blobs(None)
@@ -1390,7 +1374,7 @@ async def test_a_project_needs_a_name(client):
 
 
 async def test_a_project_links_folders_that_already_exist(client, tmp_path):
-    """Linking replaced seeding: one store, so pointing at files beats copying rows."""
+    """One store: a project points at existing files rather than copying rows."""
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     try:
         user_id = await _signed_in(client)
@@ -1404,7 +1388,6 @@ async def test_a_project_links_folders_that_already_exist(client, tmp_path):
         assert made.json()["files"] == 2, "the folder and its children, not the sibling"
         linked = await client.get(f"/projects/{made.json()['id']}/files")
         assert sorted(f["path"] for f in linked.json()) == ["notes/a.md", "notes/deep/b.md"]
-        # Nothing was copied and nothing moved: it is the same one file.
         assert len((await client.get("/files")).json()) == 3
     finally:
         store.use_blobs(None)
@@ -1530,9 +1513,7 @@ async def test_a_rename_to_nothing_is_refused(client):
 
 
 async def test_a_rename_touches_no_folder_and_no_mount(client, tmp_path):
-    """The bug this pins: the Files tab grouped by project TITLE, so renaming a
-    project renamed the filesystem's headers. Folders are store segments now and
-    a rename cannot reach one."""
+    """Folders are store segments, so renaming a project cannot reach one."""
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     try:
         from harness_module import workspace
@@ -1625,10 +1606,8 @@ async def _new_session() -> str:
 
 
 async def test_a_new_folder_is_durable_before_anything_is_in_it(client, tmp_path):
-    """The folder is in the store the moment it is named, not when it is filled.
-
-    A folder is a path segment and has no row of its own, so the sentinel is
-    what makes it exist — and what survives the round trip through a sandbox.
+    """A folder is a path segment with no row of its own: the `.keep` sentinel is
+    what makes it exist, and what survives a round trip through a sandbox.
     """
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     try:
@@ -1642,7 +1621,7 @@ async def test_a_new_folder_is_durable_before_anything_is_in_it(client, tmp_path
         assert [f["path"] for f in listed] == ["receipts/2026/.keep"]
         # It is a real tree entry, so materialize carries it into the box.
         assert [e.path for e in await store.read_tree(user_id)] == ["receipts/2026/.keep"]
-        # And its TOP segment is the folder, which is what the Files tab heads with.
+        # Its TOP segment is the folder, which is what the Files tab heads with.
         assert (await client.get("/folders")).json() == [{"name": "receipts", "files": 0}]
     finally:
         store.use_blobs(None)
@@ -1711,7 +1690,7 @@ async def test_moving_a_file_moves_the_row_and_leaves_the_blob_alone(client, tmp
 
 
 async def test_moving_between_folders_is_an_ordinary_move(client, tmp_path):
-    """One namespace: what used to need a copy between two projects is a row edit."""
+    """One namespace: a move between two folders is a row edit."""
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     try:
         await _signed_in(client)
@@ -1721,12 +1700,8 @@ async def test_moving_between_folders_is_an_ordinary_move(client, tmp_path):
         moved = await client.post("/files/move", json={"from": "triage/a.md", "to": "archive/a.md"})
 
         assert moved.status_code == 200
-        # SORTED, because the endpoint's order is the database's collation and
-        # that is not the same everywhere: under postgres:15's default, `a.md`
-        # sorts before `archive/.keep`; under the deployment's it is the other
-        # way round. The assertion is about WHAT is in the store after a move,
-        # and asserting an order the endpoint never promised made it fail on one
-        # of the two databases this suite is meant to run against.
+        # Sorted: the endpoint promises no order, and the database's collation
+        # differs between postgres:15 and the deployment.
         assert sorted(f["path"] for f in (await client.get("/files")).json()) == [
             "archive/.keep",
             "archive/a.md",
@@ -1759,7 +1734,7 @@ async def test_moving_a_directory_takes_everything_under_it(client, tmp_path):
 
 
 async def test_renaming_a_folder_is_refused_here(client, tmp_path):
-    """It moves what claims and mounts are keyed by, so it is its own card."""
+    """A folder rename moves what claims and mounts are keyed by, so /files/move refuses it."""
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     try:
         await _signed_in(client)
@@ -1821,16 +1796,11 @@ async def test_moving_a_path_the_store_does_not_have_is_absent(client, tmp_path)
         store.use_blobs(None)
 
 
-# --- the consent callback (11.10.2) --------------------------------------------
+# --- the consent callback ------------------------------------------------------
 
 
 class _FakeCallback:
-    """Stands in for the Composio client's reconcile leg.
-
-    Distinct from `_FakeConnectors` above, which stands in for the connections
-    half. Two fakes named the same thing meant the later definition shadowed the
-    earlier one and eight tool-budget tests lost the method they were calling.
-    """
+    """Stands in for the Composio client's reconcile leg."""
 
     def __init__(self, settles=None, blow_up=False):
         self.settles = settles
@@ -1854,8 +1824,7 @@ async def test_the_callback_settles_the_connection(monkeypatch, client):
 
     assert response.status_code == 200
     assert fake.calls == [(user_id, "ca_1")]
-    # The popup closes itself and pings the opener, rather than stranding the
-    # person on a raw body.
+    # The popup closes itself and pings the opener.
     assert "window.close" in response.text
     assert "connected" in response.text
 
@@ -1897,16 +1866,11 @@ async def test_an_upstream_refusal_still_closes_the_popup(monkeypatch, client):
     assert "not connected" in response.text
 
 
-# --- streams end themselves on shutdown (11.11.4) -------------------------------
+# --- streams end themselves on shutdown -----------------------------------------
 
 
 async def test_shutdown_wakes_every_subscriber_on_both_channels():
-    """An SSE response is an in-flight request that never ends.
-
-    A graceful shutdown waits for it — forever, since every signed-in tab holds
-    an attention stream open for its whole session. The dev flag papered over it
-    by shooting the connection; this hangs up on purpose instead.
-    """
+    """An SSE response never ends on its own, so a graceful shutdown must hang up on it."""
     from harness_module.stream import CLOSED, attention, shutdown_streams, stream
 
     async with stream.subscribe("session-a") as session_q, attention.subscribe("user-b") as attention_q:
@@ -1918,11 +1882,7 @@ async def test_shutdown_wakes_every_subscriber_on_both_channels():
 
 
 async def test_shutdown_reaches_a_subscriber_whose_queue_is_full():
-    """A subscriber that is behind still has to learn the server is leaving.
-
-    What it was behind ON stops mattering the moment the process is going down,
-    so the sentinel is forced past a full queue rather than dropped.
-    """
+    """A subscriber that is behind still has to learn the server is leaving."""
     from harness_module.stream import CLOSED, AttentionSignal, UserStream
 
     channel = UserStream(queue_size=1)
