@@ -15,16 +15,19 @@ there is no `docs/deprecated/`, and any pointer to that path is stale. Do not
 cite it or follow its task numbers. Stale pointers to it in docstrings should be
 deleted, not followed.
 
-**The project is Buddy** (`the-real-buddy/buddy-core`); it was called ARKOS, and
-the rename is cosmetic-only so far. The literal string `arkos` is still
-LOAD-BEARING in several places and must NOT be swept: `_ISSUER` in
-`harness_module/jwt_utils.py` (every live token carries `iss=arkos`, so changing
-it invalidates every session), `store.bucket` / `store.prefix` / `store.root` in
-`config_module/config.yaml` (the content-addressed blob prefix — changing it
-orphans every stored blob), the `/tmp/arkos-*.tar` staging paths in
-`harness_module/workspace.py` (materialize and flush must agree on them), and
-the `ark_session` cookie with `ARK_SESSION_SECRET`. Rename prose and titles
-freely; leave those identifiers alone.
+**The project is Buddy** (`the-real-buddy/buddy-core`), inside and out. The
+predecessor's name is gone from the tree as of 12.3.5 — identifiers included —
+so there is nothing left to sweep and no carve-out to respect.
+
+The five that were load-bearing all moved in that card, pre-launch and with the
+user table already empty, which is the only time they are free: `_ISSUER` is
+`buddy` (every cookie carries `iss=buddy`, and changing it signs everyone out),
+`store.bucket` / `store.prefix` / `store.root` point at the `buddy` bucket
+(changing them orphans every stored blob), the staging paths in
+`harness_module/workspace.py` are `/tmp/buddy-*.tar` (materialize and flush must
+agree on them), and the cookie is `buddy_session` signed with
+`BUDDY_SESSION_SECRET`. They are ordinary identifiers now, but they are still
+the ones with side effects: change any of them and say what it costs.
 
 **CI is `.github/workflows/ci.yml`, and it runs on this branch.** It was deleted
 on 2026-08-25 and restored the same afternoon (`79fab01`) carrying only what
@@ -33,8 +36,8 @@ works: a lint stage (`ruff check .`, `ruff format --check .`) and a test stage
 service, on push to `main` and `dev_refactor`. Run both yourself before claiming
 a change is green — a red push is a slower way to learn the same thing. The
 deploy and monitor jobs did NOT come back and should not be recreated from
-`git log`: they targeted `ghcr.io/sgiark/arkos` and `ark.mit.edu`, which are not
-this project's infrastructure. Integration tests are deselected in CI and need
+`git log`: they pushed to a container registry and a university host that were
+never this project's infrastructure. Integration tests are deselected in CI and need
 real credentials.
 
 **The old architecture is GONE as of 2026-08-13** (Tasks 7 and 8, pulled forward).

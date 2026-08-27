@@ -32,8 +32,8 @@ MOUNT_ROOT = "/home/user/store"
 # Outside MOUNT_ROOT so no sweep of the claimed mounts can pick it up.
 SENTINEL = "/home/user/.ark/materialized.json"
 
-_STAGING_TAR = "/tmp/arkos-materialize.tar"
-_FLUSH_TAR = "/tmp/arkos-flush.tar"
+_STAGING_TAR = "/tmp/buddy-materialize.tar"
+_FLUSH_TAR = "/tmp/buddy-flush.tar"
 
 
 @dataclass(frozen=True, slots=True)

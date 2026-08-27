@@ -235,7 +235,7 @@ def _check_auth_rate(request: Request) -> None:
 
 async def current_user(request: Request) -> str:
     """Resolve the caller from the session cookie, and origin-check mutations."""
-    cookie = request.cookies.get(str(_cfg("auth.cookie_name", "ark_session")))
+    cookie = request.cookies.get(str(_cfg("auth.cookie_name", "buddy_session")))
     if not cookie:
         raise ApiError(401, "unauthenticated", "No session. Sign in first.")
     try:
@@ -334,7 +334,7 @@ async def create_auth_session(request: Request, authorization: str | None = Head
 
     out = Response(status_code=204)
     out.set_cookie(
-        key=str(_cfg("auth.cookie_name", "ark_session")),
+        key=str(_cfg("auth.cookie_name", "buddy_session")),
         value=cookie,
         max_age=int(_cfg("auth.session_ttl_s", 604800)),
         httponly=True,
@@ -433,7 +433,7 @@ async def delete_auth_session(request: Request) -> Response:
     cookie is self-signed, so a copy taken before this call would otherwise keep
     working for the rest of its seven days.
     """
-    cookie = request.cookies.get(str(_cfg("auth.cookie_name", "ark_session")))
+    cookie = request.cookies.get(str(_cfg("auth.cookie_name", "buddy_session")))
     if not cookie:
         logger.info("sign-out with no session cookie; nothing to revoke")
     else:
@@ -447,7 +447,7 @@ async def delete_auth_session(request: Request) -> Response:
             # endpoint exists to prevent.
             logger.warning("sign-out could not revoke its session row", exc_info=True)
     out = Response(status_code=204)
-    out.delete_cookie(key=str(_cfg("auth.cookie_name", "ark_session")), path="/")
+    out.delete_cookie(key=str(_cfg("auth.cookie_name", "buddy_session")), path="/")
     return out
 
 

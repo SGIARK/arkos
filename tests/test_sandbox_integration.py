@@ -87,7 +87,7 @@ async def test_no_credentials_reach_a_real_sandbox():
     try:
         env = (await manager.exec(session_id, "env"))["stdout"]
 
-        for name in ("OPENAI_API_KEY", "DB_URL", "COMPOSIO_API_KEY", "E2B_API_KEY", "ARK_SESSION_SECRET"):
+        for name in ("OPENAI_API_KEY", "DB_URL", "COMPOSIO_API_KEY", "E2B_API_KEY", "BUDDY_SESSION_SECRET"):
             assert name not in env, f"{name} is set inside the sandbox"
             value = os.environ.get(name)
             if value:

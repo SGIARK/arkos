@@ -1,9 +1,9 @@
-# Contributing to ARKOS
+# Contributing to buddy
 
 ## Philosophy
 
 Write code for the next person reading it, not for the machine running it.
-ARKOS is a student team using AI-assisted development. That means readable,
+buddy is a student team using AI-assisted development. That means readable,
 focused, and well-named code matters more than clever or compact code.
 The reviewer — human or AI — should understand a function in 10 seconds.
 

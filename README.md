@@ -7,8 +7,8 @@
 > file when the redesign settles.
 
 Buddy is an agent harness: one loop, one model client, native tool calling.
-Formerly ARKOS; see `CLAUDE.md` for why the string `arkos` still appears in
-load-bearing identifiers.
+The internal rename landed in 12.3.5: the predecessor's name is gone from the
+tree, identifiers included.
 
 ## Where things are
 
@@ -49,7 +49,7 @@ Code layout:
    the pooler DSN for IPv4-only networks.
 
    The server then refuses to start without two things, with no demo bypass.
-   `ARK_SESSION_SECRET` signs the session cookie we issue. The second is SOME
+   `BUDDY_SESSION_SECRET` signs the session cookie we issue. The second is SOME
    way to verify a Supabase token, and a project URL is enough — derived from
    the DSN above, which carries the project ref, or set as `SUPABASE_URL` —
    because current projects sign with a key published at the project's JWKS
@@ -122,5 +122,5 @@ in CI and need live credentials.
 
 The workflow was deleted on 2026-08-25 and restored the same afternoon with only
 those two stages. The deploy and monitor jobs did NOT come back and should not
-be recreated from `git log`: they targeted `ghcr.io/sgiark/arkos` and
-`ark.mit.edu`, which are not this project's infrastructure.
+be recreated from `git log`: they pushed to a container registry and a
+university host that were never this project's infrastructure.

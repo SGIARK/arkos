@@ -35,7 +35,7 @@ async def backend():
 
 
 async def test_a_blob_round_trips_through_the_bucket(backend):
-    content = f"arkos store probe {uuid.uuid4()}".encode()
+    content = f"buddy store probe {uuid.uuid4()}".encode()
     content_hash = store.sha256(content)
 
     await backend.put(content_hash, content)
@@ -46,7 +46,7 @@ async def test_a_blob_round_trips_through_the_bucket(backend):
 
 
 async def test_uploading_the_same_blob_twice_is_accepted(backend):
-    content = f"arkos idempotence probe {uuid.uuid4()}".encode()
+    content = f"buddy idempotence probe {uuid.uuid4()}".encode()
     content_hash = store.sha256(content)
 
     await backend.put(content_hash, content)

@@ -37,7 +37,7 @@ def sha256(content: bytes) -> str:
 
 def blob_key(content_hash: str) -> str:
     """Where a blob lives: two hex characters of fan-out, then the full hash."""
-    prefix = str(_cfg("store.prefix", "arkos")).strip("/")
+    prefix = str(_cfg("store.prefix", "buddy")).strip("/")
     return f"{prefix}/blobs/{content_hash[:2]}/{content_hash}"
 
 
@@ -226,7 +226,7 @@ def secret_key() -> str | None:
 def _build() -> Blobs:
     backend = str(_cfg("store.backend", "filesystem")).lower()
     if backend == "filesystem":
-        return FilesystemBlobs(_cfg("store.root", ".arkos-store"))
+        return FilesystemBlobs(_cfg("store.root", ".buddy-store"))
     if backend == "supabase":
         url = project_url()
         key = secret_key()

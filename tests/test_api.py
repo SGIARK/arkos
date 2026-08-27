@@ -120,7 +120,7 @@ async def test_a_verified_supabase_token_is_the_only_way_to_a_cookie(client):
     response = await client.post("/auth/session", headers={"Authorization": f"Bearer {_supabase_token(user_id)}"})
 
     assert response.status_code == 204
-    assert "ark_session" in response.cookies
+    assert "buddy_session" in response.cookies
     row = await pool.fetchrow("SELECT id, email FROM users WHERE id = $1", uuid.UUID(user_id))
     assert row["email"] == "a@example.com", "sub -> users, created on first login"
 
@@ -148,7 +148,7 @@ async def test_an_expired_token_is_refused(client):
 
 async def test_cookie_session(client):
     """No cookie and a foreign cookie are both rejected, on every endpoint."""
-    forged = jwt.encode({"sub": str(uuid.uuid4()), "iss": "arkos"}, "wrong-secret", algorithm="HS256")
+    forged = jwt.encode({"sub": str(uuid.uuid4()), "iss": "buddy"}, "wrong-secret", algorithm="HS256")
 
     for method, path in (
         ("get", "/auth/me"),
@@ -166,7 +166,7 @@ async def test_cookie_session(client):
         bare = await getattr(client, method)(path, **body)
         assert bare.status_code == 401, f"{method} {path} let a caller in with no cookie"
 
-        foreign = await getattr(client, method)(path, cookies={"ark_session": forged}, **body)
+        foreign = await getattr(client, method)(path, cookies={"buddy_session": forged}, **body)
         assert foreign.status_code == 401, f"{method} {path} accepted a cookie we did not sign"
 
 
@@ -267,7 +267,7 @@ async def test_a_recovery_link_token_is_refused_a_cookie(client, amr):
     response = await client.post("/auth/session", headers={"Authorization": f"Bearer {token}"})
 
     assert response.status_code == 401
-    assert "ark_session" not in response.cookies
+    assert "buddy_session" not in response.cookies
 
 
 async def test_an_ordinary_sign_in_is_not_mistaken_for_a_recovery_link(client):
@@ -343,11 +343,11 @@ async def test_one_users_reset_does_not_sign_anybody_else_out(client):
 async def test_a_cookie_with_no_jti_cannot_be_revoked_so_is_refused(client):
     """Cookies minted before 12.2.5 have no handle to take back."""
     legacy = jwt.encode(
-        {"sub": str(uuid.uuid4()), "iss": "arkos", "exp": datetime.now(UTC) + timedelta(hours=1)},
+        {"sub": str(uuid.uuid4()), "iss": "buddy", "exp": datetime.now(UTC) + timedelta(hours=1)},
         "test-session-secret-at-least-32-chars",
         algorithm="HS256",
     )
-    client.cookies.set("ark_session", legacy)
+    client.cookies.set("buddy_session", legacy)
 
     assert (await client.get("/auth/me")).status_code == 401
 
@@ -425,7 +425,7 @@ async def test_logout_clears_the_cookie(client):
     response = await client.delete("/auth/session")
 
     assert response.status_code == 204
-    assert response.cookies.get("ark_session") in (None, "")
+    assert response.cookies.get("buddy_session") in (None, "")
 
 
 async def test_health_needs_no_cookie(client):

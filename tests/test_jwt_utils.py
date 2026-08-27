@@ -54,7 +54,7 @@ class TestSessionCookie:
         assert claims["jti"] == jti
 
     def test_a_cookie_we_did_not_sign_is_refused(self):
-        forged = jwt.encode({"sub": "u-1", "iss": "arkos"}, "not-our-secret", algorithm="HS256")
+        forged = jwt.encode({"sub": "u-1", "iss": "buddy"}, "not-our-secret", algorithm="HS256")
 
         with pytest.raises(jwt.PyJWTError):
             read_session(forged)
@@ -139,9 +139,9 @@ class TestKeyCachePersistence:
 
 class TestAssertSecureSecrets:
     def test_raises_without_a_way_to_sign_sessions(self, monkeypatch):
-        monkeypatch.delenv("ARK_SESSION_SECRET", raising=False)
+        monkeypatch.delenv("BUDDY_SESSION_SECRET", raising=False)
 
-        with pytest.raises(RuntimeError, match="ARK_SESSION_SECRET"):
+        with pytest.raises(RuntimeError, match="BUDDY_SESSION_SECRET"):
             assert_secure_secrets()
 
     def test_raises_without_any_way_to_verify_a_token(self, monkeypatch):
@@ -163,7 +163,7 @@ class TestAssertSecureSecrets:
 
     def test_no_demo_bypass_exists(self, monkeypatch):
         """ARK_DEMO_MODE does not excuse a missing session secret."""
-        monkeypatch.delenv("ARK_SESSION_SECRET", raising=False)
+        monkeypatch.delenv("BUDDY_SESSION_SECRET", raising=False)
         monkeypatch.setenv("ARK_DEMO_MODE", "1")
 
         with pytest.raises(RuntimeError):

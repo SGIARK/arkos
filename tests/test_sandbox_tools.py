@@ -251,10 +251,10 @@ async def test_a_glob_over_a_missing_directory_is_not_an_empty_tree(sandbox):
 
 async def test_a_home_relative_path_is_expanded_by_the_box_not_by_us(sandbox):
     """Quoting suppresses shell expansion, so `~` is rewritten to the box's own $HOME."""
-    await _run("grep", {"pattern": "timeout", "path": "~/store/triage/arkos"}, _ctx())
+    await _run("grep", {"pattern": "timeout", "path": "~/store/triage/buddy"}, _ctx())
 
     command = sandbox.commands[-1]
-    assert '"$HOME"/store/triage/arkos' in command
+    assert '"$HOME"/store/triage/buddy' in command
     assert "/home/user" not in command, "the home directory is the box's to decide"
 
 

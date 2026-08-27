@@ -21,4 +21,4 @@ async def require_db(attempts: int = 3, delay: float = 0.5) -> None:
             await pool.close()
             if attempt + 1 < attempts:
                 await asyncio.sleep(delay)
-    pytest.skip(f"needs the arkos database (migrations applied): {last}")
+    pytest.skip(f"needs the buddy database (migrations applied): {last}")

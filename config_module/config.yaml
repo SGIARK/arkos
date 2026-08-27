@@ -27,11 +27,11 @@ auth:
   # The last good key set, so a restart is never cold. Public material — these
   # keys are served unauthenticated to anyone who asks — and only ever a
   # starting point; the tick refreshes it on the usual clock.
-  jwks_cache_file: "/tmp/arkos-jwks.json"
+  jwks_cache_file: "/tmp/buddy-jwks.json"
   # While the cache is EMPTY the tick retries on this backoff instead of the
   # refresh interval: minutes of refusing every sign-in is not a schedule.
   jwks_retry_max_s: 30
-  cookie_name: "ark_session"
+  cookie_name: "buddy_session"
   cookie_secure: true             # false only for plain-http local development
   cookie_samesite: "lax"
   session_ttl_s: 604800           # cookie lifetime in seconds (7 days)
@@ -70,9 +70,9 @@ store:
   # The bucket name, overridable by STORE_BUCKET in the environment. A literal
   # rather than a ${VAR}: an unset interpolation fails config load for the whole
   # process, including the parts that never touch the store.
-  bucket: "arkos"
-  prefix: "arkos"
-  root: ".arkos-store"
+  bucket: "buddy"
+  prefix: "buddy"
+  root: ".buddy-store"
 
 browser:
   # The rented specialist (browser_task). One section, so a knob is never in two

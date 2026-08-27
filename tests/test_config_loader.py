@@ -26,7 +26,7 @@ def env_var_config(tmp_path):
     """Create a config file with environment variable references."""
     config_data = {
         "database": {"url": "${DB_URL}", "password": "${DB_PASS}"},
-        "app": {"name": "arkos"},
+        "app": {"name": "buddy"},
     }
     config_file = tmp_path / "config.yaml"
     config_file.write_text(yaml.dump(config_data))

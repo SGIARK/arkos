@@ -350,7 +350,7 @@ def _sweeping(sandbox: FakeSandbox) -> FakeSandbox:
                     info = tarfile.TarInfo(name=relative)
                     info.size = len(body)
                     archive.addfile(info, io.BytesIO(body))
-            sandbox.files["/tmp/arkos-flush.tar"] = buffer.getvalue()
+            sandbox.files["/tmp/buddy-flush.tar"] = buffer.getvalue()
             return {"stdout": "", "stderr": "", "exit_code": 0}
         if command.startswith("rm -f "):
             for token in command[len("rm -f ") :].split():

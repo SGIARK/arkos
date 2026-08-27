@@ -1,4 +1,4 @@
-# ARKOS — Coding Standards
+# buddy — Coding Standards
 
 Loaded automatically by AI coding tools. Follow these rules on every task.
 
