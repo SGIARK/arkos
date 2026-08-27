@@ -1,6 +1,6 @@
 const NAV = ["desk", "approvals", "files", "projects"];
 
-/* Hashes bookmarked before the rename still have to resolve. */
+/* Hashes bookmarked under the old view names still have to resolve. */
 const NAV_ALIAS = { computer: "files", "looking glass": "projects" };
 
 function App() {

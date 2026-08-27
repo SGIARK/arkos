@@ -162,9 +162,13 @@ class TestAssertSecureSecrets:
         assert assert_secure_secrets() is None
 
     def test_no_demo_bypass_exists(self, monkeypatch):
-        """ARK_DEMO_MODE does not excuse a missing session secret."""
+        """No env var excuses a missing session secret.
+
+        There was once a demo mode that did. It is gone, and this pins that
+        nothing takes its place: setting a plausible bypass flag changes nothing.
+        """
         monkeypatch.delenv("BUDDY_SESSION_SECRET", raising=False)
-        monkeypatch.setenv("ARK_DEMO_MODE", "1")
+        monkeypatch.setenv("DEMO_MODE", "1")
 
         with pytest.raises(RuntimeError):
             assert_secure_secrets()

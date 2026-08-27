@@ -19,7 +19,7 @@ pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.integration,
     pytest.mark.skipif(
-        not (os.environ.get("OPENAI_API_KEY") or os.environ.get("ARK_MODEL_KEY")),
+        not os.environ.get("OPENAI_API_KEY"),
         reason="a browser run needs a model key",
     ),
 ]

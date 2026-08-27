@@ -15,12 +15,13 @@ there is no `docs/deprecated/`, and any pointer to that path is stale. Do not
 cite it or follow its task numbers. Stale pointers to it in docstrings should be
 deleted, not followed.
 
-**The project is Buddy** (`the-real-buddy/buddy-core`), inside and out. The
-predecessor's name is gone from the tree as of 12.3.5 — identifiers included —
-so there is nothing left to sweep and no carve-out to respect.
+**The project is Buddy** (`the-real-buddy/buddy-core`), inside and out —
+prose, identifiers and infrastructure names alike. Nothing needs sweeping and
+there is no carve-out to respect.
 
-The five that were load-bearing all moved in that card, pre-launch and with the
-user table already empty, which is the only time they are free: `_ISSUER` is
+Five identifiers carry side effects if you change them, and 12.3.5 moved them
+all at once, pre-launch and with the user table already empty, which is the only
+time they are free: `_ISSUER` is
 `buddy` (every cookie carries `iss=buddy`, and changing it signs everyone out),
 `store.bucket` / `store.prefix` / `store.root` point at the `buddy` bucket
 (changing them orphans every stored blob), the staging paths in

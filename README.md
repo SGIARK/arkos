@@ -7,8 +7,6 @@
 > file when the redesign settles.
 
 Buddy is an agent harness: one loop, one model client, native tool calling.
-The internal rename landed in 12.3.5: the predecessor's name is gone from the
-tree, identifiers included.
 
 ## Where things are
 
