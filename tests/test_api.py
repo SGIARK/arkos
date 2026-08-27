@@ -215,6 +215,66 @@ async def test_auth_me_reports_the_signed_in_user(client):
     assert body["email"] == "a@example.com"
     # The page needs it on the first render and nothing else would carry it.
     assert body["home_session_id"], "the app has nowhere to land without this"
+    # Nobody said, so there is nothing to say. The caller falls back to email.
+    assert body["display_name"] is None
+
+
+async def test_the_name_from_sign_up_metadata_is_what_the_buddy_calls_you(client):
+    """12.1: the name rides the SIGNED token as user_metadata, never a body."""
+    user_id = str(uuid.uuid4())
+    token = _supabase_token(user_id, user_metadata={"name": "Nathaniel"})
+
+    await client.post("/auth/session", headers={"Authorization": f"Bearer {token}"})
+
+    assert (await client.get("/auth/me")).json()["display_name"] == "Nathaniel"
+
+
+async def test_google_supplies_the_name_as_full_name(client):
+    """Google's OIDC profile calls it `full_name`; our own form calls it `name`."""
+    user_id = str(uuid.uuid4())
+    token = _supabase_token(user_id, user_metadata={"full_name": "Ada Lovelace"})
+
+    await client.post("/auth/session", headers={"Authorization": f"Bearer {token}"})
+
+    assert (await client.get("/auth/me")).json()["display_name"] == "Ada Lovelace"
+
+
+async def test_a_later_sign_in_without_a_name_does_not_erase_the_one_you_typed(client):
+    """The mixed case: sign up with a password, then sign in through a provider
+    whose profile carries no name. COALESCE is what keeps the typed one."""
+    user_id = str(uuid.uuid4())
+    named = _supabase_token(user_id, user_metadata={"name": "Nathaniel"})
+    await client.post("/auth/session", headers={"Authorization": f"Bearer {named}"})
+
+    bare = _supabase_token(user_id)
+    await client.post("/auth/session", headers={"Authorization": f"Bearer {bare}"})
+
+    assert (await client.get("/auth/me")).json()["display_name"] == "Nathaniel"
+
+
+async def test_a_blank_or_absent_name_is_not_a_name(client):
+    """Whitespace is not a name, and an absent one must not write an empty string:
+    the fallback to email keys off NULL."""
+    user_id = str(uuid.uuid4())
+    token = _supabase_token(user_id, user_metadata={"name": "   "})
+
+    await client.post("/auth/session", headers={"Authorization": f"Bearer {token}"})
+
+    assert (await client.get("/auth/me")).json()["display_name"] is None
+
+
+async def test_signing_in_again_keeps_exactly_one_home_session(client):
+    """12.1's acceptance: however you got the token — password or Google — a
+    second arrival must not mint a second home."""
+    user_id = str(uuid.uuid4())
+    token = _supabase_token(user_id, user_metadata={"full_name": "Ada"})
+
+    await client.post("/auth/session", headers={"Authorization": f"Bearer {token}"})
+    first = (await client.get("/auth/me")).json()["home_session_id"]
+    await client.post("/auth/session", headers={"Authorization": f"Bearer {token}"})
+    second = (await client.get("/auth/me")).json()["home_session_id"]
+
+    assert first and first == second
 
 
 async def test_logout_clears_the_cookie(client):

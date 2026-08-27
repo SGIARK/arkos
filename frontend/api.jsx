@@ -30,11 +30,45 @@ async function supabaseClient() {
     );
   }
   _supabase = window.supabase.createClient(cfg.supabase_url, cfg.anon_key, {
-    // The cookie is the session. Persisting a second one in localStorage would
-    // be a copy of a credential we deliberately do not keep.
-    auth: { persistSession: false, autoRefreshToken: false },
+    auth: {
+      // The cookie is the session. Persisting a second one in localStorage would
+      // be a copy of a credential we deliberately do not keep.
+      persistSession: false,
+      autoRefreshToken: false,
+      /* IMPLICIT, not PKCE (12.1). PKCE is supabase-js's default and is the
+         better flow when the client keeps a session — but it stores a code
+         verifier between the redirect out and the redirect back, and with
+         `persistSession: false` there is nowhere to keep one, so the exchange
+         would fail every time. Implicit hands the token straight back on the
+         URL fragment, which is exactly what this app wants: a token to trade
+         for a cookie, once, and never store. The fragment never reaches the
+         server, and `returnFromOAuth` clears it before it can be shared. */
+      flowType: "implicit",
+      /* We read the fragment ourselves in `returnFromOAuth`, because the token
+         is not the session here — the cookie is, and the token is only good for
+         the one exchange that mints it. */
+      detectSessionInUrl: false,
+    },
   });
   return _supabase;
+}
+
+/* Trade a Supabase access token for our cookie. THE one session-establishment
+   path (12.1): password sign-in, sign-up and Google all end here, because
+   `POST /auth/session` is the only endpoint that reads a bearer token and the
+   only thing that mints a cookie. A second path would be a second place for
+   identity to be decided. */
+async function exchange(token) {
+  const response = await fetch(API + "/auth/session", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { Authorization: "Bearer " + token },
+  });
+  if (!response.ok) {
+    const shape = await response.json().catch(() => ({}));
+    throw new ApiError(shape.code || "sign_in_failed", shape.message || "The server rejected the token.");
+  }
+  return api.me();
 }
 
 class ApiError extends Error {
@@ -125,17 +159,70 @@ const api = {
     if (error) throw new ApiError("sign_in_failed", error.message);
     const token = data && data.session && data.session.access_token;
     if (!token) throw new ApiError("sign_in_failed", "Supabase returned no session.");
+    return exchange(token);
+  },
 
-    const response = await fetch(API + "/auth/session", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { Authorization: "Bearer " + token },
+  /* Make an account (12.1). The NAME rides as user_metadata, so it arrives on
+     the signed token and `POST /auth/session` can trust it; nothing about the
+     name is sent in a body anywhere.
+
+     Two endings, and the caller has to tell them apart. With email confirmation
+     ON — which it is — Supabase returns a user and NO session, because the
+     account is not usable until the link is clicked. That is a success, not a
+     failure, and it is reported as `{confirm: true}` rather than by throwing.
+     With confirmation off, a session comes straight back and this signs in.
+
+     A repeat sign-up on an existing address does NOT error: Supabase answers
+     with a user carrying an empty `identities` array, deliberately, so the form
+     cannot be used to enumerate who has an account. We honour that — the caller
+     says "check your email" either way — because doing otherwise would rebuild
+     the leak by hand. */
+  async signUp(name, email, password) {
+    const client = await supabaseClient();
+    const { data, error } = await client.auth.signUp({
+      email,
+      password,
+      options: { data: { name } },
     });
-    if (!response.ok) {
-      const shape = await response.json().catch(() => ({}));
-      throw new ApiError(shape.code || "sign_in_failed", shape.message || "The server rejected the token.");
-    }
-    return api.me();
+    if (error) throw new ApiError("sign_up_failed", error.message);
+    const token = data && data.session && data.session.access_token;
+    if (!token) return { confirm: true };
+    return { confirm: false, me: await exchange(token) };
+  },
+
+  /* Google is only another way to GET a Supabase token (12.1) — the cookie it
+     ends at is the same cookie, minted by the same endpoint. `redirectTo` is
+     this exact origin, which is what keeps contracts' same-origin `/app` rule
+     true through the round trip: the cookie is SameSite=Lax and a cross-site
+     landing would arrive without it. This navigates the tab away; nothing after
+     it runs. */
+  async signInWithGoogle() {
+    const client = await supabaseClient();
+    const { error } = await client.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: API + "/app" },
+    });
+    if (error) throw new ApiError("sign_in_failed", error.message);
+  },
+
+  /* The return leg. Implicit flow puts the token on the fragment, so this reads
+     it, trades it for the cookie, and STRIPS the fragment before anything can
+     copy the URL out of the address bar with a live access token in it.
+
+     Returns null when there is nothing to return from, which is the ordinary
+     case on every load, so the caller can always call it. An `error` in the
+     fragment is Google or Supabase refusing — surfaced, and the fragment
+     cleared, or a reload would replay the same failure forever. */
+  async returnFromOAuth() {
+    const hash = location.hash || "";
+    if (!hash.includes("access_token=") && !hash.includes("error=")) return null;
+    const params = new URLSearchParams(hash.slice(1));
+    history.replaceState(null, "", location.pathname + location.search);
+    const failed = params.get("error_description") || params.get("error");
+    if (failed) throw new ApiError("sign_in_failed", failed);
+    const token = params.get("access_token");
+    if (!token) return null;
+    return exchange(token);
   },
 
   async signOut() {

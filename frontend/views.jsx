@@ -608,71 +608,222 @@ function scopeNames(scopes) {
    the email and password, we take the token once and turn it into the cookie.
    No signup link — accounts are made in the dashboard until there are real
    users to self-serve. */
-function Login({ gone, onSignedIn }) {
+/* THE PRE-APP AUTH SURFACE (12.1), from `designs/sign-up/`: a marketing panel
+   on the left and the auth card on the right, the two modes switching IN PLACE
+   rather than on two routes — it is one decision ("do you have an account?")
+   and it should not cost a navigation.
+
+   Sign-up, sign-in and Google are three ways to obtain a Supabase token and
+   ONE way to become signed in: `api` trades whichever token for our cookie
+   through `POST /auth/session`, which stays the only endpoint that reads a
+   bearer. Nothing here knows how the cookie is made. */
+function Login({ gone, onSignedIn, problem: arrived }) {
+  const [mode, setMode] = useState("in");
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState(null);
+  // Sign-up with confirmation on ends at "go read your email", not in the app.
+  const [sent, setSent] = useState(false);
   const first = useRef(null);
+
+  const up = mode === "up";
+  // A refusal carried back from the provider's redirect outranks nothing —
+  // it is simply the first thing there is to say.
+  const shown = problem || arrived;
 
   useEffect(() => {
     if (!gone && first.current) first.current.focus();
-  }, [gone]);
+  }, [gone, mode]);
+
+  const ready = up ? name.trim() && email.trim() && password : email.trim() && password;
 
   async function submit() {
-    if (!email.trim() || !password) return;
+    if (!ready || busy) return;
     setBusy(true);
     setProblem(null);
     try {
-      onSignedIn(await api.signIn(email.trim(), password));
+      if (up) {
+        const out = await api.signUp(name.trim(), email.trim(), password);
+        if (out.confirm) setSent(true);
+        else onSignedIn(out.me);
+      } else {
+        onSignedIn(await api.signIn(email.trim(), password));
+      }
     } catch (e) {
-      setProblem(e.message || "sign-in failed");
+      setProblem(e.message || (up ? "could not create the account" : "sign-in failed"));
     } finally {
       setBusy(false);
     }
   }
 
+  async function google() {
+    setProblem(null);
+    try {
+      // Navigates the tab away; nothing after this runs on success.
+      await api.signInWithGoogle();
+    } catch (e) {
+      setProblem(e.message || "could not start google sign-in");
+    }
+  }
+
+  /* Confirmation is ON, so a new account is not usable until the link is
+     clicked. Saying "check your email" is the honest end of the flow — and it
+     is said the same way for an address that already has an account, because
+     Supabase deliberately does not distinguish them and neither will we. */
+  if (sent) {
+    return (
+      <div className={"auth" + (gone ? " gone" : "")}>
+        <AuthAside />
+        <div className="auth-right">
+          <div className="auth-card">
+            <div className="auth-head">
+              <span className="kicker">check your email</span>
+              <span className="title">almost there</span>
+            </div>
+            <p className="auth-note">
+              we sent a confirmation link to <b>{email.trim()}</b>. click it and you are in. if an account
+              already existed for that address, we sent nothing new — sign in instead.
+            </p>
+            <div className="auth-switch">
+              <span
+                className="auth-link"
+                onClick={() => {
+                  setSent(false);
+                  setMode("in");
+                  setPassword("");
+                }}
+              >
+                back to sign in
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className={"login" + (gone ? " gone" : "")}>
-      <div className="login-card">
-        <div className="mark-lg">
-          ark<span className="pip" />
+    <div className={"auth" + (gone ? " gone" : "")}>
+      <AuthAside />
+      <div className="auth-right">
+        <div className="auth-card">
+          <div className="auth-head">
+            <span className="kicker">{up ? "new account" : "sign in"}</span>
+            <span className="title">{up ? "make an account" : "welcome back"}</span>
+          </div>
+
+          <div className="auth-fields">
+            {up && (
+              <label className="auth-field">
+                <span className="lab">name</span>
+                <input
+                  ref={up ? first : null}
+                  value={name}
+                  spellCheck={false}
+                  autoComplete="name"
+                  placeholder="what should buddy call you?"
+                  onChange={(e) => setName(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && submit()}
+                />
+              </label>
+            )}
+            <label className="auth-field">
+              <span className="lab">username</span>
+              <input
+                ref={up ? null : first}
+                type="email"
+                value={email}
+                spellCheck={false}
+                autoComplete="username"
+                placeholder="nathaniel@buddy.computer"
+                onChange={(e) => setEmail(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && submit()}
+              />
+            </label>
+            <label className="auth-field">
+              <span className="lab-row">
+                <span className="lab">password</span>
+                {/* Sign-in only, per the export. It is not wired: password
+                    reset is 12.2's email, and a link that opens nothing is
+                    worse than one that is not there yet. */}
+                {!up && <span className="auth-forgot" title="coming with the auth emails (12.2)">forgot</span>}
+              </span>
+              <input
+                type="password"
+                value={password}
+                placeholder="••••••••"
+                autoComplete={up ? "new-password" : "current-password"}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && submit()}
+              />
+            </label>
+          </div>
+
+          <div className="auth-actions">
+            <button className="auth-cta" onClick={submit} disabled={busy || !ready}>
+              {busy ? "…" : up ? "create account" : "sign in"}
+            </button>
+            <div className="auth-or">
+              <span className="rule" />
+              or
+              <span className="rule" />
+            </div>
+            <button className="auth-google" onClick={google} disabled={busy}>
+              <span className="g">G</span>
+              continue with google
+            </button>
+          </div>
+
+          {shown && <p className="auth-problem">{shown}</p>}
+
+          <div className="auth-switch">
+            {up ? "already have an account?" : "no account yet?"}{" "}
+            <span
+              className="auth-link"
+              onClick={() => {
+                setMode(up ? "in" : "up");
+                setProblem(null);
+              }}
+            >
+              {up ? "sign in" : "make one"}
+            </span>
+          </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* The left half. Static, and deliberately so: it is the only thing on the
+   screen that says what this is, to someone who has not signed in yet. */
+function AuthAside() {
+  return (
+    <div className="auth-aside">
+      <div className="auth-mark">
+        <span className="glyph">b</span>
+        <span className="pip" />
+        <span className="word">buddy</span>
+      </div>
+      <div className="auth-pitch">
+        <h1>
+          a digital intern
+          <br />
+          still on the job
+          <br />
+          next week.
+          <span className="caret" />
+        </h1>
         <p>
-          your digital life, handled in the background. sign in and pick up wherever the last conversation
-          left off.
+          buddy works on a real computer and browser, with a persistent filesystem that survives between
+          runs. workflows can span days, and it asks before anything leaves your account.
         </p>
-        <div className="field">
-          <label>email</label>
-          <input
-            ref={first}
-            type="email"
-            value={email}
-            placeholder="you@example.com"
-            spellCheck={false}
-            autoComplete="username"
-            onChange={(e) => setEmail(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && submit()}
-          />
-        </div>
-        <div className="field">
-          <label>password</label>
-          <input
-            type="password"
-            value={password}
-            placeholder="••••••••"
-            autoComplete="current-password"
-            onChange={(e) => setPassword(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && submit()}
-          />
-        </div>
-        <div className="go">
-          <span className="hint">press enter to continue</span>
-          <button className="btn primary lg" onClick={submit} disabled={busy || !email.trim() || !password}>
-            {busy ? "…" : "enter →"}
-          </button>
-        </div>
-        {problem && <p className="problem">{problem}</p>}
+      </div>
+      <div className="auth-tags">
+        <span>approvals first</span>
+        <span>disposable compute</span>
+        <span>durable storage</span>
       </div>
     </div>
   );

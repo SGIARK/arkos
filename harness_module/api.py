@@ -240,11 +240,14 @@ async def create_auth_session(authorization: str | None = Header(default=None)) 
     user_id, email = str(claims["sub"]), claims.get("email")
     await pool.execute(
         """
-        INSERT INTO users (id, email) VALUES ($1, $2)
-        ON CONFLICT (id) DO UPDATE SET email = COALESCE(EXCLUDED.email, users.email)
+        INSERT INTO users (id, email, display_name) VALUES ($1, $2, $3)
+        ON CONFLICT (id) DO UPDATE
+           SET email        = COALESCE(EXCLUDED.email, users.email),
+               display_name = COALESCE(EXCLUDED.display_name, users.display_name)
         """,
         _uuid(user_id, "user"),
         email,
+        _display_name(claims),
     )
     await _ensure_home_session(user_id)
 
@@ -259,6 +262,30 @@ async def create_auth_session(authorization: str | None = Header(default=None)) 
         path="/",
     )
     return out
+
+
+def _display_name(claims: dict[str, Any]) -> str | None:
+    """What the buddy should call this person, out of the SIGNED token (12.1).
+
+    From `user_metadata`, never from a request body: the token is signed and a
+    body is not, so reading it here is the difference between a name Supabase
+    vouches for and a name anyone with a session could set. `name` is what our
+    own sign-up form writes; `full_name` is what Google's OIDC profile carries.
+    Both, in that order, because a person who typed a name meant it.
+
+    Returns None rather than a fallback. The column is COALESCEd on upsert, so
+    None leaves whatever is already there — which is what makes signing in
+    through Google later safe for a name someone typed at sign-up.
+    """
+    meta = claims.get("user_metadata")
+    if not isinstance(meta, dict):
+        return None
+    for key in ("name", "full_name"):
+        value = meta.get(key)
+        if isinstance(value, str) and value.strip():
+            # Capped because it is rendered, and a 4KB "name" is not a name.
+            return value.strip()[:120]
+    return None
 
 
 async def _ensure_home_session(user_id: str) -> str:
@@ -333,12 +360,19 @@ async def auth_me(user_id: str = CurrentUser) -> dict[str, Any]:
     and there is no other request that would carry it. It is null only for a
     user whose home session was deleted; the next sign-in makes another.
     """
-    row = await pool.fetchrow("SELECT id, email, home_session_id FROM users WHERE id = $1", _uuid(user_id, "user"))
+    row = await pool.fetchrow(
+        "SELECT id, email, display_name, home_session_id FROM users WHERE id = $1",
+        _uuid(user_id, "user"),
+    )
     if row is None:
         raise ApiError(401, "unauthenticated", "That user no longer exists.")
     return {
         "user_id": str(row["id"]),
         "email": row["email"],
+        # Null when nobody has said (12.1) — every account older than the column,
+        # and any Google profile with no name on it. The caller falls back to the
+        # email, which is what it showed before there was a name to show.
+        "display_name": row["display_name"],
         "home_session_id": str(row["home_session_id"]) if row["home_session_id"] else None,
     }
 

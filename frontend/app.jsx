@@ -30,6 +30,9 @@ function App() {
   const [user, setUser] = useState(null);
   const [booting, setBooting] = useState(true);
   const [gone, setGone] = useState(false);
+  // A refusal carried back on the OAuth fragment. The sign-in screen shows it,
+  // because it is the only surface that can say what to do about it.
+  const [authProblem, setAuthProblem] = useState(null);
   const [view, setView] = useState(() => {
     const hash = decodeURIComponent(location.hash.replace("#", ""));
     const named = NAV_ALIAS[hash] || hash;
@@ -58,16 +61,33 @@ function App() {
     location.hash = encodeURIComponent(view);
   }, [view]);
 
-  /* The cookie may already be good, so the page asks before it offers a form. */
+  /* The cookie may already be good, so the page asks before it offers a form.
+     COMING BACK FROM GOOGLE IS ASKED FIRST (12.1): that load arrives with a
+     token on the fragment and no cookie yet, so `me()` would 401 and the form
+     would flash before the exchange had a chance to run. `returnFromOAuth`
+     answers null on every ordinary load, so this costs nothing the rest of the
+     time. A refusal from the provider is shown on the sign-in screen rather
+     than thrown away — it is the only place that can explain it. */
   useEffect(() => {
-    api
-      .me()
-      .then((who) => {
+    let dead = false;
+    (async () => {
+      try {
+        const returned = await api.returnFromOAuth();
+        const who = returned || (await api.me());
+        if (dead) return;
         setUser(who);
         setGone(true);
-      })
-      .catch(() => setUser(null))
-      .finally(() => setBooting(false));
+      } catch (e) {
+        if (dead) return;
+        setUser(null);
+        if (e && e.code === "sign_in_failed") setAuthProblem(e.message);
+      } finally {
+        if (!dead) setBooting(false);
+      }
+    })();
+    return () => {
+      dead = true;
+    };
   }, []);
 
   const onError = useCallback((e) => {
@@ -117,7 +137,7 @@ function App() {
   }
 
   if (booting) return <div className="login" />;
-  if (!user) return <Login gone={gone} onSignedIn={signIn} />;
+  if (!user) return <Login gone={gone} onSignedIn={signIn} problem={authProblem} />;
 
   const views = {
     desk: <DeskView onError={onError} waiting={waiting} onOpenSession={(id) => { setJump(id); setView("projects"); }} />,
@@ -174,7 +194,10 @@ function App() {
             </span>
             <span className="sep">/</span>
             <span>
-              user <b>{user.email || user.user_id}</b>
+              {/* The name if the person gave one at sign-up (12.1), the email
+                  otherwise — an account older than the column has no name to
+                  show, and inventing one from the address would be a guess. */}
+              user <b>{user.display_name || user.email || user.user_id}</b>
             </span>
           </div>
           <div className="right">

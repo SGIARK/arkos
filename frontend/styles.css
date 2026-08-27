@@ -582,25 +582,102 @@ kbd {
 .btn.danger:hover { border-color: var(--stop); }
 
 /* login */
-.login { position: fixed; inset: 0; z-index: 1000; background: var(--paper); display: flex; align-items: center; justify-content: center; transition: opacity .45s var(--ease); }
+/* =========================================================
+   auth — the pre-app surface (12.1)
+
+   From `designs/sign-up/`: a marketing panel left, the auth card right, and
+   the two modes switching in place. `.login` stays as the boot splash — the
+   blank paper the app shows for the one frame between asking whether the
+   cookie is good and knowing.
+   ========================================================= */
+.login { position: fixed; inset: 0; z-index: 1000; background: var(--paper); transition: opacity .45s var(--ease); }
 .login.gone { opacity: 0; pointer-events: none; }
-.login-card { width: 420px; max-width: 92vw; padding: 8px; }
-.login-card .mark-lg { font-size: 40px; font-weight: 700; letter-spacing: -0.05em; margin-bottom: 4px; display: flex; align-items: center; gap: 4px; }
-.login-card .mark-lg .pip { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); translate: 0 -14px; }
-.login-card p { color: var(--ink-mute); font-size: 12.5px; line-height: 1.7; margin: 0 0 30px; max-width: 360px; }
-.field { margin-bottom: 16px; }
-.field label { display: block; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-mute); margin-bottom: 8px; }
-.field input {
-  width: 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r);
-  background: var(--surface); color: var(--ink); font-family: var(--mono); font-size: 14px; outline: none;
-  transition: border-color .2s var(--ease);
+
+.auth {
+  position: fixed; inset: 0; z-index: 1000; background: var(--paper);
+  display: grid; grid-template-columns: 1.05fr 1fr;
+  transition: opacity .45s var(--ease);
 }
-.field input:focus { border-color: var(--accent-line); }
-.field.opt { opacity: .7; }
-.field.opt input { font-size: 12px; padding: 9px 12px; }
-.login-card .go { display: flex; align-items: center; justify-content: space-between; margin-top: 24px; }
-.login-card .go .hint { font-size: 10.5px; color: var(--ink-mute); }
-.btn.lg { padding: 11px 20px; font-size: 12px; }
+.auth.gone { opacity: 0; pointer-events: none; }
+
+.auth-aside {
+  border-right: 1px solid var(--line); background: var(--surface);
+  padding: 56px 56px 44px; min-width: 0;
+  display: flex; flex-direction: column; justify-content: space-between;
+}
+.auth-mark { display: flex; align-items: center; gap: 10px; }
+.auth-mark .glyph { font-weight: 700; font-size: 18px; letter-spacing: -0.04em; }
+.auth-mark .pip {
+  width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
+  translate: -6px -8px; animation: ping 2.4s var(--ease) infinite;
+}
+.auth-mark .word { font-size: 11px; letter-spacing: .22em; text-transform: uppercase; color: var(--ink-mute); margin-left: -4px; }
+.auth-pitch { max-width: 460px; }
+.auth-pitch h1 {
+  margin: 0 0 18px; font-weight: 500; font-size: 38px; line-height: 1.08;
+  letter-spacing: -0.03em; text-wrap: pretty; color: var(--ink);
+}
+/* The cursor the export blinks after the headline: this is a terminal's idea
+   of a product page, and it should say so. */
+.auth-pitch h1 .caret {
+  display: inline-block; width: 10px; height: .9em; vertical-align: -0.06em;
+  background: var(--accent); margin-left: 6px; animation: authblink 1.2s steps(1) infinite;
+}
+@keyframes authblink { 50% { opacity: 0; } }
+.auth-pitch p { margin: 0; font-size: 13px; line-height: 1.75; color: var(--ink-soft); text-wrap: pretty; }
+.auth-tags { display: flex; gap: 26px; font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-mute); }
+
+.auth-right { display: grid; place-items: center; padding: 48px 40px; min-width: 0; }
+.auth-card { width: 100%; max-width: 348px; display: flex; flex-direction: column; gap: 22px; }
+.auth-head { display: flex; flex-direction: column; gap: 6px; }
+.auth-head .kicker { font-size: 10.5px; letter-spacing: .22em; text-transform: uppercase; color: var(--ink-mute); }
+.auth-head .title { font-size: 20px; font-weight: 500; letter-spacing: -0.02em; color: var(--ink); }
+.auth-note { margin: 0; font-size: 12.5px; line-height: 1.75; color: var(--ink-soft); }
+
+.auth-fields { display: flex; flex-direction: column; gap: 12px; }
+.auth-field { display: flex; flex-direction: column; gap: 6px; }
+.auth-field .lab-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.auth-field .lab { font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-mute); }
+.auth-field input {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 7px;
+  padding: 10px 12px; font-family: var(--mono); font-size: 13px; color: var(--ink);
+  outline: none; transition: border-color .2s var(--ease); width: 100%;
+}
+.auth-field input:focus { border-color: var(--accent-line); }
+.auth-forgot { font-size: 10.5px; color: var(--ink-mute); cursor: default; text-decoration: underline; text-underline-offset: 2px; }
+
+.auth-actions { display: flex; flex-direction: column; gap: 11px; }
+.auth-cta {
+  text-align: center; font-size: 12.5px; font-family: var(--mono);
+  border: 1px solid var(--ink); background: var(--ink); color: var(--paper);
+  padding: 10px 14px; border-radius: 7px; cursor: pointer; transition: all .18s var(--ease);
+}
+.auth-cta:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); }
+.auth-cta:disabled { opacity: .45; cursor: default; }
+.auth-or { display: flex; align-items: center; gap: 12px; color: var(--ink-faint); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; }
+.auth-or .rule { flex: 1; height: 1px; background: var(--line); }
+.auth-google {
+  display: flex; align-items: center; justify-content: center; gap: 9px;
+  font-size: 12.5px; font-family: var(--mono);
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+  padding: 10px 14px; border-radius: 7px; cursor: pointer; transition: all .18s var(--ease);
+}
+.auth-google:hover:not(:disabled) { border-color: var(--ink-faint); background: var(--surface-2); }
+.auth-google:disabled { opacity: .45; cursor: default; }
+.auth-google .g {
+  width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--ink-faint);
+  display: inline-grid; place-items: center; font-size: 9px; font-weight: 700; color: var(--ink-soft);
+}
+.auth-problem { color: var(--stop); font-size: 11.5px; margin: 0; line-height: 1.6; }
+.auth-switch { font-size: 11.5px; color: var(--ink-mute); text-align: center; line-height: 1.6; }
+.auth-link { color: var(--accent); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+
+/* One column under the fold: the marketing panel is the half that goes, because
+   the card is the half you came for. */
+@media (max-width: 860px) {
+  .auth { grid-template-columns: 1fr; }
+  .auth-aside { display: none; }
+}
 
 /* scrollbars */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
