@@ -101,6 +101,9 @@ function App() {
   }
 
   if (booting) return <div className="login" />;
+  /* A reset link outranks everything: it lands signed out, carries a token good
+     only for a password change, and must not fall through to the sign-in form. */
+  if (!user && api.recoveryPending()) return <ResetPassword onSignedIn={signIn} />;
   if (!user) return <Login gone={gone} onSignedIn={signIn} problem={authProblem} />;
 
   const views = {

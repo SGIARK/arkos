@@ -17,11 +17,18 @@ const API = location.origin;
    router writes the hash: the OAuth token and the route share location.hash,
    and whoever writes second wins. Stripping also keeps a live access token out
    of the address bar. */
-const _oauthFragment = (function captureOAuthFragment() {
+const _landing = (function captureAuthFragment() {
   const hash = location.hash || "";
-  if (!hash.includes("access_token=") && !hash.includes("error=")) return "";
+  if (!hash.includes("access_token=") && !hash.includes("error=")) return {};
   history.replaceState(null, "", location.pathname + location.search);
-  return hash;
+  const p = new URLSearchParams(hash.slice(1));
+  return {
+    // A recovery token opens the new-password screen; it never buys a cookie.
+    recovery: p.get("type") === "recovery",
+    token: p.get("access_token") || "",
+    refresh: p.get("refresh_token") || "",
+    failed: p.get("error_description") || p.get("error") || "",
+  };
 })();
 
 /* Supabase's client, built from GET /auth/config on first use. Only sign-in
@@ -173,8 +180,14 @@ const api = {
     });
     if (error) throw new ApiError("sign_up_failed", error.message);
     const token = data && data.session && data.session.access_token;
-    if (!token) return { confirm: true };
-    return { confirm: false, me: await exchange(token) };
+    /* A session here means the dashboard's "Confirm email" toggle is OFF, so
+       nothing was sent and the address was never proved. Signing in is still
+       what the flow asks for, but it is a misconfiguration and says so. */
+    if (token) {
+      console.log("[auth] signUp returned a session — email confirmation is OFF in Supabase");
+      return { confirm: false, me: await exchange(token) };
+    }
+    return { confirm: true };
   },
 
   /* `redirectTo` must be this exact origin: the cookie is SameSite=Lax and a
@@ -197,24 +210,68 @@ const api = {
   async returnFromOAuth() {
     /* Reads the stash, never `location.hash`: by the time this runs the router
        has already written over the real fragment. */
-    const hash = _oauthFragment;
-    if (!hash) {
+    if (_landing.failed) {
+      console.log("[auth] provider refused:", _landing.failed);
+      throw new ApiError("sign_in_failed", _landing.failed);
+    }
+    if (_landing.recovery) {
+      console.log("[auth] recovery link — opening the new-password screen");
+      return null;
+    }
+    if (!_landing.token) {
       console.log("[auth] no fragment on", location.pathname, "— nothing to exchange");
       return null;
     }
-    const params = new URLSearchParams(hash.slice(1));
-    const failed = params.get("error_description") || params.get("error");
-    if (failed) {
-      console.log("[auth] provider refused:", failed);
-      throw new ApiError("sign_in_failed", failed);
-    }
-    const token = params.get("access_token");
-    if (!token) {
-      console.log("[auth] fragment with no access_token, keys:", [...params.keys()].join(","));
-      return null;
-    }
     console.log("[auth] fragment found on", location.pathname, "— exchanging for the cookie");
+    return exchange(_landing.token);
+  },
+
+  /* This load came from a reset link, so the app owes a new-password screen
+     rather than a session. */
+  recoveryPending: () => !!_landing.recovery && !!_landing.token,
+
+  /* Send the reset mail. Resolves the same way whether or not the address has
+     an account: Supabase does not say, and neither may we. */
+  async sendReset(email) {
+    const client = await supabaseClient();
+    const { error } = await client.auth.resetPasswordForEmail(email, {
+      redirectTo: API + "/app/",
+    });
+    if (error) throw new ApiError("reset_failed", error.message);
+  },
+
+  /* Finish the reset. The recovery token is only good for this: it is put in
+     as an in-memory session, spent on the password change, and the session that
+     comes back is what buys the cookie — so the new password is live and the
+     person is signed in in one step. */
+  async completeReset(password) {
+    const client = await supabaseClient();
+    const { error: sessionError } = await client.auth.setSession({
+      access_token: _landing.token,
+      refresh_token: _landing.refresh,
+    });
+    if (sessionError) {
+      throw new ApiError("reset_failed", "This reset link has expired. Ask for another.");
+    }
+    const { data, error } = await client.auth.updateUser({ password });
+    if (error) throw new ApiError("reset_failed", error.message);
+    const { data: fresh } = await client.auth.getSession();
+    const token = (fresh && fresh.session && fresh.session.access_token) || _landing.token;
+    _landing.recovery = false;
+    console.log("[auth] password changed for", (data && data.user && data.user.email) || "the account");
     return exchange(token);
+  },
+
+  /* Ask for the confirmation mail again. Supabase rate-limits this per user;
+     the caller owns the cooldown so the button can say why it is dim. */
+  async resendSignup(email) {
+    const client = await supabaseClient();
+    const { error } = await client.auth.resend({
+      type: "signup",
+      email,
+      options: { emailRedirectTo: API + "/app/" },
+    });
+    if (error) throw new ApiError("resend_failed", error.message);
   },
 
   async signOut() {

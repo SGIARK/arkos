@@ -569,39 +569,54 @@ function scopeNames(scopes) {
    way to be signed in: `api` trades any of them for our cookie via
    `POST /auth/session`, the only endpoint that reads a bearer. */
 function Login({ gone, onSignedIn, problem: arrived }) {
+  // in | up | forgot
   const [mode, setMode] = useState("in");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState(null);
-  // Sign-up with confirmation on ends at "go read your email", not in the app.
-  const [sent, setSent] = useState(false);
+  /* "signup" | "reset" — a flow that ends in the mail rather than in the app.
+     Set on EVERY outcome that sends nothing back, because an address that is
+     already registered, rate-limited, or inside the 60s window is
+     indistinguishable from success and must not read as a dead button. */
+  const [sent, setSent] = useState(null);
   const first = useRef(null);
 
   const up = mode === "up";
+  const forgot = mode === "forgot";
   const shown = problem || arrived;
 
   useEffect(() => {
     if (!gone && first.current) first.current.focus();
   }, [gone, mode]);
 
-  const ready = up ? name.trim() && email.trim() && password : email.trim() && password;
+  const ready = forgot
+    ? email.trim()
+    : up
+      ? name.trim() && email.trim() && password
+      : email.trim() && password;
 
   async function submit() {
     if (!ready || busy) return;
     setBusy(true);
     setProblem(null);
     try {
-      if (up) {
+      if (forgot) {
+        await api.sendReset(email.trim());
+        setSent("reset");
+      } else if (up) {
         const out = await api.signUp(name.trim(), email.trim(), password);
-        if (out.confirm) setSent(true);
+        if (out.confirm) setSent("signup");
         else onSignedIn(out.me);
       } else {
         onSignedIn(await api.signIn(email.trim(), password));
       }
     } catch (e) {
-      setProblem(e.message || (up ? "could not create the account" : "sign-in failed"));
+      setProblem(
+        e.message ||
+          (forgot ? "could not send the reset email" : up ? "could not create the account" : "sign-in failed")
+      );
     } finally {
       setBusy(false);
     }
@@ -625,28 +640,15 @@ function Login({ gone, onSignedIn, problem: arrived }) {
       <div className={"auth" + (gone ? " gone" : "")}>
         <AuthAside />
         <div className="auth-right">
-          <div className="auth-card">
-            <div className="auth-head">
-              <span className="kicker">check your email</span>
-              <span className="title">almost there</span>
-            </div>
-            <p className="auth-note">
-              we sent a confirmation link to <b>{email.trim()}</b>. click it and you are in. if an account
-              already existed for that address, we sent nothing new — sign in instead.
-            </p>
-            <div className="auth-switch">
-              <span
-                className="auth-link"
-                onClick={() => {
-                  setSent(false);
-                  setMode("in");
-                  setPassword("");
-                }}
-              >
-                back to sign in
-              </span>
-            </div>
-          </div>
+          <MailSent
+            kind={sent}
+            email={email.trim()}
+            onBack={() => {
+              setSent(null);
+              setMode("in");
+              setPassword("");
+            }}
+          />
         </div>
       </div>
     );
@@ -658,8 +660,10 @@ function Login({ gone, onSignedIn, problem: arrived }) {
       <div className="auth-right">
         <div className="auth-card">
           <div className="auth-head">
-            <span className="kicker">{up ? "new account" : "sign in"}</span>
-            <span className="title">{up ? "make an account" : "welcome back"}</span>
+            <span className="kicker">{forgot ? "reset password" : up ? "new account" : "sign in"}</span>
+            <span className="title">
+              {forgot ? "we will email you a link" : up ? "make an account" : "welcome back"}
+            </span>
           </div>
 
           <div className="auth-fields">
@@ -690,11 +694,21 @@ function Login({ gone, onSignedIn, problem: arrived }) {
                 onKeyDown={(e) => e.key === "Enter" && submit()}
               />
             </label>
+            {!forgot && (
             <label className="auth-field">
               <span className="lab-row">
                 <span className="lab">password</span>
-                {/* Sign-in only, and not yet wired to anything. */}
-                {!up && <span className="auth-forgot" title="coming with the auth emails (12.2)">forgot</span>}
+                {!up && (
+                  <span
+                    className="auth-forgot"
+                    onClick={() => {
+                      setMode("forgot");
+                      setProblem(null);
+                    }}
+                  >
+                    forgot
+                  </span>
+                )}
               </span>
               <input
                 type="password"
@@ -705,37 +719,210 @@ function Login({ gone, onSignedIn, problem: arrived }) {
                 onKeyDown={(e) => e.key === "Enter" && submit()}
               />
             </label>
+            )}
           </div>
 
           <div className="auth-actions">
             <button className="auth-cta" onClick={submit} disabled={busy || !ready}>
-              {busy ? "…" : up ? "create account" : "sign in"}
+              {busy ? "…" : forgot ? "email me a link" : up ? "create account" : "sign in"}
             </button>
-            <div className="auth-or">
-              <span className="rule" />
-              or
-              <span className="rule" />
-            </div>
-            <button className="auth-google" onClick={google} disabled={busy}>
-              <span className="g">G</span>
-              continue with google
-            </button>
+            {/* Google is a way IN, not a way to reset a password it does not
+                hold — hidden here rather than offered and refused. */}
+            {!forgot && (
+              <React.Fragment>
+                <div className="auth-or">
+                  <span className="rule" />
+                  or
+                  <span className="rule" />
+                </div>
+                <button className="auth-google" onClick={google} disabled={busy}>
+                  <span className="g">G</span>
+                  continue with google
+                </button>
+              </React.Fragment>
+            )}
           </div>
 
           {shown && <p className="auth-problem">{shown}</p>}
 
           <div className="auth-switch">
-            {up ? "already have an account?" : "no account yet?"}{" "}
-            <span
-              className="auth-link"
-              onClick={() => {
-                setMode(up ? "in" : "up");
-                setProblem(null);
-              }}
-            >
-              {up ? "sign in" : "make one"}
-            </span>
+            {forgot ? (
+              <span
+                className="auth-link"
+                onClick={() => {
+                  setMode("in");
+                  setProblem(null);
+                }}
+              >
+                back to sign in
+              </span>
+            ) : (
+              <React.Fragment>
+                {up ? "already have an account?" : "no account yet?"}{" "}
+                <span
+                  className="auth-link"
+                  onClick={() => {
+                    setMode(up ? "in" : "up");
+                    setProblem(null);
+                  }}
+                >
+                  {up ? "sign in" : "make one"}
+                </span>
+              </React.Fragment>
+            )}
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* THE FLOW ALWAYS SAYS SOMETHING. A signup or reset that sends no mail — the
+   address is already registered, the sender is rate-limited, or we are inside
+   Supabase's 60s per-user window — is indistinguishable from one that did, and
+   silence reads as a dead button. The copy is the same in every case, which is
+   also what keeps the anti-enumeration contract: it never says whether the
+   address exists. */
+function MailSent({ kind, email, onBack }) {
+  const reset = kind === "reset";
+  const [cooling, setCooling] = useState(0);
+  const [note, setNote] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!cooling) return undefined;
+    const id = setInterval(() => setCooling((n) => (n > 0 ? n - 1 : 0)), 1000);
+    return () => clearInterval(id);
+  }, [cooling]);
+
+  // Supabase's own per-user interval. Held here so the button can say why it
+  // is dim instead of failing at the server.
+  const RESEND_WAIT = 60;
+
+  async function again() {
+    if (cooling || busy) return;
+    setBusy(true);
+    setNote(null);
+    try {
+      if (reset) await api.sendReset(email);
+      else await api.resendSignup(email);
+      setNote("sent again — check your inbox and your spam folder.");
+      setCooling(RESEND_WAIT);
+    } catch (e) {
+      // A rate-limit refusal is not a failure worth alarming anyone about; it
+      // is the same wait, arriving from the other side.
+      setNote(e.message || "could not send it again just now.");
+      setCooling(RESEND_WAIT);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="auth-card">
+      <div className="auth-head">
+        <span className="kicker">check your email</span>
+        <span className="title">{reset ? "reset on its way" : "almost there"}</span>
+      </div>
+      <p className="auth-note">
+        {reset ? (
+          <React.Fragment>
+            if <b>{email}</b> has a buddy account, a link to set a new password is on its way. it expires
+            in an hour.
+          </React.Fragment>
+        ) : (
+          <React.Fragment>
+            check your email — if <b>{email}</b> is new to buddy, a confirmation is on its way. click the
+            link and you are in.
+          </React.Fragment>
+        )}
+      </p>
+      <div className="auth-actions">
+        <button className="auth-google" onClick={again} disabled={!!cooling || busy}>
+          {cooling ? `send again in ${cooling}s` : busy ? "…" : "send it again"}
+        </button>
+      </div>
+      {note && <p className="auth-note quiet">{note}</p>}
+      <div className="auth-switch">
+        <span className="auth-link" onClick={onBack}>
+          back to sign in
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/* The recovery landing. The link carries a token good for exactly one thing —
+   changing the password — so this screen is the whole of what it can do, and
+   it is reachable only with that token in hand. */
+function ResetPassword({ onSignedIn }) {
+  const [password, setPassword] = useState("");
+  const [again, setAgain] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState(null);
+  const first = useRef(null);
+
+  useEffect(() => {
+    if (first.current) first.current.focus();
+  }, []);
+
+  const mismatch = again.length > 0 && password !== again;
+  const ready = password.length >= 8 && password === again;
+
+  async function submit() {
+    if (!ready || busy) return;
+    setBusy(true);
+    setProblem(null);
+    try {
+      onSignedIn(await api.completeReset(password));
+    } catch (e) {
+      setProblem(e.message || "could not set the new password");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="auth">
+      <AuthAside />
+      <div className="auth-right">
+        <div className="auth-card">
+          <div className="auth-head">
+            <span className="kicker">reset password</span>
+            <span className="title">choose a new one</span>
+          </div>
+          <div className="auth-fields">
+            <label className="auth-field">
+              <span className="lab">new password</span>
+              <input
+                ref={first}
+                type="password"
+                value={password}
+                placeholder="at least 8 characters"
+                autoComplete="new-password"
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && submit()}
+              />
+            </label>
+            <label className="auth-field">
+              <span className="lab">again</span>
+              <input
+                type="password"
+                value={again}
+                placeholder="••••••••"
+                autoComplete="new-password"
+                onChange={(e) => setAgain(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && submit()}
+              />
+            </label>
+          </div>
+          <div className="auth-actions">
+            <button className="auth-cta" onClick={submit} disabled={busy || !ready}>
+              {busy ? "…" : "set password and sign in"}
+            </button>
+          </div>
+          {mismatch && <p className="auth-note quiet">those two do not match yet.</p>}
+          {problem && <p className="auth-problem">{problem}</p>}
         </div>
       </div>
     </div>

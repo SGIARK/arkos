@@ -644,7 +644,9 @@ kbd {
   outline: none; transition: border-color .2s var(--ease); width: 100%;
 }
 .auth-field input:focus { border-color: var(--accent-line); }
-.auth-forgot { font-size: 10.5px; color: var(--ink-mute); cursor: default; text-decoration: underline; text-underline-offset: 2px; }
+.auth-forgot { font-size: 10.5px; color: var(--ink-mute); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.auth-forgot:hover { color: var(--ink); }
+.auth-note.quiet { font-size: 11.5px; color: var(--ink-mute); }
 
 .auth-actions { display: flex; flex-direction: column; gap: 11px; }
 .auth-cta {
