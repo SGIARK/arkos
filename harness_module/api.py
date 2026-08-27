@@ -1963,15 +1963,12 @@ class _Frontend(StaticFiles):
     """StaticFiles that refuses to let index.html be cached.
 
     HTML is `no-store`; assets keep the ordinary validators, since `?v=N`
-    cache-busts them. Keyed off content type, so the html=True fallback counts.
+    cache-busts them. Keyed off the PATH: a 304 carries no content-type, so
+    testing the response would skip revalidation — the one case that matters.
     """
 
     async def get_response(self, path: str, scope: Any) -> Response:
         response = await super().get_response(path, scope)
-        # Keyed off the PATH, not the response: a 304 carries no content-type,
-        # so a content-type test silently skipped exactly the case that matters
-        # — a browser revalidating a document it cached before this existed, and
-        # being told to keep it.
         if path in ("", ".", "index.html") or path.endswith(".html"):
             response.headers["Cache-Control"] = "no-store, must-revalidate"
         return response
