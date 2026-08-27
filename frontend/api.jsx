@@ -16,6 +16,33 @@ const { useState, useEffect, useCallback, useRef } = React;
 /* The API is wherever this page came from. /app is served by the same app. */
 const API = location.origin;
 
+/* THE OAUTH FRAGMENT, TAKEN BEFORE ANYTHING CAN LOSE IT.
+
+   This app routes on the hash — `app.jsx` writes `#projects` in an effect on
+   mount — and the implicit flow returns `#access_token=...` in that same
+   fragment. There is only one, so the router and the token are two writers to
+   one slot, and on the Google landing the router won: it overwrote the hash
+   before the boot effect asked for it, and `returnFromOAuth` then correctly
+   and uselessly reported "no fragment". The token was already gone.
+
+   Fixed by ORDERING, not by a flag. This runs at module scope in the FIRST
+   script `index.html` loads, so it happens before React mounts, before any
+   effect runs, and before anything else in the page can touch the hash: read
+   it, keep it, strip it. From here on the router only ever sees a clean URL,
+   `returnFromOAuth` consumes what was stashed, and nothing that runs later can
+   destroy the token because it is no longer in the URL to destroy.
+
+   Stripping here is also what keeps a live access token out of the address bar
+   — and out of anything copied from it — for the whole life of the page. */
+const _oauthFragment = (function captureOAuthFragment() {
+  const hash = location.hash || "";
+  if (!hash.includes("access_token=") && !hash.includes("error=")) return "";
+  // The router's own initial read happens after this, and finds nothing — which
+  // is what it should find, so the view falls back to its default.
+  history.replaceState(null, "", location.pathname + location.search);
+  return hash;
+})();
+
 /* Supabase's client, built from GET /auth/config on first use. Only sign-in
    touches it; every other call in this file is to our own API. */
 let _supabase = null;
@@ -42,7 +69,8 @@ async function supabaseClient() {
          would fail every time. Implicit hands the token straight back on the
          URL fragment, which is exactly what this app wants: a token to trade
          for a cookie, once, and never store. The fragment never reaches the
-         server, and `returnFromOAuth` clears it before it can be shared. */
+         server, and the capture above strips it from the URL before anything
+         else on the page runs. */
       flowType: "implicit",
       /* We read the fragment ourselves in `returnFromOAuth`, because the token
          is not the session here — the cookie is, and the token is only good for
@@ -227,20 +255,20 @@ const api = {
      fragment is Google or Supabase refusing — surfaced, and the fragment
      cleared, or a reload would replay the same failure forever. */
   async returnFromOAuth() {
-    const hash = location.hash || "";
+    /* Reads the STASH, never `location.hash` — by the time this runs the router
+       has already written `#projects` over the real fragment, which is the bug
+       this stash exists to make impossible. */
+    const hash = _oauthFragment;
     /* SAY SO EITHER WAY. This ran silently and returned null on a load that
        should have carried a token, and a silent no-op is indistinguishable from
        code that never ran at all — which is exactly how the first Google round
        trip failed: the console showed one 401 from `me()` and nothing else, and
        the absence proved nothing. `[auth]` so it is greppable in a busy log. */
-    if (!hash.includes("access_token=") && !hash.includes("error=")) {
+    if (!hash) {
       console.log("[auth] no fragment on", location.pathname, "— nothing to exchange");
       return null;
     }
     const params = new URLSearchParams(hash.slice(1));
-    // Cleared BEFORE the exchange, so a token cannot be copied out of the
-    // address bar while the request is in flight.
-    history.replaceState(null, "", location.pathname + location.search);
     const failed = params.get("error_description") || params.get("error");
     if (failed) {
       console.log("[auth] provider refused:", failed);
