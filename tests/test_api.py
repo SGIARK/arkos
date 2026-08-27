@@ -244,6 +244,37 @@ async def test_a_later_sign_in_without_a_name_does_not_erase_the_one_you_typed(c
     assert (await client.get("/auth/me")).json()["display_name"] == "Nathaniel"
 
 
+@pytest.mark.parametrize(
+    "amr",
+    [
+        [{"method": "recovery", "timestamp": 1}],
+        [{"method": "otp"}],
+        [{"method": "password"}, {"method": "recovery"}],
+        ["recovery"],
+    ],
+)
+async def test_a_recovery_link_token_is_refused_a_cookie(client, amr):
+    """12.2: the reset link's token is an ordinary access token, so without this
+    anything that sees the link — a mail scanner following it, a shared mailbox,
+    a forward — could trade it for a seven-day session without changing the
+    password, leaving the owner no signal. The client refuses to send one; this
+    is the half that holds when the client is curl."""
+    token = _supabase_token(str(uuid.uuid4()), amr=amr)
+
+    response = await client.post("/auth/session", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 401
+    assert "ark_session" not in response.cookies
+
+
+async def test_an_ordinary_sign_in_is_not_mistaken_for_a_recovery_link(client):
+    """The refusal is a denylist, so an unfamiliar method must not lock anyone out."""
+    for amr in ([{"method": "password"}], [{"method": "oauth"}], [], None, "nonsense"):
+        token = _supabase_token(str(uuid.uuid4()), amr=amr)
+        response = await client.post("/auth/session", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 204, f"amr={amr!r} was refused"
+
+
 async def test_a_blank_or_absent_name_is_not_a_name(client):
     """Whitespace is not a name: the fallback to email keys off NULL, not an empty string."""
     user_id = str(uuid.uuid4())

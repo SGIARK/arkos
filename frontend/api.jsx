@@ -297,6 +297,11 @@ const api = {
      as an in-memory session, spent on the password change, and the session that
      comes back is what buys the cookie — so the new password is live and the
      person is signed in in one step. */
+  /* Change the password, then STOP. The recovery token is never traded for a
+     cookie: the server cannot tell one from a password sign-in, so a link seen
+     by a mail scanner, a shared mailbox or a forward would buy a seven-day
+     session without changing anything the owner would notice. Signing in with
+     the new password is the proof that it took. */
   async completeReset(password) {
     const client = await supabaseClient();
     if (_landing.otp) {
@@ -311,17 +316,13 @@ const api = {
     }
     const { error } = await client.auth.updateUser({ password });
     if (error) throw new ApiError("reset_failed", error.message);
-    const { data: fresh } = await client.auth.getSession();
-    const token = (fresh && fresh.session && fresh.session.access_token) || _landing.token;
-    console.log("[auth] password changed — exchanging for the cookie");
-    /* The password is ALREADY changed by here. Cleared only after the exchange
-       lands, so a failure leaves the screen up to say so rather than dropping
-       the person onto a form where their old password no longer works. */
-    const me = await exchange(token).catch(() => {
-      throw new ApiError("reset_done_no_session", "Your password was changed. Sign in with the new one.");
-    });
+    // Drop the in-memory session so nothing is left holding a recovery token.
+    await client.auth.signOut().catch(() => {});
     _landing.recovery = false;
-    return me;
+    _landing.token = "";
+    _landing.refresh = "";
+    _landing.otp = "";
+    console.log("[auth] password changed — sign in with it");
   },
 
   /* Ask for the confirmation mail again. Supabase rate-limits this per user;

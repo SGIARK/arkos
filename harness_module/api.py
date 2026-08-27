@@ -209,6 +209,19 @@ async def create_auth_session(authorization: str | None = Header(default=None)) 
     except jwt.PyJWTError as e:
         raise ApiError(401, "unauthenticated", f"Token rejected: {e}") from e
 
+    # A RECOVERY TOKEN IS NOT A SIGN-IN. The reset link's token is an ordinary
+    # access token, so without this the server would trade one for a seven-day
+    # cookie — and anything that sees the link (a mail scanner following it, a
+    # shared mailbox, a forward) could take the account without changing the
+    # password, leaving the owner no signal at all. The client refuses to send
+    # one; this is the half that holds when the client is curl.
+    if _from_recovery_link(claims):
+        raise ApiError(
+            401,
+            "unauthenticated",
+            "That token came from a password-reset link. Set the password, then sign in with it.",
+        )
+
     user_id, email = str(claims["sub"]), claims.get("email")
     await pool.execute(
         """
@@ -234,6 +247,25 @@ async def create_auth_session(authorization: str | None = Header(default=None)) 
         path="/",
     )
     return out
+
+
+# How Supabase names the recovery/OTP methods in `amr`. A DENYLIST, not an
+# allowlist: an unrecognised method must not lock anyone out of signing in.
+# Magic link is on it because this app does not use one — if that changes, the
+# flow needs its own decision rather than inheriting this refusal.
+_RECOVERY_METHODS = {"recovery", "otp", "magiclink", "email_otp", "email_change"}
+
+
+def _from_recovery_link(claims: dict[str, Any]) -> bool:
+    """Whether this token was minted by following an emailed link."""
+    amr = claims.get("amr")
+    if not isinstance(amr, list):
+        return False
+    for entry in amr:
+        method = entry.get("method") if isinstance(entry, dict) else entry
+        if isinstance(method, str) and method.lower() in _RECOVERY_METHODS:
+            return True
+    return False
 
 
 def _display_name(claims: dict[str, Any]) -> str | None:
@@ -1936,7 +1968,11 @@ class _Frontend(StaticFiles):
 
     async def get_response(self, path: str, scope: Any) -> Response:
         response = await super().get_response(path, scope)
-        if str(response.headers.get("content-type", "")).startswith("text/html"):
+        # Keyed off the PATH, not the response: a 304 carries no content-type,
+        # so a content-type test silently skipped exactly the case that matters
+        # — a browser revalidating a document it cached before this existed, and
+        # being told to keep it.
+        if path in ("", ".", "index.html") or path.endswith(".html"):
             response.headers["Cache-Control"] = "no-store, must-revalidate"
         return response
 

@@ -568,7 +568,7 @@ function scopeNames(scopes) {
 /* Sign-up, sign-in and Google are three ways to get a Supabase token and one
    way to be signed in: `api` trades any of them for our cookie via
    `POST /auth/session`, the only endpoint that reads a bearer. */
-function Login({ gone, onSignedIn, problem: arrived, startMode }) {
+function Login({ gone, onSignedIn, problem: arrived, notice, startMode }) {
   // in | up | forgot
   const [mode, setMode] = useState(startMode || "in");
   // An error carried in from the boot belongs to the screen as it opened, not
@@ -617,8 +617,11 @@ function Login({ gone, onSignedIn, problem: arrived, startMode }) {
       }
     } catch (e) {
       setProblem(
-        e.message ||
-          (forgot ? "could not send the reset email" : up ? "could not create the account" : "sign-in failed")
+        forgot
+          ? "could not send the reset email"
+          : up
+            ? e.message || "could not create the account"
+            : "that email and password do not match, or the address has not been confirmed yet"
       );
     } finally {
       setBusy(false);
@@ -750,6 +753,7 @@ function Login({ gone, onSignedIn, problem: arrived, startMode }) {
             )}
           </div>
 
+          {notice && !problem && <p className="auth-note quiet">{notice}</p>}
           {shown && <p className="auth-problem">{shown}</p>}
 
           <div className="auth-switch">
@@ -867,7 +871,7 @@ function MailSent({ kind, email, onBack }) {
 /* The recovery landing. The link carries a token good for exactly one thing —
    changing the password — so this screen is the whole of what it can do, and
    it is reachable only with that token in hand. */
-function ResetPassword({ onSignedIn, onGiveUp }) {
+function ResetPassword({ onDone, onGiveUp }) {
   const [password, setPassword] = useState("");
   const [again, setAgain] = useState("");
   const [busy, setBusy] = useState(false);
@@ -880,15 +884,14 @@ function ResetPassword({ onSignedIn, onGiveUp }) {
 
   const mismatch = again.length > 0 && password !== again;
   const ready = password.length >= MIN_PASSWORD && password === again;
-  // The password really changed; only the cookie did not.
-  const changed = !!problem && problem.startsWith("Your password was changed");
 
   async function submit() {
     if (!ready || busy) return;
     setBusy(true);
     setProblem(null);
     try {
-      onSignedIn(await api.completeReset(password));
+      await api.completeReset(password);
+      onDone();
     } catch (e) {
       setProblem(e.message || "could not set the new password");
     } finally {
@@ -932,11 +935,11 @@ function ResetPassword({ onSignedIn, onGiveUp }) {
           </div>
           <div className="auth-actions">
             <button className="auth-cta" onClick={submit} disabled={busy || !ready}>
-              {busy ? "…" : "set password and sign in"}
+              {busy ? "…" : "set new password"}
             </button>
           </div>
           {mismatch && <p className="auth-note quiet">those two do not match yet.</p>}
-          {problem && <p className={changed ? "auth-note quiet" : "auth-problem"}>{problem}</p>}
+          {problem && <p className="auth-problem">{problem}</p>}
           <div className="auth-switch">
             <span className="auth-link" onClick={onGiveUp}>
               back to sign in

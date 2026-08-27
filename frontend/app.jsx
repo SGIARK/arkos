@@ -12,6 +12,7 @@ function App() {
   const [authProblem, setAuthProblem] = useState(null);
   // Abandoning the reset screen must leave somewhere to go.
   const [recoveryDone, setRecoveryDone] = useState(false);
+  const [authNotice, setAuthNotice] = useState(null);
   const [view, setView] = useState(() => {
     const hash = decodeURIComponent(location.hash.replace("#", ""));
     const named = NAV_ALIAS[hash] || hash;
@@ -109,13 +110,24 @@ function App() {
      this on `!user` meant that clicking it while still signed in dropped the
      token and opened the app as normal — the one person who asked to change
      their password, silently refused. */
-  if (api.recoveryPending() && !recoveryDone) return <ResetPassword onSignedIn={signIn} onGiveUp={() => setRecoveryDone(true)} />;
+  if (api.recoveryPending() && !recoveryDone) {
+    return (
+      <ResetPassword
+        onDone={() => {
+          setRecoveryDone(true);
+          setAuthNotice("password changed — sign in with it");
+        }}
+        onGiveUp={() => setRecoveryDone(true)}
+      />
+    );
+  }
   if (!user)
     return (
       <Login
         gone={gone}
         onSignedIn={signIn}
         problem={authProblem}
+        notice={authNotice}
         startMode={api.linkExpired() ? "forgot" : "in"}
       />
     );
