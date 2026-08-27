@@ -385,13 +385,20 @@ async def delete_auth_session(request: Request) -> Response:
     working for the rest of its seven days.
     """
     cookie = request.cookies.get(str(_cfg("auth.cookie_name", "ark_session")))
-    if cookie:
+    if not cookie:
+        logger.info("sign-out with no session cookie; nothing to revoke")
+    else:
         try:
             claims = jwt_utils.read_session(cookie)
-            await pool.execute("DELETE FROM auth_sessions WHERE jti = $1", _uuid(claims["jti"], "session"))
+            gone = await pool.execute(
+                "DELETE FROM auth_sessions WHERE jti = $1", _uuid(claims["jti"], "session")
+            )
+            logger.info("sign-out revoked jti %s: %s", claims.get("jti"), gone)
         except (jwt.PyJWTError, ApiError, KeyError):
-            # Nothing to revoke; clearing the cookie is still the right answer.
-            pass
+            # Clearing the cookie is still the right answer, but a revoke that
+            # did not happen must not be silent: that is the whole failure this
+            # endpoint exists to prevent.
+            logger.warning("sign-out could not revoke its session row", exc_info=True)
     out = Response(status_code=204)
     out.delete_cookie(key=str(_cfg("auth.cookie_name", "ark_session")), path="/")
     return out

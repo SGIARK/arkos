@@ -370,6 +370,20 @@ async def test_the_sign_in_endpoint_is_rate_limited(client, monkeypatch):
     assert codes[3:] == [429, 429]
 
 
+async def test_signing_out_deletes_the_row_not_just_the_cookie(client):
+    """The cookie is self-signed, so a copy taken beforehand keeps working until
+    the row is gone. Clearing the cookie alone is a suggestion, not a sign-out."""
+    user_id = str(uuid.uuid4())
+    await client.post("/auth/session", headers={"Authorization": f"Bearer {_supabase_token(user_id)}"})
+    live = await pool.fetchval("SELECT count(*) FROM auth_sessions WHERE user_id = $1", uuid.UUID(user_id))
+    assert live == 1, "the mint did not record the session"
+
+    await client.delete("/auth/session")
+
+    left = await pool.fetchval("SELECT count(*) FROM auth_sessions WHERE user_id = $1", uuid.UUID(user_id))
+    assert left == 0, "signing out left the session revocable by nobody"
+
+
 async def test_logout_clears_the_cookie(client):
     await _signed_in(client)
 
