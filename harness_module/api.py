@@ -390,9 +390,7 @@ async def delete_auth_session(request: Request) -> Response:
     else:
         try:
             claims = jwt_utils.read_session(cookie)
-            gone = await pool.execute(
-                "DELETE FROM auth_sessions WHERE jti = $1", _uuid(claims["jti"], "session")
-            )
+            gone = await pool.execute("DELETE FROM auth_sessions WHERE jti = $1", _uuid(claims["jti"], "session"))
             logger.info("sign-out revoked jti %s: %s", claims.get("jti"), gone)
         except (jwt.PyJWTError, ApiError, KeyError):
             # Clearing the cookie is still the right answer, but a revoke that
