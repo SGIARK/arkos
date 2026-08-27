@@ -7,8 +7,10 @@ no stream token of its own.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import pathlib
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -93,8 +95,42 @@ def reset_jwks() -> None:
     _jwks_client = None
 
 
+def _jwks_file() -> pathlib.Path:
+    return pathlib.Path(str(config.get("auth.jwks_cache_file") or "/tmp/arkos-jwks.json"))
+
+
+def prime_jwks_from_disk() -> bool:
+    """Seed the cache from the last good fetch, so a restart is never cold.
+
+    Without this, a process that restarts into the endpoint's flaky window
+    refuses every sign-in until a fetch lands. The keys are public material —
+    they are served unauthenticated to anyone who asks — so a file is fine, and
+    it is only ever a starting point: the tick refreshes it on the usual clock.
+
+    A corrupt or unreadable file is not an error worth failing over; the tick
+    will overwrite it.
+    """
+    client = _jwks()
+    if client is None or client.jwk_set_cache is None:
+        return False
+    try:
+        data = json.loads(_jwks_file().read_text())
+        # The RAW dict: PyJWT's cache holds what `fetch_data` returns, and
+        # `get_jwk_set` re-parses it. Putting a PyJWKSet here type-errors on the
+        # next read, which looks exactly like an empty cache.
+        jwt.PyJWKSet.from_dict(data)  # parsed only to reject a malformed file
+        client.jwk_set_cache.put(data)
+        logger.info("primed the key cache from %s", _jwks_file())
+        return True
+    except FileNotFoundError:
+        return False
+    except Exception as e:  # noqa: BLE001 - a bad cache file is not fatal
+        logger.warning("could not prime keys from %s: %s", _jwks_file(), e)
+        return False
+
+
 def refresh_jwks() -> bool:
-    """Pull the JWK set into the cache. BLOCKING — the caller runs it off-loop.
+    """Pull the JWK set into the cache and onto disk. BLOCKING — run off-loop.
 
     The only place this process fetches keys. It is called on a timer, never by
     a request, which is what makes `_signing_key` a pure cache read: the JWKS
@@ -105,11 +141,23 @@ def refresh_jwks() -> bool:
     if client is None:
         return False
     try:
-        client.get_jwk_set(refresh=True)
-        return True
+        data = client.fetch_data()
+        # `fetch_data` already caches it; put again so the path is explicit and
+        # does not depend on that staying true.
+        client.jwk_set_cache.put(data)
     except Exception as e:  # noqa: BLE001 - a stale cache beats a blocked request
         logger.warning("JWKS refresh failed; serving whatever is cached: %s", e)
         return False
+    try:
+        # Written atomically: a half-written file read at the next boot is a
+        # cold start with extra steps.
+        path = _jwks_file()
+        scratch = path.with_suffix(".tmp")
+        scratch.write_text(json.dumps(data))
+        scratch.replace(path)
+    except Exception as e:  # noqa: BLE001 - the cache is in memory either way
+        logger.warning("could not persist keys to %s: %s", _jwks_file(), e)
+    return True
 
 
 def _signing_key(token: str) -> Any:

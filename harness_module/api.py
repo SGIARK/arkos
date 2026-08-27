@@ -162,28 +162,42 @@ async def _keys_and_sweep() -> None:
     request. The JWKS half is what makes verification a pure cache read — the
     host is normally 200ms and occasionally 30s, and a sign-in must never be the
     thing that finds out. The sweep half is bookkeeping: an expired cookie is
-    already refused on its own `exp`, so a row past `expires_at` is dead weight,
-    and without this the table only grows.
+    already refused on its own `exp`, so a row past `expires_at` is dead weight.
 
-    Primed BEFORE the first tick's sleep, because an empty cache refuses every
-    token: the first refresh has to land before anyone can sign in.
+    COLD START IS THE CASE THIS IS SHAPED AROUND. An empty cache refuses every
+    token, so a restart landing in the endpoint's flaky window would be an
+    outage for a whole interval. Two answers: the last good set is loaded from
+    disk before the first fetch, so a restart is normally warm already; and
+    while the cache is EMPTY the retry is a short backoff rather than the tick
+    interval, because minutes of refusing sign-ins is not a schedule anyone
+    chose.
     """
     every = float(_cfg("auth.jwks_refresh_s", 300))
-    first = True
+    ceiling = float(_cfg("auth.jwks_retry_max_s", 30))
+    warm = await asyncio.to_thread(jwt_utils.prime_jwks_from_disk)
+    if not warm:
+        logger.info("no key cache on disk; the first fetch has to land before anyone can sign in")
+    backoff = 1.0
     while True:
         try:
-            ok = await asyncio.to_thread(jwt_utils.refresh_jwks)
-            if first and not ok:
-                logger.error("no signing keys at startup: every sign-in will be refused until a tick lands")
-            first = False
+            got = await asyncio.to_thread(jwt_utils.refresh_jwks)
+            warm = warm or got
             pruned = await pool.execute("DELETE FROM auth_sessions WHERE expires_at < now()")
             if pruned and pruned != "DELETE 0":
                 logger.info("swept expired sessions: %s", pruned)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - a tick that dies must not take the app
-            logger.warning("the key/sweep tick failed; retrying next interval", exc_info=True)
-        await asyncio.sleep(every)
+            logger.warning("the key/sweep tick failed; retrying", exc_info=True)
+            got = False
+        if warm:
+            backoff = 1.0
+            await asyncio.sleep(every)
+        else:
+            # Nothing can be verified yet. Try again soon, not in five minutes.
+            logger.error("still no signing keys; sign-ins are refused until a fetch lands (retry in %.0fs)", backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, ceiling)
 
 
 # --- who is calling ------------------------------------------------------------

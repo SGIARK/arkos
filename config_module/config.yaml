@@ -24,6 +24,13 @@ auth:
   # endpoint. Deliberately long: the tick owns the schedule, so this only ever
   # decides how much flakiness survives without becoming a sign-in outage.
   jwks_cache_ttl_s: 86400
+  # The last good key set, so a restart is never cold. Public material — these
+  # keys are served unauthenticated to anyone who asks — and only ever a
+  # starting point; the tick refreshes it on the usual clock.
+  jwks_cache_file: "/tmp/arkos-jwks.json"
+  # While the cache is EMPTY the tick retries on this backoff instead of the
+  # refresh interval: minutes of refusing every sign-in is not a schedule.
+  jwks_retry_max_s: 30
   cookie_name: "ark_session"
   cookie_secure: true             # false only for plain-http local development
   cookie_samesite: "lax"

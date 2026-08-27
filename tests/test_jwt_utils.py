@@ -71,6 +71,72 @@ class TestSessionCookie:
             read_session(mint_session("u-1")[0])
 
 
+class TestKeyCachePersistence:
+    """A restart must not be cold: the endpoint goes away for minutes at a time,
+    and an empty cache refuses every token."""
+
+    JWKS = {
+        "keys": [
+            {
+                "kid": "k1",
+                "kty": "EC",
+                "crv": "P-256",
+                "alg": "ES256",
+                "use": "sig",
+                "x": "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",
+                "y": "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0",
+            }
+        ]
+    }
+
+    def _client(self, monkeypatch, tmp_path, fetched):
+        import jwt as pyjwt
+
+        monkeypatch.setattr(jwt_utils, "jwks_url", lambda: "https://example.test/jwks.json")
+        monkeypatch.setattr(jwt_utils, "_jwks_file", lambda: tmp_path / "jwks.json")
+        jwt_utils.reset_jwks()
+        client = jwt_utils._jwks()
+        monkeypatch.setattr(client, "fetch_data", lambda: fetched.append(1) or self.JWKS)
+        return client, pyjwt
+
+    def test_a_refresh_writes_the_set_to_disk(self, monkeypatch, tmp_path):
+        fetched = []
+        self._client(monkeypatch, tmp_path, fetched)
+
+        assert jwt_utils.refresh_jwks() is True
+        assert (tmp_path / "jwks.json").exists()
+        assert fetched == [1]
+
+    def test_a_restart_primes_from_disk_without_touching_the_network(self, monkeypatch, tmp_path):
+        fetched = []
+        self._client(monkeypatch, tmp_path, fetched)
+        jwt_utils.refresh_jwks()
+
+        # The restart: a brand-new client that must never call out.
+        jwt_utils.reset_jwks()
+        client = jwt_utils._jwks()
+
+        def forbidden():
+            raise AssertionError("primed from disk must not fetch")
+
+        monkeypatch.setattr(client, "fetch_data", forbidden)
+
+        assert jwt_utils.prime_jwks_from_disk() is True
+        token = jwt.encode({"sub": "u"}, "x" * 32, algorithm="HS256", headers={"kid": "k1"})
+        assert jwt_utils._signing_key(token) is not None
+
+    def test_a_corrupt_cache_file_is_not_fatal(self, monkeypatch, tmp_path):
+        self._client(monkeypatch, tmp_path, [])
+        (tmp_path / "jwks.json").write_text("{not json")
+
+        assert jwt_utils.prime_jwks_from_disk() is False
+
+    def test_no_cache_file_is_simply_a_cold_start(self, monkeypatch, tmp_path):
+        self._client(monkeypatch, tmp_path, [])
+
+        assert jwt_utils.prime_jwks_from_disk() is False
+
+
 class TestAssertSecureSecrets:
     def test_raises_without_a_way_to_sign_sessions(self, monkeypatch):
         monkeypatch.delenv("ARK_SESSION_SECRET", raising=False)
