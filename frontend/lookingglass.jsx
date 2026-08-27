@@ -117,13 +117,18 @@ function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJ
     );
   }
 
-  /* Zero sessions means the composer, not a placeholder: there is nothing to
-     list and the only useful thing here is to say what you want done. */
+  /* Zero sessions renders the SAME shell, with no session in it (12.2.6.5).
+     Not a lighter screen: the first send has to fill this page, not navigate
+     off one. */
   if (openProject && (starting || (sessions !== null && !sessions.length))) {
     return (
-      <StartSession
+      <SessionDetail
+        key={"new-" + openProject.id}
+        sessionId={null}
         project={openProject}
         onError={onError}
+        onPulse={onPulse}
+        onOpenFile={onOpenFile}
         onBack={() => {
           setStarting(false);
           if (sessions && sessions.length) return;
@@ -457,72 +462,17 @@ function Composer({ placeholder, onSend, chip = null, autoFocus = false }) {
   );
 }
 
-/* A PROJECT WITH NOWHERE TO TYPE was the bug (12.2.6): nothing in the frontend
-   ever called `POST /sessions`, so a fresh account opened its project onto a
-   placeholder and was stranded. The first message is what creates the session —
-   there is no "create" button, because an empty session is not a thing anyone
-   wants, and `POST /sessions` takes the goal in the same call. */
-function StartSession({ project, onStarted, onError, onBack }) {
-  const [starting, setStarting] = useState(false);
-
-  const begin = async (goal) => {
-    setStarting(true);
-    try {
-      const made = await api.start(goal, project.id);
-      onStarted(made.session_id);
-      return true;
-    } catch (e) {
-      onError(e);
-      // Keeps what was typed: the send failed, so the words are still owed.
-      return false;
-    } finally {
-      setStarting(false);
-    }
-  };
-
-  return (
-    <div className="lg-view">
-      <div className="lg-ctxline">
-        <button className="back-btn" onClick={onBack}>
-          ← projects
-        </button>
-        <span className="path">
-          <b>{project.title}</b>
-        </span>
-        <span className="grow" />
-      </div>
-      <div className="lg-body">
-        <div className="stream-wrap">
-          <div className="stream">
-            <div className="start-note">
-              <span className="kicker">new session</span>
-              <p>
-                say what you want done. buddy drafts and works in <b>{project.title}</b>, and asks before
-                anything leaves your account.
-              </p>
-            </div>
-            {starting && (
-              <div className="plan-drafting">
-                <Spinner />
-                <span>starting…</span>
-              </div>
-            )}
-          </div>
-          <Composer
-            autoFocus
-            placeholder="what should buddy do?"
-            onSend={begin}
-          />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFile }) {
+/* ONE SHELL, WITH OR WITHOUT A SESSION (12.2.6.5). `sessionId` may be null: a
+   project whose first message will create the session renders this same page,
+   not a stripped one, so the first send fills the layout in place instead of
+   teleporting to a different page. `useStream` no-ops on a null id, so the
+   difference is the snapshot — synthesised below from the project, which is all
+   the project-scoped panels need. */
+function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFile, onStarted }) {
+  const pre = !sessionId;
   const stream = useStream(sessionId, onError, onPulse);
   const {
-    session,
+    session: liveSession,
     events,
     pending,
     questions,
@@ -533,6 +483,28 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
     refreshQuestions,
     refreshSession,
   } = stream;
+  /* The pre-session snapshot: everything project-scoped is real, everything
+     session-scoped is the empty state it would show anyway. Shadowing `session`
+     means the whole render below is untouched — one layout, not two. */
+  const session =
+    liveSession ||
+    (pre && project
+      ? {
+          session_id: null,
+          title: null,
+          status: "idle",
+          mode: "attended",
+          terminal_reason: null,
+          hops_used: 0,
+          hops_max: 0,
+          project_id: project.id,
+          project_title: project.title,
+          folders: project.folders || [],
+          claims: [],
+          plan: null,
+        }
+      : null);
+
   const [tab, setTab] = useState(() => localStorage.getItem("buddy-canvas") || "files");
   const [headRename, setHeadRename] = useState(false);
   const [headText, setHeadText] = useState("");
@@ -604,7 +576,8 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
      the terminal. Other terminals keep their partial list. */
   const doneRun = session.status === "completed";
   const shownRows = doneRun ? todoRows.map((r) => ({ ...r, status: TODO_DONE })) : todoRows;
-  const showRun = !planCard && !drafting && !held && !running && !unattended;
+  // Nothing to run yet: the composer is the only control before a session exists.
+  const showRun = !pre && !planCard && !drafting && !held && !running && !unattended;
 
   /* Cancel is the only press that spends the plan's approval; resume is a plain
      start, because the stop changed nothing to undo. */
@@ -667,9 +640,9 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
           ) : (
             <span className={"dot " + (running ? "live" : session.status === "awaiting_approval" ? "work" : "")} />
           )}
-          {held ? "stopped" : statusLabel(session.status, session.terminal_reason)}
+          {pre ? "new session" : held ? "stopped" : statusLabel(session.status, session.terminal_reason)}
         </span>
-        {!held && (
+        {!pre && !held && (
           <span className="lg-budget">
             hop {session.hops_used}/{session.hops_max}
           </span>
@@ -830,10 +803,30 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
 
           <Composer
             chip={<SessionTools sessionId={sessionId} onError={onError} />}
+            autoFocus={pre}
             /* A stopped run resumes on what is typed here: kind `resume` is
                exempt from the composer's 409. */
-            placeholder={held ? "type to resume. your note is the next thing buddy reads" : "suggest or steer this session…"}
-            onSend={(said) => send(said)}
+            placeholder={
+              pre
+                ? "what should buddy do?"
+                : held
+                  ? "type to resume. your note is the next thing buddy reads"
+                  : "suggest or steer this session…"
+            }
+            onSend={async (said) => {
+              if (!pre) return send(said);
+              /* THE FIRST MESSAGE IS THE CREATE. `POST /sessions` takes the goal
+                 in the same call, so there is no empty session to make and no
+                 second page to land on — the id arrives and this shell fills. */
+              try {
+                const made = await api.start(said, project && project.id);
+                if (onStarted) onStarted(made.session_id);
+                return true;
+              } catch (e) {
+                onError(e);
+                return false;
+              }
+            }}
           />
         </div>
 
@@ -895,7 +888,11 @@ function SessionTools({ sessionId, onError }) {
   const [busy, setBusy] = useState(null);
   const [refused, setRefused] = useState(null);
 
+  /* The toggles are per SESSION, so before one exists there is nothing to read
+     and nothing to set. The chip still renders — the composer must not change
+     shape on first send — with its counter dashed out. */
   const load = useCallback(async () => {
+    if (!sessionId) return;
     try {
       setDoc(await api.sessionTools(sessionId));
     } catch (e) {
@@ -1023,9 +1020,10 @@ function SessionTools({ sessionId, onError }) {
 
       <button
         type="button"
-        className={"tb-chip" + (open ? " open" : "")}
-        title="mcp connectors in this session"
-        onClick={() => setOpen((o) => !o)}
+        className={"tb-chip" + (open ? " open" : "") + (sessionId ? "" : " idle")}
+        title={sessionId ? "mcp connectors in this session" : "connectors attach once the session starts"}
+        disabled={!sessionId}
+        onClick={() => sessionId && setOpen((o) => !o)}
       >
         <span className={"tb-pip" + (ratio >= 1 ? " stop" : used ? " on" : "")} />
         <span className="k">tools</span>
