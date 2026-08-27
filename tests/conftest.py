@@ -3,6 +3,8 @@
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 # Fallback DSN only; tests truncate tables, so this must never be a real database.
@@ -35,3 +37,19 @@ if not os.environ.get("SUPABASE_JWT_SECRET"):
     os.environ["SUPABASE_JWT_SECRET"] = "test-supabase-secret-at-least-32-chars"
 if not os.environ.get("ARK_SESSION_SECRET"):
     os.environ["ARK_SESSION_SECRET"] = "test-session-secret-at-least-32-chars"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_auth_window():
+    """Give every test its own sliding window for `POST /auth/session`.
+
+    The limiter (12.2.5) is per source address, and every test shares one — so
+    without this the suite signs in past the ceiling and starts 429ing partway
+    through, which looks like a bug in whatever test happened to be running.
+    The limit stays ON; `test_the_sign_in_endpoint_is_rate_limited` exercises it.
+    """
+    from harness_module import api
+
+    api._auth_hits.clear()
+    yield
+    api._auth_hits.clear()

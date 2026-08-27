@@ -45,10 +45,13 @@ class TestVerifySupabase:
 
 class TestSessionCookie:
     def test_round_trips_what_we_signed(self):
-        claims = read_session(mint_session("u-1", "a@example.com"))
+        cookie, jti, _expires = mint_session("u-1", "a@example.com")
+        claims = read_session(cookie)
 
         assert claims["sub"] == "u-1"
         assert claims["email"] == "a@example.com"
+        # The handle the server revokes by; without it the cookie is refused.
+        assert claims["jti"] == jti
 
     def test_a_cookie_we_did_not_sign_is_refused(self):
         forged = jwt.encode({"sub": "u-1", "iss": "arkos"}, "not-our-secret", algorithm="HS256")
@@ -65,7 +68,7 @@ class TestSessionCookie:
         monkeypatch.setattr(jwt_utils.config, "get", lambda key, default=None: -1)
 
         with pytest.raises(jwt.ExpiredSignatureError):
-            read_session(mint_session("u-1"))
+            read_session(mint_session("u-1")[0])
 
 
 class TestAssertSecureSecrets:
@@ -108,12 +111,27 @@ def test_extract_bearer_takes_only_a_bearer_scheme():
     assert jwt_utils.extract_bearer("Bearer ") is None
 
 
-def _publishing(signing):
-    """A stand-in JWKS client that always hands back one key."""
+def _publishing(signing, kid="test-kid"):
+    """A stand-in JWKS client publishing one key, the way the real set does.
+
+    Since 12.2.5 the lookup is by `kid` against a cached set: an unknown kid is
+    refused rather than triggering a fetch, so the fake has to publish a SET
+    rather than answer per token.
+    """
+
+    class Key:
+        key_id = kid
+
+        @property
+        def key(self):
+            return signing().key
+
+    class Set:
+        keys = [Key()]
 
     class Client:
-        def get_signing_key_from_jwt(self, token):
-            return signing()
+        def get_jwk_set(self, refresh=False):
+            return Set()
 
     return Client()
 
@@ -141,7 +159,7 @@ class TestAsymmetricTokens:
         class Signing:
             key = private_key.public_key()
 
-        monkeypatch.setattr(jwt_utils, "_jwks", lambda: _publishing(Signing))
+        monkeypatch.setattr(jwt_utils, "_jwks", lambda: _publishing(Signing, kid="k1"))
 
         assert verify_supabase(token)["sub"] == "u-1"
 
@@ -152,15 +170,51 @@ class TestAsymmetricTokens:
             {"sub": "u-1", "aud": "authenticated", "exp": int(time.time()) + 300},
             theirs,
             algorithm="ES256",
+            headers={"kid": "k1"},
         )
 
         class Signing:
             key = mine.public_key()
 
-        monkeypatch.setattr(jwt_utils, "_jwks", lambda: _publishing(Signing))
+        monkeypatch.setattr(jwt_utils, "_jwks", lambda: _publishing(Signing, kid="k1"))
 
         with pytest.raises(jwt.InvalidSignatureError):
             verify_supabase(token)
+
+    def test_an_unknown_kid_is_refused_without_a_fetch(self, monkeypatch):
+        """12.2.5: `POST /auth/session` is public and the header is the caller's,
+        so a miss must cost a dictionary lookup, not a blocking JWKS fetch on the
+        pool shared with blob IO and every sandbox call."""
+        private_key = self._es256_key()
+        token = jwt.encode(
+            {"sub": "u-1", "aud": "authenticated", "exp": int(time.time()) + 300},
+            private_key,
+            algorithm="ES256",
+            headers={"kid": "a-kid-nobody-published"},
+        )
+
+        class Signing:
+            key = private_key.public_key()
+
+        fetches = []
+        client = _publishing(Signing, kid="k1")
+        original = client.get_jwk_set
+
+        def counting(refresh=False):
+            if refresh:
+                fetches.append(1)
+            return original(refresh)
+
+        client.get_jwk_set = counting
+        monkeypatch.setattr(jwt_utils, "_jwks", lambda: client)
+        jwt_utils.reset_jwks_clock()
+
+        with pytest.raises(jwt.InvalidKeyError):
+            verify_supabase(token)
+        with pytest.raises(jwt.InvalidKeyError):
+            verify_supabase(token)
+
+        assert len(fetches) == 1, "a second unknown kid must not buy a second fetch"
 
     def test_an_asymmetric_token_with_nowhere_to_fetch_keys_is_refused(self, monkeypatch):
         token = jwt.encode(

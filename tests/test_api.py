@@ -26,6 +26,9 @@ from tool_module.composio_mcp import ComposioError
 
 pytestmark = pytest.mark.asyncio
 
+# The real config reader, so a test can override one key without losing the rest.
+_real_cfg = api._cfg
+
 _seeded: list[uuid.UUID] = []
 
 
@@ -296,6 +299,75 @@ async def test_signing_in_again_keeps_exactly_one_home_session(client):
     second = (await client.get("/auth/me")).json()["home_session_id"]
 
     assert first and first == second
+
+
+async def test_a_password_change_signs_out_the_other_browser(client):
+    """12.2.5's acceptance. The reason to reset a password is often that someone
+    else has your session; leaving it alive is the outcome the reset was for."""
+    user_id = str(uuid.uuid4())
+    token = _supabase_token(user_id)
+    await client.post("/auth/session", headers={"Authorization": f"Bearer {token}"})
+    assert (await client.get("/auth/me")).status_code == 200
+
+    # The reset completes in another browser and revokes everything for the user.
+    await client.post("/auth/sessions/revoke", headers={"Authorization": f"Bearer {token}"})
+
+    assert (await client.get("/auth/me")).status_code == 401
+
+
+async def test_revoking_takes_a_recovery_token_even_though_signing_in_does_not(client):
+    """Revocation only ever takes access away, so the token that cannot buy a
+    session can still end one — which is what the reset flow holds."""
+    user_id = str(uuid.uuid4())
+    await client.post("/auth/session", headers={"Authorization": f"Bearer {_supabase_token(user_id)}"})
+    recovery = _supabase_token(user_id, amr=[{"method": "recovery"}])
+
+    revoked = await client.post("/auth/sessions/revoke", headers={"Authorization": f"Bearer {recovery}"})
+
+    assert revoked.status_code == 204
+    assert (await client.get("/auth/me")).status_code == 401
+
+
+async def test_one_users_reset_does_not_sign_anybody_else_out(client):
+    mine, theirs = str(uuid.uuid4()), str(uuid.uuid4())
+    await client.post("/auth/session", headers={"Authorization": f"Bearer {_supabase_token(theirs)}"})
+    other_cookie = dict(client.cookies)
+    await client.post("/auth/session", headers={"Authorization": f"Bearer {_supabase_token(mine)}"})
+
+    await client.post("/auth/sessions/revoke", headers={"Authorization": f"Bearer {_supabase_token(mine)}"})
+
+    client.cookies.update(other_cookie)
+    assert (await client.get("/auth/me")).status_code == 200
+
+
+async def test_a_cookie_with_no_jti_cannot_be_revoked_so_is_refused(client):
+    """Cookies minted before 12.2.5 have no handle to take back."""
+    legacy = jwt.encode(
+        {"sub": str(uuid.uuid4()), "iss": "arkos", "exp": datetime.now(UTC) + timedelta(hours=1)},
+        "test-session-secret-at-least-32-chars",
+        algorithm="HS256",
+    )
+    client.cookies.set("ark_session", legacy)
+
+    assert (await client.get("/auth/me")).status_code == 401
+
+
+async def test_the_sign_in_endpoint_is_rate_limited(client, monkeypatch):
+    """The one endpoint nothing authenticates, so the one that needs a ceiling."""
+    monkeypatch.setattr(
+        api,
+        "_cfg",
+        lambda key, default=None: 3 if key == "quotas.auth_attempts_per_minute" else _real_cfg(key, default),
+    )
+    api._auth_hits.clear()
+    token = _supabase_token(str(uuid.uuid4()))
+
+    codes = [
+        (await client.post("/auth/session", headers={"Authorization": f"Bearer {token}"})).status_code for _ in range(5)
+    ]
+
+    assert codes[:3] == [204, 204, 204]
+    assert codes[3:] == [429, 429]
 
 
 async def test_logout_clears_the_cookie(client):

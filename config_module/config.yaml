@@ -101,6 +101,9 @@ quotas:
   max_unattended_sessions: 5      # per user; only unattended runs occupy a worker
   new_sessions_per_hour: 20       # per user; sliding window
   upload_max_mb: 25               # per file, POST /files
+  # POST /auth/session is the one endpoint nothing authenticates, so it is the
+  # one that needs its own ceiling: per source address, per minute, in process.
+  auth_attempts_per_minute: 30
 
 approvals:
   # Whether an attended session approves gated tool calls WITHOUT asking.

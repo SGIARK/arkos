@@ -333,8 +333,19 @@ const api = {
       });
       if (error) throw new ApiError("link_expired", "That reset link has expired. Ask for another.");
     }
+    const { data: live } = await client.auth.getSession();
+    const proof = (live && live.session && live.session.access_token) || _landing.token;
     const { error } = await client.auth.updateUser({ password });
     if (error) throw new ApiError("reset_failed", error.message);
+    /* SIGN OUT EVERYWHERE (12.2.5). The reason someone resets a password is
+       often that somebody else has their session; leaving those alive is the
+       one outcome the reset was meant to prevent. Best effort — the password
+       has already changed and a failure here must not read as one. */
+    await fetch(API + "/auth/sessions/revoke", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { Authorization: "Bearer " + proof },
+    }).catch(() => {});
     // Drop the in-memory session so nothing is left holding a recovery token.
     await client.auth.signOut().catch(() => {});
     _landing.recovery = false;

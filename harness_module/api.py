@@ -14,6 +14,7 @@ import logging
 import os
 import posixpath
 import signal
+import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -152,6 +153,36 @@ async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
 
 # --- who is calling ------------------------------------------------------------
 
+# The one authenticated-by-nothing endpoint, so the one that needs its own
+# ceiling (12.2.5). In-process and per-IP: this is a single event loop, and the
+# point is to bound work an anonymous caller can order, not to be a quota system.
+_auth_hits: dict[str, list[float]] = {}
+
+
+def _check_auth_rate(request: Request) -> None:
+    """Bound how often one caller may ask us to verify a token."""
+    limit = int(_cfg("quotas.auth_attempts_per_minute", 30))
+    if limit <= 0:
+        return
+    who = request.client.host if request.client else "unknown"
+    now = time.monotonic()
+    recent = [at for at in _auth_hits.get(who, []) if now - at < 60.0]
+    if len(recent) >= limit:
+        _auth_hits[who] = recent
+        raise ApiError(
+            429,
+            "quota_exceeded",
+            f"Too many sign-in attempts from here. Wait a minute ({limit}/min).",
+            retryable=True,
+        )
+    recent.append(now)
+    _auth_hits[who] = recent
+    # Bounded memory: an attacker rotating source addresses must not grow this
+    # without limit. Anything with no live hits is dropped on the next sweep.
+    if len(_auth_hits) > 4096:
+        for addr in [a for a, hits in _auth_hits.items() if not hits or now - hits[-1] > 60.0]:
+            _auth_hits.pop(addr, None)
+
 
 async def current_user(request: Request) -> str:
     """Resolve the caller from the session cookie, and origin-check mutations."""
@@ -162,6 +193,13 @@ async def current_user(request: Request) -> str:
         claims = jwt_utils.read_session(cookie)
     except jwt.PyJWTError as e:
         raise ApiError(401, "unauthenticated", f"Session rejected: {e}") from e
+
+    # The cookie's signature says it was ours; this says it still IS (12.2.5).
+    # One indexed primary-key lookup, and it is what lets a password change
+    # reach a session living in someone else's browser.
+    live = await pool.fetchval("SELECT 1 FROM auth_sessions WHERE jti = $1", _uuid(claims["jti"], "session"))
+    if live is None:
+        raise ApiError(401, "unauthenticated", "That session was signed out. Sign in again.")
 
     if request.method not in ("GET", "HEAD", "OPTIONS"):
         _check_origin(request)
@@ -198,8 +236,9 @@ UploadedPath = Form(default=None)
 
 
 @app.post("/auth/session", status_code=204)
-async def create_auth_session(authorization: str | None = Header(default=None)) -> Response:
+async def create_auth_session(request: Request, authorization: str | None = Header(default=None)) -> Response:
     """Verify a Supabase token and set the session cookie. The only endpoint that reads a bearer token."""
+    _check_auth_rate(request)
     token = jwt_utils.extract_bearer(authorization)
     if not token:
         raise ApiError(401, "unauthenticated", "Send the Supabase access token as Authorization: Bearer.")
@@ -236,10 +275,18 @@ async def create_auth_session(authorization: str | None = Header(default=None)) 
     )
     await _ensure_home_session(user_id)
 
+    cookie, jti, expires = jwt_utils.mint_session(user_id, email)
+    await pool.execute(
+        "INSERT INTO auth_sessions (jti, user_id, expires_at) VALUES ($1, $2, $3)",
+        _uuid(jti, "session"),
+        _uuid(user_id, "user"),
+        expires,
+    )
+
     out = Response(status_code=204)
     out.set_cookie(
         key=str(_cfg("auth.cookie_name", "ark_session")),
-        value=jwt_utils.mint_session(user_id, email),
+        value=cookie,
         max_age=int(_cfg("auth.session_ttl_s", 604800)),
         httponly=True,
         secure=bool(_cfg("auth.cookie_secure", True)),
@@ -330,10 +377,48 @@ async def auth_config() -> dict[str, Any]:
 
 
 @app.delete("/auth/session", status_code=204)
-async def delete_auth_session() -> Response:
+async def delete_auth_session(request: Request) -> Response:
+    """Sign out THIS session: drop its row, then clear the cookie.
+
+    Dropping the row is what makes it a sign-out rather than a suggestion — the
+    cookie is self-signed, so a copy taken before this call would otherwise keep
+    working for the rest of its seven days.
+    """
+    cookie = request.cookies.get(str(_cfg("auth.cookie_name", "ark_session")))
+    if cookie:
+        try:
+            claims = jwt_utils.read_session(cookie)
+            await pool.execute("DELETE FROM auth_sessions WHERE jti = $1", _uuid(claims["jti"], "session"))
+        except (jwt.PyJWTError, ApiError, KeyError):
+            # Nothing to revoke; clearing the cookie is still the right answer.
+            pass
     out = Response(status_code=204)
     out.delete_cookie(key=str(_cfg("auth.cookie_name", "ark_session")), path="/")
     return out
+
+
+@app.post("/auth/sessions/revoke", status_code=204)
+async def revoke_all_sessions(authorization: str | None = Header(default=None)) -> Response:
+    """Sign this user out EVERYWHERE. Takes a Supabase bearer, not our cookie.
+
+    This is what a password change calls, and it deliberately accepts a token
+    `POST /auth/session` refuses — a recovery token included. Proving you hold a
+    valid token for an account is enough to END its sessions: revocation only
+    ever takes access away, so the failure mode of being too permissive here is
+    an unwanted sign-out, while being too strict leaves a stolen cookie alive
+    through the one action taken to stop it.
+    """
+    token = jwt_utils.extract_bearer(authorization)
+    if not token:
+        raise ApiError(401, "unauthenticated", "Send the Supabase access token as Authorization: Bearer.")
+    try:
+        claims = await jwt_utils.verify_supabase_off_loop(token)
+    except jwt.PyJWTError as e:
+        raise ApiError(401, "unauthenticated", f"Token rejected: {e}") from e
+
+    gone = await pool.execute("DELETE FROM auth_sessions WHERE user_id = $1", _uuid(str(claims["sub"]), "user"))
+    logger.info("revoked sessions for %s: %s", claims["sub"], gone)
+    return Response(status_code=204)
 
 
 @app.get("/auth/me")

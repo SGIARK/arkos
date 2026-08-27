@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -48,6 +50,9 @@ def assert_secure_secrets() -> None:
 _ASYMMETRIC = ("ES256", "RS256", "EdDSA")
 
 _jwks_client: Any = None
+# When the JWK set was last pulled. Refresh is on our clock, not a token's.
+_jwks_at: float = 0.0
+_JWKS_LIFESPAN_S = 600.0
 
 
 def jwks_url() -> str | None:
@@ -59,7 +64,7 @@ def jwks_url() -> str | None:
 
 
 def _jwks() -> Any:
-    """The JWKS client; caches keys and refetches on an unknown `kid`."""
+    """The JWKS client. Fetching is ours to schedule, never a token's to trigger."""
     global _jwks_client
     if _jwks_client is None:
         url = jwks_url()
@@ -69,10 +74,46 @@ def _jwks() -> Any:
     return _jwks_client
 
 
+def reset_jwks_clock() -> None:
+    """Force the next lookup to refresh. For tests and an urgent rotation."""
+    global _jwks_at
+    _jwks_at = 0.0
+
+
 def reset_jwks() -> None:
     """Drop the cached JWKS client, for tests and key rotation."""
-    global _jwks_client
+    global _jwks_client, _jwks_at
     _jwks_client = None
+    _jwks_at = 0.0
+
+
+def _signing_key(token: str) -> Any:
+    """The key for this token's `kid`, from a periodically refreshed cache.
+
+    NEVER fetches because a `kid` is unknown (12.2.5). PyJWKClient's own
+    behaviour is to refetch on a miss, which hands an unauthenticated caller a
+    lever: `POST /auth/session` is public, the header is attacker-chosen, and
+    each miss cost one blocking 30s-timeout fetch on the default thread pool —
+    the pool shared with blob IO and every sandbox call. Refresh is on OUR
+    clock, so a flood of unknown kids costs one lookup each and no network.
+
+    Raises InvalidKeyError for a kid the cache does not hold, which is a 401.
+    """
+    client = _jwks()
+    if client is None:
+        return None
+    global _jwks_at
+    now = time.monotonic()
+    if now - _jwks_at > _JWKS_LIFESPAN_S:
+        # One fetch per lifespan, whatever arrives in between. A real rotation
+        # is visible within that window; an attacker's misses never are.
+        client.get_jwk_set(refresh=True)
+        _jwks_at = now
+    kid = jwt.get_unverified_header(token).get("kid")
+    for key in client.get_jwk_set().keys:
+        if key.key_id == kid:
+            return key.key
+    raise jwt.InvalidKeyError(f"no signing key for kid {kid!r} in the cached JWKS")
 
 
 def verify_supabase(token: str) -> dict[str, Any]:
@@ -85,12 +126,11 @@ def verify_supabase(token: str) -> dict[str, Any]:
     algorithm = jwt.get_unverified_header(token).get("alg", "")
 
     if algorithm in _ASYMMETRIC:
-        client = _jwks()
-        if client is None:
+        if _jwks() is None:
             raise jwt.InvalidKeyError(
                 f"the token is signed with {algorithm}, and no project URL is configured to fetch keys from"
             )
-        return jwt.decode(token, client.get_signing_key_from_jwt(token).key, algorithms=[algorithm], audience=audience)
+        return jwt.decode(token, _signing_key(token), algorithms=[algorithm], audience=audience)
 
     if algorithm == _ALG:
         secret = _secret("SUPABASE_JWT_SECRET")
@@ -123,23 +163,30 @@ def extract_bearer(authorization: str | None) -> str | None:
 # --- minting and reading our own cookie ---------------------------------------
 
 
-def mint_session(user_id: str, email: str | None = None) -> str:
+def mint_session(user_id: str, email: str | None = None) -> tuple[str, str, datetime]:
     """Signs a session cookie for a user `verify_supabase` has already cleared."""
     secret = _secret("ARK_SESSION_SECRET")
     if not secret:
         raise RuntimeError("ARK_SESSION_SECRET is unset")
     now = datetime.now(UTC)
-    return jwt.encode(
+    jti = str(uuid.uuid4())
+    expires = now + timedelta(seconds=int(config.get("auth.session_ttl_s") or 604800))
+    cookie = jwt.encode(
         {
             "sub": user_id,
             "email": email,
             "iss": _ISSUER,
+            # The handle the server revokes by. A cookie is valid only while a
+            # row for this jti exists, which is what makes signing out and a
+            # password change able to reach a session in another browser.
+            "jti": jti,
             "iat": now,
-            "exp": now + timedelta(seconds=int(config.get("auth.session_ttl_s") or 604800)),
+            "exp": expires,
         },
         secret,
         algorithm=_ALG,
     )
+    return cookie, jti, expires
 
 
 def read_session(cookie: str) -> dict[str, Any]:
@@ -147,4 +194,6 @@ def read_session(cookie: str) -> dict[str, Any]:
     secret = _secret("ARK_SESSION_SECRET")
     if not secret:
         raise jwt.InvalidKeyError("ARK_SESSION_SECRET is unset")
-    return jwt.decode(cookie, secret, algorithms=[_ALG], issuer=_ISSUER, options={"require": ["sub", "exp"]})
+    # `jti` is required: a cookie minted before 12.2.5 cannot be revoked, and a
+    # session the server cannot take back is the thing this replaced.
+    return jwt.decode(cookie, secret, algorithms=[_ALG], issuer=_ISSUER, options={"require": ["sub", "exp", "jti"]})
