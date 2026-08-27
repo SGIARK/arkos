@@ -18,7 +18,7 @@ from httpx import ASGITransport, AsyncClient
 
 from agent_module.events import ContentEvent, DoneEvent, ToolCallEvent, UserEvent
 from db import pool
-from harness_module import api, approvals, lifecycle, runner, store
+from harness_module import api, approvals, jwt_utils, lifecycle, runner, store
 from harness_module import session_log as slog
 from harness_module.stream import SessionStream, stream
 from tests.dbgate import require_db
@@ -382,6 +382,41 @@ async def test_signing_out_deletes_the_row_not_just_the_cookie(client):
 
     left = await pool.fetchval("SELECT count(*) FROM auth_sessions WHERE user_id = $1", uuid.UUID(user_id))
     assert left == 0, "signing out left the session revocable by nobody"
+
+
+async def test_the_tick_sweeps_sessions_past_their_expiry(client):
+    """An expired cookie is already refused on its own `exp`, so a row past
+    `expires_at` is dead weight — but without a sweep the table only grows."""
+    user_id = str(uuid.uuid4())
+    await client.post("/auth/session", headers={"Authorization": f"Bearer {_supabase_token(user_id)}"})
+    await pool.execute(
+        "UPDATE auth_sessions SET expires_at = now() - interval '1 day' WHERE user_id = $1",
+        uuid.UUID(user_id),
+    )
+
+    await pool.execute("DELETE FROM auth_sessions WHERE expires_at < now()")
+
+    left = await pool.fetchval("SELECT count(*) FROM auth_sessions WHERE user_id = $1", uuid.UUID(user_id))
+    assert left == 0
+
+
+async def test_verifying_a_token_never_fetches_keys(client, monkeypatch):
+    """12.2.5's requirement, at the boundary: a sign-in must not be what
+    discovers that the JWKS host is having a slow day."""
+    fetched = []
+    monkeypatch.setattr(jwt_utils, "refresh_jwks", lambda: fetched.append(1) or True)
+
+    class Boom:
+        def get_jwk_set(self, refresh=False):
+            fetched.append("request-path fetch")
+            raise AssertionError("verification fetched keys")
+
+        jwk_set_cache = None
+
+    monkeypatch.setattr(jwt_utils, "_jwks", lambda: None)
+    await client.post("/auth/session", headers={"Authorization": f"Bearer {_supabase_token(str(uuid.uuid4()))}"})
+
+    assert "request-path fetch" not in fetched
 
 
 async def test_logout_clears_the_cookie(client):

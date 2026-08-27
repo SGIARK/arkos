@@ -87,6 +87,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await sandbox_manager.sweep_slots()
     await hands.start()
     await system_log.start()
+    keeper = asyncio.create_task(_keys_and_sweep(), name="jwks_and_session_sweep")
     # NOT in the `finally` below: uvicorn drains open connections BEFORE it runs
     # the lifespan's shutdown, so a stream waiting to be told to stop blocks the
     # drain that would deliver the message. The signal is the earliest moment.
@@ -96,6 +97,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         # Idempotent second call, for a shutdown that arrives without a signal.
         shutdown_streams()
+        keeper.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await keeper
         await system_log.stop()
         await hands.stop()
         # The store's HTTP client is scoped to this loop, so it closes here.
@@ -149,6 +153,37 @@ async def _api_error(request: Request, exc: ApiError) -> JSONResponse:
 async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
     logger.exception("unhandled error on %s %s", request.method, request.url.path)
     return _error(500, "internal", "Something failed on our side.", retryable=True)
+
+
+async def _keys_and_sweep() -> None:
+    """The periodic tick: refresh the signing keys, prune dead sessions.
+
+    ONE loop for both because they share a schedule and neither belongs in a
+    request. The JWKS half is what makes verification a pure cache read — the
+    host is normally 200ms and occasionally 30s, and a sign-in must never be the
+    thing that finds out. The sweep half is bookkeeping: an expired cookie is
+    already refused on its own `exp`, so a row past `expires_at` is dead weight,
+    and without this the table only grows.
+
+    Primed BEFORE the first tick's sleep, because an empty cache refuses every
+    token: the first refresh has to land before anyone can sign in.
+    """
+    every = float(_cfg("auth.jwks_refresh_s", 300))
+    first = True
+    while True:
+        try:
+            ok = await asyncio.to_thread(jwt_utils.refresh_jwks)
+            if first and not ok:
+                logger.error("no signing keys at startup: every sign-in will be refused until a tick lands")
+            first = False
+            pruned = await pool.execute("DELETE FROM auth_sessions WHERE expires_at < now()")
+            if pruned and pruned != "DELETE 0":
+                logger.info("swept expired sessions: %s", pruned)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - a tick that dies must not take the app
+            logger.warning("the key/sweep tick failed; retrying next interval", exc_info=True)
+        await asyncio.sleep(every)
 
 
 # --- who is calling ------------------------------------------------------------

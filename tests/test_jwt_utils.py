@@ -184,7 +184,8 @@ class TestAsymmetricTokens:
     def test_an_unknown_kid_is_refused_without_a_fetch(self, monkeypatch):
         """12.2.5: `POST /auth/session` is public and the header is the caller's,
         so a miss must cost a dictionary lookup, not a blocking JWKS fetch on the
-        pool shared with blob IO and every sandbox call."""
+        pool shared with blob IO and every sandbox call. Verification NEVER
+        fetches — the background tick is the only thing that does."""
         private_key = self._es256_key()
         token = jwt.encode(
             {"sub": "u-1", "aud": "authenticated", "exp": int(time.time()) + 300},
@@ -207,14 +208,13 @@ class TestAsymmetricTokens:
 
         client.get_jwk_set = counting
         monkeypatch.setattr(jwt_utils, "_jwks", lambda: client)
-        jwt_utils.reset_jwks_clock()
 
         with pytest.raises(jwt.InvalidKeyError):
             verify_supabase(token)
         with pytest.raises(jwt.InvalidKeyError):
             verify_supabase(token)
 
-        assert len(fetches) == 1, "a second unknown kid must not buy a second fetch"
+        assert fetches == [], "verification must never fetch; the tick owns that"
 
     def test_an_asymmetric_token_with_nowhere_to_fetch_keys_is_refused(self, monkeypatch):
         token = jwt.encode(

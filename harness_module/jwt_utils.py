@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -54,8 +53,6 @@ _ASYMMETRIC = ("ES256", "RS256", "EdDSA")
 
 _jwks_client: Any = None
 # When the JWK set was last pulled. Refresh is on our clock, not a token's.
-_jwks_at: float = 0.0
-_JWKS_LIFESPAN_S = 600.0
 
 
 def jwks_url() -> str | None:
@@ -76,57 +73,62 @@ def _jwks() -> Any:
         # A SHORT timeout on purpose: this runs on the default thread pool,
         # shared with blob IO and every sandbox call, and 30s of holding one
         # thread because an endpoint is unreachable is the outage, not the fix.
-        _jwks_client = jwt.PyJWKClient(url, cache_keys=True, timeout=float(config.get("auth.jwks_timeout_s") or 5))
+        _jwks_client = jwt.PyJWKClient(
+            url,
+            cache_keys=True,
+            timeout=float(config.get("auth.jwks_timeout_s") or 5),
+            # FAR longer than the refresh interval, because the tick owns the
+            # schedule and this is only the fallback. At PyJWT's 300s default a
+            # tick failing for five minutes empties the cache and every sign-in
+            # is refused — a flaky endpoint would become an outage. Keys are
+            # stable; a genuinely rotated one fails verification anyway.
+            lifespan=float(config.get("auth.jwks_cache_ttl_s") or 86400),
+        )
     return _jwks_client
-
-
-def reset_jwks_clock() -> None:
-    """Force the next lookup to refresh. For tests and an urgent rotation."""
-    global _jwks_at
-    _jwks_at = 0.0
 
 
 def reset_jwks() -> None:
     """Drop the cached JWKS client, for tests and key rotation."""
-    global _jwks_client, _jwks_at
+    global _jwks_client
     _jwks_client = None
-    _jwks_at = 0.0
+
+
+def refresh_jwks() -> bool:
+    """Pull the JWK set into the cache. BLOCKING — the caller runs it off-loop.
+
+    The only place this process fetches keys. It is called on a timer, never by
+    a request, which is what makes `_signing_key` a pure cache read: the JWKS
+    host is normally 200ms and occasionally 30s, and a request must never be the
+    thing that discovers which.
+    """
+    client = _jwks()
+    if client is None:
+        return False
+    try:
+        client.get_jwk_set(refresh=True)
+        return True
+    except Exception as e:  # noqa: BLE001 - a stale cache beats a blocked request
+        logger.warning("JWKS refresh failed; serving whatever is cached: %s", e)
+        return False
 
 
 def _signing_key(token: str) -> Any:
-    """The key for this token's `kid`, from a periodically refreshed cache.
+    """The key for this token's `kid`, from the cache. NEVER fetches.
 
-    NEVER fetches because a `kid` is unknown (12.2.5). PyJWKClient's own
-    behaviour is to refetch on a miss, which hands an unauthenticated caller a
-    lever: `POST /auth/session` is public, the header is attacker-chosen, and
-    each miss cost one blocking 30s-timeout fetch on the default thread pool —
-    the pool shared with blob IO and every sandbox call. Refresh is on OUR
-    clock, so a flood of unknown kids costs one lookup each and no network.
-
-    Raises InvalidKeyError for a kid the cache does not hold, which is a 401.
+    An unknown kid is a 401 and no network at all (12.2.5). `POST /auth/session`
+    is public and the header is the caller's, so a miss must cost a dictionary
+    lookup — PyJWKClient's own behaviour is to refetch, which would hand an
+    unauthenticated caller a lever on the pool shared with blob IO and every
+    sandbox call.
     """
     client = _jwks()
     if client is None:
         return None
-    global _jwks_at
-    now = time.monotonic()
-    if now - _jwks_at > _JWKS_LIFESPAN_S:
-        # STAMPED FIRST, so a failing endpoint costs one attempt per window
-        # rather than one per request. Stamping after the call meant that when
-        # the fetch raised, the next request tried again — and with a 30s
-        # timeout that turned an unreachable JWKS into a minute-long sign-in.
-        _jwks_at = now
-        try:
-            client.get_jwk_set(refresh=True)
-        except Exception as e:  # noqa: BLE001 - any failure falls back to the cache
-            logger.warning("JWKS refresh failed, serving the cached set: %s", e)
     kid = jwt.get_unverified_header(token).get("kid")
-    # CHECK THE CACHE BEFORE ASKING FOR IT: `get_jwk_set()` fetches when the
-    # cache is empty, so falling through it would pay the network again on the
-    # very path that exists because the network just failed.
+    # Ask the CACHE, not the client: `get_jwk_set()` fetches when it is empty.
     cache = getattr(client, "jwk_set_cache", None)
     if cache is not None and cache.get() is None:
-        raise jwt.InvalidKeyError(f"no JWKS cached to verify kid {kid!r}; the endpoint is unreachable")
+        raise jwt.InvalidKeyError(f"no JWKS cached to verify kid {kid!r}; the refresh tick has not landed one yet")
     for key in client.get_jwk_set().keys:
         if key.key_id == kid:
             return key.key

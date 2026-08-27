@@ -16,6 +16,14 @@ auth:
   # keys are cached and refreshed on our own clock, so this is only ever paid
   # once per refresh window.
   jwks_timeout_s: 5
+  # How often the background tick pulls the signing keys and sweeps expired
+  # sessions. Verification only ever reads what this leaves behind, so a key
+  # rotation is visible within one interval and no request ever waits on it.
+  jwks_refresh_s: 300
+  # How long a cached key set stays usable if the refresh tick cannot reach the
+  # endpoint. Deliberately long: the tick owns the schedule, so this only ever
+  # decides how much flakiness survives without becoming a sign-in outage.
+  jwks_cache_ttl_s: 86400
   cookie_name: "ark_session"
   cookie_secure: true             # false only for plain-http local development
   cookie_samesite: "lax"
