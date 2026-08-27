@@ -45,6 +45,21 @@ const _landing = (function captureAuthLanding() {
   };
 })();
 
+/* The `amr` claim and nothing else. A JWT payload is base64url and readable by
+   anyone holding the token, so this discloses nothing the browser did not
+   already have — but it is deliberately narrow: the rest of the payload is not
+   ours to print into a console log. */
+function _amrOf(token) {
+  try {
+    const body = String(token || "").split(".")[1];
+    if (!body) return "(no payload)";
+    const json = JSON.parse(atob(body.replace(/-/g, "+").replace(/_/g, "/")));
+    return "amr" in json ? JSON.stringify(json.amr) : "(no amr claim)";
+  } catch (e) {
+    return "(unreadable)";
+  }
+}
+
 /* Errors that mean NO MAIL WENT OUT and why must not be said aloud: the
    address is already registered, or we are inside the per-user window. Both
    answer the question "does this address have an account?", so they end on the
@@ -252,6 +267,10 @@ const api = {
     }
     if (_landing.recovery) {
       console.log("[auth] recovery link — opening the new-password screen");
+      // ONE claim, printed once, so a live reset run confirms the vocabulary the
+      // server's denylist is written against. `amr` names how the token was
+      // obtained; nothing else from the payload is read or logged.
+      console.log("[auth] recovery token amr:", _amrOf(_landing.token));
       return null;
     }
     if (_landing.otp) {
