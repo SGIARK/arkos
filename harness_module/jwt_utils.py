@@ -7,6 +7,7 @@ no stream token of its own.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 import uuid
@@ -16,6 +17,8 @@ from typing import Any
 import jwt  # PyJWT
 
 from config_module.loader import config
+
+logger = logging.getLogger(__name__)
 
 _ALG = "HS256"
 
@@ -70,7 +73,10 @@ def _jwks() -> Any:
         url = jwks_url()
         if url is None:
             return None
-        _jwks_client = jwt.PyJWKClient(url, cache_keys=True)
+        # A SHORT timeout on purpose: this runs on the default thread pool,
+        # shared with blob IO and every sandbox call, and 30s of holding one
+        # thread because an endpoint is unreachable is the outage, not the fix.
+        _jwks_client = jwt.PyJWKClient(url, cache_keys=True, timeout=float(config.get("auth.jwks_timeout_s") or 5))
     return _jwks_client
 
 
@@ -105,11 +111,22 @@ def _signing_key(token: str) -> Any:
     global _jwks_at
     now = time.monotonic()
     if now - _jwks_at > _JWKS_LIFESPAN_S:
-        # One fetch per lifespan, whatever arrives in between. A real rotation
-        # is visible within that window; an attacker's misses never are.
-        client.get_jwk_set(refresh=True)
+        # STAMPED FIRST, so a failing endpoint costs one attempt per window
+        # rather than one per request. Stamping after the call meant that when
+        # the fetch raised, the next request tried again — and with a 30s
+        # timeout that turned an unreachable JWKS into a minute-long sign-in.
         _jwks_at = now
+        try:
+            client.get_jwk_set(refresh=True)
+        except Exception as e:  # noqa: BLE001 - any failure falls back to the cache
+            logger.warning("JWKS refresh failed, serving the cached set: %s", e)
     kid = jwt.get_unverified_header(token).get("kid")
+    # CHECK THE CACHE BEFORE ASKING FOR IT: `get_jwk_set()` fetches when the
+    # cache is empty, so falling through it would pay the network again on the
+    # very path that exists because the network just failed.
+    cache = getattr(client, "jwk_set_cache", None)
+    if cache is not None and cache.get() is None:
+        raise jwt.InvalidKeyError(f"no JWKS cached to verify kid {kid!r}; the endpoint is unreachable")
     for key in client.get_jwk_set().keys:
         if key.key_id == kid:
             return key.key

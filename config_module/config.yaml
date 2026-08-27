@@ -10,6 +10,12 @@ app:
 
 auth:
   jwt_audience: "authenticated"   # what Supabase stamps on its access tokens
+  # How long to wait on the JWKS endpoint. Short on purpose: the fetch is
+  # blocking and runs on the pool shared with blob IO and every sandbox call,
+  # so an unreachable endpoint must fail fast rather than hold a thread. The
+  # keys are cached and refreshed on our own clock, so this is only ever paid
+  # once per refresh window.
+  jwks_timeout_s: 5
   cookie_name: "ark_session"
   cookie_secure: true             # false only for plain-http local development
   cookie_samesite: "lax"
