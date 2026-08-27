@@ -143,10 +143,8 @@ async def test_the_fold_rebuilds_messages_from_the_log():
 
     assert messages[0]["role"] == "system"
     assert messages[1] == {"role": "user", "content": "find the receipt"}
-    # Streamed chunks are one assistant message, carrying that hop's tool calls.
     assert messages[2]["content"] == "Looking now."
     assert messages[2]["tool_calls"][0]["function"]["name"] == "grep"
-    # The result carries the moment it was fetched (11.6); the body follows it.
     assert messages[3]["role"] == "tool" and messages[3]["tool_call_id"] == "c1"
     assert messages[3]["content"].startswith("[fetched ")
     assert messages[3]["content"].endswith("found it")
@@ -173,8 +171,7 @@ async def test_event_replay_deterministic():
     await slog.append(session_id, ContentEvent(text="hello"))
 
     session = await runner.load(session_id)
-    # `now` is an input to the fold (11.6), so it is pinned here rather than
-    # read twice: the invariant is same log AND same inputs => same messages.
+    # `now` is an input to the fold, so it is pinned: same log and same inputs => same messages.
     at = datetime(2026, 8, 20, 14, 32, tzinfo=UTC)
     first = (await runner.fold(session, now=at)).messages
     second = (await runner.fold(session, now=at)).messages
@@ -183,17 +180,13 @@ async def test_event_replay_deterministic():
 
 
 async def test_the_fold_stamps_a_result_and_dates_the_prompt(monkeypatch):
-    """11.6: the model can see when it is, and when each result was true.
-
-    A week-old inbox read must not render as the current one, and the session
-    must be able to notice it slept.
-    """
+    """The fold dates the prompt and stamps each result with when it was fetched."""
     session_id = await _session()
     await slog.append(session_id, UserEvent(text="what is in my inbox?"))
     await slog.append(session_id, ToolCallEvent(id="c1", name="mcp_gmail_search", args={}))
     await slog.append(session_id, ToolResultEvent(id="c1", ok=True, content="3 threads"))
 
-    # Age the stored result, the way a session resumed days later would see it.
+    # Age the stored result, as a session resumed days later would see it.
     fetched = datetime(2026, 8, 13, 9, 14, tzinfo=UTC)
     await pool.execute(
         "UPDATE session_events SET ts = $2 WHERE session_id = $1 AND kind = 'tool_result'",
@@ -403,7 +396,6 @@ async def test_two_concurrent_cancels_produce_exactly_one_terminal(model, tools,
 
     assert (row["status"], row["terminal_reason"]) == ("cancelled", "cancelled")
     assert len(dones) == 1, f"expected one terminal, got {[d.reason for d in dones]}"
-    # The session starts again after the cancel.
     assert await runner.start(session_id)
     await runner.cancel(session_id)
 
@@ -460,7 +452,6 @@ async def test_resume_verify_on_wake(model, tools):
     assert interrupted, "the dangling call was never closed"
     assert interrupted[0].error_kind == "interrupted"
     assert not interrupted[0].ok
-    # The repaired result is in the messages the model was sent.
     assert any(m.get("tool_call_id") == "orphan" for m in model.messages_seen[0])
 
 
@@ -515,7 +506,6 @@ async def test_a_message_typed_mid_call_still_folds_legally():
     messages = (await runner.fold(await runner.load(session_id))).messages
 
     _assert_loadable(messages)
-    # The message is kept, ordered after the result that was already open.
     assert [m["content"] for m in messages if m["role"] == "user"] == ["do it", "actually, hurry"]
     result = next(m for m in messages if m["role"] == "tool" and m["tool_call_id"] == "c1")
     assert messages.index(result) < len(messages) - 1
@@ -598,13 +588,7 @@ async def test_a_plain_wake_leaves_the_mode_alone(monkeypatch):
 
 
 async def test_a_setup_failure_is_an_internal_error_not_a_model_error(monkeypatch):
-    """`_drive`'s catch-all names the harness, because the harness is what failed.
-
-    A Postgres blip, an OpenAI outage and a model that said nothing all wrote
-    `model_error` before 11.8.5, so the status pill could not tell them apart —
-    and the 2026-08-20 Marketplace run reported `failed{model_error}` though
-    nothing had errored.
-    """
+    """`_drive`'s catch-all names the harness, because the harness is what failed."""
     session_id = await _session(status="idle")
 
     async def explode(_session):
@@ -625,12 +609,7 @@ async def test_a_setup_failure_is_an_internal_error_not_a_model_error(monkeypatc
 
 
 async def test_a_message_sent_mid_turn_reaches_the_next_hop(model, tools, monkeypatch):
-    """The gap this card closed.
-
-    A message typed during a run was appended, streamed and watched — and never
-    read, because the turn holds the list the fold built. It arrived after the
-    run was over, answering the question before it.
-    """
+    """A message typed mid-turn is read by the next hop, not after the run."""
     session_id = await _session()
 
     def bind(ctx, **kw):
@@ -655,8 +634,7 @@ async def test_a_message_sent_mid_turn_reaches_the_next_hop(model, tools, monkey
     second_hop = model.messages_seen[1]
     assert [m["content"] for m in second_hop if m["role"] == "user"][-1] == "clone it onto your computer"
 
-    # After the result of the call that was open when it was typed, which is the
-    # order the fold applies on replay and the order the API requires.
+    # The API requires the message after the result of the call that was open when it was typed.
     roles = [m["role"] for m in second_hop]
     assert roles[-2:] == ["tool", "user"]
 
@@ -688,8 +666,7 @@ async def test_two_messages_arrive_in_the_order_they_were_typed(model, tools, mo
 
 
 async def test_the_same_message_is_not_delivered_twice(model, tools, monkeypatch):
-    """The cursor advances past everything read, so a three-hop run does not
-    repeat what it was told on the first."""
+    """The cursor advances past everything read, so a message is delivered once."""
     session_id = await _session()
     posted = {"done": False}
 
@@ -733,8 +710,7 @@ async def test_a_message_after_the_last_hop_is_carried_by_the_next_turn():
 
 
 async def test_the_loop_does_not_re_read_its_own_nudge(model, tools, monkeypatch):
-    """The nudge is a user event with source=system; the loop wrote it and must
-    not be handed it back as something the human said."""
+    """A user event with source=system is the loop's own nudge and is never replayed to it."""
     session_id = await _session()
 
     def bind(ctx, **kw):
@@ -759,12 +735,7 @@ async def test_the_loop_does_not_re_read_its_own_nudge(model, tools, monkeypatch
 
 
 async def test_an_attended_gate_parks_on_the_call_rather_than_answering_for_the_human():
-    """It used to answer yes on the human's behalf, silently; then it refused and
-    told the model to describe its intention to `request_approval`, which bound
-    consent to prose and looped forever because nothing read the grant back.
-
-    Now the gate raises the marker that parks the turn ON THIS CALL (11.7).
-    """
+    """The gate raises the marker that parks the turn on this call."""
     session = _fake_session(mode="attended")
 
     with pytest.raises(ToolUnavailable) as raised:
@@ -785,16 +756,8 @@ async def test_the_escape_hatch_still_works_when_it_is_asked_for(monkeypatch):
 
 
 async def test_an_unattended_destructive_gate_parks_rather_than_refusing():
-    """It used to return False, which the caller renders as "the human declined"
-    — so the model went looking for another route to the same effect. Nobody
-    declined; nobody was asked. Parking for hours is what unattended parking is
-    for, and the park is identical in both modes.
-
-    Amended for 11.11.2: an unattended run now ANSWERS its own non-destructive
-    gates, so the tool here has to be a destructive one for there to be a park
-    to test. The point the test was making is unchanged — a park is not a
-    refusal — it just applies to the calls autopilot still refuses to make for
-    itself."""
+    """A gate parks rather than refusing; unattended answers its own non-destructive
+    gates, so only a destructive tool still parks here."""
     session = _fake_session(mode="unattended")
 
     with pytest.raises(ToolUnavailable) as raised:
@@ -829,8 +792,7 @@ def _fake_session(mode: str):
     """A sink with just enough session on it for the approval gate."""
     sink = runner._Sink.__new__(runner._Sink)
     sink.session = SimpleNamespace(id="3f1d4a02-0000-4000-8000-0000000000aa", mode=mode)
-    # `__init__` is skipped, so the state the gate reads is set by hand. Adding a
-    # field to the sink means adding it here, which is the cost of the shortcut.
+    # `__init__` is skipped: every field the gate reads must be set by hand here.
     sink._grant_once = False
     sink._park = None
     sink._gated_call = None
@@ -838,18 +800,12 @@ def _fake_session(mode: str):
 
 
 async def test_a_tools_status_reaches_the_stream(model, tools, monkeypatch):
-    """The `emit_status` channel, end to end for the first time.
-
-    `browser_task` is its first real consumer — a three-minute browser call has
-    to say what it is doing — and until this test nothing proved the channel
-    reached a subscriber at all: it was wired in the sink and called by nobody.
-    """
+    """A tool's `emit_status` reaches a stream subscriber and the transcript."""
     session_id = await _session()
     said: list[str] = []
 
     def bind(ctx, **kw):
         async def dispatch(name, args):
-            # What a long-running tool does while it works.
             ctx.emit_status("using the browser…", f"/sessions/{session_id}/browser/frames")
             ctx.emit_status("step 1/25 · go_to_url · open the pricing page")
             said.append(name)
@@ -906,7 +862,6 @@ async def test_an_unattended_run_completes_only_through_finish_task(model, tools
     row = await pool.fetchrow("SELECT status, mode, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id))
 
     assert (row["status"], row["terminal_reason"]) == ("completed", "completed")
-    # The finished run hands the session back as attended.
     assert row["mode"] == "attended"
 
 
@@ -980,7 +935,6 @@ async def test_a_killed_run_resumes_without_repeating_its_side_effect(model, too
     await runner.lifecycle.sweep_interrupted()
     failed = await pool.fetchrow("SELECT status, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id))
 
-    # A human restarts it.
     model.arm(_call("finish_task", '{"summary": "verified, already sent"}'))
     await runner.start(session_id)
     await _settle(session_id)
@@ -1001,18 +955,8 @@ async def test_a_killed_run_resumes_without_repeating_its_side_effect(model, too
 def tiny_window(monkeypatch):
     """A window small enough that a few results overflow it.
 
-    The ceiling has to sit ABOVE the system prompt, because rung 1 clears stored
-    results and nothing else — a ceiling below the prompt is a view that can
-    never come under budget however much it drops. So this number is tuned to
-    the prompt's size and has to be retuned whenever the prompt grows: it was
-    ~1313 tokens, 11.6's freshness block took it to ~1484, and 11.8.5's
-    "Running unattended" section took it to ~1735.
-
-    Retuned at 11.8.5 with room to spare rather than to the token: the previous
-    number left the ceiling ~45 tokens above the fully-cleared view, so the next
-    paragraph added to the prompt broke it. `_bulky_log` now shows enough of each
-    result that clearing them all frees ~735 tokens, which is the slack this
-    fixture needs on both sides.
+    The ceiling must sit ABOVE the system prompt (rung 1 clears stored results and
+    nothing else), so retune these numbers whenever the prompt grows.
     """
 
     def cfg(key, default):
@@ -1029,9 +973,8 @@ def tiny_window(monkeypatch):
 async def _bulky_log(session_id: str, results: int = 6, size: int = 1200) -> list[str]:
     """A log of blobbed results, oldest first.
 
-    The inline preview is deliberately much longer than the "[cleared…]" line
-    that replaces it: that difference IS the headroom rung 1 buys, and a small
-    difference makes `tiny_window` knife-edge on the prompt's length.
+    The inline preview must stay much longer than the "[cleared…]" line replacing
+    it: that difference is the headroom rung 1 buys.
     """
     refs = []
     await slog.append(session_id, UserEvent(text="do the thing"))
@@ -1124,7 +1067,6 @@ async def test_the_drop_is_recorded_in_the_transcript(model, tools, tiny_window)
     results = [e.event for e in events if e.event.kind == "tool_result"]
 
     assert len(transforms) == 1 and transforms[0].dropped_refs
-    # The stored results still hold their own text.
     assert all("cleared from view" not in r.content for r in results)
     assert len(events) > before
 
@@ -1146,12 +1088,11 @@ async def test_rung_1_clears_results_and_nothing_else(monkeypatch):
 
     folded = await runner.fold(await runner.load(session_id))
 
-    # Every clearable result is gone and the view is still over the ceiling.
     assert folded.transform.dropped_refs == refs
     assert runner._estimate_tokens(folded.messages) > int(runner._input_budget() * 0.8)
 
 
-# --- the terminal checklist sweep (11.11.1) -------------------------------------
+# --- the terminal checklist sweep -----------------------------------------------
 
 
 def _sweep_sink(todo):
@@ -1213,15 +1154,11 @@ async def test_a_run_with_no_checklist_sweeps_nothing():
     assert sink._queue.empty()
 
 
-# --- autopilot answers its own gates (11.11.2) ----------------------------------
+# --- autopilot answers its own gates --------------------------------------------
 
 
 def test_the_destructive_check_reads_the_name_the_gate_actually_sees():
-    """The gate sees `mcp_GMAIL_SEND_EMAIL`; config names `GMAIL_SEND_EMAIL`.
-
-    Matching the raw name alone auto-approves every destructive CONNECTOR tool,
-    silently, and the first symptom is a sent email.
-    """
+    """The gate sees `mcp_GMAIL_SEND_EMAIL`; config names `GMAIL_SEND_EMAIL`."""
     assert runner._destructive("GMAIL_SEND_EMAIL")
     assert runner._destructive("mcp_GMAIL_SEND_EMAIL")
     assert not runner._destructive("mcp_GMAIL_FETCH_EMAILS")
@@ -1291,20 +1228,11 @@ async def test_attended_chat_still_parks_everything():
         await sink._approve("mcp_GMAIL_FETCH_EMAILS", {})
 
 
-# --- regressions: shape changes that crashed a live server ----------------------
+# --- regressions ----------------------------------------------------------------
 
 
 async def test_fold_reads_a_session_that_has_todo_events():
-    """REGRESSION. Every turn died at fold with AttributeError: 'StoredEvent'
-    object has no attribute 'kind'.
-
-    11.11.1 added the checklist extraction and reached for `e.kind`/`e.payload`
-    — the shape of a database ROW, not of the object `_all_events` returns.
-    StoredEvent wraps the event, so the kind is on `e.event`.
-
-    Nothing local caught it because fold needs a database, so this test only
-    means anything where one exists — which is the point of it.
-    """
+    """StoredEvent wraps the event, so fold reads a todo's kind off `e.event`."""
     session_id = await _session()
     await slog.append(session_id, UserEvent(text="go"))
     await slog.append(session_id, TodoEvent(items=[{"text": "step one", "status": "pending"}]))
@@ -1326,13 +1254,8 @@ async def test_fold_reads_a_session_with_no_todo_events():
 
 
 async def test_approvals_get_returns_an_answered_row():
-    """REGRESSION. Answering any approval was a 500: KeyError 'answered_by'.
-
-    11.11.2 added the column to `_COLUMNS` and to `_row`, but `get` does not use
-    `_COLUMNS` — it joins sessions for the ownership check and spells its columns
-    by hand, so it handed `_row` a record without the field `_row` had started
-    reading. Every query feeding `_row` has to carry every column it reads.
-    """
+    """Every query feeding `_row` must carry every column `_row` reads — `get`
+    spells its own columns and does not use `_COLUMNS`."""
     session_id = await _session()
     user_id = str(await pool.fetchval("SELECT user_id FROM sessions WHERE id = $1", uuid.UUID(session_id)))
     row = await approvals.create(session_id, "call-regression", "call", "run it?", tool_name="t", tool_args={})
@@ -1360,14 +1283,7 @@ async def test_approvals_get_returns_an_auto_answered_row():
 
 
 async def test_an_auto_answered_approval_renders_the_auto_badge():
-    """The transcript's only reader of `Approval.auto_answered`.
-
-    Approvals are not an event kind, so an ANSWERED one has nowhere else to
-    appear in a transcript. The status event carries the badge, and the row —
-    not the fact that we just called answer_auto — is what decides it: if the
-    column ever stops being written, the badge stops rendering, which is the
-    failure anybody would want over a badge that lies.
-    """
+    """The status event carries the badge, and the stored row is what decides it."""
     session_id = await _session(mode="unattended")
     sink = runner._Sink.__new__(runner._Sink)
     sink.session = SimpleNamespace(id=session_id, user_id=None, mode="unattended")

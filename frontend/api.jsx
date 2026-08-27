@@ -1,11 +1,9 @@
 /* =========================================================
    The data layer: sign-in, the endpoint table, and the stream.
 
-   Everything here talks to the API on our own origin. That is not a
-   convenience: the session cookie is httpOnly and SameSite=Lax, so a
-   cross-origin backend would leave every EventSource unauthenticated. The page
-   never holds a token — supabase-js hands one over once at sign-in, the backend
-   turns it into a cookie, and the browser does the rest.
+   Everything here talks to the API on our own origin: the session cookie is
+   httpOnly and SameSite=Lax, so a cross-origin backend would leave every
+   EventSource unauthenticated. The page never holds a token.
    ========================================================= */
 
 /* Every file here is a <script type="text/babel">, so they share one global
@@ -13,32 +11,15 @@
    loads, and a second `const` of these names anywhere would throw. */
 const { useState, useEffect, useCallback, useRef } = React;
 
-/* The API is wherever this page came from. /app is served by the same app. */
 const API = location.origin;
 
-/* THE OAUTH FRAGMENT, TAKEN BEFORE ANYTHING CAN LOSE IT.
-
-   This app routes on the hash — `app.jsx` writes `#projects` in an effect on
-   mount — and the implicit flow returns `#access_token=...` in that same
-   fragment. There is only one, so the router and the token are two writers to
-   one slot, and on the Google landing the router won: it overwrote the hash
-   before the boot effect asked for it, and `returnFromOAuth` then correctly
-   and uselessly reported "no fragment". The token was already gone.
-
-   Fixed by ORDERING, not by a flag. This runs at module scope in the FIRST
-   script `index.html` loads, so it happens before React mounts, before any
-   effect runs, and before anything else in the page can touch the hash: read
-   it, keep it, strip it. From here on the router only ever sees a clean URL,
-   `returnFromOAuth` consumes what was stashed, and nothing that runs later can
-   destroy the token because it is no longer in the URL to destroy.
-
-   Stripping here is also what keeps a live access token out of the address bar
-   — and out of anything copied from it — for the whole life of the page. */
+/* Must run at module scope in the first script `index.html` loads, before the
+   router writes the hash: the OAuth token and the route share location.hash,
+   and whoever writes second wins. Stripping also keeps a live access token out
+   of the address bar. */
 const _oauthFragment = (function captureOAuthFragment() {
   const hash = location.hash || "";
   if (!hash.includes("access_token=") && !hash.includes("error=")) return "";
-  // The router's own initial read happens after this, and finds nothing — which
-  // is what it should find, so the view falls back to its default.
   history.replaceState(null, "", location.pathname + location.search);
   return hash;
 })();
@@ -58,34 +39,25 @@ async function supabaseClient() {
   }
   _supabase = window.supabase.createClient(cfg.supabase_url, cfg.anon_key, {
     auth: {
-      // The cookie is the session. Persisting a second one in localStorage would
-      // be a copy of a credential we deliberately do not keep.
+      // The cookie is the session; a second copy in localStorage would be a
+      // credential we deliberately do not keep.
       persistSession: false,
       autoRefreshToken: false,
-      /* IMPLICIT, not PKCE (12.1). PKCE is supabase-js's default and is the
-         better flow when the client keeps a session — but it stores a code
-         verifier between the redirect out and the redirect back, and with
-         `persistSession: false` there is nowhere to keep one, so the exchange
-         would fail every time. Implicit hands the token straight back on the
-         URL fragment, which is exactly what this app wants: a token to trade
-         for a cookie, once, and never store. The fragment never reaches the
-         server, and the capture above strips it from the URL before anything
-         else on the page runs. */
+      /* Implicit, not supabase-js's default PKCE: PKCE stores a code verifier
+         across the redirect, and `persistSession: false` has nowhere to keep
+         one, so the exchange would fail every time. */
       flowType: "implicit",
-      /* We read the fragment ourselves in `returnFromOAuth`, because the token
-         is not the session here — the cookie is, and the token is only good for
-         the one exchange that mints it. */
+      /* We read the fragment ourselves in `returnFromOAuth`: the cookie is the
+         session, and the token is only good for the one exchange that mints it. */
       detectSessionInUrl: false,
     },
   });
   return _supabase;
 }
 
-/* Trade a Supabase access token for our cookie. THE one session-establishment
-   path (12.1): password sign-in, sign-up and Google all end here, because
-   `POST /auth/session` is the only endpoint that reads a bearer token and the
-   only thing that mints a cookie. A second path would be a second place for
-   identity to be decided. */
+/* Trade a Supabase access token for our cookie. `POST /auth/session` is the only
+   endpoint that reads a bearer token and the only thing that mints a cookie, so
+   password sign-in, sign-up and Google all end here. */
 async function exchange(token) {
   const response = await fetch(API + "/auth/session", {
     method: "POST",
@@ -140,21 +112,16 @@ async function request(method, path, body) {
   return payload;
 }
 
-/* The wire carries `{seq, ts, kind, version, payload:{...}}`; every renderer
-   wants one flat event. Flattened here, once, at the boundary — so "store-shape
-   is wire-shape" is true of what the components actually receive, and no
-   renderer has to know the envelope exists. */
+/* The wire carries `{seq, ts, kind, version, payload:{...}}`; flattened once
+   here, at the boundary, so no renderer has to know the envelope exists. */
 function asEvent(raw) {
   const { payload, ...rest } = raw || {};
   return { ...rest, ...(payload || {}) };
 }
 
-/* Multipart goes around `request` rather than through it: the browser sets its
-   own boundary, and a Content-Type we invented would break it.
-
-   The path is REQUIRED and carries the folder: the store is one flat namespace
-   per user and every file in it lives in a folder, so there is no root to drop
-   something into. */
+/* Multipart goes around `request`: the browser sets its own boundary, and a
+   Content-Type we invented would break it. `path` is REQUIRED and carries the
+   folder — the store is one flat namespace per user with no root. */
 async function _postFile(blob, path, whenItFails) {
   const form = new FormData();
   form.append("file", blob, path.split("/").pop());
@@ -178,9 +145,8 @@ const api = {
 
   me: () => request("GET", "/auth/me"),
 
-  /* Sign in with Supabase, then trade the token for our cookie. The token is
-     used once, here, and never stored: from the next request on, identity is
-     the httpOnly cookie, which script cannot read. */
+  /* The token is used once, here, and never stored: from the next request on,
+     identity is the httpOnly cookie, which script cannot read. */
   async signIn(email, password) {
     const client = await supabaseClient();
     const { data, error } = await client.auth.signInWithPassword({ email, password });
@@ -190,21 +156,9 @@ const api = {
     return exchange(token);
   },
 
-  /* Make an account (12.1). The NAME rides as user_metadata, so it arrives on
-     the signed token and `POST /auth/session` can trust it; nothing about the
-     name is sent in a body anywhere.
-
-     Two endings, and the caller has to tell them apart. With email confirmation
-     ON — which it is — Supabase returns a user and NO session, because the
-     account is not usable until the link is clicked. That is a success, not a
-     failure, and it is reported as `{confirm: true}` rather than by throwing.
-     With confirmation off, a session comes straight back and this signs in.
-
-     A repeat sign-up on an existing address does NOT error: Supabase answers
-     with a user carrying an empty `identities` array, deliberately, so the form
-     cannot be used to enumerate who has an account. We honour that — the caller
-     says "check your email" either way — because doing otherwise would rebuild
-     the leak by hand. */
+  /* The name rides as user_metadata so it arrives on the signed token. Supabase
+     returns no session when email confirmation is on (`{confirm: true}`, a
+     success), and no error for an existing address (empty `identities`). */
   async signUp(name, email, password) {
     const client = await supabaseClient();
     const { data, error } = await client.auth.signUp({
@@ -212,10 +166,8 @@ const api = {
       password,
       options: {
         data: { name },
-        // Stated rather than inherited: without it the confirmation link lands
-        // on whatever the dashboard's Site URL happens to be, which is a
-        // different setting in a different place that nothing here can see.
-        // Same trailing slash, and the same allowlist requirement.
+        // Stated rather than inherited: without it the confirmation link lands on
+        // the dashboard's Site URL. Same trailing slash and allowlist requirement.
         emailRedirectTo: API + "/app/",
       },
     });
@@ -225,45 +177,27 @@ const api = {
     return { confirm: false, me: await exchange(token) };
   },
 
-  /* Google is only another way to GET a Supabase token (12.1) — the cookie it
-     ends at is the same cookie, minted by the same endpoint. `redirectTo` is
-     this exact origin, which is what keeps contracts' same-origin `/app` rule
-     true through the round trip: the cookie is SameSite=Lax and a cross-site
-     landing would arrive without it. This navigates the tab away; nothing after
-     it runs. */
+  /* `redirectTo` must be this exact origin: the cookie is SameSite=Lax and a
+     cross-site landing would arrive without it. This navigates the tab away, so
+     nothing after it runs. */
   async signInWithGoogle() {
     const client = await supabaseClient();
     const { error } = await client.auth.signInWithOAuth({
       provider: "google",
-      // TRAILING SLASH, deliberately. `/app` is a StaticFiles mount, so the
-      // server answers a slashless request with a 307 to `/app/`. Landing on
-      // the final URL means the return leg never depends on what survives a
-      // redirect. NOTE: Supabase matches this against its Redirect Allowlist,
-      // so the allowlist must name `<origin>/app/` — an entry for `/app` alone
-      // will refuse this and the error comes back on the fragment.
+      // TRAILING SLASH: `/app` is a StaticFiles mount that 307s to `/app/`, and
+      // Supabase matches this against its Redirect Allowlist, so the allowlist
+      // must name `<origin>/app/` — an entry for `/app` alone refuses this.
       options: { redirectTo: API + "/app/" },
     });
     if (error) throw new ApiError("sign_in_failed", error.message);
   },
 
-  /* The return leg. Implicit flow puts the token on the fragment, so this reads
-     it, trades it for the cookie, and STRIPS the fragment before anything can
-     copy the URL out of the address bar with a live access token in it.
-
-     Returns null when there is nothing to return from, which is the ordinary
-     case on every load, so the caller can always call it. An `error` in the
-     fragment is Google or Supabase refusing — surfaced, and the fragment
-     cleared, or a reload would replay the same failure forever. */
+  /* Returns null when there is nothing to return from, the ordinary case on
+     every load, so the caller can always call it. */
   async returnFromOAuth() {
-    /* Reads the STASH, never `location.hash` — by the time this runs the router
-       has already written `#projects` over the real fragment, which is the bug
-       this stash exists to make impossible. */
+    /* Reads the stash, never `location.hash`: by the time this runs the router
+       has already written over the real fragment. */
     const hash = _oauthFragment;
-    /* SAY SO EITHER WAY. This ran silently and returned null on a load that
-       should have carried a token, and a silent no-op is indistinguishable from
-       code that never ran at all — which is exactly how the first Google round
-       trip failed: the console showed one 401 from `me()` and nothing else, and
-       the absence proved nothing. `[auth]` so it is greppable in a busy log. */
     if (!hash) {
       console.log("[auth] no fragment on", location.pathname, "— nothing to exchange");
       return null;
@@ -276,8 +210,6 @@ const api = {
     }
     const token = params.get("access_token");
     if (!token) {
-      // A fragment that carried neither a token nor an error is a shape nobody
-      // predicted; naming its keys is what makes it diagnosable.
       console.log("[auth] fragment with no access_token, keys:", [...params.keys()].join(","));
       return null;
     }
@@ -293,16 +225,12 @@ const api = {
   /* --- what is here ----------------------------------------------------- */
 
   projects: () => request("GET", "/projects"),
-  /* Deliberately, rather than as a side effect of starting a session.
-
-     `folders` is what it LINKS — store folders that already exist, by name. A
-     project owns none of them, so linking costs nothing and unlinking would
-     take nothing away. Picking none makes a folder named after the project,
-     which then appears in the Files tab like any other. */
+  /* `folders` LINKS store folders that already exist, by name; a project owns
+     none of them. Picking none makes a folder named after the project. */
   createProject: (title, folders) =>
     request("POST", "/projects", folders && folders.length ? { title, folders } : { title }),
-  /* Link one more folder to a project. The pane shows it at once; the AGENT
-     sees it from the next session, because claims are fixed per session. */
+  /* The pane shows it at once; the AGENT sees it from the next session, because
+     claims are fixed per session. */
   linkFolder: (projectId, folder) => request("POST", `/projects/${projectId}/folders`, { folder }),
   renameProject: (projectId, title) => request("PATCH", `/projects/${projectId}`, { title }),
   sessions: (status) => request("GET", status ? `/sessions?status=${encodeURIComponent(status)}` : "/sessions"),
@@ -311,14 +239,13 @@ const api = {
     const body = await request("GET", `/sessions/${sessionId}`);
     return { ...body, recent_events: (body.recent_events || []).map(asEvent) };
   },
-  /* The whole store: one flat namespace per user, folder-first paths. What the
-     Files tab draws, and where its headers come from. */
+  /* The whole store: one flat namespace per user, folder-first paths. */
   storeFiles: () => request("GET", "/files"),
-  /* The store's folders with their file counts — the modal's checklist and the
-     `+ link` picker. Derived from the paths, never a table. */
+  /* The store's folders with their file counts, derived from the paths rather
+     than from a table. */
   folders: () => request("GET", "/folders"),
-  /* The same rows, narrowed to what one project LINKS: the working-files pane.
-     Same paths, so clicking one lands on it in the Files tab. */
+  /* The same rows, narrowed to what one project LINKS; same paths as the Files
+     tab, so clicking one lands on it there. */
   files: (projectId) => request("GET", `/projects/${projectId}/files`),
   file: (fileId) => request("GET", `/files/${fileId}`),
   /* One query at three scopes: nothing is the Command Center, a project is its
@@ -332,66 +259,52 @@ const api = {
     return request("GET", "/attention" + query);
   },
 
-  /* Uploading a file and saving an edit are the SAME call: `put_file` upserts
-     on (project_id, path), so writing a path that already exists replaces it,
-     and write-through puts it in any box already holding the project.
-
-     A folder is a path prefix, not a row: the store keeps flat paths and the
-     tree is derived from them, so uploading INTO a directory is uploading a
-     file whose path carries it. Absent, the name alone lands it at the root. */
+  /* `put_file` upserts on (project_id, path), so writing an existing path
+     replaces it. A folder is a path prefix, not a row: uploading into a
+     directory means putting it in the path; absent, the name lands at the root. */
   upload: (file, dir) =>
     _postFile(file, dir ? `${dir}/${file.name}` : file.name, `Could not upload ${file.name}.`),
   saveFile: (path, text) =>
     _postFile(new Blob([text], { type: "text/plain" }), path, `Could not save ${path}.`),
 
-  /* A folder is durable the moment it is named: the server writes a zero-byte
-     sentinel inside it, because a folder is a path segment and not a row.
-     Nothing about it lives only in this tab. */
+  /* The server writes a zero-byte sentinel inside the folder, because a folder
+     is a path segment and not a row. */
   newFolder: (path) => request("POST", "/folders", { path }),
 
-  /* Rename or reparent a file or a directory inside the store. Blobs never move
-     — they are content-addressed — so this is a row edit the server also pushes
-     into any live sandbox, which is what stops a running turn from undoing it.
-     Moving a top-level FOLDER is refused: that is its own card. */
+  /* A row edit — blobs are content-addressed and never move — which the server
+     also pushes into any live sandbox. Moving a top-level FOLDER is refused. */
   moveFile: (from, to) => request("POST", "/files/move", { from, to }),
 
-  /* Rename anything in the store — a file, a directory, or a top-level folder.
-     `name` is a NAME: a `/` in it is refused rather than quietly making this a
-     move. Renaming a top-level folder carries the projects that link it and the
-     claims that mount it with the paths, and is refused while a running session
-     has it mounted (`409 folder_busy`). */
+  /* `name` is a NAME: a `/` in it is refused rather than making this a move.
+     Renaming a top-level folder carries its project links and claims, and is
+     refused while a running session has it mounted (`409 folder_busy`). */
   renameFile: (path, name) => request("POST", "/files/rename", { path, name }),
 
-  /* Delete a file or a whole subtree. The rows go and the BLOBS do not — they
-     are content-addressed and never collected — so the `batch` this returns
-     takes it back exactly, the same content under the same id. A delete that
-     empties a folder takes the folder and the project links that named it, and
-     `folders` says which stopped existing. */
+  /* The rows go and the BLOBS do not, so the returned `batch` takes it back
+     exactly. A delete that empties a folder takes the folder and the project
+     links that named it. */
   deleteFile: (path) => request("DELETE", "/files", { path }),
   undoDelete: (batch) => request("POST", "/files/undo", { batch }),
 
   /* --- connections ------------------------------------------------------ */
 
-  /* One row per connector, each carrying what the next click does: `scopes`,
-     what a connect is about to grant, and `shares_with`, the sibling services a
-     disconnect takes with it. A Composio connected account is per toolkit, so
-     this is normally empty.
-     `setup_url` is a live consent link, so the panel can open the popup inside
-     the click rather than after an await, which the browser would block. */
+  /* Each row carries `scopes` (what a connect grants) and `shares_with` (what a
+     disconnect takes with it — normally empty, Composio grants are per toolkit).
+     `setup_url` is a live consent link, so the popup can open inside the click
+     rather than after an await, which the browser would block. */
   connections: () => request("GET", "/connections"),
 
   /* Mints a fresh consent link when the row's has gone stale. Calls no tool and
      connects nothing: the popup is what connects. */
   connect: (server) => request("POST", `/connections/${encodeURIComponent(server)}/connect`),
 
-  /* Revokes at Composio and answers with what actually went — which may be more than
-     one service whenever they share a sign-in. */
+  /* Revokes at Composio and answers with what actually went — which may be more
+     than one service whenever they share a sign-in. */
   disconnect: (server) => request("DELETE", `/connections/${encodeURIComponent(server)}`),
 
   /* --- what one session may reach --------------------------------------- */
 
-  /* The meter and the per-server rows behind the composer's tools chip. The
-     write returns the whole document, so the chip re-renders from what the
+  /* The write returns the whole document, so the chip re-renders from what the
      server now holds rather than from what the click assumed. */
   sessionTools: (sessionId) => request("GET", `/sessions/${sessionId}/tools`),
   setSessionTool: (sessionId, server, enabled) =>
@@ -399,8 +312,7 @@ const api = {
 
   /* --- the session's live disk ------------------------------------------ */
 
-  /* The sandbox filesystem while the session is awake. Nothing here boots a
-     box: a parked or finished session 404s, which is the honest answer. */
+  /* Nothing here boots a box: a parked or finished session 404s. */
   sandboxDir: (sessionId, path) =>
     request("GET", `/sessions/${sessionId}/fs${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   sandboxFile: (sessionId, path) =>
@@ -408,43 +320,37 @@ const api = {
 
   /* --- what a human may do ---------------------------------------------- */
 
-  /* Every one of these is a suggestion or a decision. None of them executes a
-     tool: the human steers the session, and the session acts. */
+  /* None of these executes a tool: the human steers the session, and the
+     session acts. */
   start: (goal, projectId) =>
     request("POST", "/sessions", projectId ? { goal, project_id: projectId } : { goal }),
   send: (sessionId, text) => request("POST", `/sessions/${sessionId}/messages`, { text }),
   answer: (approvalId, answer) => request("POST", `/approvals/${approvalId}/respond`, { answer }),
   approve: (sessionId) => request("POST", `/sessions/${sessionId}/approve`),
-  /* Stop holds a run; cancel ends it. The same teardown on the server, landing
-     differently: stop leaves the session idle with its mode kept, so the plan
-     still stands, and cancel is terminal and spends it. */
+  /* Same teardown, different landing: stop leaves the session idle with its mode
+     kept, so the plan still stands; cancel is terminal and spends it. */
   stop: (sessionId) => request("POST", `/sessions/${sessionId}/stop`),
-  /* Pick a stopped run back up with nothing added. The mode was kept, so an
-     idle unattended session resumes UNATTENDED from its plan. Saying something
-     instead is `send` — the words land in the fold and the run reads them. */
+  /* The mode was kept, so an idle unattended session resumes UNATTENDED from its
+     plan. Saying something instead is `send`. */
   resume: (sessionId) => request("POST", `/sessions/${sessionId}/resume`),
   cancel: (sessionId) => request("POST", `/sessions/${sessionId}/cancel`),
 
   /* --- the stream ------------------------------------------------------- */
 
   /* One EventSource for the ACCOUNT, opened once at sign-in. A frame carries no
-     row: it means "read /attention again". Returns its own unsubscribe, which
-     is what a `useEffect` cleanup wants. */
+     row: it means "read /attention again". Returns its own unsubscribe. */
   watchAttention(onChange) {
     const source = new EventSource(`${API}/attention/stream`, { withCredentials: true });
     source.addEventListener("attention", () => onChange());
     /* No error handler beyond the default: there is no state to repair and no
-       cursor to resume from, so a drop costs one stale list until the browser
-       reconnects on its own and the server's opening frame refetches. */
+       cursor to resume from, so a drop costs one stale list. */
     return () => source.close();
   },
 
-
-  /* One EventSource per open session. No polling anywhere: the snapshot gives
-     the tail of the log and its last seq, and the stream carries everything
-     after it. On a drop the browser reconnects on its own and sends
-     Last-Event-ID; `last_event_id` here is only for the first connect, which
-     has no header to send. */
+  /* One EventSource per open session, no polling: the snapshot gives the tail of
+     the log and its last seq, and the stream carries everything after it.
+     `last_event_id` is only for the first connect; a reconnect sends the
+     Last-Event-ID header itself. */
   stream(sessionId, afterSeq, onEvent, onError) {
     const url = `${API}/sessions/${sessionId}/events?last_event_id=${afterSeq || 0}`;
     const source = new EventSource(url, { withCredentials: true });
@@ -464,8 +370,7 @@ const api = {
     for (const kind of EVENT_KINDS) source.addEventListener(kind, handle);
     source.addEventListener("error", (e) => {
       // A stream that failed on the server sends a final `error` frame with a
-      // body; a dropped connection sends an event with none, and the browser
-      // is already reconnecting.
+      // body; a dropped connection sends an event with none.
       if (e.data && onError) {
         try {
           onError(JSON.parse(e.data));
@@ -507,10 +412,8 @@ function relTime(iso) {
   return Math.floor(s / 86400) + "d ago";
 }
 
-/* Why a run stopped, in words. The vocabulary is `done.reason` and the pill is
-   read by people, so each reason says what actually happened: 11.8.5 split
-   `model_error` into three, and "failed: model_error" for a Postgres blip was
-   exactly the confusion that split fixed. */
+/* Keyed by `done.reason`, and read by people, so each reason says what actually
+   happened. */
 const REASON_LABEL = {
   stalled_progress: "stalled — no progress",
   model_error: "the model errored",

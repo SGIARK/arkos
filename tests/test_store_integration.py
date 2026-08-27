@@ -1,13 +1,4 @@
-"""The blob backend against a real Supabase Storage bucket.
-
-Marked `integration`: it needs SUPABASE_SECRET_KEY and a private bucket named by
-STORE_BUCKET; the project URL is derived from DB_URL. Run with
-`pytest -m integration`.
-
-The mock-transport tests in test_store.py pin the HTTP contract. What only this
-can show is that the bucket exists, the key is accepted, and a blob survives a
-round trip.
-"""
+"""The blob backend against a real Supabase Storage bucket, named by STORE_BUCKET."""
 
 from __future__ import annotations
 

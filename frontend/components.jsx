@@ -1,25 +1,12 @@
-/* =========================================================
-   Shared atoms and cards, ported from the pre-rewrite frontend.
+/* Shared atoms and cards. */
 
-   These are the originals' markup and behaviour, re-pointed at the endpoints
-   that exist now. The class names, the structure and the choreography are not
-   new work — only what they talk to is. What was genuinely bound to the deleted
-   architecture (the task rows, the plan card's fenced-block approval flow, the
-   demo login) is gone with it; everything here outlived its data source.
-   ========================================================= */
-
-/* The status dot. `live` pings, because a running thing should look running. */
-/* One dot, one prop API. `kind` names a tone directly ("work"), `status` names
-   a lifecycle state and is translated. Both are kept because both are real
-   questions — "show me the attention colour" and "show me what this session is
-   doing" — but only one of them may be passed. */
+/* `kind` names a tone directly, `status` names a lifecycle state and is
+   translated; exactly one of the two may be passed. */
 function Dot({ kind, status, title }) {
   const tone = kind !== undefined ? kind : toneFor(status);
   return <span className={"dot" + (tone ? " " + tone : "")} title={title || statusLabel(status)} />;
 }
 
-/* The old vocabulary was live / work / stop, and it is a better one than five
-   flat colours: one thing is alive, one wants you, one has stopped. */
 function toneFor(status) {
   if (status === "running") return "live";
   if (status === "awaiting_approval") return "work";
@@ -40,10 +27,6 @@ function Spinner() {
   return <span className="spin" />;
 }
 
-/* Escape closes the thing on top. Written four times across two files before
-   11.7.5 — each an effect, a listener and a matching teardown, and each one a
-   chance to forget the teardown. `active` gates it so a closed modal is not
-   holding a listener for a key it would ignore. */
 function useEscape(active, close) {
   useEffect(() => {
     if (!active) return undefined;
@@ -53,12 +36,6 @@ function useEscape(active, close) {
   }, [active, close]);
 }
 
-/* The approval card, ported. It collapses itself on resolve rather than
-   vanishing, and it carries the note field: answering a question and adding a
-   sentence about why are the same gesture, so they are the same control.
-
-   The old one took a workshopped plan; this one takes an `approval` row, which
-   is the same thing the backend now calls a question. */
 function ApprovalCard({ item, onResolve, onError }) {
   const [noteOpen, setNoteOpen] = useState(false);
   const [gone, setGone] = useState(false);
@@ -66,12 +43,9 @@ function ApprovalCard({ item, onResolve, onError }) {
   const note = useRef(null);
 
   const isAsk = item.kind === "ask";
-  // A gated call is decided, not discussed: the API takes exactly approve or
-  // decline, so no note is appended to it and the verbs are its own.
+  // The API takes exactly "approve" or "decline" for a gated call; no note is
+  // appended to it.
   const isCall = item.kind === "call";
-  /* A pending plan, on the desk. It gets its steps and the two words here and
-     nothing else: workshopping a plan is the session window's job, where the
-     conversation that produced it is on screen. */
   const isPlan = item.kind === "plan";
   const plan = isPlan ? item.tool_args || {} : null;
   const decided = isCall || isPlan;
@@ -81,8 +55,6 @@ function ApprovalCard({ item, onResolve, onError }) {
     const body = decided || !extra ? answer : `${answer}\n\n${extra}`;
     setGone(true);
 
-    // Collapse in place: the card shrinking is what says "answered", and the
-    // list closing over it is quieter than a row disappearing.
     if (card.current) {
       const height = card.current.offsetHeight;
       card.current.style.transition =
@@ -172,8 +144,6 @@ function ApprovalCard({ item, onResolve, onError }) {
   );
 }
 
-/* An ask wants prose, not a verdict, so it gets the field rather than the pair
-   of buttons. */
 function AskAnswer({ disabled, onSend }) {
   const [text, setText] = useState("");
   return (
@@ -200,15 +170,10 @@ function AskAnswer({ disabled, onSend }) {
 
 /* =========================================================
    the stream — one session's live transcript
-
-   ONE component for every session, because there is only one kind (D5): the
-   only difference between them is whether a human is turn-taking with it. It
-   was "shared by the chat view and the looking glass detail" until 11.8 removed
-   the chat view; what is left is the rule that outlived it.
    ========================================================= */
 
-/* One reply is many `content` events — that is what streaming is — so a run of
-   them is one message, not one paragraph each. Same for `reasoning`. */
+/* One reply arrives as many `content` events, so a consecutive run of them is
+   one message rather than one paragraph each. Same for `reasoning`. */
 function grouped(events) {
   const out = [];
   for (const event of events) {
@@ -230,8 +195,8 @@ function useStream(sessionId, onError, onPulse) {
   const [questions, setQuestions] = useState([]);
   const [todo, setTodo] = useState(null);
   const [browserUrl, setBrowserUrl] = useState(null);
-  // What the browser run last said about itself. Null until one announces
-  // itself, so a lease-waiting status is never read as a page.
+  // Null until a browser run announces itself, so a lease-waiting status is
+  // never read as a page.
   const [browserLabel, setBrowserLabel] = useState(null);
   const seen = useRef(new Set());
 
@@ -244,11 +209,8 @@ function useStream(sessionId, onError, onPulse) {
     }
   }, [sessionId, onError]);
 
-  /* Re-read the session's own fields. `questions` covers what is OPEN; this
-     covers what was decided — `plan.answer` is how the window knows a plan was
-     approved, dismissed, or spent by a cancel, and none of those leave a row
-     behind to notice. Only the fields are taken: `events` has its own stream and
-     re-seeding it from the snapshot would duplicate everything since. */
+  /* Fields only: `recent_events` is dropped because the stream owns events and
+     re-seeding from the snapshot would duplicate everything since. */
   const refreshSession = useCallback(async () => {
     if (!sessionId) return;
     try {
@@ -259,8 +221,8 @@ function useStream(sessionId, onError, onPulse) {
     }
   }, [sessionId, onError]);
 
-  /* Snapshot first, then the stream from where the snapshot ended, so nothing
-     between the two is missed: the replay starts at that seq. */
+  /* Snapshot first, then the stream replayed from that seq, so nothing between
+     the two is missed. */
   useEffect(() => {
     if (!sessionId) return undefined;
     let source = null;
@@ -277,12 +239,9 @@ function useStream(sessionId, onError, onPulse) {
         const plans = recent.filter((e) => e.kind === "todo");
         if (plans.length) setTodo(plans[plans.length - 1].items);
 
-        /* A browser run that announced itself BEFORE this window opened. Frames
-           are a side-channel and are never replayed, but the stream is still
-           there to subscribe to — without this, reloading the page mid-run left
-           the canvas saying no browser had run, and it stayed wrong until the
-           next step happened to fire. Only while the session is still running,
-           and only if nothing has finished since the announcement. */
+        /* Frames are a side-channel and are never replayed: re-attach to a run
+           announced before this window opened, only while the session is still
+           running and nothing has finished since. */
         const announced = recent.filter((e) => e.kind === "status" && e.url);
         const ended = recent.filter((e) => e.kind === "done");
         const live = announced.length ? announced[announced.length - 1] : null;
@@ -317,8 +276,8 @@ function useStream(sessionId, onError, onPulse) {
                 setBrowserUrl(event.url);
                 setBrowserLabel(event.label || "");
               } else {
-                // Only once a run has announced itself: before that, a status
-                // is somebody else's (a lease wait, a discarded edit).
+                // Before a run announces itself, a status is somebody else's
+                // (a lease wait, a discarded edit).
                 setBrowserLabel((current) => (current === null ? null : event.label || current));
               }
             }
@@ -326,11 +285,8 @@ function useStream(sessionId, onError, onPulse) {
               setSession((s) => (s ? { ...s, hops_used: event.hops_used, hops_max: event.hops_max } : s));
             }
             if (event.kind === "lifecycle") {
-              /* Mode moves in exactly one place — approving a plan — and it
-                 moves in the SAME conditional UPDATE as the status, so the
-                 lifecycle event is where the window learns about it. A terminal
-                 hands the session back attended, the other half of the same
-                 rule. */
+              /* Mode moves only here: the server flips it in the same UPDATE as
+                 the status, on plan approval and on any terminal state. */
               setSession((s) =>
                 s
                   ? {
@@ -370,9 +326,7 @@ function useStream(sessionId, onError, onPulse) {
     };
   }, [sessionId, refreshQuestions, refreshSession, onError, onPulse]);
 
-  /* Optimistic: the words appear now and reconcile when the log echoes them.
-     Waiting a round trip to see what you just typed is the one latency a chat
-     cannot have. */
+  /* Optimistic: the local echo is dropped when the log echoes the same text. */
   const send = useCallback(
     async (body) => {
       const mine = { id: `local-${Date.now()}`, text: body };
@@ -401,7 +355,6 @@ function useStream(sessionId, onError, onPulse) {
   };
 }
 
-/* One event, in the design's stream vocabulary. */
 function StreamEvent({ event, questions, onAnswered, onError }) {
   const [openArgs, setOpenArgs] = useState(false);
   const [openResult, setOpenResult] = useState(false);
@@ -409,11 +362,8 @@ function StreamEvent({ event, questions, onAnswered, onError }) {
 
   switch (event.kind) {
     case "user":
-      /* `source: system` is the harness talking to the model — the play
-         button's handoff, the continuation, the finish nudge. It is in the log
-         because the fold needs it, and it is NOT rendered: nobody typed it, and
-         showing it put the instructions we send in with the words the human
-         said, which read as a leaked prompt rather than as a turn. */
+      /* `source: system` is the harness talking to the model: in the log
+         because the fold needs it, deliberately not rendered. */
       return event.source === "system" ? null : (
         <div className="ev-block ev-user">
           <span className="who">you</span>
@@ -483,14 +433,7 @@ function StreamEvent({ event, questions, onAnswered, onError }) {
     }
 
     case "status":
-      /* An auto-approval is not progress, so it does not get the spinner: it is
-         a decision the run made on the human's behalf, and it reads as a badge
-         beside the tool it approved. The prefix is the harness's `_AUTO_BADGE`
-         — approvals are not an event kind, so a status event is where an
-         answered one can appear in a transcript at all. */
-      /* A retry is the run waiting, not working: the spinner would say the
-         opposite. It reads as a held breath rather than progress, which is what
-         it is — the model asked us to wait and we are waiting. */
+      /* A retry is the run waiting, not working, so it gets no spinner. */
       if (String(event.label || "").startsWith(RETRY_LABEL)) {
         return (
           <div className="ev-block ev-status ev-retry">
@@ -499,6 +442,8 @@ function StreamEvent({ event, questions, onAnswered, onError }) {
           </div>
         );
       }
+      /* Approvals are not an event kind, so an auto-approved one arrives as a
+         status carrying this prefix. */
       if (String(event.label || "").startsWith(AUTO_BADGE)) {
         return (
           <div className="ev-block ev-status ev-auto">
@@ -534,23 +479,19 @@ function StreamEvent({ event, questions, onAnswered, onError }) {
 
     case "todo":
     case "budget":
-      return null; // both live in the context panel, where they stay glanceable
+      return null; // both live in the context panel
 
     default:
       return <div className="ev-block ev-lifecycle">{event.kind}</div>;
   }
 }
 
-/* Mirrors `_AUTO_BADGE` in harness_module/runner.py. An autopilot run answers
-   its own non-destructive gates, and this is how the transcript says so. */
+/* Mirrors `_AUTO_BADGE` in harness_module/runner.py. */
 const AUTO_BADGE = "auto-approved ";
 
-/* Mirrors the label agent_module/loop.py builds when the client is backing off.
-   A run gone quiet for eight seconds looks exactly like a hung one; this is how
-   the person watching can tell which. */
+/* Mirrors the label agent_module/loop.py builds while the client backs off. */
 const RETRY_LABEL = "model busy ";
 
-/* A parked session's open question, answered where it was asked. */
 function AskBlock({ item, onAnswered, onError }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -566,11 +507,8 @@ function AskBlock({ item, onAnswered, onError }) {
     }
   };
 
-  /* A gated call is not a question. The session is parked with this exact call
-     open in the transcript, so the card shows the call and its arguments — the
-     thing that will actually run — and answering runs or closes it. Approving a
-     description of an action was the old shape, and nothing bound the
-     description to the action. */
+  /* Consent binds to the call, so the card shows the exact tool and args that
+     answering will run. */
   if (item.kind === "call") {
     return (
       <div className="ev-block ev-ask ev-gated">
@@ -614,26 +552,9 @@ function AskBlock({ item, onAnswered, onError }) {
 }
 
 /* =========================================================
-   the plan card (11.8.5)
-
-   An unattended run starts from an approved plan and no other way, so this is
-   the surface that starts one. It is not a summary of a decision made
-   elsewhere: the approvals row carries the plan itself, the card renders those
-   args, and answering the card is what writes plan.md and flips the mode.
-
-   Three answers, not two, which is the whole difference between this and the
-   gated-call card. Approve runs it, ✕ closes the park, and anything typed into
-   the field is a REPLY — the model reads it and proposes again. That is why the
-   input sits on the card rather than in the composer: the composer refuses a
-   plan-parked session with a 409, because "yes do that" typed down there would
-   read as a reply rather than as consent.
-
-   What this card deliberately does NOT do is track a conversation. There is no
-   revising banner and no "changed since v{n-1}" diff: replying closes THIS card
-   and the next plan arrives as a whole new one. The diff was unreadable by v3 —
-   changes stack, and a list of every edit since the last version says less than
-   the plan itself does. A reply is answered by a new plan, not by an annotation
-   on the old one.
+   the plan card — three answers: approve runs it, ✕ closes the park, and typed
+   text is a REPLY that closes this card (the next plan arrives as a new one).
+   The field lives here because the composer 409s a plan-parked session.
    ========================================================= */
 
 function PlanCard({ item, onAnswered, onError }) {
@@ -645,8 +566,7 @@ function PlanCard({ item, onAnswered, onError }) {
   const inputs = Array.isArray(plan.inputs) ? plan.inputs : [];
   const missing = Array.isArray(plan.missing) ? plan.missing : [];
 
-  /* Every action is the same request with a different word in it, because on
-     the wire they ARE the same request: the answer text is what decides. */
+  /* Approve, decline and reply are one request; the answer text decides. */
   const respond = async (answer, outcome) => {
     setBusy(true);
     try {
@@ -660,9 +580,7 @@ function PlanCard({ item, onAnswered, onError }) {
     }
   };
 
-  /* The field is cleared only once the request has landed. Clearing it first
-     lost the reply outright when the post failed — the one thing on this card
-     the human actually typed. */
+  /* Cleared only once the request lands, so a failed post keeps the reply. */
   const sendAsk = async () => {
     const said = ask.trim();
     if (!said) return;
@@ -676,8 +594,7 @@ function PlanCard({ item, onAnswered, onError }) {
         <span className="ver">v{item.version || 1}</span>
         <span className="grow" />
         <span className="mute">nothing runs until you approve</span>
-        {/* The way out, where a way out is looked for: on the card itself, not
-            in a footer below the fold of a card that scrolls. */}
+        {/* The way out sits on the card, not in a footer below its scroll. */}
         <button className="pl-x" title="dismiss this plan" disabled={busy} onClick={() => respond("decline", "dismissed")}>
           ✕
         </button>
@@ -719,9 +636,8 @@ function PlanCard({ item, onAnswered, onError }) {
             </div>
           </div>
         )}
-        {/* Insufficiency renders INSIDE the card, as named questions. An
-            under-informed plan is still a plan, and this is what makes the card
-            an intake form rather than a thing to reject. */}
+        {/* Insufficiency renders inside the card as named questions, so an
+            under-informed plan is an intake form rather than a rejection. */}
         {missing.length > 0 && (
           <div className="pl-field">
             <span className="kicker">missing</span>
@@ -759,14 +675,8 @@ function PlanCard({ item, onAnswered, onError }) {
 }
 
 /* =========================================================
-   shared primitives
-
-   These live here because components.jsx loads FIRST. `fileSize` was
-   defined in lookingglass.jsx and called from views.jsx, which loads before
-   it — working only because every call happens at render time, after all
-   five scripts have evaluated. One top-level use would have thrown. The file
-   tree is the same story in the other direction: defined in views.jsx,
-   rendered by lookingglass.jsx.
+   shared primitives — this file loads FIRST, so anything the later scripts
+   share at module scope belongs here.
    ========================================================= */
 
 function PageHead({ title, accent, lede }) {
@@ -789,12 +699,8 @@ function fileSize(n) {
   return (n / 1024 / 1024).toFixed(1) + " mb";
 }
 
-/* Flat paths into a tree. The store keeps `arkos/.git/objects/pack/…` as one
-   string per file, which is the right shape for a tree and the wrong shape for
-   a list: a clone turns the panel into 182 rows of somebody else's repository. */
-/* The zero-byte file that makes an empty folder durable. It is a real row, so
-   it rides materialize and flush like anything else — which is why an empty
-   folder survives a session at all — and it is never shown. */
+/* The zero-byte file that makes an empty folder durable: a real row that rides
+   materialize and flush like any other, and is never shown. */
 const SENTINEL = ".keep";
 
 function isSentinel(path) {
@@ -813,7 +719,7 @@ function asTree(files) {
   };
   for (const file of files) {
     const parts = file.path.split("/");
-    // Descending is the whole point of the sentinel; listing it is not.
+    // A sentinel still creates its directory; it is just never listed.
     const node = descend(parts.slice(0, -1));
     if (!isSentinel(file.path)) node.files.push({ ...file, name: parts[parts.length - 1] });
   }
@@ -831,44 +737,27 @@ function countFiles(node) {
   return n;
 }
 
-/* ONE FILE TREE, used by both surfaces (11.9).
-
-   The Files tab and a session's working-files pane are two SCOPES on the same
-   store — everything, and the folders one project links — so they are one
-   component with one set of powers: open, drag to move, drop to upload,
-   double-click to rename. They differed before because they grew separately,
-   which is the only reason a file could be renamed in one pane and not the
-   other, and dropped into a nested folder in one and not the other.
-
-   What a caller still supplies is what genuinely differs: which rows to load,
-   and what clicking one does. Everything below is behaviour, and behaviour is
-   the same in both.
-
-   `reveal` is a path to select and open the ancestors of — how the pane hands a
-   file to the tab. `onFiles` reports the loaded rows back, for a header that
-   counts them. */
+/* One tree for both scopes (the Files tab and a session's working-files pane).
+   `reveal` is a path to select and open the ancestors of; `onFiles` reports the
+   loaded rows back to the caller. */
 function FileTree({ load, onOpen, onError, onFiles, reveal, onRevealed, header, zoneIdle, onDragState }) {
   const [files, setFiles] = useState(null);
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState(null);
-  // Closed by default: what you came to look at is never the hundredth row.
   const [open, setOpen] = useState(() => new Set());
-  // `target` is the directory a drop lands in; `moving` is the path being
-  // dragged, which is what makes a drop a rearrange rather than an upload.
+  // `target` is the directory a drop lands in; a set `moving` makes that drop a
+  // rearrange rather than an upload.
   const [dragging, setDragging] = useState(false);
   const [target, setTarget] = useState("");
-  // `moving` is the path being dragged; `movingDir` is whether it is a
-  // directory, which decides what the EDGE means: a directory dropped there
-  // moves out to the top level and becomes a folder, a file cannot.
+  // `movingDir` decides what the EDGE means: a directory dropped there moves out
+  // to the top level and becomes a folder, a file cannot.
   const [moving, setMoving] = useState(null);
   const [movingDir, setMovingDir] = useState(false);
-  // The row being renamed, and the text so far. One at a time.
   const [renaming, setRenaming] = useState(null);
   const [renameText, setRenameText] = useState("");
   const renameCancelled = useRef(false);
-  // The row whose delete is ARMED — the first click — and the last delete, kept
-  // so it can be taken back. One level, because a second undo is a history and
-  // a history is a different feature; the bar goes as soon as it is used.
+  // `arming` is the row whose delete the first click armed; `undone` keeps one
+  // level of undo, discarded as soon as it is used.
   const [arming, setArming] = useState(null);
   const [undone, setUndone] = useState(null);
 
@@ -906,8 +795,6 @@ function FileTree({ load, onOpen, onError, onFiles, reveal, onRevealed, header, 
       return next;
     });
 
-  /* Arrived from the other scope: the same store and the same path, so this is
-     a scroll-to rather than a second listing to keep in step. */
   useEffect(() => {
     if (!reveal || files === null) return;
     const wanted = files.find((f) => f.path === reveal);
@@ -918,8 +805,8 @@ function FileTree({ load, onOpen, onError, onFiles, reveal, onRevealed, header, 
     onOpen(wanted);
   }, [reveal, files]);
 
-  /* Every file in the store is in a folder, so a drop needs one. Refused here
-     rather than sent and refused, and it names the way to do what was meant. */
+  /* Every file in the store lives in a folder, so a drop with no directory is
+     refused here rather than sent and refused. */
   const add = async (list, dir) => {
     if (!list || !list.length) return;
     if (!dir) {
@@ -944,15 +831,11 @@ function FileTree({ load, onOpen, onError, onFiles, reveal, onRevealed, header, 
     }
   };
 
-  /* The store moves in one transaction and every live box is corrected in the
-     same request, so the only copy that can be behind is this one — which is
-     why the tree is re-read rather than patched in place. */
+  /* The server moves in one transaction, so the tree is re-read rather than
+     patched in place. */
   const move = async (from, into, isDir) => {
-    /* Dropped on the EDGE rather than on a row. For a directory that means OUT:
-       it leaves the folder it was in and becomes a top-level folder of its own,
-       which is what "a folder is a top-level path segment" already says. For a
-       file it means nothing there is to land on, because the top level holds
-       folders. */
+    /* Dropped on the EDGE: a directory moves out to the top level and becomes a
+       folder of its own; a file has nothing there to land on. */
     if (!into && !isDir) {
       onError(
         new ApiError(
@@ -964,8 +847,8 @@ function FileTree({ load, onOpen, onError, onFiles, reveal, onRevealed, header, 
     }
     const name = from.split("/").pop();
     const to = into ? `${into}/${name}` : name;
-    // Into itself, or back where it already is: both are no-ops, and the first
-    // would be a folder swallowing its own subtree.
+    // Into itself or back where it is: no-ops, and the first would be a folder
+    // swallowing its own subtree.
     if (to === from || into === from || (into && into.startsWith(from + "/"))) return;
     setBusy(true);
     try {
@@ -985,11 +868,8 @@ function FileTree({ load, onOpen, onError, onFiles, reveal, onRevealed, header, 
     }
   };
 
-  /* A rename changes what a thing is CALLED and not where it is, so what goes
-     over the wire is a NAME. Renaming a top-level folder carries the projects
-     that link it and the claims that mount it along with the paths, and the
-     server refuses it while a run has that folder mounted — which arrives here
-     as an ordinary error saying so. */
+  /* What goes over the wire is a NAME, not a path. The server refuses a
+     top-level folder while a run has it mounted; that arrives as an error. */
   const commitRename = async () => {
     if (renameCancelled.current) {
       renameCancelled.current = false;
@@ -1004,9 +884,6 @@ function FileTree({ load, onOpen, onError, onFiles, reveal, onRevealed, header, 
     try {
       const result = await api.renameFile(from, name);
       await refresh();
-      // What is open, what is expanded and what is aimed at all follow the new
-      // name: a rename that collapsed the tree you were reading would look like
-      // a different tree.
       const follow = (path) =>
         path === from || path.startsWith(from + "/") ? result.to + path.slice(from.length) : path;
       if (selected) setSelected(follow(selected));
@@ -1020,11 +897,8 @@ function FileTree({ load, onOpen, onError, onFiles, reveal, onRevealed, header, 
     }
   };
 
-  /* Deleting takes the rows and leaves the BLOBS, which are content-addressed
-     and never collected — so the `batch` the server hands back restores the
-     same content under the same id rather than a copy of it. A delete that
-     empties a folder takes the folder and the project links that named it, and
-     they come back together, because one click removed them for one reason. */
+  /* Rows go, blobs stay: they are content-addressed and never collected, so the
+     returned `batch` restores the same content — and the project links with it. */
   const destroy = async (path) => {
     setArming(null);
     setBusy(true);
@@ -1085,10 +959,8 @@ function FileTree({ load, onOpen, onError, onFiles, reveal, onRevealed, header, 
       }}
       onDrop={(e) => {
         e.preventDefault();
-        /* Read the drag before clearing it, and clear it HERE rather than in
-           whatever runs next: both of those can decide there is nothing to do
-           and return early, and an overlay that outlives the drop is the bug
-           that makes. */
+        /* Read and clear the drag HERE: move() and add() can both return early,
+           leaving an overlay that outlives the drop. */
         const lifted = moving;
         const liftedDir = movingDir;
         const into = target;
@@ -1122,8 +994,8 @@ function FileTree({ load, onOpen, onError, onFiles, reveal, onRevealed, header, 
             onLift={(path, isDir) => {
               setMoving(path);
               setMovingDir(!!isDir);
-              // dragend with nothing lifted means the drag was abandoned —
-              // Escape, or a drop outside the panel — and no drop is coming.
+              // dragend with no path means the drag was abandoned (Escape, or a
+              // drop outside the panel) and no drop is coming.
               if (!path) {
                 setDragging(false);
                 setTarget("");
@@ -1134,9 +1006,8 @@ function FileTree({ load, onOpen, onError, onFiles, reveal, onRevealed, header, 
             remove={{ armed: arming, onArm: setArming, onConfirm: destroy }}
           />
         )}
-        {/* Under the rows, where the thing that vanished was — not a toast in a
-            corner that times out before it is read. It stays until it is used
-            or the panel is left. */}
+        {/* Under the rows, where the deleted thing was; it stays until used or
+            until the panel is left. */}
         {undone && (
           <div className="ft-undo">
             <span className="what">
@@ -1173,9 +1044,8 @@ function FileTree({ load, onOpen, onError, onFiles, reveal, onRevealed, header, 
   );
 }
 
-/* A move or a rename corrects every live box in the same request, because flush
-   commits what is on disk. A box that refused comes back named rather than
-   swallowed — the store is right and that box is not. */
+/* Flush commits what is on disk, so a running session still holding the old
+   path is stale and is named rather than swallowed. */
 function warnStale(result, what, onError) {
   const stale = (result && result.stale_sessions) || [];
   if (!stale.length) return;
@@ -1187,11 +1057,8 @@ function warnStale(result, what, onError) {
   );
 }
 
-/* `rename` is optional and the Files tab is the only caller: it is
-   `{path, text, onText, onCommit, onCancel, onStart}`, where `path` is the row
-   being edited. The working-files pane passes none and gets no rename, which is
-   the design — that pane is a view of what a project works in, and what a thing
-   is CALLED is a fact about the store. */
+/* `rename` is optional — `{path, text, onText, onCommit, onCancel, onStart}`,
+   `path` being the row edited; passing none disables renaming. */
 function Branch({
   node,
   path,
@@ -1211,11 +1078,7 @@ function Branch({
   const dirs = [...node.dirs.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   const files = [...node.files].sort((a, b) => a.name.localeCompare(b.name));
 
-  /* The delete affordance: a `✕` that is invisible until the row is hovered,
-     and ARMS on the first click into the word "delete?" before it will do
-     anything. Two clicks rather than a modal, because a modal for every file
-     is a modal nobody reads — and the second click is not a confirmation of a
-     dialog, it is the same gesture again on the same row. */
+  /* Two clicks rather than a modal: the first arms the row, the second deletes. */
   const trash = (path) => {
     const armed = remove.armed === path;
     return (
@@ -1233,9 +1096,7 @@ function Branch({
     );
   };
 
-  /* The inline editor, drawn in place of the name. Enter and blur commit,
-     Escape cancels — the gesture people already have for renaming a file, and
-     the same one the project card uses. */
+  /* Drawn in place of the name: Enter and blur commit, Escape cancels. */
   const editor = () => (
     <input
       className="cv-rename"
@@ -1270,8 +1131,8 @@ function Branch({
                 e.dataTransfer.effectAllowed = "move";
                 // Firefox starts no drag without payload; the path is the payload.
                 e.dataTransfer.setData("text/plain", full);
-                // A directory, which is the one thing that may be dragged OUT
-                // to the top level — there it becomes a folder of its own.
+                // A directory is the one thing that may be dragged OUT to the
+                // top level, where it becomes a folder of its own.
                 onLift(full, true);
               }}
               onDragEnd={() => onLift(null)}
@@ -1328,9 +1189,8 @@ function Branch({
           className={
             "cv-entry" +
             (selected === file.path ? " sel" : "") +
-            /* The bar sits under the LAST file of the directory a drop would
-               land in, so it reads as "into this folder" rather than "onto
-               this file" — dropping on a file means the folder holding it. */
+            /* The bar sits under the LAST file of the target directory: dropping
+               on a file means the folder holding it. */
             (dropTarget === path && i === files.length - 1 ? " drop" : "") +
             (lifted === file.path ? " lifted" : "")
           }

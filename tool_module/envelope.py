@@ -23,9 +23,7 @@ ErrorKind = Literal[
     "auth_required",
     "timeout",
     "upstream_error",
-    # The call did not finish and its outcome is unknown — the process died
-    # under it, or a human tore the turn down. One kind for both, because the
-    # model's job is the same either way: check before assuming it happened.
+    # Did not finish, outcome unknown: check before assuming it took effect.
     "interrupted",
 ]
 
@@ -34,11 +32,7 @@ _RETRYABLE: frozenset[str] = frozenset({"timeout", "upstream_error"})
 
 
 class ToolUnavailable(Exception):
-    """Raised by a tool that cannot run right now, carrying the kind to report.
-
-    `execute` turns it into an envelope. Anything else a tool raises becomes an
-    `upstream_error`.
-    """
+    """Raised by a tool that cannot run right now, carrying the kind to report."""
 
     def __init__(self, error_kind: str, message: str, *, retryable: bool = True):
         self.error_kind = error_kind
@@ -99,8 +93,7 @@ class ToolContext:
 
     user_id: str
     session_id: str | None = None
-    # `(label)` or `(label, url)`. The url is an ephemeral side-channel to mount
-    # — the browser's frame stream — and is never stored for replay.
+    # `(label)` or `(label, url)`; the url is an ephemeral stream to mount, never stored.
     emit_status: Callable[..., None] | None = None
     store_blob: Callable[[str], Awaitable[str]] | None = None
     read_blob: Callable[[str, int, int], Awaitable[str | None]] | None = None
@@ -109,7 +102,6 @@ class ToolContext:
     # ("sandbox", "browser"). Raises ToolUnavailable if the wait times out.
     lease: Callable[[str], Awaitable[None]] | None = None
     # Per-turn state shared between calls, keyed by the tool that owns it.
-    # `edit_file` uses it to record which paths have been read.
     scratch: dict[str, Any] = field(default_factory=dict)
 
 
@@ -134,8 +126,7 @@ async def execute(
 
     `name` must already be stripped of any mcp_ prefix by the caller.
     """
-    # All of it inside the try: lookup, schema check, approval and validate can
-    # each raise, and any escaping breaks the promise above.
+    # Everything inside the try: lookup, schema check, approval and validate can all raise.
     try:
         tool = lookup(name)
         if tool is None:

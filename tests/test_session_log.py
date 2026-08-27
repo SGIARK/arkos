@@ -1,7 +1,4 @@
-"""The transcript: seq ordering under concurrency, the tool-call invariant, blobs, redaction.
-
-Runs against a real Postgres with migration 0 applied; each case owns its rows.
-"""
+"""The transcript: seq ordering under concurrency, the tool-call invariant, blobs, redaction."""
 
 from __future__ import annotations
 
@@ -27,7 +24,7 @@ async def _db():
     """Skip the module unless the real schema is reachable."""
     await require_db()
     yield
-    # Seeded rows go away; a session left `running` is swept by any process on this database.
+    # A session left `running` needs no reset: any process on this database sweeps it.
     await pool.execute("DELETE FROM sessions WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM users WHERE id = ANY($1::uuid[])", _seeded)
     _seeded.clear()
@@ -47,9 +44,6 @@ async def _session(mode: str = "attended", status: str = "running") -> str:
         status,
     )
     return str(session_id)
-
-
-# --- ordering ----------------------------------------------------------------
 
 
 async def test_append_returns_the_seq_and_reads_back_the_same_event():
@@ -109,9 +103,6 @@ async def test_get_events_reads_after_a_cursor_and_recent_reads_the_tail():
     assert [e.seq for e in tail] == seqs[-2:], "recent_events must return the tail in seq order"
 
 
-# --- the transcript invariant -------------------------------------------------
-
-
 async def test_transcript_invariant():
     """Every tool_call.id is closed by exactly one tool_result, before the run ends."""
     session_id = await _session()
@@ -124,7 +115,6 @@ async def test_transcript_invariant():
     with pytest.raises(slog.TranscriptError):
         await slog.append(session_id, ToolResultEvent(id="c1", ok=True, content="found twice"))
 
-    # The call is closed, so the run may end.
     await slog.append(session_id, DoneEvent(reason="turn_end"))
 
 
@@ -146,7 +136,6 @@ async def test_close_dangling_synthesizes_the_result_nobody_was_alive_to_write()
     assert [c.event.id for c in closed] == ["c1"], "only the open call is closed"
     assert closed[0].event.error_kind == "interrupted"
     assert not closed[0].event.ok
-    # The run may now end.
     await slog.append(session_id, DoneEvent(reason="cancelled"))
 
 
@@ -159,9 +148,6 @@ async def test_a_finished_run_does_not_constrain_the_next_one():
 
     await slog.append(session_id, UserEvent(text="again"))
     await slog.append(session_id, DoneEvent(reason="turn_end"))
-
-
-# --- redaction ----------------------------------------------------------------
 
 
 async def test_secrets_in_tool_args_never_reach_the_log():
@@ -201,9 +187,6 @@ async def test_a_secret_nested_below_a_secret_key_is_still_redacted():
     assert "sk-live-000" not in str(payload)
 
 
-# --- blobs --------------------------------------------------------------------
-
-
 async def test_a_blob_round_trips_and_slices():
     session_id = await _session()
     ref = await slog.save_blob(session_id, "abcdefghij")
@@ -225,9 +208,6 @@ async def test_an_unparseable_ref_is_a_miss_not_a_crash():
     assert await slog.read_blob("not-a-uuid") is None
 
 
-# --- id reuse across runs -----------------------------------------------------
-
-
 async def test_an_earlier_runs_result_does_not_close_a_later_call_with_the_same_id():
     """A result closes the call of its own run when an earlier run used the same id."""
     session_id = await _session()
@@ -235,7 +215,6 @@ async def test_an_earlier_runs_result_does_not_close_a_later_call_with_the_same_
     await slog.append(session_id, ToolResultEvent(id="call_1", ok=True, content="first"))
     await slog.append(session_id, DoneEvent(reason="turn_end"))
 
-    # A second run reuses the id.
     await slog.append(session_id, ToolCallEvent(id="call_1", name="grep", args={}))
     stored = await slog.append(session_id, ToolResultEvent(id="call_1", ok=True, content="second"))
 

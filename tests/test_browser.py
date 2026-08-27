@@ -1,10 +1,6 @@
 """The browser on its leash: progress, budget, envelope, and who may watch.
 
-The vendor is faked here — a real browser_use run needs a browser, a model and
-minutes. What is NOT faked is the leash itself, which is the whole of what this
-card added: the fake agent is asked to stop and obeys or does not, and the tests
-check what we do about it either way. `tests/test_browser_integration.py` is the
-one that talks to the real library.
+The vendor is faked here; `tests/test_browser_integration.py` drives the real library.
 """
 
 from __future__ import annotations
@@ -98,11 +94,7 @@ def _ctx(**kw):
 
 
 def _with_agent(monkeypatch, **agent_kw):
-    """Substitute the vendor with a fake, at the one seam built for it.
-
-    The container url is faked too: every path below the guard assumes one, and
-    the guard itself has its own test above.
-    """
+    """Substitute the vendor with a fake, and fake a container url along with it."""
     made = {}
     monkeypatch.setattr(browser_tool, "cdp_url", lambda: "ws://browserless:3000", raising=False)
 
@@ -117,11 +109,11 @@ def _with_agent(monkeypatch, **agent_kw):
     return made
 
 
-# --- it is in the manifest, which is what makes it real -----------------------------
+# --- the manifest -------------------------------------------------------------------
 
 
 async def test_browser_task_is_in_the_manifest():
-    """The old one was complete and reachable from nothing; that is the card's point."""
+    """browser_task is offered to the model, and is not readonly."""
     specs = {s.name: s for s in (await registry.manifest(USER)).specs}
 
     assert "browser_task" in specs
@@ -132,12 +124,8 @@ async def test_browser_task_is_in_the_manifest():
 
 
 async def test_no_cdp_url_is_a_loud_refusal_and_launches_nothing(monkeypatch):
-    """A browser beside the harness's credentials is a different architecture.
-
-    So an unset url refuses rather than falling back to a local Chromium: the
-    process holding the user's cookies and the store's secret key does not get
-    to run pages the model picked.
-    """
+    """An unset url refuses rather than falling back to a Chromium inside the harness
+    process, which holds the user's cookies and the store's key."""
     made = _with_agent(monkeypatch)
     monkeypatch.setattr(browser_tool, "cdp_url", lambda: "")
 
@@ -150,8 +138,7 @@ async def test_no_cdp_url_is_a_loud_refusal_and_launches_nothing(monkeypatch):
 
 
 async def test_the_container_url_carries_the_stealth_parameter():
-    """Ported from the deleted implementation: Browserless reads it off the query
-    string, and losing it is the difference between pages loading and bot walls."""
+    """Browserless reads stealth off the query string; without it pages hit bot walls."""
     assert browser_tool._augment_cdp_url("ws://browserless:3000") == "ws://browserless:3000?stealth=true"
     assert browser_tool._augment_cdp_url("ws://b:3000?token=x&stealth=true").endswith("stealth=true")
 
@@ -163,8 +150,8 @@ async def test_stealth_can_be_turned_off_by_the_environment(monkeypatch):
 
 
 async def test_the_url_falls_back_to_the_environment(monkeypatch):
-    """config.yaml keeps it literal, because an unset ${VAR} there fails config load
-    for the whole app rather than for one tool."""
+    """config.yaml keeps the value literal: an unset ${VAR} there fails config load for
+    the whole app rather than for this one tool."""
     monkeypatch.setattr(browser_tool, "_cfg", lambda key, default: "" if key == "browser.cdp_url" else default)
     monkeypatch.setenv("BROWSERLESS_URL", "ws://browserless:3000")
 
@@ -183,7 +170,7 @@ async def test_a_kwarg_the_vendor_hides_behind_kwargs_is_still_passed():
     assert kept["cdp_url"] == "ws://x"
 
 
-# --- progress is events, never silence ----------------------------------------------
+# --- progress -----------------------------------------------------------------------
 
 
 async def test_every_step_reports_progress_to_the_session(monkeypatch):
@@ -212,7 +199,7 @@ async def test_the_frame_stream_is_announced_on_the_first_status(monkeypatch):
     assert announced == [f"/sessions/{session_id}/browser/frames"]
 
 
-# --- the budget is asked first, enforced second -------------------------------------
+# --- the budget ---------------------------------------------------------------------
 
 
 async def test_the_budget_stops_the_run_and_keeps_what_it_found(monkeypatch):
@@ -248,11 +235,11 @@ async def test_an_agent_that_ignores_the_stop_is_cut_off_and_still_reports(monke
     assert "whatever it managed" in result.content
 
 
-# --- the result is an envelope, never a bare string ---------------------------------
+# --- the result envelope ------------------------------------------------------------
 
 
 async def test_a_failed_run_says_what_went_wrong(monkeypatch):
-    """Failure and empty were the same string in the implementation this replaces."""
+    """A failed run is not ok and carries the vendor's error text."""
     _with_agent(
         monkeypatch,
         history=FakeHistory(answer="", errors=["captcha blocked the page"], successful=False),
@@ -291,7 +278,7 @@ async def test_the_whole_run_is_stored_behind_a_ref(monkeypatch):
     assert record["urls"] == ["https://shop.example/item"]
 
 
-# --- the leash on the resource ------------------------------------------------------
+# --- the lease ----------------------------------------------------------------------
 
 
 async def test_the_browser_is_leased_before_it_is_driven(monkeypatch):
@@ -320,12 +307,12 @@ async def test_a_task_with_no_goal_is_refused_before_anything_boots(monkeypatch)
     assert "agent" not in made, "an empty task started a browser"
 
 
-# --- dropped kwargs are loud --------------------------------------------------------
+# --- dropped kwargs -----------------------------------------------------------------
 
 
 async def test_a_vendor_that_lost_our_callback_warns(caplog):
-    """A version bump that renames the step callback takes every progress event
-    with it, and that must never be quiet."""
+    """A vendor rename of the step callback silently kills every progress event, so a
+    dropped kwarg has to warn."""
 
     def agent_without_callbacks(task=None, llm=None):
         return None
@@ -348,11 +335,11 @@ async def test_nothing_is_dropped_when_the_vendor_still_accepts_it():
     assert set(kept) == {"task", "llm", "register_new_step_callback"}
 
 
-# --- frames are ephemeral, and keyed by the pair --------------------------------------
+# --- frames -------------------------------------------------------------------------
 
 
 async def test_frames_reach_the_watcher_of_that_session_only():
-    """Two of a user's sessions browsing at once clobbered each other before."""
+    """Frames are keyed by (user, session), so concurrent sessions do not cross."""
     frames = FrameBroker()
     mine, theirs = "session-a", "session-b"
 
@@ -467,8 +454,7 @@ class _Cdp:
 
 
 async def test_the_screencast_puts_frames_on_the_broker(monkeypatch):
-    """The CDP path, not a screenshot poll: browser_use hands us frames and we
-    forward them keyed by (user, session)."""
+    """Frames arrive over CDP, not a screenshot poll, and are forwarded per (user, session)."""
     frames = FrameBroker()
     monkeypatch.setattr(browser_tool, "broker", frames)
     session_id = "3f1d4a02-0000-4000-8000-0000000000cc"

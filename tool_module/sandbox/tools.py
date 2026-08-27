@@ -1,12 +1,4 @@
-"""
-The sandbox toolset: a shell and a filesystem in the session's sandbox.
-
-Tool descriptions carry the discipline the model is expected to follow —
-read before edit, unique `old_string`, search before reading whole files.
-
-The sandbox boots on the first call to one of these and not before, so a
-session that never reaches for it costs nothing.
-"""
+"""The sandbox toolset: a shell and a filesystem in the session's sandbox."""
 
 from __future__ import annotations
 
@@ -29,11 +21,7 @@ _MAX_MATCHES = 100
 async def _sandbox(ctx: ToolContext):
     """Return the sandbox manager, holding the session's slot in the user's pool.
 
-    The box belongs to this session alone, so a call waits only when the user is
-    already running as many boxes at once as the cap allows.
-
-    Raises:
-        ToolUnavailable: the call has no session, so there is no box to key.
+    Raises ToolUnavailable when the call has no session, so there is no box to key.
     """
     if ctx.session_id is None:
         raise ToolUnavailable("invalid_args", "The computer is only available inside a session.", retryable=False)
@@ -45,17 +33,8 @@ async def _sandbox(ctx: ToolContext):
 def _shell_path(path: str) -> str:
     """Quote a path for the shell, keeping `~` meaningful.
 
-    Quoting is what keeps a readonly tool readonly: the pattern and path are
-    written by the model and interpolated into a shell line, so unquoted they
-    could word-split or execute — and the loop batches readonly tools in
-    parallel on the promise that they do not mutate anything.
-
-    But `~` IS a shell feature, and quoting is the instruction not to apply
-    shell features. Both cannot be true, and the tilde used to survive into
-    grep as a literal directory name. So a leading `~` becomes `"$HOME"`,
-    expanded by the box's own shell against whatever home that image has, and
-    everything the model wrote stays quoted. Nothing here assumes /home/user:
-    a different template changes the answer without changing this line.
+    A leading `~` becomes `"$HOME"` for the box's own shell to expand; every other
+    character stays quoted so an interpolated path cannot word-split or execute.
     """
     if path == "~":
         return '"$HOME"'
@@ -151,7 +130,7 @@ class WriteFile:
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
         path, content = args["path"], args["content"]
         await (await _sandbox(ctx)).write_file(ctx.session_id, path, content)
-        # The file's current contents are now known, so an edit may follow.
+        # Writing satisfies edit_file's read-before-edit check.
         _read_paths(ctx).add(path)
         return ok(f"Wrote {path} ({len(content)} chars).")
 
@@ -232,11 +211,8 @@ class Grep:
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
         path = args.get("path") or "."
-        # grep's own exit codes carry the difference the caller needs: 0 found
-        # something, 1 found nothing, 2 could not read what it was pointed at.
-        # `2>/dev/null` on its own turned all three into "(no matches)", so a
-        # mistyped path read as a completed search — and the model reasoned from
-        # it. stderr is kept out of the body but the code is not thrown away.
+        # `exit ${PIPESTATUS[0]}` preserves grep's code past head: 1 is no
+        # matches, 2 is an unreadable path — stderr is dropped, the code is not.
         command = (
             f"grep -rnI {shlex.quote(args['pattern'])} {_shell_path(path)} 2>/dev/null | head -{_MAX_MATCHES}; "
             f"exit ${{PIPESTATUS[0]}}"
@@ -268,9 +244,8 @@ class Glob:
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
         path = args.get("path") or "."
-        # `find` exits non-zero when it cannot read the tree it was given, which
-        # is the same false negative grep had: no output is not the same answer
-        # as no such directory.
+        # `find` exits non-zero on a tree it cannot read; empty output alone
+        # would not distinguish that from no matches.
         command = (
             f"find {_shell_path(path)} -type f -name {shlex.quote(args['pattern'])} "
             f"2>/dev/null | head -{_MAX_MATCHES}; exit ${{PIPESTATUS[0]}}"

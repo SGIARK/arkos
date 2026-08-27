@@ -1,21 +1,10 @@
 """
 Per-user Composio connections, keyed by `(user_id, server)`.
 
-`server` is the Composio toolkit prefix in upper snake — `GMAIL`, `LINEAR`,
-`GOOGLEDRIVE` — which is also what every one of that toolkit's tool names is
-prefixed with. It is the vendor's name for the toolkit, not a config label,
-which is what makes it safe to store: renaming the key under `mcp_servers:` in
-config.yaml still changes nothing here.
-
-A row is a CACHE of a fact that lives at Composio, not the fact itself. The
-grant belongs to Composio, keyed by the user id in the per-user MCP url, and it
-survives anything we do to this table. What the row buys is a settings panel
-that can render without a round trip, and a `PUT /sessions/{id}/tools` that can
-refuse an unconnected server without one either.
-
-`connected_account_id` is Composio's id for the grant. It arrives at the end of
-consent, on the `/connections/done` callback, and it is what a disconnect needs
-in order to actually revoke rather than merely forget.
+`server` is Composio's toolkit prefix in upper snake (`GMAIL`, `LINEAR`) — the
+vendor's durable key, never the `mcp_servers:` config label. A row is a cache of
+a grant that lives at Composio; `connected_account_id` is Composio's id for that
+grant, and a disconnect needs it to revoke rather than merely forget.
 """
 
 from __future__ import annotations
@@ -30,9 +19,7 @@ from db.ids import as_uuid as _uid
 PENDING = "pending"
 CONNECTED = "connected"
 DISCONNECTED = "disconnected"
-# Composio ERRORED: authorized once, expired or revoked provider-side. Distinct
-# from `pending`, which reads as never-connected, and from `connected`, which
-# would loop the model into a wall it cannot see.
+# Composio ERRORED: authorized once, since expired or revoked provider-side.
 RECONNECT = "reconnect"
 
 
@@ -71,9 +58,7 @@ async def load(user_id: str) -> dict[str, Connection]:
 async def mark(user_id: str, server: str, status: str, account_id: str | None = None) -> None:
     """Record what Composio says about one toolkit, inserting the row if it is the first word.
 
-    A null `account_id` never overwrites a stored one: consent starts before the
-    id exists, and the panel re-reads status far more often than a grant changes,
-    so an unqualified write would erase the only handle a disconnect has.
+    A null `account_id` never clears a stored one: consent starts before the id exists.
     """
     await pool.execute(
         """
@@ -93,12 +78,7 @@ async def mark(user_id: str, server: str, status: str, account_id: str | None = 
 
 
 async def sync(user_id: str, statuses: dict[str, str], account_ids: dict[str, str | None] | None = None) -> None:
-    """Write a whole reading of Composio's per-user state in one transaction.
-
-    One listing answers for every toolkit at once, so the rows move together or
-    not at all: a partial write would leave the panel showing one toolkit's
-    reading beside another's from minutes ago, with nothing to say which.
-    """
+    """Write a whole reading of Composio's per-user state in one transaction."""
     if not statuses:
         return
     ids = account_ids or {}

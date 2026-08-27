@@ -1,22 +1,7 @@
 """
 Bytes, addressed by the hash of their content.
 
-Write-once and immutable: the name IS the content, so two paths holding the same
-bytes are one blob, a write can never corrupt an existing one, and a retry after
-a partial upload is safe. Nothing here knows about paths, users, trees or
-sandboxes — `store.py` maps paths to hashes and this maps hashes to bytes.
-
-Split out of `store.py` in 11.8.8, which was three modules wearing one filename.
-The import direction is one-way and stays that way: blobs <- store <- workspace.
-
-**The HTTP client is bound to the event loop that made it**, which is why its
-lifecycle lives here rather than inside the backend that uses it. `httpx`
-sockets register with a running loop; pytest-asyncio gives each test its own, so
-a client cached across two of them raises "Event loop is closed" on the second —
-a flake that was on the 11.7.5 list and moved rather than went away every time
-somebody cached the client somewhere new. `_client_for_loop` keys the cache by
-the RUNNING loop and closes the one it replaces, so the lifetime is a fact about
-the loop rather than about who remembered to reset a global.
+Write-once and immutable. Imports run one way: blobs <- store <- workspace.
 """
 
 from __future__ import annotations
@@ -72,9 +57,7 @@ class Blobs(Protocol):
 class FilesystemBlobs:
     """Blobs as files under a root directory.
 
-    The interface above is what an object store implements; this is the local
-    one. Writes go to a temporary name and are renamed into place, so a reader
-    never sees a partial blob.
+    Writes are renamed into place, so a reader never sees a partial blob.
     """
 
     def __init__(self, root: str | Path):
@@ -89,7 +72,7 @@ class FilesystemBlobs:
     def _put(self, content_hash: str, content: bytes) -> None:
         target = self._path(content_hash)
         if target.exists():
-            return  # write-once: the hash is the content, so there is nothing to update
+            return  # write-once: the name is the content, so there is nothing to update
         target.parent.mkdir(parents=True, exist_ok=True)
         staging = target.with_suffix(f".{uuid.uuid4().hex}.partial")
         staging.write_bytes(content)
@@ -110,23 +93,17 @@ class FilesystemBlobs:
 class SupabaseBlobs:
     """Blobs in a Supabase Storage bucket, over its REST API.
 
-    Writes are write-once, so an upload of a hash that is already there is a
-    success rather than an overwrite: Supabase reports the duplicate and this
-    treats it as the object already being correct, which it is, because the
-    name is the hash of the content.
-
-    The URL and secret key come from the environment rather than config.yaml,
-    for the same reason E2B_API_KEY does: a `${VAR}` in the yaml makes an unset
-    key crash config load for everything, including the parts that do not use it.
+    URL and secret key come from the environment, not config.yaml: a `${VAR}`
+    there makes an unset key crash config load for everything.
     """
 
     def __init__(self, url: str, secret_key: str, bucket: str, concurrency: int = 8, client: Any = None):
         self.base = url.rstrip("/") + "/storage/v1/object"
         self.bucket = bucket
-        # Both headers, which suits either key format: the current secret keys
-        # (sb_secret_...) and the legacy service_role JWT.
+        # Both headers, to suit either key format: secret keys (sb_secret_...)
+        # and the legacy service_role JWT.
         self._headers = {"Authorization": f"Bearer {secret_key}", "apikey": secret_key}
-        # An injected client is a test's, and it owns it.
+        # An injected client belongs to the test that passed it.
         self._injected = client
         self._gate = asyncio.Semaphore(concurrency)
 
@@ -148,8 +125,8 @@ class SupabaseBlobs:
             )
         if response.status_code in (200, 201):
             return
-        # The object already exists. Its name is the hash of its content, so it
-        # is the blob we were about to write.
+        # A reported duplicate is a success: the name is the hash of the content,
+        # so the existing object is the blob we were about to write.
         if response.status_code in (409, 400) and "duplicate" in response.text.lower():
             return
         raise StoreError(f"uploading {content_hash[:12]} failed: {response.status_code} {response.text[:200]}")
@@ -173,10 +150,8 @@ class SupabaseBlobs:
         async def absent(content_hash: str) -> str | None:
             async with self._gate:
                 response = await client.head(self._url(content_hash), headers=self._headers)
-            # Anything but a clean 200 counts as absent. A HEAD carries no body
-            # to distinguish a miss from an error, and the two mistakes are not
-            # equal: calling a present blob missing costs one redundant upload,
-            # calling a missing blob present costs the file.
+            # A HEAD carries no body to tell a miss from an error, so anything but 200
+            # counts as absent: a false "present" costs the file, a false "missing" one upload.
             return None if response.status_code == 200 else content_hash
 
         found = await asyncio.gather(*(absent(h) for h in wanted))
@@ -192,9 +167,8 @@ class SupabaseBlobs:
 def _is_absent(response: Any) -> bool:
     """Whether a response means the object is not there.
 
-    Supabase Storage reports a missing object as HTTP 400 carrying a body of
-    `{"statusCode": "404", ... "code": "NoSuchKey"}`, so the transport status
-    alone does not say.
+    Supabase Storage reports a missing object as HTTP 400 with a body of
+    `{"statusCode": "404", ... "code": "NoSuchKey"}`, so the status alone does not say.
     """
     if response.status_code == 404:
         return True
@@ -218,9 +192,8 @@ def blobs() -> Blobs:
 def project_url() -> str | None:
     """The Supabase project URL, from SUPABASE_URL or derived from the database DSN.
 
-    Both DSN shapes carry the project ref: the direct connection puts it in the
-    host (`db.<ref>.supabase.co`) and the pooler puts it in the username
-    (`postgres.<ref>@aws-0-<region>.pooler.supabase.com`).
+    Both DSN shapes carry the project ref: the direct connection in the host
+    (`db.<ref>.supabase.co`), the pooler in the username (`postgres.<ref>@...`).
     """
     explicit = os.environ.get("SUPABASE_URL")
     if explicit:
@@ -246,13 +219,7 @@ def bucket() -> str:
 
 
 def secret_key() -> str | None:
-    """The key the store authenticates with.
-
-    `SUPABASE_SECRET_KEY` holds a secret API key (`sb_secret_...`), which is
-    revocable and rotatable on its own. `SUPABASE_SERVICE_KEY` is read as a
-    fallback for installations still on the legacy service_role JWT, which can
-    only be rotated by invalidating every key in the project at once.
-    """
+    """The key the store authenticates with; SUPABASE_SERVICE_KEY is the legacy fallback."""
     return os.environ.get("SUPABASE_SECRET_KEY") or os.environ.get("SUPABASE_SERVICE_KEY")
 
 
@@ -280,7 +247,7 @@ def _build() -> Blobs:
 
 
 def use_blobs(backend: Blobs | None) -> None:
-    """Swap the backend. For tests, and for the day an object store is configured."""
+    """Swap the backend."""
     global _blobs
     _blobs = backend
 
@@ -306,11 +273,8 @@ async def missing_blobs(hashes: Iterable[str]) -> set[str]:
 
 # --- the HTTP client, one per running loop ---------------------------------------
 #
-# `httpx` binds its sockets to the loop that opened them, so a client cached in a
-# module global outlives the loop it belongs to and the next loop finds it dead —
-# "Event loop is closed", from a connection pool nobody thought about. Keying the
-# cache by the RUNNING loop makes the lifetime follow the thing it actually
-# depends on, and closing the one being replaced means a swap leaks nothing.
+# `httpx` binds its sockets to the loop that opened them, so a client outliving its
+# loop raises "Event loop is closed". Key the cache by the RUNNING loop.
 
 _clients: dict[Any, Any] = {}
 
@@ -325,8 +289,7 @@ def _client_for_loop() -> Any:
         return client
     client = httpx.AsyncClient(timeout=30.0)
     _clients[loop] = client
-    # Loops that have gone leave nothing behind: their clients are already dead
-    # with them, and the entry is only a reference to collect.
+    # Clients of closed loops are already dead; the entry is only a reference to drop.
     for stale in [key for key in _clients if key.is_closed()]:
         _clients.pop(stale, None)
     return client
@@ -344,16 +307,12 @@ async def close_clients() -> None:
 
 
 def build_tar(files: Sequence[tuple[str, bytes]]) -> bytes:
-    """Pack (path, content) pairs into an uncompressed tar.
-
-    One archive per materialize keeps the transfer to a single write and a
-    single extract, whatever the file count.
-    """
+    """Pack (path, content) pairs into an uncompressed tar."""
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w") as archive:
         for path, content in files:
             info = tarfile.TarInfo(name=path)
             info.size = len(content)
-            info.mtime = 0  # a stable archive for the same content
+            info.mtime = 0  # deterministic archive for identical content
             archive.addfile(info, io.BytesIO(content))
     return buffer.getvalue()

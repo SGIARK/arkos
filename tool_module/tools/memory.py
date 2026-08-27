@@ -1,12 +1,7 @@
 """The memory tools: what the agent carries between sessions.
 
-Four hands over the store's memory region — save a fact, search for one, read
-the curated core, rewrite it. The core is also injected into the system prompt
-at fold time, so `read_memory` is for the full document when the injected copy
-was capped, and for reading before a rewrite.
-
-Every call is scoped to `ctx.user_id` in the SQL itself: memory is the user's,
-and no argument here can widen that.
+Every call is scoped to `ctx.user_id` in the SQL itself; no argument here can
+widen that.
 """
 
 from __future__ import annotations
@@ -18,8 +13,7 @@ from config_module.loader import cfg as _cfg
 from harness_module import memory
 from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, ToolUnavailable, fail, ok
 
-# How much of one hit is shown. A note is short; the core can be long, and a
-# search result is a pointer to it, not a replacement for reading it.
+# Chars of each search hit shown inline: a hit points at the document, not a copy.
 _SNIPPET_CHARS = 600
 
 
@@ -27,8 +21,7 @@ def _user(ctx: ToolContext) -> str:
     """The user whose memory this is.
 
     Raises:
-        ToolUnavailable: there is no user to key memory by, which is not a
-            condition the model can do anything about.
+        ToolUnavailable: there is no user to key memory by.
     """
     if not ctx.user_id:
         raise ToolUnavailable("invalid_args", "Memory is per user, and this call has no user.", retryable=False)
@@ -164,11 +157,10 @@ class UpdateMemory:
     )
 
     async def validate(self, args: dict[str, Any], ctx: ToolContext) -> str | None:
-        """Read before rewrite, for the same reason `edit_file` has it.
+        """Require a read this turn before a whole-document rewrite.
 
-        The system prompt carries a capped copy of the core, so a model that has
-        not read the document this turn may be holding a truncated one, and a
-        whole-document write from that would delete the tail.
+        The system prompt's copy of the core is capped, so a rewrite from an
+        unread turn would delete the tail.
         """
         if "text" not in _read_core(ctx):
             return "Call read_memory before update_memory, so you rewrite the whole document and not the capped copy."
@@ -188,7 +180,7 @@ class UpdateMemory:
             )
 
         await memory.update_memory(_user(ctx), content)
-        # It has been rewritten, so what was read before is no longer the document.
+        # Keep the per-turn read in sync so a second rewrite this turn is valid.
         _read_core(ctx)["text"] = content
         return ok(f"Memory document rewritten ({len(content)} chars).")
 

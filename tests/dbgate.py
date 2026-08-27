@@ -1,9 +1,4 @@
-"""Gate for tests that need the live database.
-
-A transient connection failure used to turn every database test into a silent
-skip, so a green run could mean nothing had run. This retries before giving up,
-and skips only when the database is genuinely unavailable.
-"""
+"""Gate for tests that need the live database."""
 
 from __future__ import annotations
 

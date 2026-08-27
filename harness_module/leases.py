@@ -1,14 +1,7 @@
-"""
-Claims on what is shared: the browser, and a project a session writes to.
+"""Claims on what is shared: the browser, and a project a session writes to.
 
-A resource is leased when it is both shared across a user's concurrent sessions
-and carries state between calls. The lease is held for the whole session, so one
-session's half-finished write cannot be interleaved with another's. The sandbox
-is neither: a box belongs to one session and its disk is a cache, so it is capped
-as capacity instead (`tool_module/sandbox/manager.py`).
-
-Leases carry an expiry, so a process that dies holding one does not lock the
-resource until someone intervenes.
+A lease is held for the whole session and carries an expiry, so a process that
+dies holding one does not lock the resource forever.
 """
 
 from __future__ import annotations
@@ -27,13 +20,7 @@ def key(resource: str, user_id: str) -> str:
 
 
 async def acquire(resource_key: str, session_id: str, ttl_s: float) -> bool:
-    """
-    Take or renew a lease.
-
-    Returns:
-        True if the session now holds it. False if another session holds an
-        unexpired lease.
-    """
+    """Take or renew a lease. False when another session holds an unexpired one."""
     held = await pool.fetchval(
         """
         INSERT INTO resource_leases (resource_key, session_id, expires_at)

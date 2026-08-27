@@ -1,21 +1,8 @@
 """Tool discovery and dispatch, and the one place a turn's tool list is built.
 
-A local tool is a module under `tool_module/tools/` exposing a `TOOLS` list.
-MCP tools are namespaced `mcp_*`, and the prefix is stripped on dispatch, so a
-remote tool cannot shadow a local name.
-
-`manifest` is the ONLY builder of a turn's tool list, and it cannot overflow.
-The provider refuses a request carrying more than `llm.max_tools` schemas
-outright — no token is generated, and the error arrives nowhere near the
-connection that caused it — so the cap is applied here, to whatever the toggles
-say, rather than trusted to whoever wrote them. Ours are always loaded and never
-counted against the human's allowance; MCP servers are the only thing deferred,
-whole servers at a time, most-recently-enabled first.
-
-"Ours" is not the same as "local". Google Search reaches the web over SerpAPI,
-and it is still one of OUR tools: no per-user grant, nothing for a human to
-connect, always loaded, counted in `ours`. It spends our allowance, not the human's, which is exactly
-what `ours` means.
+The provider rejects outright any request carrying more than `llm.max_tools`
+schemas, so `manifest` — the only builder of a turn's list — applies that cap
+itself rather than trusting the toggles.
 """
 
 from __future__ import annotations
@@ -54,12 +41,7 @@ class McpSource(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ServerReach:
-    """One server's standing in this turn's manifest.
-
-    Three states, and the prompt says a different thing about each: shipped
-    (the model may call it), enabled-but-benched (it was asked for and did not
-    fit), and connected-but-off (the human has it, this session does not).
-    """
+    """One server's standing in this turn's manifest."""
 
     label: str
     name: str
@@ -78,9 +60,8 @@ class ServerReach:
 class Manifest:
     """A turn's tool list, and the account of how it came to be that list.
 
-    `specs` is what goes in the request. `servers` is what the system prompt is
-    generated from — never the toggles, which can promise a server the cap then
-    dropped. Anything reading one without the other will drift.
+    `servers` is what the system prompt is generated from — never the toggles,
+    which can promise a server the cap then dropped.
     """
 
     specs: list[ToolSpec] = field(default_factory=list)
@@ -96,6 +77,7 @@ class Manifest:
 
 logger = logging.getLogger(__name__)
 
+# The prefix is stripped again on dispatch, so a remote tool can never shadow a local name.
 MCP_PREFIX = "mcp_"
 
 _local: dict[str, Tool] | None = None
@@ -125,24 +107,14 @@ def reset() -> None:
 async def manifest(user_id: str, *, mcp: McpSource | None = None, session_id: str | None = None) -> Manifest:
     """Build the tool list for one turn, and report what it cost to fit.
 
-    Ours are always loaded. An MCP server is reached only when this session has
-    been given it — `session_id=None` means no session, so no toggles, so ours
-    alone. That default is what makes an accidental over-cap request impossible
-    rather than unlikely: a connected server is not a reachable one.
-
-    The cap is then applied to the toggles rather than trusted to them. Servers
-    are taken longest-enabled first and the first one that will not fit ends the
-    list: a stale toggle set, or a server that doubled its tool list overnight,
-    cannot produce a request the provider will reject. Whole servers only —
-    shipping half of a server is a model that believes it can post a message and
-    discovers otherwise in the middle of a task.
+    Ours are always loaded; `session_id=None` means no toggles, so ours alone.
+    MCP servers are admitted whole or not at all, in `enabled_servers` order.
     """
     # ToolSpec is mutable and the local ones are process-cached, so every caller
     # gets its own copy.
     ours = [_copy(t.spec) for t in local_tools().values()]
-    # Ours over the wire, named like every other gateway tool so dispatch has
-    # ONE route to the gateway rather than two. They are counted in `ours`, so
-    # the budget below is what is left after them.
+    # Prefixed like every other gateway tool so dispatch has ONE route to the
+    # gateway; still counted in `ours`, so `budget` is what is left after them.
     ours += [_copy(spec, name=f"{MCP_PREFIX}{spec.name}") for spec in (await mcp.always(user_id) if mcp else [])]
     budget = max(0, int(_cfg("llm.max_tools", 128)) - len(ours))
 
@@ -157,9 +129,8 @@ async def manifest(user_id: str, *, mcp: McpSource | None = None, session_id: st
 
     for server in sorted((s for s in connected if s.server in rank), key=lambda s: rank[s.server]):
         if used + len(server.specs) > budget:
-            # Everything from here on is benched: stopping rather than skipping
-            # is what makes "most recently enabled goes first" true. Taking a
-            # later, smaller server would keep it while an older one was cut.
+            # Stop, do not skip: taking a later, smaller server would keep it
+            # while an earlier-ranked one was cut.
             logger.warning(
                 "session %s: %s (%d tools) does not fit in %d remaining tool slot(s); benched",
                 session_id,
@@ -237,8 +208,7 @@ async def dispatch(
     """Run one tool by the name the model used.
 
     Local and MCP tools both go through `envelope.execute`, the single place the
-    approval gate, the schema check and the timeout are applied; an mcp_* name is
-    wrapped in an adapter to get there.
+    approval gate, the schema check and the timeout are applied.
     """
     if name.startswith(MCP_PREFIX):
         if mcp_call is None:
@@ -258,8 +228,8 @@ def bind(
 ) -> Callable[[str, dict[str, Any]], Awaitable[ResultEnvelope]]:
     """Adapt `dispatch` to the `(name, args)` shape `run_turn` requires.
 
-    `tools` is the manifest this turn was built with. It carries each remote
-    tool's `requires_approval`, which the gate in `execute` reads.
+    `tools` is this turn's manifest; it carries each remote tool's
+    `requires_approval`, which the gate in `execute` reads.
     """
     cap = float(_cfg("tools.call_timeout_s", 120.0)) if timeout_s is None else timeout_s
     specs = {t.name: t for t in tools} if tools else None

@@ -1,9 +1,4 @@
-"""Registers the sandbox toolset for discovery.
-
-`registry.local_tools` scans this package, and the sandbox tools live next to
-the e2b manager they drive. Importing them here puts them in the manifest
-without moving them.
-"""
+"""Registers the sandbox toolset for discovery: `registry.local_tools` scans only this package."""
 
 from __future__ import annotations
 

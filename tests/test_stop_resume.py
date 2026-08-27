@@ -1,18 +1,7 @@
-"""One teardown, two landings (11.8.7).
+"""One teardown, two landings: stop and cancel are the same `task.cancel()` path.
 
-The rule this file exists to pin: stop and cancel are the SAME path —
-`task.cancel()` on the turn — and differ only in where it lands. Cancel is
-terminal: `done{cancelled}`, mode handed back to attended, which is what spends
-the plan. Stop is not: `done{stopped}`, `running -> idle`, mode KEPT, box
-hibernated. Resuming is then the absence of a change, so it is code that already
-existed — an idle session starts on a message or a plain start, unattended
-because nothing moved the mode.
-
-What it replaced: 11.8.6 made stop a second authority over how a turn ends — a
-sink flag, a dispatch registry, a boundary wait, a grace timer that degraded
-into a cancel, and a `resume` park with three answers — all coordinating with a
-loop that runs on event time. Every coordination point was a race and first live
-use found three in one afternoon. The complexity was the bug.
+Cancel is terminal (mode handed back to attended); stop is not (`idle`, mode kept,
+box hibernated), so resuming is just the ordinary start of an idle session.
 """
 
 from __future__ import annotations
@@ -112,7 +101,6 @@ async def test_a_stop_lands_idle_with_the_mode_kept_and_no_terminal():
     assert row["terminal_reason"] is None and row["ended_at"] is None
     done = [e.event for e in await slog.get_events(session_id) if e.event.kind == "done"]
     assert [e.reason for e in done] == ["stopped"]
-    # And nothing is waiting to be answered: a stop is not a question.
     assert await approvals.open_for(session_id) == []
 
 
@@ -143,8 +131,7 @@ async def test_the_press_decides_the_landing_of_one_teardown(monkeypatch):
         landed = asyncio.Event()
 
         async def forever(sid: str = session_id, done: asyncio.Event = landed) -> None:
-            # The landing `_drive` takes on the cancellation path, in miniature:
-            # the intent decides the reason, and the sink writes it.
+            # Mirrors `_drive`'s cancellation path: the intent decides the reason.
             try:
                 await asyncio.sleep(30)
             except asyncio.CancelledError:
@@ -189,16 +176,10 @@ async def test_a_stopped_run_hibernates_its_box_and_a_cancel_reaps_it(monkeypatc
 
 @pytest.mark.asyncio
 async def test_a_live_stop_lands_stopped_and_not_the_loops_cancelled(monkeypatch):
-    """A real turn, cancelled mid-hop: the ending is `stopped`, not `cancelled`.
+    """A real turn, cancelled mid-hop, lands `stopped`, not `cancelled`.
 
-    The card said to VERIFY rather than assume that `loop.py` needs nothing, and
-    this is the check. `run_turn` has its own `except CancelledError` that
-    yields `DoneEvent(reason="cancelled")` — so if `_drive`'s `async for`
-    consumed that parting yield, every stop would land terminal and spend the
-    plan, which is the entire bug this card exists to remove. A task cancelled
-    while awaiting `__anext__` takes the CancelledError at that await and never
-    receives the yield; every other test here calls `abort` directly and would
-    not notice if that changed.
+    A task cancelled while awaiting `__anext__` never receives `run_turn`'s parting
+    `DoneEvent(reason="cancelled")`; every other test here calls `abort` directly.
     """
     from model_module import client as mc
 
@@ -265,11 +246,7 @@ async def test_a_live_cancel_still_lands_cancelled(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_message_resumes_a_stopped_run_unattended(client, monkeypatch):
-    """No park kind, no respond arm, no 409 exemption — the ordinary message path.
-
-    The mode was kept, so starting an idle session starts it unattended, and the
-    words are in the fold for the next hop. That IS resume-with-guidance.
-    """
+    """The ordinary message path: the mode was kept, so an idle session starts unattended."""
     user_id = await _user(client)
     session_id = await _stopped(user_id)
 
@@ -340,15 +317,7 @@ async def test_cancelling_a_stopped_run_spends_the_plan(client):
 
 @pytest.mark.asyncio
 async def test_every_direct_write_terminal_hands_the_mode_back(client):
-    """The no-sink path does it too, and for EVERY terminal rather than one caller.
-
-    `cancel` passed the mode explicitly for a session with no turn, so that case
-    worked. A cancel landing before `_drive` has built its sink takes the same
-    no-sink path with no mode argument, and wrote `cancelled` while the row
-    still said unattended — a quota slot held for a run nobody is running. It
-    surfaced as a flake in the live-cancel test, which is how races usually ask
-    to be noticed.
-    """
+    """The no-sink path hands the mode back for EVERY terminal, not just its one caller."""
     user_id = await _user(client)
     session_id = await _session(user_id, status="idle", mode="unattended")
 
@@ -357,7 +326,7 @@ async def test_every_direct_write_terminal_hands_the_mode_back(client):
     row = await pool.fetchrow("SELECT status, mode FROM sessions WHERE id = $1", uuid.UUID(session_id))
     assert (row["status"], row["mode"]) == ("cancelled", "attended")
 
-    # And the no-sink path directly, which is what the early-cancel race hits.
+    # The no-sink path directly: what a cancel landing before `_drive` builds a sink hits.
     other = await _session(user_id, status="running", mode="unattended")
     assert await runner._ending(other, None, "cancelled") is True
 
@@ -413,7 +382,7 @@ def test_a_stop_is_not_terminal_and_not_a_failure():
 
 
 def test_every_failed_call_spends_the_tools_attempts():
-    """The exemption is gone: the streak is per-turn state and a stop ends the turn."""
+    """The failure streak is per-turn state, so every failed call spends an attempt."""
     state = lp._State(budgets=lp.Budgets.load("unattended"))
     call = lp._PartialCall(id="c1", name="browser_task")
     failed = ResultEnvelope(ok=False, content="boom", error_kind="upstream_error")
@@ -424,7 +393,7 @@ def test_every_failed_call_spends_the_tools_attempts():
 
 
 def test_the_stop_machinery_is_gone():
-    """The card's own acceptance: the delete list IS the test."""
+    """The stop machinery stays deleted."""
     for name in ("request_stop", "park_stopped", "_force_stop", "_stopped_envelope", "_stop_backstops"):
         assert not hasattr(runner, name), name
     assert not hasattr(runner._Sink, "stopping")

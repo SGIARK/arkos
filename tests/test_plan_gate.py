@@ -1,14 +1,7 @@
-"""An unattended run starts from an approved plan, and never dies confused (11.8.5).
+"""An unattended run starts from an approved plan.
 
-The rule this file exists to pin: there is exactly ONE door into an unattended
-run. `propose_plan` parks the session on a row of kind `plan` carrying the plan
-itself, and approving that row — not pressing play, not the model deciding — is
+There is exactly one door: approving the `plan` row `propose_plan` parks on is
 what writes `plan.md` and flips the mode.
-
-What it replaced: the play arrow handed the model a transcript rather than a
-task. The 2026-08-20 Marketplace run went unattended with the model's own
-unanswered question as the last event, burned a browser run and five bare-text
-hops greeting nobody, and ended `failed{model_error}` though nothing errored.
 """
 
 from __future__ import annotations
@@ -41,15 +34,11 @@ PLAN = {
 async def _db(monkeypatch, tmp_path):
     await require_db()
 
-    # Blobs on disk, as everywhere else that writes a file in a unit test.
-    # `SupabaseBlobs` caches one httpx client, and pytest-asyncio gives every
-    # test its own event loop, so the second test in a module to write a blob
-    # gets "Event loop is closed" from a pool belonging to the first one's loop.
-    # Approving a plan writes `plan.md`, so more than one test here does.
+    # Blobs on disk: `SupabaseBlobs` caches one httpx client, and per-test event
+    # loops close it under the next test that writes a blob.
     store.use_blobs(store.FilesystemBlobs(tmp_path))
 
-    # The loop is out of scope: the turn a wake would drive is not what these
-    # tests are about, and the kwargs `start` was called with are.
+    # `start` is stubbed: these tests assert the kwargs it was called with.
     start_calls: list[dict] = []
 
     async def fake_start(session_id: str, **kw) -> bool:
@@ -86,8 +75,7 @@ async def _user(client: AsyncClient) -> str:
 async def _project_session(user_id: str, *, status: str = "awaiting_approval") -> tuple[str, str]:
     """A project linking one folder, and a session in it claiming that folder.
 
-    The claim is what decides where `plan.md` lands (11.9): the FIRST folder the
-    session writes, which is the first the project linked.
+    The claim decides where `plan.md` lands: the FIRST folder the session writes.
     """
     project_id = await api._new_project(user_id, "inbox triage")
     await api._link_folder(project_id, await api._make_folder(user_id, "inbox-triage"))
@@ -119,14 +107,13 @@ async def test_propose_plan_is_a_park_tool_of_kind_plan():
     from tool_module.tools.control import PARK_KINDS, ProposePlan
 
     assert PARK_KINDS[ProposePlan.spec.name] == "plan"
-    # An under-informed plan is still a plan: `missing` is how insufficiency
-    # renders, so nothing about it is required.
+    # `missing` is how insufficiency renders, so it is not itself required.
     assert set(ProposePlan.spec.input_schema["required"]) == {"goal", "done_when", "steps"}
 
 
 @pytest.mark.asyncio
 async def test_a_plan_park_carries_the_args_on_the_row(client):
-    """Consent binds to the plan, not to prose about it — the `call` rule, applied."""
+    """Consent binds to the plan, not to prose about it."""
     user_id = await _user(client)
     _, session_id = await _project_session(user_id)
 
@@ -179,8 +166,7 @@ async def test_approving_saves_the_plan_and_starts_the_run_unattended(client):
 async def test_the_unattended_quota_binds_at_plan_approval(client, monkeypatch):
     """The one point a user's unattended load grows, so the one point it is counted.
 
-    Checked BEFORE the row is answered: a user at their limit keeps their plan
-    rather than losing it to an approval that then cannot start anything.
+    Checked BEFORE the row is answered, so a user at their limit keeps their plan.
     """
     user_id = await _user(client)
     monkeypatch.setattr(api, "_cfg", lambda key, default: 1 if key == "quotas.max_unattended_sessions" else default)
@@ -226,10 +212,8 @@ async def test_declining_closes_the_park_and_leaves_an_attended_chat(client):
 async def test_a_reply_closes_the_plan_and_asks_for_the_next_one(client):
     """Anything that is not one of the two words is a reply.
 
-    Two events land, and the second is the point: the human's own words, then
-    the instruction that makes them produce a PLAN. Without it the model answers
-    inline and the session goes idle with the card gone and nothing to approve —
-    the run they were setting up quietly stops existing.
+    Two events land: the human's words, then the instruction that makes the model
+    produce a new PLAN rather than answering inline.
     """
     user_id = await _user(client)
     _, session_id = await _project_session(user_id)
@@ -259,11 +243,7 @@ async def test_a_reply_closes_the_plan_and_asks_for_the_next_one(client):
 
 @pytest.mark.asyncio
 async def test_a_composer_message_to_a_plan_parked_session_is_refused(client):
-    """`plan` joins `approval` and `call` in the 409: prose never answers a plan.
-
-    "yes do that" typed in the composer would read as FEEDBACK, spending a round
-    of the workshop on an approval the human thought they had given.
-    """
+    """`plan` joins `approval` and `call` in the 409: prose never answers a plan."""
     user_id = await _user(client)
     _, session_id = await _project_session(user_id)
     await _propose(session_id, PLAN)
@@ -298,12 +278,7 @@ async def test_a_second_proposal_supersedes_the_first_and_bumps_the_version(clie
 
 @pytest.mark.asyncio
 async def test_attention_carries_the_plan_and_its_version_and_nothing_else(client):
-    """No diff against the previous version.
-
-    Edits stack: by v3 the "changed since v{n-1}" list was longer than the plan
-    and said less than reading the plan does. A reply is answered by a whole new
-    plan, so the whole new plan is all that is sent.
-    """
+    """No diff against the previous version: a reply is answered by a whole new plan."""
     user_id = await _user(client)
     _, session_id = await _project_session(user_id)
     first = await _propose(session_id, PLAN, call_id="c1")
@@ -322,12 +297,7 @@ async def test_attention_carries_the_plan_and_its_version_and_nothing_else(clien
 
 @pytest.mark.asyncio
 async def test_a_decision_is_stored_normalized_however_it_was_typed(client):
-    """The consent table must say what was decided, not how it was spelled.
-
-    `{"answer": "Approve"}` started the run and wrote plan.md while the row read
-    unapproved, so the one table whose whole job is binding consent disagreed
-    with what had happened.
-    """
+    """The consent table must say what was decided, not how it was spelled."""
     user_id = await _user(client)
     _, session_id = await _project_session(user_id)
     row = await _propose(session_id, PLAN)
@@ -341,11 +311,7 @@ async def test_a_decision_is_stored_normalized_however_it_was_typed(client):
 
 @pytest.mark.asyncio
 async def test_a_plan_the_run_could_not_start_is_reopened(client, monkeypatch):
-    """A lost status race must not consume the plan.
-
-    Answered-and-never-started leaves a row nothing can approve again, and the
-    human's only recourse is getting the whole plan proposed from scratch.
-    """
+    """A lost status race must not consume the plan."""
     user_id = await _user(client)
     _, session_id = await _project_session(user_id)
     row = await _propose(session_id, PLAN)
@@ -365,8 +331,7 @@ async def test_a_plan_the_run_could_not_start_is_reopened(client, monkeypatch):
 async def test_a_session_given_no_folder_cannot_approve_a_plan(client):
     """The unattended prompt promises `plan.md` at the root of the first folder.
 
-    The home chat is exactly this session: no project, no links, nothing durable
-    to write into. Refused BEFORE the row is answered, so the plan survives.
+    Refused BEFORE the row is answered, so the plan survives.
     """
     user_id = await _user(client)
     session_id = str(
@@ -387,12 +352,7 @@ async def test_a_session_given_no_folder_cannot_approve_a_plan(client):
 
 @pytest.mark.asyncio
 async def test_the_handoff_carries_the_plan_rather_than_sending_the_model_to_read_it(client):
-    """A fact the harness knows is injected; the model's tools are for the world.
-
-    "read plan.md FIRST" spent a tool call on something already in hand — and
-    after a DECLINED plan it was a guaranteed FileNotFound, because nothing had
-    written the file.
-    """
+    """A fact the harness knows is injected; the model's tools are for the world."""
     user_id = await _user(client)
     _, session_id = await _project_session(user_id, status="idle")
 
@@ -416,18 +376,10 @@ async def test_the_handoff_carries_the_plan_rather_than_sending_the_model_to_rea
 
 @pytest.mark.asyncio
 async def test_play_on_a_cancelled_run_drafts_a_continuation(client):
-    """The header's ▶ reads "resume" on a spent plan, and this is what it calls.
+    """The header's ▶ on a spent plan: a terminal session is a legal start point.
 
-    `approve_session` refused anything that was not idle or pending, so the one
-    press the design asks for — pick a cancelled run back up — 409'd. A terminal
-    session is a legal starting point; the `terminal -> running` reopen exists
-    for exactly this, and the handoff makes it a CONTINUATION rather than a
-    fresh v1.
-
-    A run that was cancelled HAS a plan — that is what made it a run — so the
-    handoff carries it. A session cancelled before any plan was approved has
-    nothing to continue from and is told so instead; that case is
-    `test_the_handoff_carries_the_plan_rather_than_sending_the_model_to_read_it`.
+    The `terminal -> running` reopen exists for this, and the handoff carries the
+    cancelled run's plan, making it a CONTINUATION rather than a fresh v1.
     """
     user_id = await _user(client)
     _, session_id = await _project_session(user_id, status="cancelled")
@@ -459,8 +411,7 @@ async def test_play_is_still_refused_while_a_run_is_live(client):
 async def test_the_session_snapshot_carries_the_newest_plan(client):
     """The pinned card reads this, not a count of `propose_plan` calls.
 
-    `recent_events` is a capped window, so counting them renders a version the
-    server does not agree with once a session gets long — or loses the line.
+    `recent_events` is a capped window, so counting them loses the version.
     """
     user_id = await _user(client)
     _, session_id = await _project_session(user_id)

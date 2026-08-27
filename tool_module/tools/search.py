@@ -1,16 +1,7 @@
 """Web search: ours, native, over SerpAPI.
 
-OURS, not a connector (11.10.2). There is no per-user OAuth and nothing for a
-human to connect: the SerpAPI key is an app-level secret in `.env` and every
-user's searches share our quota. So it is always in the manifest, counted in
-`ours`, and it appears in no toggle and no settings row.
-
-It used to ride the connector wire, because that was where its key was
-configured. That was the only reason, and it cost a vendor in the path of a call
-that has no user data in it at all — so 11.10.2 brought it home. The tool is
-`readonly` and `auto_approve`: a search reads the web and changes nothing, and
-gating it would put an approval card in front of the human every time the agent
-looked something up.
+App-level SerpAPI key and no per-user OAuth: always in the manifest, counted in
+`ours`, and in no toggle and no settings row.
 """
 
 from __future__ import annotations
@@ -27,7 +18,6 @@ from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, fail, ok
 
 _ENDPOINT = "https://serpapi.com/search.json"
 _TIMEOUT = aiohttp.ClientTimeout(total=30)
-# Enough to answer from, short enough that ten of them do not eat the turn.
 _MAX_RESULTS = 10
 _SNIPPET_CHARS = 300
 
@@ -64,9 +54,6 @@ class WebSearch:
 
         key = str(_cfg("tools.serpapi_key", "") or os.environ.get("SERPAPI_API_KEY", "")).strip()
         if not key:
-            # Not retryable and not the model's problem: a missing app-level
-            # secret is an operator fact, and saying so plainly beats a
-            # generic upstream error the model will retry into.
             return fail(
                 "unavailable",
                 "Web search is not configured on this server (no SerpAPI key).",
@@ -85,8 +72,7 @@ class WebSearch:
             async with aiohttp.ClientSession(timeout=_TIMEOUT) as session, session.get(url) as resp:
                 text = await resp.text()
                 if resp.status >= 400:
-                    # The key is in the query string, so the url never goes in
-                    # a message: SerpAPI echoes the request on some errors.
+                    # Never put the url in a message: the api_key rides its query string.
                     return fail("upstream_error", f"Search failed ({resp.status}).")
         except (aiohttp.ClientError, TimeoutError) as e:
             return fail("upstream_error", f"Search could not reach SerpAPI: {type(e).__name__}")
@@ -103,11 +89,7 @@ class WebSearch:
 
 
 def _render(payload: dict[str, Any], count: int) -> str:
-    """Flatten SerpAPI's answer to the few fields a model can act on.
-
-    An answer box or knowledge panel is put first when present: it is usually
-    the whole answer, and burying it under ten blue links wastes the turn.
-    """
+    """Flatten SerpAPI's answer to the few fields a model can act on."""
     lines: list[str] = []
 
     box = payload.get("answer_box") or {}

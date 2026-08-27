@@ -1,13 +1,4 @@
-"""Materializing the store into a sandbox: everything claimed, only what is missing.
-
-A claim names a FOLDER of the user's one flat store (11.9), mounted at
-`~/store/<folder>/` — so a mounted path is the store path with the mount root in
-front of it, and the round trip out and back is the same string both ways.
-
-Runs against a real Postgres; the sandbox is a fake that actually applies the tar,
-so "byte-identical" is checked against real extracted files rather than a call log.
-The box is keyed by session, so that is what the fakes are handed.
-"""
+"""Materializing the store into a sandbox: everything claimed, only what is missing."""
 
 from __future__ import annotations
 
@@ -76,7 +67,7 @@ async def _db(tmp_path):
 
 
 async def _workspace() -> tuple[str, str]:
-    """A user with a store, and a session of theirs. A claim names a folder in it."""
+    """A user with a store, and a session of theirs."""
     user_id = uuid.uuid4()
     await pool.execute("INSERT INTO users (id) VALUES ($1)", user_id)
     _seeded.append(user_id)
@@ -474,7 +465,7 @@ async def test_a_process_that_dies_before_the_flush_leaves_the_last_tree_intact(
     await workspace.materialize(sandbox, session_id, [_claim(user_id)])
 
     sandbox.files[f"{workspace.MOUNT_ROOT}/taxes/a.txt"] = b"never flushed"
-    # The process stops here. Nothing calls flush.
+    # The process stops here: nothing calls flush.
 
     fresh = _sweeping(FakeSandbox())
     await workspace.materialize(fresh, session_id, [_claim(user_id)])
@@ -491,7 +482,7 @@ async def test_losing_the_sandbox_entirely_loses_nothing_that_was_flushed():
     sandbox.files[f"{workspace.MOUNT_ROOT}/taxes/a.txt"] = b"v2"
     await workspace.flush(sandbox, session_id, [_claim(user_id)], manifest)
 
-    del sandbox  # the sandbox is destroyed outright
+    del sandbox
     replacement = _sweeping(FakeSandbox())
     await workspace.materialize(replacement, session_id, [_claim(user_id)])
 
@@ -526,14 +517,12 @@ async def test_a_deletion_by_another_session_is_not_resurrected_by_a_warm_sandbo
     session_id, user_id = await _workspace()
     await store.commit_tree(user_id, [_file("taxes/keep.txt", "1")])
 
-    # Session A materializes and adds a file.
     a = _sweeping(FakeSandbox())
     manifest_a = (await workspace.materialize(a, session_id, [_claim(user_id)])).manifest
     a.files[f"{workspace.MOUNT_ROOT}/taxes/doomed.txt"] = b"created by A"
     await workspace.flush(a, session_id, [_claim(user_id)], manifest_a)
     assert "taxes/doomed.txt" in [e.path for e in await store.read_tree(user_id, "taxes")]
 
-    # Session B, its own sandbox, deletes it and flushes.
     other = await _second_session(session_id)
     b = _sweeping(FakeSandbox())
     manifest_b = (await workspace.materialize(b, other, [_claim(user_id)])).manifest
@@ -541,7 +530,6 @@ async def test_a_deletion_by_another_session_is_not_resurrected_by_a_warm_sandbo
     await workspace.flush(b, other, [_claim(user_id)], manifest_b)
     assert "taxes/doomed.txt" not in [e.path for e in await store.read_tree(user_id, "taxes")]
 
-    # A's sandbox is still warm and still has the file on disk.
     assert f"{workspace.MOUNT_ROOT}/taxes/doomed.txt" in a.files
     manifest_a2 = (await workspace.materialize(a, session_id, [_claim(user_id)])).manifest
 
@@ -577,7 +565,7 @@ async def test_a_box_that_died_between_materialize_and_flush_commits_nothing():
     manifest = (await workspace.materialize(box, session_id, [_claim(user_id)])).manifest
     box.files[f"{workspace.MOUNT_ROOT}/taxes/a.txt"] = b"edited, not yet flushed"
 
-    # The box dies; the next call gets a fresh one with an empty disk.
+    # The box died: the replacement is a fresh box with an empty disk.
     replacement = _sweeping(FakeSandbox())
     with pytest.raises(store.StoreError, match="sentinel"):
         await workspace.flush(replacement, session_id, [_claim(user_id)], manifest)

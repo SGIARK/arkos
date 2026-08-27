@@ -1,28 +1,6 @@
-/* =========================================================
-   app — root: state, routing, theme, rail, command bar
-
-   The design's frame. `watching` is not in the nav: nothing in the system
-   watches a source on a schedule, and a rail entry for a feature that does not
-   exist is a promise the product cannot keep. The nav is the whole surface —
-   desk, approvals, files, projects.
-
-   `projects` is the projects surface and only that; it was called "looking
-   glass" until the 11.4 design renamed it to what it shows, and `computer`
-   became `files` for the same reason.
-
-   Chat and the ambient bar are GONE (11.8): the design export removed them, and
-   a session's own composer is where you talk to a session. The home session
-   (LG-1.7) still exists backend-side and has no surface at all — the buddy's
-   return or retirement is a future card. 11.9 finished taking the furniture out
-   from under it: it holds no project, claims no folder, and the window's header
-   no longer invents a name for the container it does not have.
-   ========================================================= */
-
 const NAV = ["desk", "approvals", "files", "projects"];
 
-/* The hash a browser may still be holding from before the rename. Landing on
-   the desk because a bookmark says "computer" would be a small betrayal of a
-   link somebody saved. */
+/* Hashes bookmarked before the rename still have to resolve. */
 const NAV_ALIAS = { computer: "files", "looking glass": "projects" };
 
 function App() {
@@ -30,8 +8,7 @@ function App() {
   const [user, setUser] = useState(null);
   const [booting, setBooting] = useState(true);
   const [gone, setGone] = useState(false);
-  // A refusal carried back on the OAuth fragment. The sign-in screen shows it,
-  // because it is the only surface that can say what to do about it.
+  // A refusal carried back on the OAuth fragment; only the sign-in screen shows it.
   const [authProblem, setAuthProblem] = useState(null);
   const [view, setView] = useState(() => {
     const hash = decodeURIComponent(location.hash.replace("#", ""));
@@ -40,16 +17,11 @@ function App() {
   });
   const [settings, setSettings] = useState(false);
   const [error, setError] = useState(null);
-  // Bumped when something happened that the counts are made of.
   const [pulse, setPulse] = useState(0);
-  // Fetched ONCE per pulse and passed down. Every surface that shows what is
-  // waiting shows the same unscoped list, and four components each fetching it
-  // was four identical requests on every change. Null means not yet read.
+  // Fetched once per pulse and passed down to every surface; null means not yet read.
   const [waiting, setWaiting] = useState(null);
-  // A session opened from somewhere other than the grid — the desk, say.
   const [jump, setJump] = useState(null);
-  // A file the working-files pane asked the Files tab to land on. Same store,
-  // same path: the pane and the tab are two views of one namespace (11.9).
+  // Path the Files tab should land on: pane and tab are two views of one namespace.
   const [openFile, setOpenFile] = useState(null);
 
   useEffect(() => {
@@ -61,13 +33,8 @@ function App() {
     location.hash = encodeURIComponent(view);
   }, [view]);
 
-  /* The cookie may already be good, so the page asks before it offers a form.
-     COMING BACK FROM GOOGLE IS ASKED FIRST (12.1): that load arrives with a
-     token on the fragment and no cookie yet, so `me()` would 401 and the form
-     would flash before the exchange had a chance to run. `returnFromOAuth`
-     answers null on every ordinary load, so this costs nothing the rest of the
-     time. A refusal from the provider is shown on the sign-in screen rather
-     than thrown away — it is the only place that can explain it. */
+  /* The OAuth return must be asked before `me()`: that load carries a token on
+     the fragment and no cookie yet, so `me()` would 401 and flash the form. */
   useEffect(() => {
     let dead = false;
     (async () => {
@@ -102,9 +69,8 @@ function App() {
 
   const bump = useCallback(() => setPulse((n) => n + 1), []);
 
-  /* The pending count in the topbar, and the alert dot on the rail. Keyed to
-     `user`, NOT to `pulse`: the account list must not depend on any window
-     being mounted (11.11). */
+  /* Keyed to `user`, NOT to `pulse`: the account-wide list must not depend on
+     any window being mounted. */
   const readWaiting = useCallback(() => {
     api.attention().then(setWaiting).catch(() => {});
   }, []);
@@ -112,12 +78,10 @@ function App() {
   useEffect(() => {
     if (!user) return undefined;
     readWaiting();
-    /* One subscription for the account. The first frame arrives on connect, so
-       "subscribed" and "current" are the same moment. */
+    /* One subscription for the account; the first frame arrives on connect. */
     return api.watchAttention(readWaiting);
   }, [user, readWaiting]);
 
-  // `/` focused the ambient bar, which is gone; escape still closes settings.
   useEscape(settings, () => setSettings(false));
 
   async function signIn(who) {
@@ -194,9 +158,7 @@ function App() {
             </span>
             <span className="sep">/</span>
             <span>
-              {/* The name if the person gave one at sign-up (12.1), the email
-                  otherwise — an account older than the column has no name to
-                  show, and inventing one from the address would be a guess. */}
+              {/* Name if one was given at sign-up; an older account has none. */}
               user <b>{user.display_name || user.email || user.user_id}</b>
             </span>
           </div>

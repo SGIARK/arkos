@@ -1,12 +1,4 @@
-"""The sandbox manager against a real e2b sandbox.
-
-Marked `integration`: it boots a real VM, costs money and takes seconds. Run it
-with `pytest -m integration`. Skipped without `E2B_API_KEY` or the SDK.
-
-The unit tests in test_sandbox_tools.py cover the tool logic against a fake.
-What can only be checked here is that the SDK is driven correctly and that the
-sandbox's environment holds none of our credentials.
-"""
+"""The sandbox manager against a real e2b sandbox: it boots a real VM and costs money."""
 
 from __future__ import annotations
 
@@ -89,7 +81,7 @@ async def test_a_real_sandbox_round_trips_files_and_commands():
 
 
 async def test_no_credentials_reach_a_real_sandbox():
-    """The card requires it and only the sandbox itself can confirm it."""
+    """No harness credential, by name or by value, is visible inside the sandbox."""
     session_id = await _session()
     manager = sandbox_manager.manager()
     try:

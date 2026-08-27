@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Migration runner: apply pending db/migrations/*.sql in lexical order.
-
-Applied migrations are recorded in the `schema_migrations` table.
-"""
+"""Migration runner: apply pending db/migrations/*.sql in lexical order."""
 
 import os
 import sys

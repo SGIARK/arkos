@@ -1,7 +1,4 @@
-"""The model client has one retry layer and it is bounded.
-
-Pins contracts.md's retry budget: <=3 attempts, and background does not retry on overload.
-"""
+"""The model client has one retry layer and it is bounded."""
 
 import asyncio
 from types import SimpleNamespace
@@ -20,10 +17,9 @@ from openai import (
 from model_module import client as mc
 from model_module.errors import ModelError
 
-# Captured before monkeypatching so the override lambdas can defer to the real
-# loader. `_cfg` rather than `config.get`: the module-level alias is the seam now
-# (11.7.5 gave the eleven copies one home), and patching it isolates this module
-# instead of reconfiguring every other one through the shared singleton.
+# Captured before monkeypatching so the override lambdas can defer to the real loader.
+# Patch the module-level `_cfg` alias, not `config.get`: it isolates this module from
+# the shared config singleton.
 _real_cfg = mc._cfg
 
 
@@ -99,7 +95,7 @@ def fake(monkeypatch):
         monkeypatch.setattr(mc, "get_client", lambda: SimpleNamespace(chat=SimpleNamespace(completions=completions)))
         return completions
 
-    # Keep the suite fast: the attempt count is what's under test, not the clock.
+    # Backoff pinned tiny: the attempt count is under test, not the clock.
     overrides = {"llm.retry_backoff_s": 0.001, "llm.retry_backoff_max_s": 0.004}
     monkeypatch.setattr(mc, "_cfg", lambda k, d=None: overrides.get(k, _real_cfg(k, d)))
     return install
@@ -136,16 +132,7 @@ async def test_retryable_failures_stop_at_the_configured_cap(fake, error, kind):
 @pytest.mark.parametrize("source", ["background", "interactive"])
 @pytest.mark.asyncio
 async def test_an_overload_is_waited_out_whichever_kind_of_run_it_is(fake, source):
-    """REVERSED 2026-08-26 (11.11.3). This asserted the opposite.
-
-    The old rule was `retryable = source != "background"` — "an unattended run
-    yields the GPU slot instead of queueing for it" — which made sense against a
-    self-hosted SGLang where a background run competing for a slot was the whole
-    problem. Against a metered API it is backwards: a TPM limit reopens in
-    seconds, and the background run is precisely the one with nobody waiting on
-    it, so it is the one that can afford to wait. A live 429 saying "try again
-    in 4.404s" killed an autopilot session outright.
-    """
+    """A metered 429 reopens in seconds, so background runs wait it out too."""
     completions = fake(lambda n: RateLimitError("busy", response=_response(429), body=None))
 
     with pytest.raises(ModelError) as excinfo:
@@ -385,12 +372,8 @@ async def test_bad_max_retries_still_raises_model_error(monkeypatch, bad_value):
 
 @pytest.mark.asyncio
 async def test_client_is_cached_with_the_configured_timeout(monkeypatch):
-    """The bounded wall clock depends on the timeout actually being applied.
-
-    Async because the cache is keyed by the RUNNING LOOP: outside one,
-    `get_client` takes its documented no-loop branch and returns an uncached
-    client every call, so a sync test could never see the caching it is about.
-    """
+    """Async on purpose: the client cache is keyed by the running loop, and outside
+    one `get_client` returns an uncached client every call."""
     mc.reset_client()
     monkeypatch.setattr(mc, "_cfg", lambda k, d=None: 12.5 if k == "llm.timeout_s" else _real_cfg(k, d))
 
@@ -448,7 +431,7 @@ def test_overflow_is_recognised_from_the_prose_alone():
         assert mc._classify(exc, "interactive").kind == "context_overflow", wording
 
 
-# --- transient errors retry, permanent ones do not (11.11.3) --------------------
+# --- transient errors retry, permanent ones do not ------------------------------
 
 
 def _rate_limited(retry_after=None, ms=None):
@@ -507,7 +490,7 @@ async def test_a_permanent_error_is_terminal_with_zero_retries(fake):
 
 @pytest.mark.asyncio
 async def test_a_transient_error_that_recovers_lets_the_run_continue(fake):
-    """The point of the card: a hiccup is not the end of a run."""
+    """A transient error that recovers does not end the run."""
     completions = fake(
         lambda n: (
             _rate_limited(retry_after=0) if n == 1 else _Stream([_chunk(content="recovered"), _chunk(finish="stop")])
@@ -536,13 +519,7 @@ async def test_the_retry_delta_carries_the_numbers(fake):
 
 @pytest.mark.asyncio
 async def test_the_wait_is_interruptible(fake, monkeypatch):
-    """Stop and cancel reach a backoff the way they reach anything else.
-
-    It is a plain sleep, so there is no separate pause machinery to teach about
-    the verbs — which is the whole reason it is a plain sleep. The rest of this
-    file keeps backoff at a millisecond to stay fast; this one needs a wait long
-    enough to be interrupted mid-flight, which is the thing under test.
-    """
+    """Backoff is a plain sleep, so stop and cancel reach it like anything else."""
     fake(lambda n: _rate_limited(retry_after=30))
     monkeypatch.setattr(mc, "_cfg", lambda k, d=None: 30.0 if "backoff_max" in k else _real_cfg(k, d))
 

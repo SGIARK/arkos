@@ -1,10 +1,4 @@
-"""The Composio connector backend: dialect, dispatch, consent, isolation.
-
-The dialect cases are the point of this file. Every one of them is a place a
-client written against the generic MCP spec passes its own tests and fails
-against the live server, and each was measured in the 11.10.1 spike before the
-client was written (`docs/implementation_notes.md` § "Composio over MCP").
-"""
+"""The Composio connector backend: dialect, dispatch, consent, isolation."""
 
 from __future__ import annotations
 
@@ -55,7 +49,7 @@ ROSTER = [
 
 
 class FakeClient:
-    """Answers the way the live server did, and counts what went over the wire."""
+    """Stands in for the live server and counts what went over the wire."""
 
     def __init__(self, *, tools=None, result=None, accounts=None, link=None):
         self.tools = ROSTER if tools is None else tools
@@ -123,9 +117,8 @@ async def db():
 async def test_the_per_user_url_is_derived_not_minted():
     """Identity is a query param, and the resolved /v3/.../mcp form is what we speak.
 
-    The url the dashboard and SDK hand back is `/v3.1/mcp/{id}?...`, which
-    answers 307 with a JSON BODY rather than a Location header — nothing follows
-    that, so the client never speaks it.
+    The `/v3.1/mcp/{id}` form the dashboard and SDK hand back answers 307 with a
+    JSON body rather than a Location header, so the client never speaks it.
     """
     client = ComposioClient(server_id="srv-1", api_key="k")
 
@@ -332,7 +325,7 @@ async def test_the_callback_settles_the_row_from_the_account_id(db):
 
 
 async def test_an_account_id_that_is_not_this_users_settles_nothing(db):
-    """A url is a claim. Reconciling asks Composio whose account that id is."""
+    """A url is only a claim; reconciling asks Composio whose account that id is."""
     user_id = _user()
     hands = _hands(FakeClient(accounts=[]))
 
@@ -365,7 +358,7 @@ async def test_a_reconnect_row_is_not_reachable(db):
 
 
 async def test_nothing_is_always_on_this_wire(db):
-    """Web search is ours and native since 11.10.2; no toolkit is unconditional."""
+    """Web search is ours and native; no toolkit is unconditional on this wire."""
     assert await _hands().always(_user()) == []
 
 
@@ -378,13 +371,7 @@ async def test_auto_approve_waives_the_gate_for_the_named_tool():
 
 
 async def test_the_toggle_path_asks_the_vendor_nothing(db):
-    """`refresh=False` answers from stored rows: the toggle needs no round trip.
-
-    It runs on every render and every click, and it reads `status` and
-    `tool_count` — both already in the rows the settings panel refreshes. Asking
-    Composio here cost 305ms of REST and a seven-row write per click for a
-    freshness nothing downstream read.
-    """
+    """`refresh=False` answers from stored rows: the toggle needs no round trip."""
     user_id = _user()
     await _seed_user(user_id)
     await conns.mark(user_id, "GMAIL", conns.CONNECTED, "ca_1")
@@ -411,5 +398,4 @@ async def test_the_panel_path_does_refresh(db):
 
     assert client.account_reads == 1
     assert next(r for r in rows if r["server"] == "GMAIL")["status"] == conns.CONNECTED
-    # and it syncs, so the toggle path that follows reads the fresh answer
     assert (await conns.load(user_id))["GMAIL"].connected

@@ -1,13 +1,7 @@
 """The browser against the real library, not a fake of it.
 
-`tests/test_browser.py` fakes the vendor to test the leash. That leaves exactly
-one thing unproven, and it is the thing most likely to break: whether the calls
-we make into `browser_use` are calls this version of `browser_use` has. A mock
-encodes what we believe the API is, so believing it twice proves nothing.
-
-Deselected by default (`-m "not integration"`); skipped outright unless
-browser_use and a model key are both present. It costs a real browser, a real
-model call and a minute.
+Deselected by default (`-m "not integration"`) and skipped unless browser_use and
+a model key are both present: it costs a real browser, a real model call and a minute.
 """
 
 from __future__ import annotations
@@ -34,11 +28,7 @@ USER = "8f1d4a02-0000-4000-8000-000000000001"
 
 
 async def test_the_signature_we_build_the_agent_with_is_one_this_version_has():
-    """The cheap half: no browser, no model call, just the constructor's shape.
-
-    If a version bump renamed the step callback, our own warning fires here and
-    this fails — before a run in production goes quietly blind.
-    """
+    """The cheap half: no browser, no model call, just the constructor's shape."""
     from tool_module.browser.tool import _accepted
 
     wanted = {"task": "t", "llm": object(), "register_new_step_callback": print}

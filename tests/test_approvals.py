@@ -346,16 +346,11 @@ async def _true() -> bool:
     return True
 
 
-# --- attention announces itself from the write (11.11) --------------------------
+# --- attention announces itself from the write ----------------------------------
 
 
 async def test_parking_a_call_nudges_the_users_attention_channel():
-    """The bug this exists for: a park published only into a session stream.
-
-    A human sitting on the desk had nothing subscribed to that stream, so the
-    waiting list stayed frozen until a window happened to be mounted. The
-    account channel is published from the row's own write.
-    """
+    """A park publishes to the user's account channel, not only the session stream."""
     user_id = await _user()
     session_id = await _session(user_id)
 
@@ -410,13 +405,7 @@ async def test_another_users_channel_hears_nothing():
 
 
 async def test_the_kind_vocabulary_matches_the_tables_check_constraint():
-    """`Kind` and the CHECK constraint are the same vocabulary in two languages.
-
-    Nothing can import a constraint, so this reads it back. A kind in the Literal
-    that the constraint rejects is an insert that fails at the moment a run
-    parks; a kind the constraint allows that the Literal omits is a row nothing
-    in Python can name.
-    """
+    """`Kind` and the CHECK constraint are the same vocabulary in two languages."""
     from typing import get_args
 
     from harness_module.approvals import Kind

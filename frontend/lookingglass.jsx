@@ -1,22 +1,8 @@
-/* =========================================================
-   looking glass — projects grid + live session detail
+/* Looking glass — the projects grid and live session detail. The only projects
+   surface; chat, desk, approvals and computer are their own views in the rail. */
 
-   The design's composition, on real data. The grid is the user's projects with
-   their rollup dot; opening one lists its sessions; opening a session is the
-   detail view — the transcript streaming live on the left, the plan and the
-   canvas on the right, the composer underneath.
-
-   This is the ONLY projects surface. Chat, desk, approvals and computer are
-   their own views in the rail.
-   ========================================================= */
-
-/* The design's four statuses, from ours. `work` pings because something is
-   actually happening; `attn` is the one that wants a person. */
-/* The checklist item shape, mirrored from `agent_module/events.py`, which is
-   where it is defined. `todo_write` validates `pending | in_progress | done`.
-   This file used to test for "completed" — a word the tool never accepted — so
-   a list the model dutifully marked done rendered entirely unchecked. Every
-   frontend reader of the shape goes through these two. */
+/* Checklist item shape mirrors `agent_module/events.py`: `todo_write` validates
+   `pending | in_progress | done`. */
 const TODO_DONE = "done";
 const TODO_PENDING = "pending";
 
@@ -38,13 +24,11 @@ function pcStatus(status) {
 
 function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJumped, onOpenFile }) {
   const [projects, setProjects] = useState(null);
-  // From App, which reads it once per pulse for every surface that shows it.
   const waiting = pending || [];
   const [openProject, setOpenProject] = useState(null);
   const [sessions, setSessions] = useState([]);
   const [openSession, setOpenSession] = useState(null);
   const [making, setMaking] = useState(false);
-  // The project whose name is being edited, and the text so far. One at a time.
   const [renaming, setRenaming] = useState(null);
   const [renameText, setRenameText] = useState("");
 
@@ -61,10 +45,6 @@ function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJ
     setRenameText(project.title);
   };
 
-  /* Enter and blur both commit, escape cancels — the export's contract, and the
-     one people already have for renaming a file. An unchanged or empty name is
-     a no-op rather than a request: renaming a thing to what it is called is not
-     an edit. */
   const commitRename = async () => {
     const id = renaming;
     const title = renameText.trim();
@@ -72,8 +52,6 @@ function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJ
     if (!id || !title) return;
     const was = (projects || []).find((p) => p.id === id);
     if (was && was.title === title) return;
-    // Optimistic: the name is yours, and waiting a round trip to see your own
-    // typing is the one latency a rename cannot have.
     setProjects((list) => (list || []).map((p) => (p.id === id ? { ...p, title } : p)));
     try {
       await api.renameProject(id, title);
@@ -100,8 +78,6 @@ function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJ
     };
   }, [pulse, onError]);
 
-  /* Opened from somewhere else — the desk's running list, say. The grid is
-     still the surface; it just arrives already looking at one session. */
   useEffect(() => {
     if (!jump) return;
     setOpenSession(jump);
@@ -114,8 +90,6 @@ function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJ
     try {
       const list = await api.projectSessions(project.id);
       setSessions(list);
-      // One session is the common case, and clicking twice to reach it is a
-      // click too many.
       if (list.length === 1) setOpenSession(list[0].session_id);
     } catch (e) {
       onError(e);
@@ -124,9 +98,8 @@ function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJ
 
   if (openSession) {
     return (
-      /* Keyed by the session: every piece of local state in there — the plan
-         lane's drafting flag, the plan approved in this window — is about ONE
-         session, and reusing the instance across two carried it over. */
+      /* Keyed by session: SessionDetail's local state is all about one session
+         and must not carry across a switch. */
       <SessionDetail
         key={openSession}
         sessionId={openSession}
@@ -245,7 +218,6 @@ function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJ
             setMaking(false);
             await reload();
             if (onPulse) onPulse();
-            // Land in the new project, which is what the plus was for.
             open({ id: project.id, title: project.title });
           }}
         />
@@ -254,17 +226,8 @@ function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJ
   );
 }
 
-/* The new-project modal.
-
-   Two ways to start, and they differ in what the project LINKS: folders that
-   already exist in the store, or a fresh one named after the project. A project
-   owns no folder either way — linking is a fact about which work reads and
-   writes where, and the none-case folder is itself just linked (11.9).
-
-   The choices come from `GET /folders`, which is the store's top-level segments
-   grouped with their file counts. Not from the projects: a folder nothing links
-   is still a folder, and deriving the list from projects would hide exactly the
-   folders a new project is most likely to want. */
+/* The new-project modal. Folder choices come from `GET /folders` — the store's
+   top-level segments — not from the projects, which would hide unlinked ones. */
 function NewProject({ onClose, onMade, onError }) {
   const [name, setName] = useState("");
   const [mode, setMode] = useState("new");
@@ -274,8 +237,6 @@ function NewProject({ onClose, onMade, onError }) {
 
   useEscape(true, onClose);
 
-  // Only when asked for: a person starting an empty project should not pay for
-  // a listing they are not going to read.
   useEffect(() => {
     if (mode !== "existing" || folders !== null) return;
     let dead = false;
@@ -301,9 +262,6 @@ function NewProject({ onClose, onMade, onError }) {
   const chosen = [...picked];
   const ready = !!name.trim() && !busy && (!linking || chosen.length > 0);
 
-  /* The footer previews the OUTCOME, because the two modes do different things
-     and the difference is the whole choice: one points at files that exist, the
-     other makes a folder that does not. */
   const preview = linking
     ? chosen.length
       ? "links: " + chosen.map((f) => f + "/").join(", ")
@@ -391,9 +349,8 @@ function NewProject({ onClose, onMade, onError }) {
   );
 }
 
-/* One session, live. Every session is the same kind of thing (D5), so this is
-   the only window there is — reached from a project, or from the desk's running
-   list, and since 11.9 a session need not belong to a project at all. */
+/* One session, live — reached from a project or from the desk's running list.
+   A session need not belong to a project at all. */
 function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFile }) {
   const stream = useStream(sessionId, onError, onPulse);
   const {
@@ -410,28 +367,21 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
   } = stream;
   const [text, setText] = useState("");
   const [tab, setTab] = useState(() => localStorage.getItem("ark-canvas") || "files");
-  // Renaming the project from its own session header: the same gesture as on
-  // the card, because it is the same name.
   const [headRename, setHeadRename] = useState(false);
   const [headText, setHeadText] = useState("");
   const tail = useRef(null);
   const composer = useRef(null);
 
-  /* THE COMPOSER'S HEIGHT IS ITS CONTENT'S (11.12). `auto` first so the box can
-     SHRINK — `scrollHeight` never reports less than the height already set, so
-     without the reset a box that grew could never come back down after a
-     delete. The cap and the internal scroll are the stylesheet's; this only
-     reports how tall the text wants to be. */
+  /* `auto` first so the box can shrink: `scrollHeight` never reports less than
+     the height already set. The cap and internal scroll are the stylesheet's. */
   const grow = (el) => {
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight}px`;
   };
 
-  /* One send path for both doors into it — the form's submit and Enter — so
-     they cannot drift apart. Trim decides whether there is anything to send;
-     what is SENT is the trimmed text, newlines and all. Resetting the height
-     is part of sending: the value going empty does not re-run `grow`. */
+  /* Resetting the height belongs here: the value going empty does not re-run
+     `grow`. */
   const submit = () => {
     const said = text.trim();
     if (!said) return;
@@ -444,31 +394,15 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
     }
   };
 
-  /* The plan lane. Two pieces of local state, and each is a thing the server
-     genuinely does not know:
-       drafting  — the play button was pressed, or a reply was sent, and the
-                   turn drafting the next plan is in flight. There is no plan
-                   row to read yet.
-     (There is no second piece any more: the dismissed-plan flag went with the
-     pin in 11.12.)
-     The open plan itself is NOT held here. It is `questions`, and it is on
-     screen exactly while the server says a plan is waiting: replying closes the
-     row, the card goes with it, and the next plan arrives as a new card. */
+  /* `drafting` is the one fact the server has no row for: a plan turn is in
+     flight. The open plan itself is not held here — it is `questions`. */
   const [drafting, setDrafting] = useState(false);
-  /* The plan approved in THIS window. The snapshot's `plan` is the same fact
-     from the server and is what survives a reload, but it was read before the
-     approval, so the panel's steps would not seed until then without this.
-     There is no pin and no dismiss any more (11.12): the pin was a THIRD
-     rendering of facts that already have one home each — status in the header,
-     goal and steps in the panel, the propose and approve cards inline where
-     they happened, `plan.md` in working files — and a dismiss was a second
-     authority over the visibility of the one that lingered. */
+  /* The plan approved in THIS window: the snapshot carries the same fact, but
+     it was read before the approval, so the panel's steps would not seed. */
   const [approvedHere, setApprovedHere] = useState(null);
 
-  /* Renaming the project from its own window. Keyed off the SNAPSHOT's ids
-     rather than the grid's navigation state, so it works in a window opened
-     from the desk — where there is no `project` prop at all — and the header
-     re-reads the name from the server rather than from a mutated prop. */
+  /* Keyed off the SNAPSHOT's ids, not the grid's navigation state: a window
+     opened from the desk has no `project` prop at all. */
   const commitHeadRename = async () => {
     const title = headText.trim();
     setHeadRename(false);
@@ -488,9 +422,6 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
     localStorage.setItem("ark-canvas", tab);
   }, [tab]);
 
-  /* The lane's bookkeeping, all of it driven by rows arriving rather than by
-     timers: a plan appearing ends the drafting, and a session that stops
-     running ends it whatever else happened. */
   const openPlan = questions.find((q) => q.kind === "plan") || null;
   useEffect(() => {
     if (openPlan) {
@@ -499,9 +430,7 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
     }
   }, [openPlan]);
   useEffect(() => {
-    // A turn that ended without a plan: the model answered in prose instead of
-    // proposing. The spinner stops and the play button comes back rather than
-    // waiting on something nothing is drafting.
+    // A turn can end without proposing at all, so leaving `running` ends drafting.
     if (session && session.status !== "running") setDrafting(false);
   }, [session && session.status]);
   useEffect(() => {
@@ -512,55 +441,29 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
 
   const running = session.status === "running";
   const unattended = session.mode === "unattended";
-  /* The snapshot first, the navigation state second: a window opened from the
-     desk has no `project` prop, and the header should not depend on how you
-     got here. Null for a session with no project — the home chat is one. */
   const projectTitle = session.project_title || (project && project.title) || null;
-  /* No directory chips in the header (11.9). A session may hold SEVERAL linked
-     folders, so one chip was never going to be right, and where work lands is
-     said by the plan card and the working-files pane — the two places that show
-     it in full rather than in a slot that fits one. */
 
-  // The open plan row, and the session's newest plan whatever became of it.
   const planCard = openPlan;
-  /* Everything below reads the server's `plan` — its `answer` is what became of
-     it — with one local override for the approval made in THIS window, which the
-     snapshot was read before. Dismissing hides whatever version was dismissed. */
   const serverPlan = session.plan || null;
   const approvedPlan = approvedHere || (serverPlan && serverPlan.answer === "approve" ? serverPlan : null);
 
-  /* THE FACES KEY OFF STATUS, never off an endpoint's 202. A stopped run is
-     `idle` with the mode still `unattended` — the stop kept it, which is what
-     leaves the plan approved — and that pair is reachable no other way: an
-     ordinary idle session is attended, and an unattended one is running or
-     parked. The lifecycle stream carries it, so the button is right after a
-     reload and right in a second tab. */
+  /* idle + unattended is a stopped run and nothing else: an ordinary idle
+     session is attended, and an unattended one is running or parked. */
   const held = session.status === "idle" && unattended;
   const cancelled = !!approvedPlan && session.status === "cancelled";
-  /* The checklist, and whether it is the model's or the plan's. A real
-     `todo_write` always wins: the first one is the model taking over its own
-     checklist, and the seed steps out of the way. */
   const planSteps = (approvedPlan && approvedPlan.steps) || [];
   const seededSteps = (!todo || !todo.length) && planSteps.length > 0;
   const todoRows = seededSteps
     ? planSteps.map((step) => todoItem(step))
     : todo || [];
-  /* A COMPLETED run never shows unchecked boxes: the harness sweeps the list at
-     the terminal (11.11.1), and this is the same fact rendered — a seeded list
-     the model never wrote to would otherwise sit unchecked under a completed
-     banner and contradict it. Other terminals keep their partial list, which is
-     an honest record of where the run stopped. */
+  /* A completed run never shows unchecked boxes: the harness sweeps the list at
+     the terminal. Other terminals keep their partial list. */
   const doneRun = session.status === "completed";
   const shownRows = doneRun ? todoRows.map((r) => ({ ...r, status: TODO_DONE })) : todoRows;
-  /* ▶ is offered when nothing is pending on the human and nothing is in flight:
-     an idle session, a finished one, a dismissed plan, or a cancelled run
-     (where it reads "resume"). A held run has its own two faces instead. */
   const showRun = !planCard && !drafting && !held && !running && !unattended;
 
-  /* Cancel is the second press and the only one that spends the plan; resume is
-     a plain start, because the stop changed nothing to undo. Neither answers a
-     row any more — 11.8.7 deleted the `resume` park along with the three-answer
-     machinery behind it. */
+  /* Cancel is the only press that spends the plan's approval; resume is a plain
+     start, because the stop changed nothing to undo. */
   const cancelHeld = () =>
     api
       .cancel(sessionId)
@@ -587,15 +490,8 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
             ← projects
           </button>
         )}
-        {/* THE PROJECT'S NAME, and nothing else. The session's own title was a
-            second crumb here and it earned none of the room: it repeated the
-            first line of the transcript underneath it, and where it did not —
-            a session with no project — the fallback printed the SAME name
-            twice, "Chat ▸ Chat", with a crumb between them promising a
-            container that does not exist. A session with no project shows no
-            name here rather than an invented one; the transcript says what it
-            is. The title comes from the SNAPSHOT, so the header reads the same
-            whether the window was opened from the grid or from the desk. */}
+        {/* The project's name only, and from the SNAPSHOT — the header reads the
+            same whether the window was opened from the grid or from the desk. */}
         <span className="path">
           {projectTitle &&
             (headRename ? (
@@ -645,17 +541,8 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
         )}
         <span className="grow" />
         <div className="lg-ctrls">
-          {/* The run control has three faces and never two at once.
-
-              ▶ asks for a PLAN — it does not hand the session over, which is
-              what its tooltip promises and what the endpoint does. On a
-              CANCELLED run it reads "resume" and drafts a continuation instead
-              of a fresh v1: same request, different starting point, because the
-              handoff tells the model to read plan.md and the transcript first.
-
-              ■ stop holds a running turn. ✕ cancel is the second press and the
-              only one that spends the plan. Before 11.8.6 the first press was
-              the only press. */}
+          {/* Three faces, never two at once: ▶ asks for a plan (a continuation
+              on a cancelled run), ■ holds a running turn, ✕ spends the plan. */}
           {showRun && (
             <button
               className="run-btn"
@@ -688,9 +575,8 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
                   .stop(sessionId)
                   .then((body) => {
                     refreshSession();
-                    // The turn is not running in THIS process — the owning one
-                    // died, and the startup sweep is what ends it. Saying so
-                    // beats a button that looks like it did nothing.
+                    // `stopped: false` means the owning process is gone; the
+                    // startup sweep is what ends the turn.
                     if (body && body.stopped === false) {
                       onError(
                         new ApiError(
@@ -707,10 +593,8 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
               stop
             </button>
           )}
-          {/* A HELD RUN'S TWO ACTIONS, and their only home (11.12). They used
-              to sit on a banner below the transcript as well as here, which is
-              two authorities over the same press. Resume first: it is the one
-              that keeps the work, and cancel is the one that spends it. */}
+          {/* A held run's two actions, and their only home: resume keeps the
+              work, cancel spends it. */}
           {held && (
             <button
               className="run-btn"
@@ -739,9 +623,8 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
             {grouped(events).map((event) => (
               <StreamEvent key={event.seq} event={event} />
             ))}
-            {/* Answered where it was asked, not in a separate tray — except a
-                plan, which is not a question and does not answer like one: it
-                gets the lane below. */}
+            {/* Answered where they were asked — except a plan, which is not a
+                question and gets the lane below. */}
             {questions
               .filter((q) => q.kind !== "plan")
               .map((q) => (
@@ -759,13 +642,7 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
                 <div className="said">{p.text}</div>
               </div>
             ))}
-            {/* ---- the plan lane. TWO faces since 11.12, never both at once:
-                    drafting, and the open card — the two moments a plan is
-                    still being decided. It had six, and the other four were
-                    each a second rendering of something the header, the panel
-                    or the transcript already showed. It lives INSIDE the
-                    transcript and scrolls with it — a docked strip overlaid the
-                    conversation, and the transcript is the only surface. ---- */}
+            {/* The plan lane: drafting and the open card, never both at once. */}
             {drafting && !planCard && (
               <div className="plan-drafting">
                 <Spinner />
@@ -788,14 +665,12 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
                       version: planCard.version || 1,
                       goal: (planCard.tool_args || {}).goal,
                       answer: "approve",
-                      // Carried so the todo block seeds the moment the plan is
-                      // approved, not on the next snapshot read.
+                      // Carried so the checklist seeds now, not on the next
+                      // snapshot read.
                       steps: (planCard.tool_args || {}).steps || [],
                     });
                   }
-                  // A reply wakes the session to propose again, so the lane goes
-                  // straight back to drafting rather than blanking until the
-                  // next card lands.
+                  // A reply wakes the session to propose again.
                   if (outcome === "replied") setDrafting(true);
                   refreshQuestions();
                   refreshSession();
@@ -803,21 +678,8 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
                 }}
               />
             )}
-            {/* NOTHING PLAN-SHAPED BELOW THE FEED (11.12). What used to sit
-                here — the pinned plan, the resume-note echo, the held banner,
-                the spent and dismissed banners — was a second and third
-                rendering of facts that already have exactly one home: the run's
-                status and hop count in the header, the goal and steps in the
-                panel's checklist, the propose and approve cards inline at the
-                point in history where they happened, and `plan.md` itself in
-                working files. Duplicated renderings drift, and the pin's did:
-                it asked only whether a plan had EVER been approved, so it
-                outlived every run it described. The ACTIONS those banners
-                carried are not lost — they are in the header, one home each:
-                a held run's resume and cancel are the two buttons beside the
-                status, and a cancelled run's re-propose is the same ▶ that
-                reads "resume" and drafts a continuation. */}
-
+            {/* Nothing plan-shaped below the feed: the header owns a held run's
+                actions, the panel owns the steps, `plan.md` owns the rest. */}
 
             <div ref={tail} />
           </div>
@@ -831,19 +693,8 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
           >
             <SessionTools sessionId={sessionId} onError={onError} />
             <span className="prompt">ark&gt;</span>
-            {/* A TEXTAREA, auto-sized to its content (11.12). It was an
-                `<input>`, which is one line whatever it holds: pasting an email
-                ran the text off into the ether, unreadable and uneditable before
-                send. The height is set from `scrollHeight` on every change —
-                reset to `auto` first, or the box can only ever grow, since
-                scrollHeight is bounded below by the height already set — and the
-                cap lives in the stylesheet as a `max-height`, so past it the box
-                stops growing and scrolls INTERNALLY rather than eating the
-                transcript.
-
-                Enter still sends, because this is a prompt and not a document.
-                Shift+Enter is the newline, and a pasted newline is kept: the
-                value goes to the server as typed, and only `trim` touches it. */}
+            {/* Enter sends, Shift+Enter is a newline; the height cap is the
+                stylesheet's `max-height`. */}
             <textarea
               ref={composer}
               rows={1}
@@ -859,10 +710,8 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
                 e.preventDefault();
                 submit();
               }}
-              /* A stopped run resumes on what is typed here — kind `resume` is
-                 exempt from the composer's 409, because the plan it holds on is
-                 already approved. Saying so is the difference between a held run
-                 and a dead one. */
+              /* A stopped run resumes on what is typed here: kind `resume` is
+                 exempt from the composer's 409. */
               placeholder={held ? "type to resume. your note is the next thing ark reads" : "suggest or steer this session…"}
               spellCheck={false}
               autoComplete="off"
@@ -871,15 +720,8 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
         </div>
 
         <div className="ctx-panel">
-          {/* The todo block is the MODEL's checklist, fed by `todo_write`. Until
-              the first one arrives it seeds from the approved plan's steps —
-              read from what this window already holds, so the model retypes
-              nothing — and says so in the kicker, because unchecked boxes
-              nobody has claimed yet would otherwise read as work not started.
-
-              It never says "plan" in its empty state: that copy predated the
-              plan card and borrowed its name, so a session with a plan at v6
-              read "todo · no plan yet". */}
+          {/* The model's checklist, fed by `todo_write`; until the first one
+              arrives it seeds from the approved plan's steps. */}
           <div className="todo-block">
             <span className="kicker">
               {seededSteps ? `steps · plan.md v${approvedPlan.version || 1}` : "todo"}
@@ -926,24 +768,8 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
   );
 }
 
-/* =========================================================
-   the tool budget — the chip in the composer, and the panel behind it
-
-   Choosing what this session can reach sits next to asking it for something,
-   which is why the control is in the composer and not beside the claims. The
-   meter reads `enabled / (llm.max_tools - ours)`: our own tools are always
-   loaded and never spend the human's allowance, so the denominator moves on
-   its own if we add one.
-
-   A toggle that would overflow the cap is refused HERE, dim and with the
-   numbers on the row, and fires no request. The API refuses it too — this is
-   the half that makes the refusal legible instead of a 400 from somewhere else.
-
-   What this panel does NOT claim is effect. Until Task 11.5 wires the toggles
-   into the manifest, the prompt and the loop, a server turned on is recorded
-   and displayed and nothing more, which is why no row here says a word about
-   what the model was handed.
-   ========================================================= */
+/* The tool budget. The meter reads `enabled / (llm.max_tools - ours)`: our own
+   tools are always loaded and never spend the human's allowance. */
 
 function SessionTools({ sessionId, onError }) {
   const [doc, setDoc] = useState(null);
@@ -963,8 +789,6 @@ function SessionTools({ sessionId, onError }) {
     load();
   }, [load]);
 
-  // A server connected in settings while this window was open is one the panel
-  // should offer the moment it is asked for, not on the next reload.
   useEffect(() => {
     if (open) load();
   }, [open, load]);
@@ -979,7 +803,7 @@ function SessionTools({ sessionId, onError }) {
 
   const toggle = async (row, blocked) => {
     if (blocked || busy) {
-      // Refused in the panel, with the numbers, and no request leaves the page.
+      // Refused here, with the numbers on the row; no request leaves the page.
       if (blocked && !row.enabled) setRefused(row.server);
       return;
     }
@@ -1097,24 +921,15 @@ function SessionTools({ sessionId, onError }) {
   );
 }
 
-/* WORKING FILES: the folders this project links, and nothing else.
-
-   The SAME `FileTree` the Files tab draws, with the same powers — open, drag to
-   move, drop to upload, double-click to rename. The two are scopes on one
-   store, not two filesystems, so a file renamed here is renamed there, and a
-   path clicked here is the path the tab lands on.
-
-   What is local to this pane is the LINKING. `+ link` adds a folder the project
-   does not yet link; the pane shows it at once and the AGENT sees it from the
-   NEXT session, because claims are fixed for a session's life. That is stated
-   on the control rather than hidden — a folder appearing under a running agent
-   mid-hop would be a mount and a lease it was never told about. */
+/* The folders this project links, on the same `FileTree` and the same store as
+   the Files tab. A linked folder reaches the agent only at the NEXT session,
+   because claims are fixed for a session's life. */
 function FilesCanvas({ projectId, folders, onError, onOpenFile }) {
   const [linked, setLinked] = useState(folders || []);
   const [linking, setLinking] = useState(false);
   const [choices, setChoices] = useState(null);
   const [busy, setBusy] = useState(false);
-  // Bumped when a link lands, so the tree re-reads with the new folder in it.
+  // Bumped when a link lands: `load` closes over it, so the tree re-reads.
   const [pulse, setPulse] = useState(0);
 
   useEffect(() => {
@@ -1123,8 +938,6 @@ function FilesCanvas({ projectId, folders, onError, onOpenFile }) {
 
   const load = useCallback(() => api.files(projectId), [projectId, pulse]);
 
-  // Only when the picker is opened: a listing nobody asked for is a request
-  // spent on a control that is shut.
   useEffect(() => {
     if (!linking) return;
     let dead = false;
@@ -1202,13 +1015,8 @@ function FilesCanvas({ projectId, folders, onError, onOpenFile }) {
   );
 }
 
-/* The browser's frames while it is browsing. Never events, never replayed.
-
-   A popout, not a fixed canvas: the 300px panel is where you notice the browser
-   is working, and it is nowhere near enough to read a page in. Clicking the
-   thumbnail opens the same single frame stream at a size you can actually see,
-   over the conversation rather than instead of it, and escape puts it back.
-   (The 11.4 design supersedes LG-2's right-panel wording here.) */
+/* The browser's frames while it is browsing: live only, never events and never
+   replayed. */
 function BrowserCanvas({ url, label }) {
   const [frame, setFrame] = useState(null);
   const [big, setBig] = useState(false);
@@ -1229,8 +1037,6 @@ function BrowserCanvas({ url, label }) {
 
   useEscape(big, () => setBig(false));
 
-  // The run ending takes the popout with it: an expanded still of a stream that
-  // has stopped is a picture pretending to be a window.
   useEffect(() => {
     if (!url) setBig(false);
   }, [url]);

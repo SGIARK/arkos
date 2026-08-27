@@ -230,8 +230,8 @@ async def test_a_nullable_type_union_is_accepted():
     assert (await env.execute("remote", {"a": 5}, _ctx(), lookup=_lookup(_Remote()))).error_kind == "invalid_args"
 
 
-# Invariant: execute() converts EVERY exception into an envelope, with exactly one
-# exception, cancellation, which is BaseException and must reach the event loop.
+# Invariant: execute() converts every exception into an envelope; cancellation
+# alone is a BaseException and must reach the event loop.
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "boom",

@@ -1,7 +1,4 @@
-"""
-The event vocabulary. Store-shape equals wire-shape: the object saved is the
-object pushed, so db, SSE and tests share one shape.
-"""
+"""The event vocabulary. Store-shape equals wire-shape: the saved object is the pushed object."""
 
 from __future__ import annotations
 
@@ -22,23 +19,20 @@ EventKind = Literal[
     "done",
 ]
 
-# turn_end and stopped are NON-terminal: they are the two triggers for
-# running -> idle, and they differ only in who ended the hop.
+# turn_end and stopped are NON-terminal: the two triggers for running -> idle,
+# differing only in who ended the hop.
 DoneReason = Literal[
     "turn_end",
-    # A human pressed Stop. Not a terminal and not a failure: the run is held,
-    # the mode is kept, and a message or a plain start picks it up again.
+    # A human pressed Stop: the run is held and the mode kept, not a failure.
     "stopped",
     "completed",
     "max_hops",
     "wall_clock",
-    # The model produced no work: an empty reply, or a third consecutive
-    # bare-text hop after the continuation and the finish nudge. Split out of
-    # `model_error` in 11.8.5, because nothing errored.
+    # No work from the model: an empty reply, or a third consecutive bare-text hop.
     "stalled_progress",
     "model_error",
     # The harness failed, not the model: `_drive`'s catch-all, or a loop that
-    # ended with no `done`. Also split out of `model_error` in 11.8.5.
+    # ended with no `done`.
     "internal_error",
     "context_overflow",
     "cancelled",
@@ -128,15 +122,7 @@ class StatusEvent(Event):
     url: str | None = None
 
 
-# --- the checklist item, defined ONCE ------------------------------------------
-#
-# This shape used to be spelled out in five places — the tool's validator, the
-# session-create seed, the terminal sweep, and twice in the frontend — and it had
-# already drifted: the UI tested for a status `"completed"` that `todo_write`
-# never accepted, so a list the model dutifully marked done rendered entirely
-# unchecked. One definition, and the vocabulary lives with it.
-
-# The tool that writes it. `tool_module.tools.control` re-exports this as
+# The checklist item, defined once. `tool_module.tools.control` re-exports
 # TODO_TOOL so the spec and the trackers cannot name different tools.
 TODO_TOOL = "todo_write"
 
@@ -167,14 +153,8 @@ class TodoEvent(Event):
 class TodoTracker:
     """Follows `todo_write` calls past and reports the list as it stands.
 
-    The list is in the CALL's arguments and whether it was accepted is in the
-    RESULT, so neither alone is enough — which is why this is a small object
-    rather than a function. `todo_write` is latest-wins: the whole list every
-    time, so a successful call replaces rather than merges.
-
-    Written once because it was written twice: the loop kept a copy for its hop
-    scaffold and the runner kept another for its terminal sweep, and the two
-    could disagree about what the model had last said.
+    The list is in the call's arguments and its acceptance is in the result;
+    `todo_write` is latest-wins, so a successful call replaces rather than merges.
     """
 
     def __init__(self) -> None:
@@ -261,19 +241,15 @@ _BY_KIND: dict[str, type[Event]] = {
 }
 
 
-# The Literal and the class registry are two spellings of one vocabulary, and a
-# kind added to one and not the other fails differently in each: a missing
-# Literal member is a type error nobody runs, a missing registry entry is a
-# ValueError at parse time on a row already written. Checked at import, so the
-# process refuses to start rather than failing later on one path.
+# The Literal and the class registry are two spellings of one vocabulary; checked
+# at import so a kind added to only one refuses the process rather than a row.
 assert set(_BY_KIND) == set(get_args(EventKind)), (
     f"event kinds disagree: registry={sorted(_BY_KIND)} literal={sorted(get_args(EventKind))}"
 )
 
 
 def parse_event(kind: str, payload: dict[str, Any], version: int = 1) -> Event:
-    """
-    Rebuild an event from a stored row, dropping payload keys this reader does not know.
+    """Rebuild an event from a stored row, dropping payload keys this reader does not know.
 
     Raises:
         ValueError: on an unknown kind, or a payload missing a required field.

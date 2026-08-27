@@ -1,8 +1,5 @@
 """Claims on the browser and on projects: one session at a time, and given up when it stops.
 
-The sandbox is not among them — a box belongs to one session, so it is capacity
-rather than a lease (see test_sandbox_pool.py).
-
 Runs against a real Postgres with migration 0 applied.
 """
 

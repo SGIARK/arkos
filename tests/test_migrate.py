@@ -1,7 +1,4 @@
-"""Connection-URL resolution and migration helpers in db/migrate.py.
-
-The Postgres-touching functions run against MagicMock connections.
-"""
+"""Connection-URL resolution and migration helpers in db/migrate.py."""
 
 from __future__ import annotations
 
@@ -11,10 +8,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from db import migrate
-
-# ---------------------------------------------------------------------------
-# get_connection_url
-# ---------------------------------------------------------------------------
 
 
 class TestGetConnectionUrl:
@@ -60,11 +53,6 @@ class TestGetConnectionUrl:
         assert url.startswith("postgresql://postgres:postgres@localhost:5432/")
 
 
-# ---------------------------------------------------------------------------
-# Migration helpers
-# ---------------------------------------------------------------------------
-
-
 class TestMigrationHelpers:
     def _conn_with_cursor(self, fetchone_value=None):
         conn = MagicMock()
@@ -101,7 +89,6 @@ class TestMigrationHelpers:
 
         migrate.apply_migration(conn, sql_file)
 
-        # Two execute calls: the migration SQL, then the bookkeeping insert.
         first_call_sql, *_ = cur.execute.call_args_list[0][0]
         assert "CREATE TABLE demo" in first_call_sql
 
@@ -110,11 +97,6 @@ class TestMigrationHelpers:
         assert second_call[0][1] == ("0042_demo.sql",)
 
         conn.commit.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# main() smoke
-# ---------------------------------------------------------------------------
 
 
 class TestMainSmoke:

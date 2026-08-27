@@ -1,8 +1,4 @@
-"""The session transcript: one append-only table of events.
-
-What `append` writes is what SSE pushes and what the fold reads back. A failed append
-raises, and the caller halts the run.
-"""
+"""The session transcript: one append-only table of events."""
 
 from __future__ import annotations
 
@@ -43,8 +39,7 @@ _SECRET_KEY = re.compile(
 )
 _REDACTED = "[redacted]"
 
-# The current run: everything after the last `done`. The invariant checks below
-# read only this tail.
+# The current run: everything after the last `done`.
 _RUN_START = """
     SELECT COALESCE(MAX(seq), 0) FROM session_events WHERE session_id = $1 AND kind = 'done'
 """
@@ -69,8 +64,7 @@ _OPEN_CALLS = f"""
 
 def _redact(value: Any, *, key_matched: bool = False) -> Any:
     """Replaces values held under a secret-looking key, recursively."""
-    # A matched key replaces its whole value, so {"authorization": {"header": "Bearer
-    # ..."}} redacts the nested secret as well.
+    # A matched key replaces its whole value, nested secrets included.
     if key_matched:
         return _REDACTED
     if isinstance(value, dict):
@@ -91,9 +85,7 @@ def _to_row(event: Event) -> dict[str, Any]:
 async def append(session_id: str, event: Event) -> StoredEvent:
     """Appends one event and returns it with its assigned seq.
 
-    Raises:
-        TranscriptError: the event breaks the transcript invariant.
-        asyncpg.PostgresError: the write failed. Both are fatal to the run.
+    Raises TranscriptError (invariant broken) or asyncpg.PostgresError; both are fatal to the run.
     """
     async with (await pool.pool()).acquire() as conn, conn.transaction():
         return await append_tx(conn, session_id, event)
@@ -101,9 +93,8 @@ async def append(session_id: str, event: Event) -> StoredEvent:
 
 async def append_tx(conn: asyncpg.Connection, session_id: str, event: Event) -> StoredEvent:
     """Appends inside a caller's transaction, so a status change and its event commit together."""
-    # BIGSERIAL assigns seq before commit, so commit order and seq order agree only
-    # while the lock is held. The lock key is the canonical UUID text: Postgres hashes
-    # text exactly, so two spellings of one id take different locks.
+    # BIGSERIAL assigns seq before commit, so seq order matches commit order only under this
+    # lock; the key must be the canonical UUID text, as Postgres hashes text exactly.
     await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))", str(_uuid(session_id)))
     await _check_invariant(conn, session_id, event)
 
@@ -123,11 +114,7 @@ async def append_tx(conn: asyncpg.Connection, session_id: str, event: Event) -> 
 
 
 async def _check_invariant(conn: asyncpg.Connection, session_id: str, event: Event) -> None:
-    """Enforces that every tool_call.id is closed by exactly one tool_result.
-
-    Checked on `tool_result` and `done` events only. The loop appends every result within
-    its own hop, so no other event kind falls between a call and its result.
-    """
+    """Enforces that every tool_call.id is closed by exactly one tool_result."""
     if isinstance(event, ToolResultEvent):
         open_ids = {r["call_id"] for r in await conn.fetch(_OPEN_CALLS, _uuid(session_id))}
         if event.id not in open_ids:
@@ -147,23 +134,13 @@ async def _check_invariant(conn: asyncpg.Connection, session_id: str, event: Eve
 
 
 async def open_calls(session_id: str) -> dict[str, str]:
-    """Return `{call_id: name}` for every tool_call this run left open.
-
-    Read-only, unlike `close_dangling`, because 11.7 has a case where an open
-    call must be settled rather than abandoned: a session parked on a gated call
-    resumes into it, and closing it first would throw away the thing the human
-    approved.
-    """
+    """Return `{call_id: name}` for every tool_call this run left open; read-only."""
     rows = await pool.fetch(_OPEN_CALLS, _uuid(session_id))
     return {r["call_id"]: r["name"] for r in rows}
 
 
 async def close_dangling(session_id: str) -> list[StoredEvent]:
-    """Closes every tool_call the run left open, with an `interrupted` result.
-
-    Called by the abort path inside a live run and by the startup sweep. The outcome of an
-    interrupted call is unknown, and the result text says so.
-    """
+    """Closes every tool_call the run left open, with an `interrupted` result."""
     closed: list[StoredEvent] = []
     async with (await pool.pool()).acquire() as conn, conn.transaction():
         await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))", str(_uuid(session_id)))
@@ -220,11 +197,8 @@ async def recent_events(session_id: str, limit: int = 200) -> list[StoredEvent]:
 def _stored(record: asyncpg.Record, event: Event | None = None) -> StoredEvent:
     """The one place that knows `StoredEvent`'s field set.
 
-    Two callers, and they differ only in whether the event is already in hand:
-    an append just built it, a read has to parse it back out of the row. Passing
-    it in rather than re-parsing is not an optimisation — a freshly appended
-    event round-tripping through `parse_event` would silently drop any field the
-    reader does not know, which is the one moment that would be invisible.
+    An appended event is passed in, never re-parsed: a round-trip through `parse_event`
+    would silently drop any field the reader does not know.
     """
     return StoredEvent(
         seq=record["seq"],

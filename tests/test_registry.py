@@ -13,7 +13,7 @@ def _ctx(**kw):
 
 
 def _approving(**kw):
-    """A context that answers the consent gate, for tests about routing rather than consent."""
+    """A context that answers the consent gate."""
     return _ctx(approve=lambda name, args: True, **kw)
 
 
@@ -47,12 +47,7 @@ def _mcp(*specs, label="remote"):
 
 @pytest.fixture(autouse=True)
 def _toggles(monkeypatch):
-    """Enable every server the source offers, unless a test says otherwise.
-
-    Nothing is enabled by default in the product (that is the point of 11.5), so
-    without this every test about NAMESPACING would be a test about the default
-    instead. `_enabled` overrides it where the default is what is under test.
-    """
+    """Enable every server the source offers; `_enabled` overrides it per test."""
     _enabled(monkeypatch, "Remote")
     return monkeypatch
 
@@ -280,12 +275,8 @@ def test_park_tools_are_named_not_hardcoded():
     from tool_module.tools.control import PARK_KINDS, PARK_TOOLS
 
     assert {"ask", "request_approval", "propose_plan"} == PARK_TOOLS
-    # The kind is what the approvals row is written with, so it is part of the
-    # name, not an implementation detail of the runner.
+    # The kind is what the approvals row is written with, so it is part of the name.
     assert PARK_KINDS["propose_plan"] == "plan"
-
-
-# --- the approval gate is not bypassable by the mcp branch --------------------
 
 
 @pytest.mark.asyncio

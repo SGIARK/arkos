@@ -1,14 +1,4 @@
-"""The approval gate parks on the gated call itself (11.7).
-
-The rule this file exists to pin: consent binds to the CALL, not to a sentence
-about it. A gated call parks the turn with that call still open, the approvals
-row carries the (name, args) that will run, and answering runs exactly that call
-exactly once — or closes it as declined.
-
-What it replaced looped forever: the gate refused with "you may call {name} once
-they agree" and never read the approvals table, so the grant it promised could
-not be found.
-"""
+"""The approval gate parks on the gated call itself: consent binds to the CALL."""
 
 from __future__ import annotations
 
@@ -203,10 +193,7 @@ async def test_anything_that_is_not_approve_is_not_consent():
 
 
 async def test_a_consumed_but_unclosed_call_repairs_without_re_running_it():
-    """The process died between claiming and appending. The tool may have run.
-
-    Sending a message twice is worse than not knowing whether it sent once.
-    """
+    """Claimed but never appended: the tool may have run, so repair beats re-running."""
     session_id = await _session()
     await _parked_on_a_call(session_id)
     row = (await approvals.open_for(session_id))[0]
@@ -243,14 +230,8 @@ async def test_a_call_already_closed_owes_nothing():
 
 
 async def test_composer_prose_cannot_silently_decline_a_gated_call():
-    """P0 from the 2026-08-20 review.
-
-    `approvals.approved` is an allow-list, so any prose that is not the approve
-    word reads as a decline. A message typed into the composer of a call-parked
-    session used to fall through and answer the call row — "sounds good, go
-    ahead" would have DECLINED a call the human never saw. Consent binds to the
-    call, so it is given where the call is on screen or not at all.
-    """
+    """Composer prose must not answer a call-parked session: `approved` is an
+    allow-list, so anything but the approve word would read as a decline."""
     from harness_module import api
 
     session_id = await _session()
@@ -287,8 +268,7 @@ async def test_an_ask_is_still_answerable_from_the_composer():
 
 
 async def test_the_gate_no_longer_refuses_with_invalid_args():
-    """The refusal path is deleted: `invalid_args` spent the per-tool failure cap
-    on asking correctly, and promised a grant nothing ever kept."""
+    """The gate raises `_GATED`; it never refuses the call as `invalid_args`."""
     session_id = await _session()
     session = await runner.load(session_id)
     sink = runner._Sink(session)
@@ -302,8 +282,7 @@ async def test_the_gate_no_longer_refuses_with_invalid_args():
 
 
 async def test_the_gated_result_is_dropped_so_the_call_stays_open():
-    """`emit` suppressing that one result IS the mechanism: a queued result would
-    close the call, and the call has to survive the park."""
+    """`emit` drops the gated result: a queued result would close the parked call."""
     session_id = await _session()
     session = await runner.load(session_id)
     sink = runner._Sink(session)
@@ -321,8 +300,7 @@ async def test_the_gated_result_is_dropped_so_the_call_stays_open():
 
 
 async def test_only_one_call_parks_per_hop():
-    """The transcript permits exactly one open call across a park, so a second
-    gated call in the same hop is told so and closes normally."""
+    """The transcript permits exactly one open call across a park."""
     session_id = await _session()
     session = await runner.load(session_id)
     sink = runner._Sink(session)

@@ -92,13 +92,7 @@ class ConfigLoader:
         return self.load()
 
     def assert_coherent(self) -> None:
-        """Raise RuntimeError on settings that are each valid and wrong together.
-
-        Run at startup, because the failures they cause are invisible at the
-        point of the mistake: a wait that outlives the call it is inside times
-        out as the wrong thing, and a cap below the session quota starves
-        sessions the quota promised.
-        """
+        """Raise RuntimeError on settings that are each valid and wrong together."""
         problems = []
 
         waiting = float(self.get("leases.wait_timeout_s") or 0)
@@ -119,9 +113,8 @@ class ConfigLoader:
                 "quota permits could never get a computer"
             )
 
-        # Imported here, not at module scope: `registry` reads this loader, and a
-        # config module that imports the tool registry at import time would be a
-        # cycle. By the time anything calls this, both are loaded.
+        # Imported here, not at module scope: `registry` reads this loader, so a
+        # top-level import of the tool registry would be a cycle.
         from tool_module.registry import local_tools
 
         ours = len(local_tools())
@@ -145,8 +138,7 @@ class ConfigLoader:
             raise RuntimeError("incoherent configuration: " + "; ".join(problems))
 
 
-# Seconds a contended call must have left after its wait gives up, so the tool
-# returns its own answer rather than being cut off mid-report.
+# Seconds a contended call must have left after its wait for a lease gives up.
 _WAIT_MARGIN_S = 10
 
 project_root = Path(__file__).parent.parent
@@ -160,11 +152,7 @@ config = ConfigLoader()
 def cfg(key: str, default: Any = None) -> Any:
     """Read one config value, falling back to `default`.
 
-    The single home for what was an identical four-line `_cfg` in eleven
-    modules. It is a thin function over `config.get` rather than the bound
-    method so that modules can import it under their own name — every one does
-    `from config_module.loader import cfg as _cfg`, which keeps the module
-    attribute that tests monkeypatch as a per-module seam. Patching one module's
-    config must not silently reconfigure every other module in the call path.
+    A plain function, not the bound method, so `import cfg as _cfg` keeps each
+    module's attribute a separate monkeypatch seam.
     """
     return config.get(key, default)

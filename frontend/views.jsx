@@ -1,10 +1,5 @@
 /* =========================================================
    views — desk · approvals · files, plus settings and sign-in
-
-   The design's compositions on real data. `watching` is gone: nothing in the
-   system watches sources on a schedule, and a view for a feature that does not
-   exist is a promise the product cannot keep. `chat` went the same way in 11.8,
-   and `computer` is `files` — named for what it shows.
    ========================================================= */
 
 /* ---------- DESK ---------- */
@@ -29,8 +24,8 @@ function DeskView({ onError, waiting: pending, onOpenSession }) {
     return () => {
       dead = true;
     };
-    // `waiting` comes from App, so this re-reads when the pending set changes
-    // — which is the same moment the running list is worth re-reading.
+    // `waiting` is a dep on purpose: App changing the pending set is also the
+    // moment the running list is worth re-reading.
   }, [waiting, onError]);
 
   return (
@@ -112,8 +107,7 @@ function DeskView({ onError, waiting: pending, onOpenSession }) {
 /* ---------- APPROVALS ---------- */
 
 function ApprovalsView({ onError, waiting, onResolved }) {
-  // Null until App has read it once; the view says so rather than "all caught up".
-
+  // `waiting` is null until App has read it once — distinct from an empty list.
   return (
     <div className="view">
       <PageHead
@@ -138,21 +132,10 @@ function ApprovalsView({ onError, waiting, onResolved }) {
 
 /* ---------- FILES ---------- */
 
-/* THE STORE ITSELF. One flat namespace per user: the header dropdowns are its
-   top-level segments — `triage/`, `notes/` — and a folder appears the moment a
-   file lands under a new first segment. There is no project picker, because a
-   project does not own a directory: it LINKS folders, several of them, and
-   renaming one cannot touch this view (11.9).
-
-   The tree is `FileTree`, the SAME component the session window's working-files
-   pane uses, with the same powers in both: open, drag to move, drop to upload,
-   double-click to rename. What differs is the scope it loads and what a click
-   does — everything else is behaviour, and behaviour has one implementation.
-
-   Read from the store rather than from a booted box. The files a session works
-   on live here whether or not anything is awake (D27), so this view wakes
-   nothing — and what it shows is exactly what the next materialize will put on
-   the disk. */
+/* One flat namespace per user; folders are the top-level path segments, and a
+   project links folders rather than owning them. Reads the store directly, so
+   it wakes no box (D27); `FileTree` is shared with the session working-files
+   pane and only the scope it loads differs. */
 function ComputerView({ onError, jumpTo, onJumped }) {
   const [open, setOpen] = useState(null);
   const [count, setCount] = useState(null);
@@ -160,8 +143,7 @@ function ComputerView({ onError, jumpTo, onJumped }) {
   const [newName, setNewName] = useState("");
   const [drag, setDrag] = useState({ dragging: false, target: "", moving: null });
   const cancelled = useRef(false);
-  // The editor, as the design draws it. `draft` is null when reading; a string
-  // means the pane is in edit mode, dirty or not.
+  // `draft` null means reading; any string means edit mode, dirty or not.
   const [draft, setDraft] = useState(null);
   const [saving, setSaving] = useState(false);
   // Bumped to make the tree re-read after a write that happened outside it.
@@ -183,9 +165,8 @@ function ComputerView({ onError, jumpTo, onJumped }) {
     [onError]
   );
 
-  /* The store is the durable copy, so saving here is not a scratch edit: a
-     session already holding this folder is written through and reads it on its
-     next turn, and every other session gets it at its next materialize. */
+  /* Writes the durable copy, not a scratch edit: a session already holding the
+     folder is written through, others pick it up at their next materialize. */
   const save = async () => {
     if (draft === null || !open) return;
     setSaving(true);
@@ -201,21 +182,15 @@ function ComputerView({ onError, jumpTo, onJumped }) {
     }
   };
 
-  // Only text is editable. A binary file has no draft to hold and no editor
-  // that would not corrupt it.
   const canEdit = !!open && !open.loading && !open.binary;
   const dirty = draft !== null && draft !== (open && open.text);
 
-  /* Enter or blur commits, Escape cancels. Leading and trailing slashes come
-     off so the name cannot read as absolute; `a/b` nests.
-
-     It goes to the server before it is drawn: this IS the store's tree, so a
-     folder held here until a file arrived would be a second version of the
-     truth that the next reload would contradict. */
+  /* Enter or blur commits, Escape cancels; outer slashes are stripped so the
+     name cannot read as absolute, and `a/b` nests. The server is written before
+     the tree redraws — no client-only folder that a reload would contradict. */
   const commitFolder = async () => {
-    /* Escape unmounts the input, and removing a focused element fires blur —
-       which would commit the name the user just cancelled. The flag is read and
-       cleared here so that blur does nothing. */
+    /* Escape unmounts the input and removing a focused element fires blur, which
+       would commit the cancelled name; read and clear the flag so blur is a no-op. */
     if (cancelled.current) {
       cancelled.current = false;
       return;
@@ -232,12 +207,11 @@ function ComputerView({ onError, jumpTo, onJumped }) {
     }
   };
 
-  // What the panel counts. The sentinels are structure, not content.
+  // Sentinels are structure, not content, so the count excludes them.
   const shown = count === null ? null : count.filter((f) => !isSentinel(f.path));
 
-  /* `add` is the TREE's uploader, handed back so the header's `+ file` and a
-     drop are the same code — a second copy here is how the two panes drifted
-     apart in the first place. */
+  /* `add` is the tree's own uploader, handed back so `+ file` and a drop run
+     the same code. */
   const header = ({ busy, add }) => (
     <React.Fragment>
       <div className="cv-head">
@@ -252,7 +226,7 @@ function ComputerView({ onError, jumpTo, onJumped }) {
               multiple
               hidden
               onChange={(e) => {
-                // Into the folder you are aiming at, else the one you are reading.
+                // Into the folder being aimed at, else the one being read.
                 add(e.target.files, drag.target || dirOf(open && open.path));
                 e.target.value = "";
               }}
@@ -262,8 +236,7 @@ function ComputerView({ onError, jumpTo, onJumped }) {
             className="cv-add"
             title="new folder"
             onClick={() => {
-              // If a blur never came to clear it, the last Escape must not
-              // swallow this one.
+              // A previous Escape may have left the flag set with no blur to clear it.
               cancelled.current = false;
               setCreating(true);
               setNewName("");
@@ -315,10 +288,8 @@ function ComputerView({ onError, jumpTo, onJumped }) {
         </div>
 
         <div className="cv-read">
-          {/* Over the reader, never over the tree: the tree is what you are
-              aiming at, and the row underline is the answer to "where". It names
-              the TARGET, and says so plainly when there is not one — the top
-              level is not a destination. */}
+          {/* Sits over the reader, never the tree, and names the drop target —
+              the top level takes folders, not files. */}
           {drag.dragging && (
             <div className={"cv-drop" + (drag.target || drag.movingDir ? "" : " nowhere")}>
               <span>
@@ -398,7 +369,6 @@ function ComputerView({ onError, jumpTo, onJumped }) {
   );
 }
 
-
 /* ---------- SETTINGS ---------- */
 
 function SettingsModal({ user, onClose, onSignOut, onError }) {
@@ -406,7 +376,7 @@ function SettingsModal({ user, onClose, onSignOut, onError }) {
   const [problem, setProblem] = useState(null);
   const [busy, setBusy] = useState({});
   const [links, setLinks] = useState({});
-  /* Which disconnect has been asked for once and is waiting to be meant. */
+  /* Server whose disconnect has been clicked once and awaits confirmation. */
   const [armed, setArmed] = useState(null);
   const poll = useRef(null);
 
@@ -423,14 +393,9 @@ function SettingsModal({ user, onClose, onSignOut, onError }) {
     refresh();
   }, [refresh]);
 
-  /* Re-read when this window becomes the one being looked at again.
-
-     The consent popup is on Composio's origin and then the provider's, so nothing
-     tells this page when it finishes — which is why this used to poll
-     `api.connections()` every two seconds. Contracts forbids polling anywhere,
-     and it was also the wrong shape: it burned requests while the user was
-     still typing a password, and stopped the moment they tabbed away. Coming
-     back to the tab, or the popup closing, IS the event. */
+  /* The consent popup is cross-origin (Composio, then the provider), so nothing
+     signals this page when it finishes; regaining focus is the event, and
+     contracts forbids polling `api.connections()`. */
   useEffect(() => {
     const again = () => {
       if (document.visibilityState === "visible") refresh();
@@ -444,9 +409,8 @@ function SettingsModal({ user, onClose, onSignOut, onError }) {
     };
   }, [refresh]);
 
-  /* The popup closing is the other end of the same signal, and it is the only
-     one a user who never leaves the tab will produce. One watcher, cleared as
-     soon as the window is gone — this checks a boolean, it does not fetch. */
+  /* The only signal a user who never leaves the tab produces; one watcher at a
+     time, and it reads `popup.closed` rather than fetching. */
   function watch(popup) {
     if (!popup) return;
     if (poll.current) clearInterval(poll.current);
@@ -458,18 +422,17 @@ function SettingsModal({ user, onClose, onSignOut, onError }) {
     }, 500);
   }
 
-  /* The link is already in hand: `GET /connections` asks Composio for consent
-     state and gets the url back in the same answer, so the popup opens INSIDE
-     the click. After an await the browser has lost the user gesture and blocks
-     it silently, which is the whole reason the url travels with the row. */
+  /* `GET /connections` returns the setup url with the row so the popup can open
+     synchronously inside the click — after an await the browser has lost the
+     user gesture and blocks it silently. */
   function connect(row) {
     const href = links[row.server] || row.setup_url;
     if (href) {
       watch(window.open(href, "ark_oauth", "width=560,height=720"));
       return;
     }
-    /* No link on the row — it expired, or this app was just added. Mint one and
-       render it as an anchor: the user's click on THAT is a fresh gesture. */
+    /* No link on the row: mint one and render it as an anchor, since the click
+       on that anchor is a fresh gesture the browser will honour. */
     setBusy((b) => ({ ...b, [row.server]: true }));
     api
       .connect(row.server)
@@ -482,9 +445,8 @@ function SettingsModal({ user, onClose, onSignOut, onError }) {
       .finally(() => setBusy((b) => ({ ...b, [row.server]: false })));
   }
 
-  /* Disconnecting is shared whenever services sign in through one account, so a
-     service with siblings is asked twice: the first click says what will go,
-     the second means it. */
+  /* One sign-in can back several services, so a row with siblings takes two
+     clicks: the first names what else goes, the second confirms. */
   async function disconnect(row) {
     const shared = row.shares_with || [];
     if (shared.length && armed !== row.server) {
@@ -528,7 +490,7 @@ function SettingsModal({ user, onClose, onSignOut, onError }) {
                 <span className="meta">
                   <Dot kind={connected ? "live" : ""} />
                   <span className="nm">{row.name || row.server}</span>
-                  {/* What the click is about to do, before it does it. */}
+                  {/* Scopes are shown only before connecting: what the click grants. */}
                   {!connected && !!(row.scopes || []).length && (
                     <span className="soft" style={{ fontSize: 10, marginLeft: 8 }}>
                       grants {scopeNames(row.scopes).join(", ")}
@@ -592,9 +554,8 @@ function SettingsModal({ user, onClose, onSignOut, onError }) {
   );
 }
 
-/* An OAuth scope url is unreadable and its last segment is not:
-   `https://www.googleapis.com/auth/gmail.readonly` is "gmail.readonly". Shown
-   so the human can see what a connect grants without reading a url. */
+/* Last path segment of an OAuth scope url: `.../auth/gmail.readonly` reads as
+   "gmail.readonly". */
 function scopeNames(scopes) {
   return (scopes || []).map((scope) => {
     const tail = String(scope).split("/").filter(Boolean).pop();
@@ -604,19 +565,9 @@ function scopeNames(scopes) {
 
 /* ---------- SIGN IN ---------- */
 
-/* The design's login card, with the flow that actually exists: Supabase takes
-   the email and password, we take the token once and turn it into the cookie.
-   No signup link — accounts are made in the dashboard until there are real
-   users to self-serve. */
-/* THE PRE-APP AUTH SURFACE (12.1), from `designs/sign-up/`: a marketing panel
-   on the left and the auth card on the right, the two modes switching IN PLACE
-   rather than on two routes — it is one decision ("do you have an account?")
-   and it should not cost a navigation.
-
-   Sign-up, sign-in and Google are three ways to obtain a Supabase token and
-   ONE way to become signed in: `api` trades whichever token for our cookie
-   through `POST /auth/session`, which stays the only endpoint that reads a
-   bearer. Nothing here knows how the cookie is made. */
+/* Sign-up, sign-in and Google are three ways to get a Supabase token and one
+   way to be signed in: `api` trades any of them for our cookie via
+   `POST /auth/session`, the only endpoint that reads a bearer. */
 function Login({ gone, onSignedIn, problem: arrived }) {
   const [mode, setMode] = useState("in");
   const [name, setName] = useState("");
@@ -629,8 +580,6 @@ function Login({ gone, onSignedIn, problem: arrived }) {
   const first = useRef(null);
 
   const up = mode === "up";
-  // A refusal carried back from the provider's redirect outranks nothing —
-  // it is simply the first thing there is to say.
   const shown = problem || arrived;
 
   useEffect(() => {
@@ -668,10 +617,9 @@ function Login({ gone, onSignedIn, problem: arrived }) {
     }
   }
 
-  /* Confirmation is ON, so a new account is not usable until the link is
-     clicked. Saying "check your email" is the honest end of the flow — and it
-     is said the same way for an address that already has an account, because
-     Supabase deliberately does not distinguish them and neither will we. */
+  /* Email confirmation is ON: the account is unusable until the link is clicked.
+     Supabase gives the same answer for an address that already exists, so this
+     screen must not distinguish the two either. */
   if (sent) {
     return (
       <div className={"auth" + (gone ? " gone" : "")}>
@@ -745,9 +693,7 @@ function Login({ gone, onSignedIn, problem: arrived }) {
             <label className="auth-field">
               <span className="lab-row">
                 <span className="lab">password</span>
-                {/* Sign-in only, per the export. It is not wired: password
-                    reset is 12.2's email, and a link that opens nothing is
-                    worse than one that is not there yet. */}
+                {/* Sign-in only, and not yet wired to anything. */}
                 {!up && <span className="auth-forgot" title="coming with the auth emails (12.2)">forgot</span>}
               </span>
               <input
@@ -796,8 +742,6 @@ function Login({ gone, onSignedIn, problem: arrived }) {
   );
 }
 
-/* The left half. Static, and deliberately so: it is the only thing on the
-   screen that says what this is, to someone who has not signed in yet. */
 function AuthAside() {
   return (
     <div className="auth-aside">

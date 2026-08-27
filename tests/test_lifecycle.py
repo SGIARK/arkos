@@ -1,7 +1,4 @@
-"""The one state machine: legal moves only, cancel wins, and every move leaves a row.
-
-Runs against a real Postgres with migration 0 applied; each case owns its rows.
-"""
+"""The one state machine, against a real Postgres with migration 0 applied."""
 
 from __future__ import annotations
 
@@ -27,8 +24,7 @@ _seeded: list[uuid.UUID] = []
 async def _db():
     await require_db()
     yield
-    # The sweep is global, so a session left `running` is swept by the next test
-    # and by anything else sharing this database.
+    # The sweep is global: a session left `running` would be swept by the next test.
     await pool.execute("DELETE FROM sessions WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM users WHERE id = ANY($1::uuid[])", _seeded)
     _seeded.clear()
@@ -182,7 +178,6 @@ async def test_the_sweep_fails_a_running_session_and_says_why_in_the_transcript(
     kinds = [e.event.kind for e in await slog.get_events(session_id)]
 
     assert (row["status"], row["terminal_reason"]) == ("failed", "interrupted")
-    # The dangling call is closed ahead of the done event.
     assert kinds == ["tool_call", "tool_result", "done", "lifecycle"]
 
 

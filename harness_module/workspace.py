@@ -1,40 +1,9 @@
 """
-Filling and emptying the sandbox's cache of the store.
+Filling and emptying the sandbox's cache of the store: materialize, flush, seal.
 
-The sandbox disk holds a copy of the claimed subtrees, nothing more (D27).
-`materialize` puts them there when the session takes its box; `flush` reads back
-what changed and commits it. Between the two the sandbox is free to be
-destroyed: whatever survives there is a warm start, not the record.
-
-Bytes move store -> harness -> sandbox and back. The sandbox is never given a
-credential and never reaches the store itself (D28), and it is asked nothing
-about its own contents that is not verified: both directions hash the files on
-disk and compare against the tree, so a stale or tampered record cannot decide
-what is transferred, kept or deleted.
-
-This module is a TRANSFER ENGINE and nothing else: materialize, flush, seal.
-It used to also carry live-box coherency protocols — `move_through`, the
-stale-session accounting — that chased a moving cache with remote `mv` and `rm`
-so a flush would not undo a store-side move. 11.8.8 deleted them: a destructive
-store operation against a folder whose write lease is HELD is refused, and a
-folder nobody holds has no live box to correct. Prevention, where there was
-synchronization. `write_through` stays, alone, because it is additive and safe —
-it puts an uploaded file into a box already working that folder.
-
-Claimed FOLDERS are the only thing this module mounts, one mount per folder at
-`~/store/<folder>/` (11.9). A folder is a top-level segment of the user's one
-flat store, so a mounted path IS a store path with the mount root in front of
-it, and no project id appears anywhere in here: a project links folders, it does
-not own them. The user's memory region is a different table in the store and
-nothing here reads it, so memory does not reach a box today. Whether it ever
-should is D30, open: this is the default posture, not a rule the code is built
-around.
-
-A flush may only commit against a workspace that proves it was materialized.
-`materialize` leaves a sentinel in the box and records its nonce against the
-session's slot; `flush` reads both and aborts unless they agree. The proof is
-about the box, not its contents, so a session that deleted every file still
-commits that deletion, while an empty, replaced or foreign box commits nothing.
+Bytes move store -> harness -> sandbox and back; the sandbox never holds a
+credential (D28), and both directions hash the files on disk rather than trust
+any record of what the box contains.
 """
 
 from __future__ import annotations
@@ -57,12 +26,10 @@ from harness_module import store
 
 logger = logging.getLogger(__name__)
 
-# Where claimed folders appear inside the sandbox. A mounted path is
-# `MOUNT_ROOT + "/" + <store path>`, so `~/store/triage/notes.md` is exactly the
-# store's `triage/notes.md` and the model reads one namespace, not two.
+# A mounted path is `MOUNT_ROOT + "/" + <store path>`: one namespace, not two.
 MOUNT_ROOT = "/home/user/store"
 
-# The sentinel, outside MOUNT_ROOT so no sweep of the claimed mounts can see it.
+# Outside MOUNT_ROOT so no sweep of the claimed mounts can pick it up.
 SENTINEL = "/home/user/.ark/materialized.json"
 
 _STAGING_TAR = "/tmp/arkos-materialize.tar"
@@ -71,11 +38,7 @@ _FLUSH_TAR = "/tmp/arkos-flush.tar"
 
 @dataclass(frozen=True, slots=True)
 class Claim:
-    """One folder, or part of one, that a session may see — and where it is mounted.
-
-    `user_id` rides along because the store and the lease are both keyed by user:
-    a folder name means nothing without whose store it is a folder in.
-    """
+    """One folder, or part of one, that a session may see — and where it is mounted."""
 
     user_id: str
     folder: str
@@ -97,10 +60,8 @@ class Claim:
     def mounted_prefix(self) -> str:
         """Where this claim's own subtree sits in the box.
 
-        The same as `mount` for a whole-folder claim, which is nearly all of
-        them; narrower for a subpath claim, and that is the point — a sweep of
-        the whole mount would carry files the claim does not cover into a commit
-        that replaces them.
+        Narrower than `mount` for a subpath claim, so a sweep cannot carry files
+        the claim does not cover into a commit that replaces them.
         """
         return posixpath.join(MOUNT_ROOT, self.prefix)
 
@@ -131,11 +92,9 @@ class SandboxIO(Protocol):
 async def claims_for(session_id: str) -> list[Claim]:
     """What a session may see, in the order it was declared.
 
-    Claims are FIXED for a session's life, so a folder linked to the project
-    mid-run reaches the agent at the NEXT session and not this one — recorded as
-    a fact rather than discovered as a surprise. A session with no declared
-    claims falls back to a write claim on each folder its project links, which
-    is what `_record_claims` would have written for it.
+    Claims are FIXED for a session's life: a folder linked mid-run reaches the
+    agent at the next session. With none declared, falls back to a write claim
+    on every folder the project links.
     """
     rows = await pool.fetch(
         """
@@ -159,9 +118,6 @@ async def claims_for(session_id: str) -> list[Claim]:
     return [
         Claim(
             user_id=str(r["user_id"]),
-            # READ, not derived. A folder name is a segment of paths that exist;
-            # nothing recomputes it from a title, which is what used to move a
-            # mount out from under a running agent when a project was renamed.
             folder=r["folder"],
             subpath=r["subpath"],
             mode=r["mode"],
@@ -173,14 +129,8 @@ async def claims_for(session_id: str) -> list[Claim]:
 def lease_key(claim: Claim) -> str | None:
     """The folder lease this claim takes, or None. A read claim takes none.
 
-    Per FOLDER, not per project (11.9): two projects writing different folders
-    have nothing to contend over, and two sessions writing the SAME folder still
-    serialize even though they belong to different projects. Keying it by
-    project was only ever right while a project owned one directory.
-
-    The rule lives here alone. `runner` re-derived it inline while this function
-    sat beside it, which is two places for one answer about who may write where
-    — and the kind of pair that drifts silently.
+    Per FOLDER, not per project (11.9): two sessions writing the same folder
+    serialize even across projects. This is the only place that rule lives.
     """
     return f"folder:{claim.user_id}:{claim.folder}" if claim.mode == "write" else None
 
@@ -194,21 +144,18 @@ async def materialize(sandbox: SandboxIO, session_id: str, claims: list[Claim]) 
     """
     Put the claimed subtrees in the sandbox, transferring only what is missing.
 
-    A fresh sandbox receives everything. A resumed one receives only the files
-    whose contents differ from the tree, and has anything the tree does not
-    contain deleted — including a file another session removed while this
-    sandbox slept, which would otherwise be resurrected by the next flush.
+    A resumed sandbox also has anything the tree no longer holds deleted, so the
+    next flush cannot resurrect a file another session removed.
     """
     wanted: dict[str, str] = {}
     for claim in claims:
         for entry in await store.read_tree(claim.user_id, claim.prefix):
-            # The store path IS the mounted path, under the mount root: the
-            # folder segment it already carries is the directory it lands in.
+            # A store path already carries its folder segment, so the mount root
+            # is the whole mapping.
             wanted[posixpath.join(MOUNT_ROOT, entry.path)] = entry.content_hash
 
-    # What is actually on disk, by hash. The sandbox's own record of what it
-    # holds is not consulted: it is stale the moment a flush commits, and a
-    # file it forgot about is exactly the file a deletion needs removed.
+    # Hashed from disk, never from the box's own record: that record is stale
+    # the moment a flush commits.
     on_disk = await _sweep(sandbox, session_id, claims)
     stale = [path for path, digest in wanted.items() if on_disk.get(path) != digest]
     removed = tuple(sorted(set(on_disk) - set(wanted)))
@@ -218,8 +165,8 @@ async def materialize(sandbox: SandboxIO, session_id: str, claims: list[Claim]) 
         content_hash = wanted[path]
         blob = await store.get_blob(content_hash)
         if blob is None:
-            # The tree names a blob the store does not hold. Skipping it beats
-            # writing a file whose contents are a guess.
+            # The tree names a blob the store does not hold; skip it rather than
+            # write a file whose contents are a guess.
             logger.error("blob %s for %s is missing from the store", content_hash[:12], path)
             continue
         payload.append((path.lstrip("/"), blob))
@@ -260,12 +207,11 @@ def _tree_hash(manifest: dict[str, str]) -> str:
 async def _seal(sandbox: SandboxIO, session_id: str, claims: list[Claim], manifest: dict[str, str]) -> str:
     """Write the sentinel into the box and record its nonce against the session's slot.
 
-    The box is written first: a nonce recorded for a sentinel that never landed
-    refuses the next flush, which is the safe direction to fail.
+    Order matters: a nonce recorded for a sentinel that never landed refuses the
+    next flush, which is the safe direction to fail.
 
     Raises:
-        StoreError: the session holds no slot, so there is nowhere to record the
-            nonce and nothing may be committed from this box later.
+        StoreError: the session holds no sandbox slot to record the nonce against.
     """
     nonce = _uuid_module.uuid4().hex
     payload = {
@@ -289,8 +235,8 @@ async def _verify_seal(sandbox: SandboxIO, session_id: str, manifest: dict[str, 
 
     Raises:
         StoreError: the sentinel is missing, unreadable, or names a different
-            workspace. The caller keeps the box and its leases: the disk may
-            still hold the only copy of the work.
+            workspace. The caller keeps the box and its leases — the disk may
+            hold the only copy of the work.
     """
     expected = await pool.fetchval(
         "SELECT workspace_nonce FROM session_sandboxes WHERE session_id = $1", _uuid(session_id)
@@ -331,18 +277,9 @@ async def flush(
     """
     Commit what the sandbox changed back to the store.
 
-    One sha256sum sweep says what is on disk now and the tree says what the store
-    holds. Only the differences have their bytes read back, and every file's row
-    is written from a hash, so an unchanged file costs nothing. A path the tree
-    has and the sweep does not is a deletion, which falls out of replacing the
-    subtree rather than needing a rule.
-
-    `manifest` is accepted for callers that already have the materialized map;
-    when absent the tree is read instead, which is the same answer.
-
-    A read claim commits nothing. Its edits are discarded and named in the
-    return value, because silently keeping or silently dropping them are both
-    worse than saying which.
+    `manifest` is optional; when absent the tree is read instead, which is the
+    same answer. A read claim commits nothing — its edits are discarded and
+    named in the return value.
 
     Raises:
         StoreError: the box cannot prove it is the one that was materialized. An
@@ -366,9 +303,8 @@ async def flush(
     for claim in claims:
         under = {p: h for p, h in current.items() if p.startswith(claim.mounted_prefix + "/")}
         if claim.mode != "write":
-            # Measured against what the store holds now, not against what was
-            # materialized: a file uploaded mid-run and written through is not an
-            # edit being dropped, and saying it was would be a false alarm.
+            # Measured against what the store holds NOW, so a file written
+            # through mid-run is not reported as a dropped edit.
             stored = {
                 posixpath.join(MOUNT_ROOT, e.path): e.content_hash
                 for e in await store.read_tree(claim.user_id, claim.prefix)
@@ -376,15 +312,12 @@ async def flush(
             discarded.extend(sorted(p for p, digest in under.items() if stored.get(p) != digest))
             continue
 
-        # Sizes for files whose bytes were never read back come from the tree
-        # they were materialized from.
+        # Sizes for files whose bytes were never read back come from the tree.
         previous = {e.path: e for e in await store.read_tree(claim.user_id, claim.prefix)}
         now = datetime.now(UTC)
 
         entries: list[store.TreeEntry] = []
         for path, digest in sorted(under.items()):
-            # Back to a store path: strip the mount root and the folder segment
-            # is right there where it always was.
             relative = posixpath.relpath(path, MOUNT_ROOT)
             body = contents.get(path)
             if body is not None:
@@ -401,8 +334,8 @@ async def flush(
 
             known = previous.get(relative)
             if known is None or known.content_hash != digest:
-                # Unchanged by the manifest, yet the tree does not agree. Read
-                # it rather than record a size that would be a guess.
+                # Unchanged by the manifest yet the tree disagrees: read it
+                # rather than record a size that would be a guess.
                 extra = await _read_out(sandbox, session_id, [path])
                 body = extra.get(path, b"")
                 entries.append(
@@ -466,13 +399,7 @@ async def _remove(sandbox: SandboxIO, session_id: str, paths: tuple[str, ...]) -
 
 
 async def _live_boxes(user_id: str) -> list[str]:
-    """The sessions whose box is awake and holding some of this user's work.
-
-    One caller: `write_through`. A destructive change to the store no longer
-    chases these boxes with remote `mv`/`rm` — it is REFUSED while the folder's
-    write lease is held, which prevents the divergence those commands existed to
-    repair (11.8.8).
-    """
+    """The sessions whose box is awake and holding some of this user's work."""
     rows = await pool.fetch(
         """
         SELECT p.session_id
@@ -493,11 +420,8 @@ async def write_through(sandbox: SandboxIO, user_id: str, path: str, content: by
     """
     Put an uploaded file into every live box that has its folder materialized.
 
-    A box is written to only if the file falls inside a claim it mounted; every
-    other box needs nothing, because the store has the file and the next
-    materialize brings it in. Parked sessions are left asleep for the same
-    reason. Failures are logged rather than raised: the store already holds the
-    file, so the upload stands either way.
+    Failures are logged rather than raised: the store already holds the file, so
+    the upload stands either way.
 
     Returns:
         The sessions whose box now has the file.

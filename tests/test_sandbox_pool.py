@@ -1,8 +1,4 @@
-"""The sandbox pool: one box per session, capped per user, reaped after the flush.
-
-Runs against a real Postgres; the boxes are fakes with a filesystem each, so two
-sessions of one user can only see the same bytes by going through the store.
-"""
+"""The sandbox pool: one box per session, capped per user, reaped after the flush."""
 
 from __future__ import annotations
 
@@ -58,14 +54,12 @@ class FakeBoxes:
     async def exec(self, session_id: str, command: str, timeout: int = 120) -> dict:
         self.calls.append(command)
         box = await self._open(session_id)
-        # `write <path> <body>` stands in for whatever shell line the model
-        # would use to put a file on the disk.
+        # `write <path> <body>` stands in for the shell line the model would use.
         if command.startswith("write "):
             _, path, body = command.split(" ", 2)
             box.files[path] = body.encode()
             return {"stdout": "", "stderr": "", "exit_code": 0}
-        # `die` stands in for a box that vanishes mid-run: the next call to this
-        # session builds a fresh one with an empty disk.
+        # `die` stands in for a box vanishing mid-run: the next call builds a fresh one.
         if command == "die":
             self.boxes.pop(session_id, None)
             return {"stdout": "", "stderr": "", "exit_code": 0}
@@ -128,11 +122,7 @@ def patient(monkeypatch):
 
 @pytest.fixture
 def model(monkeypatch):
-    """One `run_command`, then a text ending, read off the transcript rather than a queue.
-
-    Two sessions can then run at once without sharing a script. `command` may be
-    a function of the messages, so each session issues its own line.
-    """
+    """One `run_command`, then a text ending, read off the transcript rather than a queue."""
 
     def arm(command: str | Callable[[list[dict]], str] = "true"):
         def generate(messages, tools=None, **kw):
@@ -314,8 +304,7 @@ async def test_a_waiting_session_proceeds_when_a_box_frees(boxes, model, patient
     waiter = await _session(user_id, project_id)
     model("true")
 
-    # The holder's box goes away once the waiter has been turned down once, so
-    # the run really passes through the wait rather than racing a timer.
+    # Freeing the holder only after the first refusal makes the run pass through the wait.
     real_claim = sandbox_manager.claim_slot
     refusals = []
 
@@ -388,7 +377,6 @@ async def test_a_box_is_not_reaped_before_its_flush_lands(boxes, model, patient,
 
     monkeypatch.setattr(workspace, "flush", failing_flush)
 
-    # The turn ends on the failure; what matters is what it did not give up.
     with contextlib.suppress(Exception):
         await _drive(session_id)
 

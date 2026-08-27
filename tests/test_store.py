@@ -1,9 +1,6 @@
 """Blobs and trees: content addressing, and a commit that cannot half-happen.
 
-The tree is ONE flat namespace per user (11.9): `files (user_id, path)`, where a
-folder is the first segment of a path and no project owns one.
-
-Runs against a real Postgres with the migrations applied; blobs go to a tmp_path.
+Requires a real Postgres with the migrations applied; blobs go to a tmp_path.
 """
 
 from __future__ import annotations
@@ -142,8 +139,7 @@ async def test_a_commit_that_dies_before_the_rows_leaves_the_old_tree_whole(monk
 
     assert [e.path for e in tree] == ["p/original.txt"], "the tree was left half-written"
     assert await store.get_blob(next(e.content_hash for e in tree)) == b"before"
-    # The blob for the abandoned commit is uploaded and orphaned, which is the
-    # side the invariant errs on.
+    # The abandoned commit's blob stays uploaded and orphaned: the side the invariant errs on.
     assert await store.get_blob(store.sha256(b"after")) == b"after"
 
 
@@ -175,8 +171,7 @@ async def test_an_empty_commit_empties_the_tree():
 
 # --- folders ------------------------------------------------------------------------
 #
-# A folder is the first segment of a path. It is never a row, which is what
-# makes every property below fall out rather than need enforcing.
+# A folder is the first segment of a path, never a row of its own.
 
 
 async def test_a_folder_is_the_first_segment_of_a_path():
@@ -237,7 +232,7 @@ async def test_moving_between_folders_is_a_row_edit_and_moves_no_blob(tmp_path):
 
 
 async def test_renaming_a_folder_is_refused_here():
-    """It is a path-prefix rewrite that also moves live claims and mounts: its own card."""
+    """A folder rename is a path-prefix rewrite that also moves live claims and mounts."""
     user_id = await _user()
     await store.put_file(user_id, "triage/a.txt", b"1")
 
@@ -246,11 +241,7 @@ async def test_renaming_a_folder_is_refused_here():
 
 
 async def test_a_directory_can_be_moved_out_to_the_top_level():
-    """Dragging a folder to the edge promotes it: `triage/inbox` becomes `inbox`.
-
-    Not a special case — it is the model. A folder IS a top-level path segment,
-    so putting a directory in the first position makes one of it.
-    """
+    """Dragging a folder to the edge promotes it: `triage/inbox` becomes `inbox`."""
     user_id = await _user()
     for path in ("triage/inbox/a.md", "triage/inbox/deep/b.md", "triage/other.md"):
         await store.put_file(user_id, path, b"x")
@@ -263,18 +254,14 @@ async def test_a_directory_can_be_moved_out_to_the_top_level():
         "triage/other.md",
     ]
     assert len(moved) == 2
-    # And it is a folder now, on its own, beside the one it came out of.
     assert [(f.name, f.files) for f in await store.folders(user_id)] == [("inbox", 2), ("triage", 1)]
 
 
 async def test_a_file_cannot_be_moved_out_to_the_top_level():
-    """The top level holds FOLDERS. A file there would be its own folder holding
-    nothing — unmountable, unlinkable, and a phantom row in every folder picker.
+    """The top level holds FOLDERS: a file there would be its own folder holding nothing.
 
-    The two refusals say different things on purpose: this one is "it needs a
-    folder to go in", and moving a folder is "that is not something this can
-    do". One message for both left dragging a file out of a folder explaining
-    itself as a folder rename, which is not what was attempted."""
+    Refused distinctly from a folder move on purpose: "it needs a folder to go in".
+    """
     user_id = await _user()
     await store.put_file(user_id, "triage/a.txt", b"1")
 
@@ -297,7 +284,7 @@ async def test_renaming_a_file_keeps_it_where_it_is():
     assert moved == [("triage/draft.md", "triage/final.md")]
     tree = await store.read_tree(user_id)
     assert [e.path for e in tree] == ["triage/final.md"]
-    # Same row, same blob: nothing was re-uploaded and an open reader follows it.
+    # Same row id: a rename edits the path, it does not re-upload the blob.
     assert await pool.fetchval("SELECT path FROM files WHERE id = $1", uuid.UUID(stored.id)) == "triage/final.md"
 
 
@@ -351,12 +338,8 @@ async def test_renaming_a_folder_onto_another_is_refused_rather_than_merging_the
 
 
 async def test_renaming_a_top_level_folder_carries_its_links_and_claims():
-    """The folder's name is written in three places, and all three move at once.
-
-    A rewrite that moved only the paths would leave a project linking a folder
-    that no longer exists and a session claiming one — the folder would vanish
-    from the working-files pane and the next materialize would mount nothing.
-    """
+    """The folder's name is written in three places — paths, project_folders,
+    session_claims — and all three move at once."""
     user_id = await _user()
     project_id = await pool.fetchval(
         "INSERT INTO projects (user_id, title) VALUES ($1, 'work') RETURNING id", uuid.UUID(user_id)
@@ -403,8 +386,6 @@ async def test_the_way_to_a_new_top_level_folder_is_to_make_it_then_move_into_it
     moved = await store.move_path(user_id, "triage/a.txt", "archive/a.txt")
 
     assert moved == [("triage/a.txt", "archive/a.txt")]
-    # And `triage` is gone with its last file, which is what "a folder exists
-    # exactly as long as files exist under it" means when you watch it happen.
     assert [f.name for f in await store.folders(user_id)] == ["archive"]
 
 

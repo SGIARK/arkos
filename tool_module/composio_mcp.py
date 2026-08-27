@@ -1,61 +1,23 @@
 """MCP, reached through one Composio MCP server.
 
-Composio holds the OAuth apps — MANAGED ones, already verified with each
-provider — and the users' grants; this side holds an identity and names it on
-every request. There is no connection to create and no credential of the user's
-on this box.
+Composio's dialect, where a generic MCP client breaks quietly:
 
-THE DIALECT, all of it measured before it was written (11.10.1, and
-`docs/implementation_notes.md` § "Composio over MCP"). Each of these is a place
-a client written against the generic MCP spec breaks quietly:
+- `x-api-key` only: `Authorization: Bearer` is a 401, and sending both is a 401.
+- Identity is a query param on a per-user url, `…/v3/mcp/{server}/mcp?user_id=`;
+  it is derived, not minted, and is never handed to a browser.
+- The dashboard/SDK url `/v3.1/mcp/{id}` answers 307 with the resolved
+  `/v3/mcp/{id}/mcp` in the JSON body and no `Location` header, so nothing
+  follows it; this client speaks the resolved form directly.
+- No session id (state is url-scoped) and no pagination on `tools/list`.
+- Replies to plain JSON-RPC POSTs may arrive as SSE `data:` frames.
+- A refused call is a SUCCESSFUL `tools/call` carrying `isError: true`.
+- A content block's `text` is itself a JSON string, and the object inside spells
+  success `successfull` (three l's) where the REST API spells it `successful`.
 
-1. **`x-api-key`, never `Authorization: Bearer`.** The bearer form is a 401
-   (code 906), and sending BOTH is a 401 too: "Multiple authentication modes
-   were provided."
-
-2. **Identity is a QUERY PARAM on a per-user url**: `…/v3/mcp/{server}/mcp
-   ?user_id={uuid}`. The url is DERIVED, not minted —
-   `POST /api/v3/mcp/servers/{id}/instances` exists but is not required, and a
-   url for a user who never had an instance handshakes fine. It is still built
-   server-side and never handed to a browser: useless without the api key, but a
-   per-user url in a client is a habit worth not forming.
-
-3. **The url the dashboard and SDK hand you is NOT the url you connect to.**
-   `/v3.1/mcp/{id}?…` answers **307** with a JSON BODY naming
-   `/v3/mcp/{id}/mcp?…` — no `Location` header, so no HTTP client follows it.
-   This client speaks the resolved form directly.
-
-4. **No session.** State is scoped to the url, so there is no session id to mint
-   and no header to carry.
-
-5. **No pagination.** `tools/list` returns the whole catalogue in one page with
-   no cursor.
-
-6. **SSE frames on ordinary POSTs.** Replies arrive `event: message` /
-   `data: {…}` even for a plain JSON-RPC POST, so a parser that only does
-   `json.loads` sees nothing at all.
-
-7. **A refusal is a SUCCESSFUL `tools/call` with `isError: true`**, not an HTTP
-   error: an unconnected user gets `{"content":[{"type":"text","text":"No
-   connected account found for user ID … for toolkit gmail"}],"isError":true}`.
-   Dispatch reads the flag, and treats that particular body as a dead grant.
-
-8. **The content block's `text` is a JSON STRING that must be parsed again**,
-   and the object inside spells success **`successfull`** (three l's), while the
-   REST API spells it `successful`. Both are handled.
-
-WHAT A "SERVER" IS HERE. One server url serves every enabled toolkit, and the
-tools come back FLAT, prefixed by toolkit in upper snake — `GMAIL_FETCH_EMAILS`,
-`LINEAR_CREATE_ISSUE`. So a "server" is a PREFIX GROUP, and that prefix is what
-`user_connections` and `session_tools` are keyed by.
-
-A CONNECTED ACCOUNT IS PER TOOLKIT. Disconnecting Gmail leaves Calendar alone,
-even though both are Google, so there are no sibling services to warn about
-before a revoke.
-
-THE CATALOGUE IS 1442 TOOLS, GitHub alone 871, against `llm.max_tools`. The
-lever is `allowed_tools` on the server config, curated server-side; the session
-toggles remain the only per-session scoping authority on our side.
+One server url serves every toolkit and tools come back flat, prefixed by
+toolkit in upper snake; that prefix is the key `user_connections` and
+`session_tools` use. A connected account is per TOOLKIT, so disconnecting Gmail
+leaves Calendar alone.
 """
 
 from __future__ import annotations
@@ -120,7 +82,7 @@ class ComposioClient:
         self._http = None
 
     def _headers(self) -> dict[str, str]:
-        # `x-api-key` ALONE. See dialect note 1: bearer is a 401, both is a 401.
+        # `x-api-key` alone: bearer is a 401, and sending both auth modes is a 401.
         return {
             "x-api-key": self.api_key,
             "Content-Type": "application/json",
@@ -128,7 +90,7 @@ class ComposioClient:
         }
 
     def url_for(self, user_id: str) -> str:
-        """The resolved per-user MCP url. Derived, not minted; see dialect notes 2 and 3."""
+        """The resolved per-user MCP url: derived, not minted, and never handed to a browser."""
         return f"{self.base_url}/v3/mcp/{self.server_id}/mcp?user_id={user_id}"
 
     async def rpc(self, user_id: str, method: str, params: dict[str, Any] | None = None) -> Any:
@@ -144,7 +106,7 @@ class ComposioClient:
         return _parse_rpc(text, method)
 
     async def list_tools(self, user_id: str) -> list[dict[str, Any]]:
-        """The whole catalogue, in ONE page. No cursor loop: see dialect note 5."""
+        """The whole catalogue in ONE page: `tools/list` returns no cursor."""
         result = await self.rpc(user_id, "tools/list", {})
         tools = result.get("tools")
         return tools if isinstance(tools, list) else []
@@ -173,11 +135,8 @@ class ComposioClient:
     async def link(self, user_id: str, auth_config_id: str, callback_url: str) -> dict[str, Any]:
         """Mint a consent link for one user and one auth config.
 
-        `POST /api/v3/connected_accounts/link`. The older
-        `POST /api/v3/connected_accounts` is RETIRED for managed configs and says
-        so in its own 400 (code 600). `callback_url` IS honored: the browser
-        comes back carrying `status` and `connected_account_id` as query params,
-        which is what `/connections/done` reconciles from.
+        The browser returns to `callback_url` carrying `status` and
+        `connected_account_id` as query params, which `/connections/done` reconciles from.
         """
         return await self._rest(
             "POST",
@@ -195,7 +154,7 @@ class ComposioClient:
 
 
 def _parse_rpc(text: str, method: str) -> dict[str, Any]:
-    """Unwrap a JSON-RPC reply that may arrive as an SSE frame. Dialect note 6."""
+    """Unwrap a JSON-RPC reply that may arrive as an SSE `data:` frame."""
     payload: Any = None
     try:
         payload = json.loads(text)
@@ -227,11 +186,7 @@ class ServerTools:
 
 @dataclass(frozen=True, slots=True)
 class Consent:
-    """What Composio says about one toolkit for one user.
-
-    No `provider_id` and no sibling story: a connected account is per TOOLKIT, so
-    disconnecting Gmail does not touch Calendar.
-    """
+    """What Composio says about one toolkit for one user."""
 
     server: str
     status: str
@@ -244,11 +199,7 @@ class Consent:
 
 
 class Composio:
-    """The connector backend: what a turn may reach, and what the panel shows.
-
-    Mirrors the surface `registry.manifest`, the runner and the api already call,
-    so the swap is a client change rather than a rewrite of everything upstream.
-    """
+    """The connector backend: what a turn may reach, and what the panel shows."""
 
     def __init__(self, servers: dict[str, dict[str, Any]], mcp_config: dict[str, Any]):
         self.servers = servers or {}
@@ -288,11 +239,7 @@ class Composio:
         return lock
 
     async def tools_by_server(self, user_id: str, *, refresh: bool = False) -> dict[str, list[dict[str, Any]]]:
-        """The catalogue, grouped by toolkit prefix, cached per user.
-
-        Cached because it is 1442 tools over one request and it does not change
-        between turns; keyed per user only because the url is.
-        """
+        """The catalogue, grouped by toolkit prefix, cached per user (the url is per user)."""
         if not refresh and user_id in self._tools:
             return self._tools[user_id]
         async with self._lock_for(user_id):
@@ -318,10 +265,8 @@ class Composio:
     async def reach(self, user_id: str) -> list[ServerTools]:
         """Every CONNECTED toolkit and the tools it offers, grouped.
 
-        Grouped because the budget is spent and refused a SERVER at a time: half
-        of Gmail in a manifest is a model that thinks it can send mail and finds
-        out mid-task that it cannot. Connection state comes from our rows, not a
-        round trip — this runs every turn, and the panel is what refreshes them.
+        Grouped because the tool budget is spent and refused a whole server at a time.
+        Connection state comes from our stored rows, not a round trip: this runs every turn.
         """
         grouped = await self._tools_or_empty(user_id)
         stored = await conns.load(user_id)
@@ -337,12 +282,7 @@ class Composio:
         return out
 
     async def always(self, user_id: str) -> list[ToolSpec]:
-        """Nothing. Google Search is OURS and native now (11.10.2), not on this wire.
-
-        Kept because `registry.manifest` calls it, and because the shape of the
-        question — "what does this backend contribute unconditionally" — is worth
-        keeping answerable if a future toolkit ever is ours.
-        """
+        """Always empty: no toolkit on this wire is unconditionally ours. `registry.manifest` calls it."""
         return []
 
     async def specs(self, user_id: str) -> list[ToolSpec]:
@@ -355,9 +295,7 @@ class Composio:
         server = prefix_of(name)
 
         if server == META_PREFIX:
-            # Composio's own helper tools manage connections, which is the
-            # human's job in the panel. Never in a manifest, so reaching one
-            # means the model invented the name.
+            # Composio's own connection-management tools are never in a manifest.
             return fail("not_found", f"No tool named {name!r}.")
 
         if not self.is_connector(server):
@@ -376,9 +314,8 @@ class Composio:
 
         text, is_error = _render(result)
         if is_error and _is_unconnected(text):
-            # Dialect note 7: a revoked or missing grant is a SUCCESSFUL call
-            # carrying isError, naming the user. Correct the row rather than
-            # letting the model retry into the same wall every turn.
+            # A dead grant arrives as a successful call carrying isError: correct
+            # the row rather than let the model retry into it every turn.
             await conns.mark(ctx.user_id, server, conns.RECONNECT)
             return fail("auth_required", self._reconnect_message(server), retryable=False)
         return await _envelope(name, result, ctx)
@@ -451,15 +388,8 @@ class Composio:
     async def connections(self, user_id: str, *, refresh: bool = True) -> list[dict[str, Any]]:
         """Every configured connector and this user's standing with it.
 
-        `refresh=True` re-reads Composio and syncs the rows: that is the settings
-        panel, where this is the moment the human is looking and a round trip is
-        what makes the reading honest.
-
-        `refresh=False` answers from the STORED rows and the cached catalogue,
-        with no vendor call at all. That is the session tool toggle, which needs
-        `status` and `tool_count` and nothing live — the panel is what refreshes
-        them, and making every toggle render pay 305ms of REST plus a seven-row
-        write transaction bought a freshness nobody was reading.
+        `refresh=True` re-reads Composio and syncs the rows (the settings panel);
+        `refresh=False` answers from stored rows and the cached catalogue, no vendor call.
         """
         if refresh:
             live = await self.refresh_status(user_id)
@@ -486,9 +416,8 @@ class Composio:
                     "tool_count": len(grouped.get(server, [])),
                     "setup_url": self._setup_urls.get((user_id, server)),
                     "account_id": accounts.get(server),
-                    # Composio grants are per TOOLKIT: nothing goes with a
-                    # disconnect, which is why this is always empty and still
-                    # present — the panel reads the same shape either backend.
+                    # Always empty: grants are per toolkit. The key stays so the
+                    # panel reads one shape whatever the backend.
                     "shares_with": [],
                 }
             )
@@ -507,10 +436,8 @@ class Composio:
     async def disconnect(self, user_id: str, server: str) -> list[str]:
         """Delete the connected account at Composio and drop our row.
 
-        Returns a list of one, always: a connected account is per toolkit, so
-        disconnecting Gmail leaves Calendar alone. The list shape is kept so the
-        panel does not need to know which backend it is talking to, and so a
-        backend whose grants ARE shared could say so without a new contract.
+        Returns exactly one server: a connected account is per toolkit. The list shape is
+        the panel's contract, for backends whose grants are shared.
         """
         live = await self._accounts(user_id)
         found = live.get(server)
@@ -527,8 +454,7 @@ class Composio:
     async def reconcile(self, user_id: str, account_id: str) -> str | None:
         """Settle one connection from the callback's `connected_account_id`.
 
-        `/connections/done` lands with an id and a status and no toolkit name, so
-        the toolkit is looked up rather than trusted from the url.
+        The callback carries no toolkit name, so the toolkit is looked up by account id.
         """
         live = await self._accounts(user_id)
         for server, consent in live.items():
@@ -544,7 +470,7 @@ class Composio:
 
 
 def _status_of(raw: str) -> str:
-    """Composio's account status -> ours. ERRORED means reconnect, not gone."""
+    """Composio's account status -> ours."""
     lowered = raw.strip().upper()
     if lowered == "ACTIVE":
         return CONNECTED
@@ -572,9 +498,8 @@ def _auto_approved(name: str, setting: Any) -> bool:
 def _to_spec(tool: dict[str, Any], auto_approve: Any = None, *, readonly: bool = False) -> ToolSpec:
     """Convert one `tools/list` entry into a ToolSpec.
 
-    A remote server does not report whether a tool mutates, so no connector's
-    tool is marked readonly and every one requires approval unless config waives
-    it per toolkit.
+    A remote server never reports whether a tool mutates, so nothing is readonly and
+    everything requires approval unless config waives it per toolkit.
     """
     name = tool["name"]
     return ToolSpec(
@@ -589,10 +514,8 @@ def _to_spec(tool: dict[str, Any], auto_approve: Any = None, *, readonly: bool =
 def _render(result: Any) -> tuple[str, bool]:
     """Flatten a `tools/call` result to (text, is_error).
 
-    Dialect note 8: the content block's `text` is itself a JSON STRING, and the
-    object inside spells success `successfull` — three l's — where the REST SDK
-    spells it `successful`. Both are read, and a payload that says it failed is
-    surfaced as an error even when `isError` was not set.
+    The block's `text` is itself a JSON string whose object spells success `successfull`
+    (three l's) or `successful`; a payload saying it failed is an error without `isError`.
     """
     if not isinstance(result, dict):
         return (result if isinstance(result, str) else json.dumps(result, default=str)), False
@@ -624,11 +547,7 @@ def _render(result: Any) -> tuple[str, bool]:
 
 
 async def _envelope(name: str, result: Any, ctx: ToolContext) -> ResultEnvelope:
-    """Wrap the result, storing the tail as a blob when it is too big to inline.
-
-    The ONE cap rule, from the loop — 11.7.5 collapsed three answers to "how big
-    is too big" into `cap_view` precisely so they cannot drift apart again.
-    """
+    """Wrap the result, storing the tail as a blob when it is too big to inline."""
     text, is_error = _render(result)
     if is_error:
         return fail("upstream_error", text or f"{name} reported an error with no detail.")

@@ -1,11 +1,4 @@
-"""What a session reaches, and the prompt that tells the model about it (11.5).
-
-Two rules meet here and they are not the same rule. The TOGGLES say what a human
-asked for; the MANIFEST says what the request actually carries. The provider
-refuses a request over `llm.max_tools` outright, so the manifest gets the last
-word — and the prompt is generated from the manifest, never from the toggles,
-or the emergency exit reintroduces the bug it exists to prevent.
-"""
+"""What a session reaches, and the prompt that tells the model about it."""
 
 from __future__ import annotations
 
@@ -15,8 +8,8 @@ from agent_module import prompts
 from tool_module import registry as reg
 from tool_module.envelope import ToolSpec
 
-# Applied per-test rather than module-wide: the prompt half is plain synchronous
-# text and an asyncio mark on it is a warning, not a fact.
+# Per-test, not module-wide: the prompt half is synchronous, and an asyncio mark
+# there is a warning rather than a fact.
 asyncio_test = pytest.mark.asyncio
 
 SESSION = "session-1"
@@ -118,7 +111,7 @@ async def test_a_turn_with_no_session_reaches_nothing_remote(toggles):
 
 @asyncio_test
 async def test_the_manifest_never_exceeds_the_budget_the_toggles_ask_for(toggles, cap):
-    """The 164-schema request, refused where it is built rather than by the provider."""
+    """The cap is enforced where the manifest is built, not by the provider."""
     cap(20)
     connected = _Mcp(_Server("gmail", 12), _Server("slack", 38))
     toggles("Gmail", "Slack")
@@ -160,8 +153,7 @@ async def test_the_most_recently_enabled_server_is_the_one_dropped(toggles, cap)
 
 @asyncio_test
 async def test_a_later_smaller_server_does_not_jump_the_queue(toggles, cap):
-    """Stopping, not skipping: keeping a newer server while an older one is cut
-    would make the drop rule a lie the next time somebody read it."""
+    """Stopping, not skipping: once one server is cut, no later one is shipped."""
     cap(20)
     connected = _Mcp(_Server("gmail", 5), _Server("slack", 30), _Server("tiny", 1))
     toggles("Gmail", "Slack", "Tiny")
@@ -225,8 +217,7 @@ def test_nothing_connected_buys_no_section_at_all():
 
 
 def test_a_benched_server_is_named_unavailable_not_available():
-    """The backstop's own failure mode: a prompt built from toggles would promise
-    a server the cap quietly dropped."""
+    """A prompt built from toggles would promise a server the cap dropped."""
     text = prompts.connected_services(
         [
             _reach(label="gmail", name="Gmail", tools=12),
@@ -241,12 +232,7 @@ def test_a_benched_server_is_named_unavailable_not_available():
 
 @asyncio_test
 async def test_the_prompt_is_generated_from_the_manifest_not_the_toggles(toggles, cap):
-    """The card's pinned scenario, end to end.
-
-    A server is enabled and fits. Overnight it doubles its tool list. The toggles
-    have not changed and still say "enabled" — but the manifest drops it, and the
-    prompt for THAT turn must say it is unavailable.
-    """
+    """Enabled and fitting one turn, benched the next: the prompt follows the manifest."""
     cap(20)
     toggles("Gmail", "Slack")
 

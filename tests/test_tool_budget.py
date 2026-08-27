@@ -1,10 +1,4 @@
-"""The tool budget's arithmetic and its refusals, without a database.
-
-`tests/test_api.py` pins the same rules over HTTP with real rows, and skips
-wherever Postgres is absent. This file exists because the one thing that must
-never be wrong here — the sum that decides whether a request will be refused by
-the provider — should not be verifiable only on a machine with a database.
-"""
+"""The tool budget's arithmetic and its refusals, without a database."""
 
 from __future__ import annotations
 
@@ -41,7 +35,7 @@ class _FakeConnectors:
         return [dict(r) for r in self._rows]
 
     async def always(self, user_id):
-        """Google Search rides the gateway and is counted in `ours`, not in a row."""
+        """Web search is counted in `ours`, never as a connector row."""
         return []
 
 
@@ -86,7 +80,7 @@ async def test_the_meter_is_what_is_left_after_ours(wired):
 
 
 async def test_the_denominator_moves_when_we_add_a_local_tool(wired):
-    """A local tool we add is spent from the same 128, so the meter must say so."""
+    """A local tool is spent from the same cap, so the meter must move with it."""
     before = (await api.session_tools_state(SESSION, USER))["budget"]
     wired["ours"] = 21
 
@@ -104,7 +98,7 @@ async def test_used_counts_only_the_servers_this_session_was_given(wired):
 
 
 async def test_a_toggle_that_would_overflow_the_cap_is_refused_with_both_numbers(wired):
-    """The 164-schema request that started this card, refused where it is caused."""
+    """Refused at the toggle that causes it, not at the request it would break."""
     wired["rows"] = [_server("gmail", tools=12), _server("slack", tools=38)]
     wired["max_tools"] = 44  # 24 for the human, once ours are taken out
 

@@ -1,8 +1,4 @@
-"""Drives one turn of a session.
-
-Folds the session's event log into a message list, runs `run_turn` over it, and
-translates what the loop yields into log appends and status transitions.
-"""
+"""Drives one turn of a session."""
 
 from __future__ import annotations
 
@@ -48,39 +44,23 @@ from tool_module.tools.control import PARK_KINDS
 logger = logging.getLogger(__name__)
 
 
-# The prefix the transcript renders as an AUTO badge rather than as status
-# prose. Shared with the frontend by convention, which is why it is a constant
-# here and a single literal there.
+# The prefix the transcript renders as an AUTO badge rather than as status prose;
+# the frontend carries the same literal.
 _AUTO_BADGE = "auto-approved "
 
 
 def _destructive(name: str) -> bool:
-    """Whether a tool is one autopilot refuses to answer for itself (11.11.2).
-
-    Config, not code: `tools.destructive` is the same set the 11.10.2 roster
-    review ruled on, and a tool ABSENT from it is auto-answerable — so the safe
-    way to be wrong is to add a name, since the cost of a needless park is one
-    click and the cost of a missing one is a sent email.
-    """
+    """Whether a tool is one autopilot refuses to answer for itself; absent from config means auto-answerable."""
     named = {str(n) for n in (_cfg("tools.destructive", []) or [])}
-    # The gate sees the name the MODEL sees, which for a connector tool carries
-    # the `mcp_` prefix the registry added. The config names tools as the vendor
-    # does. Matching the raw name alone would have auto-approved every
-    # destructive connector tool there is — the failure would have been silent,
-    # and its first symptom a sent email.
+    # The gate sees the name the MODEL sees, which for a connector tool carries the
+    # registry's `mcp_` prefix; config names tools as the vendor does.
     bare = name[len(registry.MCP_PREFIX) :] if name.startswith(registry.MCP_PREFIX) else name
     return name in named or bare in named
 
 
 @dataclass(slots=True)
 class Session:
-    """The session columns a turn needs, read once at the start of the turn.
-
-    The SELECT that fills this is generated from these fields (`_SESSION_COLUMNS`
-    below), so the query cannot come to disagree with the dataclass. Two lists
-    that happen to match today is how `Approval` broke: a column added to one and
-    not the other is a KeyError on a path no local test reaches.
-    """
+    """The session columns a turn needs, read once at the start of the turn."""
 
     id: str
     user_id: str
@@ -93,18 +73,15 @@ class Session:
     hops_used: int
 
 
-# Every field of `Session`, in declaration order. The field names ARE the column
-# names, which is the whole reason this can be generated rather than typed twice.
+# Field names ARE the column names, so the SELECT cannot drift from the dataclass.
 _SESSION_COLUMNS = ", ".join(Session.__dataclass_fields__)
 
 
 # The live turn per session. At most one; a second start() is a no-op.
 _running: dict[str, asyncio.Task[None]] = {}
 
-# How a signalled turn should LAND: `stopped` or `cancelled`. One teardown path
-# with two endings, rather than two authorities over how a turn ends. Set by the
-# endpoint before the task is cancelled, read where the ending is recorded; a
-# second press of either finds the intent already there and only waits.
+# How a signalled turn should LAND: `stopped` or `cancelled`. Set by the endpoint
+# before the task is cancelled, read where the ending is recorded.
 _teardown: dict[str, str] = {}
 
 # Background terminal retries, held so they are not garbage collected.
@@ -142,11 +119,11 @@ class Folded:
     messages: list[dict[str, Any]]
     hops_used: int
     transform: ViewTransformEvent | None = None
-    # The last event this view contains. Steering reads from here, so a message
+    # The last event this view contains; steering reads from here, so a message
     # that landed between the fold and the first hop is carried, not skipped.
     last_seq: int = 0
-    # The checklist the log ends on. UI-only as a message, but the terminal
-    # sweep needs it across a resume, where the runner's own copy starts empty.
+    # The checklist the log ends on; the terminal sweep needs it across a resume,
+    # where the runner's own copy starts empty.
     todo: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -179,35 +156,17 @@ async def fold(
 ) -> Folded:
     """Rebuilds the model's message list from the session's log.
 
-    `user` and `content` events become messages, `tool_call` and `tool_result` become the
-    paired assistant and tool messages, `reasoning` is dropped, and the remaining kinds are
-    UI-only.
-
-    The output is a function of (log, config, mode, memory, reach, mounts, now) — all arguments,
-    which is what keeps it deterministic now that the prompt carries a clock. `now`
-    defaults to reading one, ONCE, so a fold is internally consistent; a caller that
-    needs two folds to compare must pass the same instant to both.
-
-    `reach` is this turn's manifest, which is why the caller builds it FIRST — the system
-    prompt names the services the request actually carries, and a prompt written before
-    the manifest could only name the ones somebody asked for.
+    The output is a function of (log, config, mode, memory, reach, mounts, now); `now`
+    defaults to reading one ONCE, so a caller comparing two folds must pass both the same
+    instant. `reach` is this turn's manifest, so the caller builds it before folding.
     """
     now = now or datetime.now(UTC)
     events = await _all_events(session.id)
-    # `StoredEvent` wraps the event; the kind is on the event, not the row. And
-    # the items are typed on TodoEvent, so isinstance is the honest test rather
-    # than a string compare against a payload dict that does not exist here.
     todo = next(
         (list(e.event.items) for e in reversed(events) if isinstance(e.event, TodoEvent)),
         [],
     )
-    # `core` rather than `memory`: the module is imported under that name, and a
-    # local shadowing it makes the very next call to it a NameError.
     core = _capped_memory(await memory.read_memory(session.user_id))
-    # The folders this session was given. Read here rather than inside
-    # `_assemble` for the same reason memory is: the assembly stays a pure
-    # function of what it is handed, and a caller comparing two folds gets the
-    # same prompt from the same inputs.
     mounts = await workspace.claims_for(session.id)
     messages, hops_used = _assemble(session, events, frozenset(), core, reach, now, mounts)
     last_seq = events[-1].seq if events else 0
@@ -233,8 +192,7 @@ async def fold(
 
     if _estimate_tokens(messages) > ceiling:
         # Rung 1 clears results and nothing else, so a view dominated by the system
-        # prompt and the conversation stays over budget and the hop can come back
-        # done{context_overflow}.
+        # prompt and the conversation stays over budget and comes back context_overflow.
         logger.warning(
             "session %s: cleared every stored result and the view is still over budget",
             session.id,
@@ -244,12 +202,7 @@ async def fold(
 
 
 def _capped_memory(core: str) -> str:
-    """Cut the memory document to what the system prompt will carry.
-
-    The tail is not lost, it is just not free: `read_memory` returns the whole
-    document, and the marker is there so the model knows to ask rather than
-    curate from a copy that stops mid-sentence.
-    """
+    """Cut the memory document to what the system prompt will carry, leaving a marker."""
     limit = int(_cfg("memory.prompt_max_chars", 4000))
     if limit <= 0 or len(core) <= limit:
         return core
@@ -259,21 +212,9 @@ def _capped_memory(core: str) -> str:
 def _steering(session_id: str, after_seq: int) -> Callable[[], Awaitable[list[str]]]:
     """Hand the loop whatever the human has said since the last hop.
 
-    A message posted while a turn is running is appended and streamed by the
-    endpoint — it appears in the transcript immediately — but the turn holds the
-    message list the fold built and has no way to see the log. Without this it
-    is invisible until the run is over, which is how "clone it onto your
-    computer" got watched, logged, and never read.
-
-    Reading from the fold's last seq and advancing past everything seen means a
-    message that landed between the fold and the first hop is carried too, and
-    nothing is delivered twice. Only what a human typed: the loop already knows
-    about its own events, and the nudge it injects is its own business.
-
-    This is delivery, never interruption. The message waits for the current hop
-    to finish. Holding a run mid-step is `POST /stop`, which is immediate and
-    lands it gently with the mode kept (11.11.2.5); `POST /cancel` is the
-    terminal press.
+    Delivery, never interruption: the message waits for the current hop to finish. Reads
+    from the fold's last seq and advances past everything seen, so nothing is delivered
+    twice; human `user` events only.
     """
     cursor = after_seq
 
@@ -365,10 +306,8 @@ def _assemble(
     for stored in events:
         event = stored.event
         if isinstance(event, UserEvent):
-            # A message typed while a call was in flight sits between the call and its
-            # result in the log. The chat template rejects a `tool` message that follows
-            # a `user` one, so it is held here until the open calls close. The log keeps
-            # its original order.
+            # The chat template rejects a `tool` message that follows a `user` one, so a
+            # message typed mid-call is held until the open calls close. The log keeps its order.
             if open_calls:
                 deferred_users.append(event.text)
             else:
@@ -429,16 +368,10 @@ def _result_text(event: ToolResultEvent) -> str:
 
 
 def _stamped(body: str, when: datetime) -> str:
-    """Prefix a rendered result with when it was fetched.
+    """Prefix a rendered result with when it was fetched; presentation only, the stored event is untouched.
 
-    Presentation only. The stored event is untouched — this is the fold's view
-    of it, the same place the ladder replaces a cleared result with a pointer.
-    Without it the model reads a week-old inbox as the current one, because
-    nothing in a `tool` message says when it was true.
-
-    The stamp is ABSOLUTE, not an age. An age would rewrite every result on
-    every fold, which changes the cached prefix each hop for no gain — the model
-    has the current time in its system prompt and can subtract.
+    The stamp is ABSOLUTE, not an age: an age would rewrite every result on every fold and
+    break the cached prefix.
     """
     return f"[fetched {prompts.clock(when)}]\n{body}"
 
@@ -451,22 +384,13 @@ def _dumps(args: dict[str, Any]) -> str:
 
 
 async def stop(session_id: str) -> bool:
-    """Hold a running turn, without ending it. The soft landing of one teardown.
+    """Hold a running turn without ending it: `done{stopped}`, `running -> idle`, mode KEPT.
 
-    Stop and cancel are the SAME path — `task.cancel()` on the turn — and differ
-    only in where it lands. Cancel is terminal: `done{cancelled}`, box reaped,
-    mode handed back to attended. Stop is not: `done{stopped}`, `running ->
-    idle`, mode KEPT, so the plan the run was approved from is still approved
-    and the box is hibernated rather than killed. In-flight calls close through
-    the interrupted synthesis every teardown already runs.
-
-    Immediate. There is no hop boundary to reach, no window to miss, and no
-    grace timer to degrade into a cancel — 11.8.6 built all three and each one
-    was a race with a loop that runs on event time.
+    Same path as cancel (`task.cancel()` on the turn), differing only in where it lands.
+    Immediate: there is no hop boundary to reach and no grace timer.
 
     Returns:
-        False when no turn of this session is running in this process. There is
-        nothing to hold: an idle or parked session is already not acting.
+        False when no turn of this session is running in this process.
     """
     return await _teardown_turn(session_id, "stopped")
 
@@ -512,24 +436,15 @@ def is_running(session_id: str) -> bool:
 
 
 async def cancel(session_id: str) -> bool:
-    """End a run for good.
-
-    A live turn is signalled and awaited; a session with no turn here is written
-    straight to `cancelled`.
-    """
+    """End a run for good: a live turn is signalled and awaited, otherwise `cancelled` is written directly."""
     if await _teardown_turn(session_id, "cancelled"):
         return True
 
     session = await load(session_id)
     if session is None or session.status in lifecycle.TERMINAL:
         return False
-    # `_ending` appends the done{cancelled} the transcript needs: the fold resets the
-    # hop count at a `done`, so a restarted session budgets from zero.
-    #
-    # The mode goes back with it. Cancelling a STOPPED run is the path that made
-    # this matter: the hold left the session unattended on purpose, so without
-    # this a cancelled one stayed recorded unattended forever — holding a worker
-    # slot in the quota, and lying about a session nobody is running.
+    # `_ending` appends the done{cancelled} the fold needs to reset the hop count, and
+    # hands an unattended session's mode back so it stops holding a worker slot.
     return await _ending(
         session_id,
         None,
@@ -550,10 +465,7 @@ async def _teardown_turn(session_id: str, intent: str) -> bool:
     if task is None or task.done():
         return False
     if session_id not in _teardown:
-        # First press wins the landing. A cancel after a stop finds `stopped`
-        # already recorded and does not fight it: the turn is coming down either
-        # way, and cancelling a session that has landed idle is a second, plain
-        # cancel with no turn to signal.
+        # First press wins the landing: a cancel after a stop does not overwrite `stopped`.
         _teardown[session_id] = intent
         task.cancel()
     # asyncio.wait reports the task's completion without re-raising its
@@ -563,10 +475,7 @@ async def _teardown_turn(session_id: str, intent: str) -> bool:
 
 
 async def _drive(session_id: str) -> None:
-    """Runs one turn to its end.
-
-    Every exit path writes a terminal, including a failure during setup.
-    """
+    """Runs one turn to its end. Every exit path writes a terminal, including a failure during setup."""
     sink: _Sink | None = None
     try:
         session = await load(session_id)
@@ -584,8 +493,7 @@ async def _drive(session_id: str) -> None:
             shipped.specs,
         )
 
-        # A call this session parked on is settled BEFORE anything closes it as
-        # dangling: it is open on purpose, and it is what the human answered.
+        # A call this session parked on is settled BEFORE anything closes it as dangling.
         await _settle_gated_call(session, sink, dispatch)
 
         # Close any call the last run left open: the chat template rejects a tool_call
@@ -595,8 +503,7 @@ async def _drive(session_id: str) -> None:
         started = time.monotonic()
         folded = await fold(session, shipped.servers)
         messages, hops_used = folded.messages, folded.hops_used
-        # Seeded so a resumed run can still sweep: the runner's own copy is
-        # populated by `emit`, which has seen nothing yet on a fresh turn.
+        # Seeded so a resumed run can still sweep: `emit` has seen nothing yet.
         sink._todo.items = list(folded.todo)
         system_log.record(
             "fold",
@@ -622,13 +529,12 @@ async def _drive(session_id: str) -> None:
             store_blob=sink.store_blob,
             steer=_steering(session_id, folded.last_seq),
             # The loop cannot tell a stop from a cancel — both arrive as a
-            # CancelledError — so it asks what the presser recorded (11.11.2.5).
+            # CancelledError — so it asks what the presser recorded.
             teardown_intent=lambda: _teardown.get(session_id),
         ):
             if isinstance(event, DoneEvent) and sink.parked:
-                # The run ended in the same hop that raised a question. The
-                # terminal wins and no question is recorded: there is nothing
-                # left for an answer to affect.
+                # The run ended in the same hop that raised a question: the terminal
+                # wins and no question is recorded.
                 logger.info("session %s ended before its question was recorded", session_id)
                 sink.drop_park()
                 await sink.close(event)
@@ -649,16 +555,12 @@ async def _drive(session_id: str) -> None:
             return
         await sink.close()
     except asyncio.CancelledError:
-        # The landing the presser asked for. Absent — a cancellation from
-        # somewhere else entirely, a process coming down — it is a cancel, which
-        # is the safe reading: a terminal that says the run ended beats an idle
-        # session nobody is driving.
+        # With no recorded intent — a cancellation from elsewhere, a process coming
+        # down — it lands as a cancel, which is the safe reading.
         await _shielded(_ending(session_id, sink, _teardown.get(session_id, "cancelled")))
         raise
     except Exception:
-        # Not `model_error`: nothing here is the model. A Postgres blip, a
-        # sandbox that would not boot and an OpenAI outage were one label until
-        # 11.8.5, so the pill could not tell an outage from a bad reply.
+        # Not `model_error`: nothing on this path is the model.
         logger.exception("session %s: the turn failed outside the loop", session_id)
         await _shielded(_ending(session_id, sink, "internal_error"))
     finally:
@@ -668,21 +570,8 @@ async def _drive(session_id: str) -> None:
 async def _settle_gated_call(session: Session, sink: _Sink, dispatch: Dispatch) -> bool:
     """Close a call the session parked on, with the human's decision.
 
-    This is where consent turns into execution, and the ordering is the whole
-    guarantee. The call is still OPEN in the log — that is what the approvals row
-    is bound to — so it is settled here, before `close_dangling` would abandon it
-    as interrupted.
-
-    Three outcomes:
-      approved   -> claim the latch, run THAT call through normal dispatch, and
-                    close it with the real result.
-      declined   -> close it with the failure the model already knows how to
-                    read, and it routes around rather than retrying.
-      re-entered -> the row is already claimed and the call is still open, so a
-                    previous wake died between claiming and appending. The tool
-                    may well have run. Close it as interrupted and never repeat
-                    it: sending a message twice is worse than not knowing whether
-                    it sent once.
+    The call is still OPEN in the log — that is what the approvals row is bound to — so it
+    is settled here, before `close_dangling` would abandon it as interrupted.
 
     Returns True when it settled something.
     """
@@ -717,8 +606,7 @@ async def _settle_gated_call(session: Session, sink: _Sink, dispatch: Dispatch) 
 
     claimed = await approvals.consume(row.id)
     if claimed is None:
-        # Another wake got there first and is running it. Leave the call alone:
-        # it is theirs to close.
+        # Another wake got there first and is running it; the call is theirs to close.
         logger.info("session %s: gated call %s claimed by another wake", session.id, row.tool_call_id)
         return False
 
@@ -729,13 +617,7 @@ async def _settle_gated_call(session: Session, sink: _Sink, dispatch: Dispatch) 
 
 
 async def dispatch_granted(sink: _Sink, dispatch: Dispatch, name: str, args: dict[str, Any]) -> ResultEnvelope:
-    """Run one approved call through NORMAL dispatch, with a one-shot grant.
-
-    Normal dispatch, not a side door: the schema check, the timeout, the lease
-    and the write-ahead barrier all still apply. The grant only answers the
-    approval gate, once — anything the model reaches for afterwards is gated
-    again.
-    """
+    """Run one approved call through NORMAL dispatch, with a grant that answers the gate exactly once."""
     sink._grant_once = True
     try:
         return await dispatch(name, args)
@@ -744,12 +626,7 @@ async def dispatch_granted(sink: _Sink, dispatch: Dispatch, name: str, args: dic
 
 
 def _result_event(call_id: str, envelope: ResultEnvelope) -> ToolResultEvent:
-    """Build the result event for a call settled outside the loop.
-
-    The view cap comes from `loop.cap_view`, not from a second reading of the
-    same config key: this path and the loop's own settle produced identical
-    truncation by coincidence, and coincidence is what drifts.
-    """
+    """Build the result event for a call settled outside the loop, capped by `loop.cap_view`."""
     content, total = cap_view(envelope.content)
     return ToolResultEvent(
         id=call_id,
@@ -762,13 +639,7 @@ def _result_event(call_id: str, envelope: ResultEnvelope) -> ToolResultEvent:
 
 
 async def _manifest_for(session: Session) -> registry.Manifest:
-    """Build the turn's tool list, degrading to ours alone rather than failing the turn.
-
-    An unreachable MCP vendor is a smaller tool list, never a dead session. The
-    fallback drops the session id with the MCP source, which is the honest
-    degradation: with no way to read what a server offers there is no way to
-    know whether it fits, and ours always do.
-    """
+    """Build the turn's tool list, degrading to ours alone rather than failing the turn."""
     try:
         return await registry.manifest(session.user_id, mcp=hands.connectors(), session_id=session.id)
     except Exception:
@@ -777,14 +648,7 @@ async def _manifest_for(session: Session) -> registry.Manifest:
 
 
 def _announce_benching(sink: _Sink, shipped: registry.Manifest) -> None:
-    """Say, in the transcript and in the operational log, that a server was left out.
-
-    A benched server is the one case where what the human switched on and what
-    the model was handed disagree, and it happens for a reason nobody typed —
-    a server grew its tool list. Silence here is how 164 tool schemas appeared
-    without anyone changing anything, so it gets a line the human can read and a
-    row an operator can query.
-    """
+    """Say, in the transcript and in the operational log, that a server was left out."""
     benched = shipped.benched
     if not benched:
         return
@@ -841,20 +705,11 @@ async def _ending(
     try:
         done = DoneEvent(reason=reason)
         if mode is None and done.is_terminal():
-            # EVERY direct-write terminal hands the mode back, not just the one
-            # `cancel` writes for a session with no turn. A cancel that lands
-            # before `_drive` has built its sink comes through here too, and
-            # without this it wrote `cancelled` while the row still said
-            # unattended — holding a quota slot for a run nobody is running.
-            # Not for `stopped`: it is not terminal, and keeping the mode is the
-            # whole point of it.
+            # Every direct-write terminal hands an unattended mode back, so it stops
+            # holding a quota slot. Not for `stopped`: it is not terminal and keeps the mode.
             current = await pool.fetchval("SELECT mode FROM sessions WHERE id = $1", _uuid(session_id))
             mode = "attended" if current == "unattended" else None
-        # ONE mapping from reason to status, the same one the sink uses. The
-        # ternary here read `cancelled` or `failed`, which was true of every
-        # reason that could reach it until `stopped` existed — a stop landing in
-        # the window before the sink is built would have been recorded as a
-        # failure of a run nothing had gone wrong with.
+        # ONE mapping from reason to status, the same one the sink uses.
         status = lifecycle.status_for(done)
         # The invariant refuses a `done` while a call is open.
         stream.publish_all(session_id, await slog.close_dangling(session_id))
@@ -867,9 +722,8 @@ async def _ending(
         return False
 
 
-# The `error_kind` the gate raises to mean "this call is parked, not failed".
-# It never reaches the log: `emit` recognises it and suppresses the result, which
-# is what leaves the tool_call open across the park.
+# The `error_kind` the gate raises to mean "this call is parked, not failed". It never
+# reaches the log: `emit` suppresses the result, which leaves the tool_call open.
 _GATED = "approval_required"
 
 
@@ -878,8 +732,7 @@ def _park_prompt(name: str, args: dict[str, Any]) -> str:
     if name == "ask":
         return str(args.get("question") or "").strip() or "(no question given)"
     if name == "propose_plan":
-        # The prompt is the one-line summary; the card reads the plan itself off
-        # `tool_args`, the same way a gated call's card reads the call.
+        # The prompt is the one-line summary; the card reads the plan itself off `tool_args`.
         return str(args.get("goal") or "").strip() or "(no goal given)"
     action = str(args.get("action") or "").strip() or "(no action given)"
     detail = str(args.get("detail") or "").strip()
@@ -888,21 +741,13 @@ def _park_prompt(name: str, args: dict[str, Any]) -> str:
 
 # --- the approved plan ---------------------------------------------------------
 
-# What an approved plan is called. It lands at the root of the session's FIRST
-# linked folder (11.9), because the run's first act is to read it and the model
-# is told that path — and because a project links folders rather than owning
-# one, so "the project root" is not a place any more.
+# An approved plan lands at the root of the session's FIRST linked folder: the run's
+# first act is to read it, and the model is told that path.
 PLAN_NAME = "plan.md"
 
 
 def plan_markdown(args: dict[str, Any], version: int) -> str:
-    """Render an approved plan as the file the run starts from.
-
-    A pure function of the args that were approved: the human read those fields
-    and nothing else is added, so the file cannot say something the card did
-    not. The model is never asked to write this — a second generation would be a
-    second chance to disagree with what was consented to.
-    """
+    """Render an approved plan as the file the run starts from: a pure function of the approved args."""
     lines = [f"# {str(args.get('goal') or '').strip()}", "", f"_plan v{version}_", ""]
     done_when = str(args.get("done_when") or "").strip()
     if done_when:
@@ -929,26 +774,14 @@ def plan_markdown(args: dict[str, Any], version: int) -> str:
 
 
 async def plan_folder(session_id: str) -> str | None:
-    """The folder an approved plan is written into: the session's FIRST claim.
-
-    First LINKED, not first alphabetically: the order a project's folders were
-    linked in is the order they were chosen in, and the first is the one the
-    work is about. A session that claims nothing has nowhere durable to put a
-    plan, and saying so before the approval is what keeps the promise "the run
-    starts from plan.md" honest.
-    """
+    """The folder an approved plan is written into: the session's first LINKED writable claim, or None."""
     claims = await workspace.claims_for(session_id)
     writable = [c for c in claims if c.mode == "write"]
     return writable[0].folder if writable else None
 
 
 async def read_plan(session_id: str) -> str | None:
-    """`plan.md`'s content for this session, or None when no run has happened here.
-
-    Read from the STORE, which is where it was written — the box is hibernated
-    or gone by the time anyone presses run again, and the harness already knows
-    this without asking anything to look.
-    """
+    """`plan.md`'s content for this session, read from the STORE, or None when no run has happened here."""
     row = await pool.fetchrow("SELECT user_id FROM sessions WHERE id = $1", _uuid(session_id))
     folder = await plan_folder(session_id)
     if row is None or folder is None:
@@ -963,12 +796,8 @@ async def read_plan(session_id: str) -> str | None:
 async def save_plan(session_id: str, args: dict[str, Any], version: int) -> str | None:
     """Write an approved plan into the session's first linked folder, and return its path.
 
-    Through the store, not the sandbox: the plan is approved while the session is
-    parked, and a parked session's box is hibernated. The next materialize copies
-    the file in like any other, which is what makes "starting from plan.md" true
-    rather than a phrase in the prompt.
-
-    Returns None when the session links no folder to write into.
+    Through the store, not the sandbox: a parked session's box is hibernated, and the next
+    materialize copies the file in. Returns None when the session links no folder to write into.
     """
     row = await pool.fetchrow("SELECT user_id FROM sessions WHERE id = $1", _uuid(session_id))
     folder = await plan_folder(session_id)
@@ -1016,18 +845,15 @@ class _Barrier:
 class _Sink:
     """Writes the loop's events to the session log and moves the session at the end of a turn.
 
-    `emit` queues an event and returns; a writer task performs the appends, and
-    consecutive text events still queued are written as a single row.
-
-    `write_ahead` wraps dispatch so a non-readonly tool waits, via `barrier()`,
-    until its own `tool_call` event is committed before it runs.
+    `emit` queues an event and returns; a writer task performs the appends, and consecutive
+    text events still queued are written as a single row. `write_ahead` wraps dispatch so a
+    non-readonly tool waits until its own `tool_call` event is committed before it runs.
     """
 
     def __init__(self, session: Session):
         self.session = session
         self._queue: asyncio.Queue[Any] = asyncio.Queue()
-        # The checklist as the model last wrote it, for the terminal sweep.
-        # Seeded from the log on resume.
+        # The checklist as the model last wrote it; seeded from the log on resume.
         self._todo = TodoTracker()
         # asyncio.Queue has no un-get, so a merge that reads one event too many parks
         # it here for the next iteration.
@@ -1043,8 +869,7 @@ class _Sink:
         # The park tool call whose result arrived, and the arguments it carried. Set on
         # the result, at which point the call is closed in the transcript.
         self._park: tuple[str, str, dict[str, Any]] | None = None
-        # Every tool call of this turn, so a parked one can be bound to its own
-        # id and args without threading the id through the approval gate.
+        # Every tool call of this turn, so a parked one can be bound to its own id and args.
         self._calls: dict[str, tuple[str, dict[str, Any]]] = {}
         # True for exactly one gated call: the one the human approved.
         self._grant_once = False
@@ -1052,8 +877,8 @@ class _Sink:
         self._gated_call: str | None = None
         # Resource keys this session holds, so a second call skips the database.
         self._leases: set[str] = set()
-        # Set once this turn has a slot in the user's sandbox pool, so a second
-        # tool call skips the database. The row is what releasing consults.
+        # Set once this turn holds a slot in the user's sandbox pool; the row, not this
+        # flag, is what releasing consults.
         self._sandbox_slot = False
         # The claims materialized into the sandbox, and the tree they came from.
         self._workspace: tuple[list[workspace.Claim], dict[str, str]] | None = None
@@ -1083,43 +908,10 @@ class _Sink:
     async def _approve(self, name: str, args: dict[str, Any]) -> bool:
         """Answer a `requires_approval` call, or park the turn on it.
 
-        Three outcomes, and only two of them return.
-
-        A grant issued by the resume path returns True once. It is one-shot on
-        purpose: the resumed turn runs exactly the call the human approved, and
-        anything the model reaches for afterwards is gated again.
-
-        Otherwise there is no grant, so the turn PARKS on this call. The gate
-        cannot park by itself — it runs inside dispatch, which must return an
-        envelope — so it raises the marker that `emit` recognises: the loop turns
-        it into a result, `emit` suppresses that result so the call stays OPEN in
-        the log, and `park()` writes the approvals row bound to that call id
-        carrying the real (name, args). The human then approves the thing that
-        will run rather than a sentence the model wrote about it.
-
-        The refusal this replaces told the model to call `request_approval` and
-        promised "you may call {name} once they agree" — a promise nothing kept,
-        because this gate never read the approvals table. It also logged asking
-        correctly as `invalid_args`, spending the per-tool failure cap on it.
-
-        Only one call may park per hop: the transcript permits exactly one open
-        tool call across a park. A second gated call in the same hop is told so
-        and closes normally; it is re-issued after the first is answered.
-
-        AUTOPILOT ANSWERS ITS OWN GATES (11.11.2). An unattended run is the
-        autopilot: it answers non-destructive calls itself, immediately, through
-        this same machinery — a real approvals row with a real answer, stamped
-        `answered_by: auto` so the history can tell the two answerers apart. It
-        never parks on them, which is what the word autopilot was promising and
-        not delivering. Attended chat is untouched and always manual: that IS the
-        supervised mode.
-
-        DESTRUCTIVE CALLS STILL PARK, in auto exactly as in manual. The list is
-        `tools.destructive` in config — data, not code — and it names what a
-        person cannot undo with a click: sends, deletes, merges, permissions.
-
-        `approvals.attended_auto_approve` remains the escape hatch, still OFF by
-        default: it turns every gated call into a silent yes.
+        Parking raises `_GATED` rather than returning: `emit` suppresses that result so the
+        call stays OPEN, and `park()` binds the approvals row to it. Only one call may park
+        per hop. An unattended run auto-answers non-destructive calls; destructive ones
+        (`tools.destructive`) park in every mode.
         """
         if self._grant_once:
             self._grant_once = False
@@ -1127,9 +919,8 @@ class _Sink:
         if self.session.mode == "attended" and bool(_cfg("approvals.attended_auto_approve", False)):
             return True
         if self.session.mode == "unattended" and not _destructive(name):
-            # Answered through the gate rather than around it: the row is
-            # written and answered here, so the transcript and the approvals
-            # history read the same as a manual approval that happened fast.
+            # Answered through the gate rather than around it, so the transcript and the
+            # approvals history read like a manual approval that happened fast.
             await self._auto_answer(name, args)
             return True
         if self._park is not None:
@@ -1144,10 +935,8 @@ class _Sink:
     async def _auto_answer(self, name: str, args: dict[str, Any]) -> None:
         """Write and answer one approvals row as the harness, for the audit trail.
 
-        The call is NOT parked, so there is no open call to bind to: the row is
-        created and answered in the same breath. A failure here is logged and
-        swallowed — the run has already been authorised by the mode it is in,
-        and losing the paper trail must not also lose the work.
+        The call is NOT parked, so there is no open call to bind to: the row is created and
+        answered in the same breath.
         """
         try:
             row = await approvals.create(
@@ -1159,16 +948,8 @@ class _Sink:
                 tool_args=args,
             )
             answered = await approvals.answer_auto(row.id, approvals.APPROVE)
-            # Visible in the transcript, because a run that approved something on
-            # the human's behalf should say so where they are reading rather than
-            # only in a table they would have to go looking for.
-            #
-            # Driven by `auto_answered` rather than by "we just called
-            # answer_auto": the row is the record, and reading it back is what
-            # makes the badge in the transcript and the column in the database
-            # the same fact. Nothing else reads that property, so if it ever
-            # stops being written this line stops rendering, which is the
-            # failure anybody would want.
+            # Driven by the row's `auto_answered`, so the badge in the transcript and the
+            # column in the database are the same fact.
             if answered is not None and answered.auto_answered:
                 self.emit(StatusEvent(label=f"{_AUTO_BADGE}{name}"))
         except Exception:  # noqa: BLE001 - the audit trail is not worth the run
@@ -1186,13 +967,9 @@ class _Sink:
     async def _lease(self, resource: str) -> None:
         """Claim what the session needs to use a shared resource, and fill its cache.
 
-        The sandbox is this session's own box, so it is capacity rather than a
-        lease: the wait is for a free slot in the user's pool. Each write claim
-        leases the FOLDER it names, so two sessions writing different folders do
-        not wait on each other even when they belong to the same project, and
-        two writing the same folder still serialize even when they do not. The
-        claimed folders are materialized once the box and the leases are held,
-        and nothing unclaimed is put there.
+        The sandbox is capacity rather than a lease: the wait is for a free slot in the
+        user's pool. Each write claim leases the FOLDER it names, and the claimed folders
+        are materialized once the box and the leases are held.
 
         Raises:
             ToolUnavailable: a box or a lease did not free up. The model routes
@@ -1262,8 +1039,7 @@ class _Sink:
     ) -> None:
         """Retry `take` until it succeeds, saying once in the transcript that it is waiting.
 
-        A wait is not a park: the session stays `running` and the wall clock is
-        the only thing spent.
+        A wait is not a park: the session stays `running`.
 
         Raises:
             ToolUnavailable: nothing freed up before the timeout. The model
@@ -1301,9 +1077,8 @@ class _Sink:
     async def _release_leases(self, *, keep_box: bool = False) -> None:
         """Commit what the sandbox changed, then give up the box and every resource held.
 
-        `keep_box` is the park: the session is not acting, so it holds no lease,
-        but it is not over either, so its box is hibernated rather than
-        destroyed and the work outside the claimed mounts survives the wait.
+        `keep_box` is the park: the box is hibernated rather than destroyed, so work outside
+        the claimed mounts survives the wait.
         """
         await self._flush_workspace()
         if keep_box:
@@ -1326,10 +1101,8 @@ class _Sink:
     async def _release_sandbox(self) -> None:
         """Destroy the session's box and free its slot in the user's pool.
 
-        Reached only after `_flush_workspace` returns, and that raises when the
-        commit did not land, so the cache is never destroyed while it holds the
-        only copy of an edit. The row is the authority, not this object: a turn
-        that inherited a slot from a predecessor gives it back too.
+        Reached only after `_flush_workspace` returns, so the cache is never destroyed while
+        it holds the only copy of an edit. The row is the authority, not this object.
         """
         try:
             await sandbox_manager.manager().reap(self.session.id)
@@ -1340,9 +1113,8 @@ class _Sink:
     async def _flush_workspace(self) -> None:
         """Write the sandbox's changes back to the store before the box goes.
 
-        A failure here is loud and nothing is given up: the edits are still on
-        the sandbox disk, and reaping the box or releasing the project leases
-        would lose them or let another session materialize over them.
+        A failure re-raises and nothing is given up: the edits are still on the sandbox disk,
+        and reaping the box or releasing the leases would lose them.
         """
         if self._workspace is None:
             return
@@ -1362,8 +1134,6 @@ class _Sink:
             discarded=len(flushed.discarded),
         )
         if flushed.discarded:
-            # The person who watched these edits happen is reading the
-            # transcript, not system_events.
             names = ", ".join(posixpath.basename(p) for p in flushed.discarded[:5])
             more = f" and {len(flushed.discarded) - 5} more" if len(flushed.discarded) > 5 else ""
             self.emit(StatusEvent(label=f"discarded edits to read-only files: {names}{more}"))
@@ -1371,12 +1141,8 @@ class _Sink:
     def emit(self, event: Event) -> None:
         """Queues one event for the writer. Never blocks.
 
-        With one exception, which is the whole of 11.7: the result of a call the
-        gate parked on is DROPPED rather than queued. A queued result closes the
-        call, and the call has to stay open — it is what the approval row is
-        bound to, and what the resumed turn executes. The loop's own view of the
-        turn is about to be abandoned at the hop boundary, so nothing downstream
-        reads the result we are discarding.
+        One exception: the result of a call the gate parked on is DROPPED rather than queued,
+        because a queued result would close a call that has to stay open.
         """
         if isinstance(event, BudgetEvent):
             self._hops = event.hops_used
@@ -1390,18 +1156,12 @@ class _Sink:
                 logger.info("session %s: parking on gated call %s (%s)", self.session.id, event.id, name)
                 return  # dropped on purpose: the call stays open across the park
             name, args = self._calls.get(event.id, ("", {}))
-            # `todo_write` had no writer before 11.11.1: the tool returned a
-            # sentence, no event reached the log, and the checklist the model
-            # kept was invisible to every surface and to the fold. The tracker
-            # holds the list; this is the moment it becomes a fact.
             self._todo.saw_call(event.id, name, args)
             if self._todo.saw_result(event.id, bool(event.ok)):
                 self._queue.put_nowait(TodoEvent(items=self._todo.items))
             if event.ok and name in PARK_KINDS:
                 # A park tool's own result: the call is closed, and THIS is the
-                # moment the session parks. `_calls` already knows every call of
-                # the turn, so the second map that held only the park ones was
-                # one more thing to keep in step for no answer it alone had.
+                # moment the session parks.
                 self._park = (event.id, name, args)
         self._queue.put_nowait(event)
 
@@ -1423,14 +1183,7 @@ class _Sink:
         await waiting
 
     def write_ahead(self, dispatch: Dispatch, tools: Sequence[ToolSpec]) -> Dispatch:
-        """Wraps dispatch so a non-readonly tool waits for its `tool_call` to be committed.
-
-        Nothing here knows about stopping. A teardown cancels the TURN, and a
-        call in flight comes down with it and is closed by the interrupted
-        synthesis every ending already runs — which is the same result 11.8.6's
-        dispatch registry, refusal branch and stopped-call envelope were built
-        to produce, minus three places to race.
-        """
+        """Wraps dispatch so a non-readonly tool waits for its `tool_call` to be committed."""
         readonly = {t.name: t.readonly for t in tools}
 
         async def guarded(name: str, args: dict[str, Any]) -> ResultEnvelope:
@@ -1514,8 +1267,7 @@ class _Sink:
         """Appends the terminal event and moves the session.
 
         `_done_appended` guards the append and `_terminal_written` the transition, so an
-        interrupted finish can be retried without a second `done` row. The session ends on
-        the first reason to reach here.
+        interrupted finish can be retried without a second `done` row.
         """
         if self._terminal_written:
             return
@@ -1525,14 +1277,9 @@ class _Sink:
         self._pending_done = done
         try:
             if not self._done_appended:
-                # Before the drain: the flush may have something to say, and a
-                # status event queued after the writer stops is a status event
-                # nobody sees.
-                #
-                # A STOP is not an ending, so the box is hibernated rather than
-                # reaped — the work outside the claimed mounts (a download, an
-                # install) is still there when the run picks back up. Leases go
-                # either way: a session that is not acting holds none.
+                # Before the drain: a status event queued after the writer stops is a
+                # status event nobody sees. A STOP hibernates the box rather than reaping
+                # it; leases go either way, since a session that is not acting holds none.
                 await self._release_leases(keep_box=done.reason == "stopped")
                 await self._sweep_checklist(done)
                 await self._drain()
@@ -1546,10 +1293,8 @@ class _Sink:
 
             await self._save_cursor()
             new_status = lifecycle.status_for(done)
-            # An unattended run that reaches a TERMINAL hands the session back
-            # attended. A stop reaches `idle` instead and keeps the mode, which
-            # is the whole of what makes it gentle: the plan is still approved,
-            # so a message or a plain start picks the run up unattended.
+            # An unattended run that reaches a TERMINAL hands the session back attended;
+            # a stop reaches `idle` instead and keeps the mode.
             mode = "attended" if new_status in lifecycle.TERMINAL and self.session.mode == "unattended" else None
             await lifecycle.transition(self.session.id, "running", new_status, done.reason, mode=mode)
             self._terminal_written = True
@@ -1560,14 +1305,7 @@ class _Sink:
     async def _sweep_checklist(self, done: DoneEvent) -> None:
         """On a COMPLETED run, resolve the checklist. On any other ending, leave it.
 
-        The harness knows the plan concluded; the model may simply not have said
-        so, and a completed banner over unchecked boxes contradicts itself. Only
-        `completed` sweeps: a failed or cancelled run's half-checked list is an
-        honest record of where it stopped, and tidying that would erase the one
-        thing it has to say.
-
-        Queued rather than written directly so it lands in the same order the
-        transcript already has — before the terminal, after the work.
+        Queued rather than written directly, so it lands before the terminal and after the work.
         """
         if done.reason != "completed":
             return
@@ -1620,28 +1358,22 @@ class _Sink:
         )
 
     async def park(self) -> bool:
-        """Suspends the session on its open question.
-
-        No `done` is appended: the run is not over. The approval row and the
-        `awaiting_approval` status carry the wait; nothing is held in memory.
+        """Suspends the session on its open question. No `done` is appended: the run is not over.
 
         Returns:
             True if the status moved to `awaiting_approval`.
         """
         if self._park is None:
             return False
-        # A parked session is not acting, so it holds no lease. Released before
-        # the drain, so anything the flush reports is still recorded; the box is
-        # kept, hibernated, because the session resumes into it.
+        # A parked session holds no lease. Released before the drain, so anything the flush
+        # reports is still recorded; the box is kept, hibernated, for the resuming turn.
         await self._release_leases(keep_box=True)
         await self._drain()
         call_id, name, args = self._park
         kind = PARK_KINDS.get(name)
         if kind == "plan":
-            # Each proposal is a version, and only the newest is live: the older
-            # row stays for the card's "changed since v{n-1}" diff but stops
-            # waiting on anybody. Superseded before the insert, so the two are
-            # never open at once.
+            # Each proposal is a version and only the newest is live; superseded before the
+            # insert, so the two are never open at once.
             superseded = await approvals.supersede_plans(self.session.id)
             if superseded:
                 logger.info("session %s: plan superseded by a newer proposal", self.session.id)
@@ -1654,8 +1386,8 @@ class _Sink:
                 tool_args=args,
             )
         elif self._gated_call == call_id:
-            # A gated call: the row carries the call itself, and the call is
-            # still open in the log for the answer to close.
+            # A gated call: the row carries the call itself, and the call is still open in
+            # the log for the answer to close.
             approval = await approvals.create(
                 self.session.id,
                 call_id,

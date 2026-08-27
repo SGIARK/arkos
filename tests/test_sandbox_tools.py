@@ -22,11 +22,11 @@ class FakeSandbox:
     def __init__(self, files: dict[str, str] | None = None):
         self.files = dict(files or {})
         self.commands: list[str] = []
-        # What the tools keyed the box by; the box belongs to the session.
+        # Whatever key the tools passed; the box is per-session, never per-user.
         self.keys: list[str] = []
         self.exit_code = 0
         self.stderr = ""
-        # None means "echo the command", which is what most tests assert on.
+        # None means "echo the command back".
         self.stdout: str | None = None
 
     async def exec(self, session_id: str, command: str, timeout: int = 120) -> dict[str, Any]:
@@ -229,12 +229,7 @@ async def test_a_search_with_no_hits_says_so(sandbox):
 
 
 async def test_a_path_that_cannot_be_read_is_not_reported_as_no_matches(sandbox):
-    """The false negative that cost a real diagnosis.
-
-    `2>/dev/null` hid grep's "No such file or directory" and the empty stdout
-    rendered as "(no matches)", so a mistyped path read as a completed search —
-    and the model concluded the thing it was looking for was not in the code.
-    """
+    """An unreadable path (grep exit 2) must not render as a completed empty search."""
     sandbox.stdout = ""
     sandbox.exit_code = 2  # grep: could not read what it was pointed at
 
@@ -255,9 +250,7 @@ async def test_a_glob_over_a_missing_directory_is_not_an_empty_tree(sandbox):
 
 
 async def test_a_home_relative_path_is_expanded_by_the_box_not_by_us(sandbox):
-    """`~` is a shell feature and quoting says "no shell features here", so the
-    tilde used to reach grep as a literal directory name. It is handed to the
-    box's own $HOME instead — nothing here assumes /home/user."""
+    """Quoting suppresses shell expansion, so `~` is rewritten to the box's own $HOME."""
     await _run("grep", {"pattern": "timeout", "path": "~/store/triage/arkos"}, _ctx())
 
     command = sandbox.commands[-1]
@@ -266,7 +259,7 @@ async def test_a_home_relative_path_is_expanded_by_the_box_not_by_us(sandbox):
 
 
 async def test_the_rest_of_a_home_path_is_still_quoted(sandbox):
-    """Expanding the tilde must not open the door quoting was holding shut."""
+    """Tilde expansion must not defeat the quoting of the rest of the path."""
     await _run("grep", {"pattern": "x", "path": "~/notes; rm -rf /"}, _ctx())
 
     command = sandbox.commands[-1]
@@ -303,7 +296,7 @@ async def test_no_credentials_are_passed_into_the_sandbox(monkeypatch):
     assert not any("key" in k.lower() or "env" in k.lower() or "token" in k.lower() for k in created)
 
 
-# --- reading a live box over HTTP, without waking one (11.4) ----------------------
+# --- reading a live box without waking one ----------------------------------------
 
 
 class _AwakeBox:
@@ -342,11 +335,7 @@ def _manager_with(session_id: str | None, box: _AwakeBox | None) -> Any:
 
 
 async def test_browsing_a_box_that_is_not_awake_never_boots_one(monkeypatch):
-    """A person opening a file browser must not start compute.
-
-    `get_or_create` is the one thing that could, so the test asserts it is not
-    reached — a parked or reaped session has no disk, and that is the answer.
-    """
+    """A person opening a file browser must not start compute."""
     manager = _manager_with(None, None)
 
     async def boom(*a, **kw):

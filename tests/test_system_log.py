@@ -1,6 +1,6 @@
 """The operational log: batched, best-effort, and never in the caller's way.
 
-Runs against a real Postgres with migration 0 applied.
+Requires a real Postgres with migration 0 applied.
 """
 
 from __future__ import annotations

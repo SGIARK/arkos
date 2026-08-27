@@ -150,13 +150,7 @@ async def test_unattended_bare_text_does_not_end_the_run(model):
 
 @pytest.mark.asyncio
 async def test_unattended_bare_text_is_answered_then_ends_as_stalled(model):
-    """The prompt promises a bare hop "will simply be asked to continue" (11.8.5).
-
-    Nothing kept that promise: the hop looped with nothing injected, the tail
-    became consecutive assistant messages, and the model degenerated. Now the
-    first is answered with a continuation, the second with the finish nudge, and
-    the third ends the run — with a reason that says what happened.
-    """
+    """First bare hop draws a continuation, second the finish nudge, third ends the run."""
     model.arm(*[_text("still talking")] * 4)
 
     events, _ = await _run(model, mode="unattended", budgets=_budgets(max_hops=10))
@@ -175,8 +169,7 @@ async def test_a_tool_calling_hop_clears_the_bare_streak(model):
 
     events, _ = await _run(model, mode="unattended", budgets=_budgets(max_hops=10))
 
-    # Two bare hops, but not consecutive, so both draw the continuation rather
-    # than the second one escalating.
+    # Non-consecutive bare hops both draw the continuation; no escalation.
     injected = [e for e in events if isinstance(e, ev.UserEvent)]
     assert len(injected) == 2 and all("not an exit" in n.text for n in injected)
     assert events[-1].reason == "completed"
@@ -184,14 +177,7 @@ async def test_a_tool_calling_hop_clears_the_bare_streak(model):
 
 @pytest.mark.asyncio
 async def test_the_streak_nudge_does_not_consume_the_near_cap_nudge(model):
-    """Two schedules, two latches.
-
-    They shared one flag at first, so a run that went bare early — spending the
-    flag on the streak's escalation — and then bare again on its second-to-last
-    hop got a "carry on" instead of "finish", and died `max_hops` with no
-    summary. The near-cap nudge is the last thing standing between an unattended
-    run and an unexplained ending; nothing else may spend it.
-    """
+    """Two schedules, two latches: only the near-cap nudge may spend its own."""
     model.arm(
         _text("thinking"),  # hop 1: streak 1 -> continuation
         _text("still thinking"),  # hop 2: streak 2 -> finish nudge (streak's own)
@@ -213,8 +199,7 @@ async def test_the_streak_nudge_does_not_consume_the_near_cap_nudge(model):
 
 @pytest.mark.asyncio
 async def test_unattended_gets_one_nudge_near_the_cap(model):
-    # A call, then bare text on the second-to-last hop, then a call: the streak
-    # never reaches two, so the only injection is the near-cap nudge.
+    # The streak never reaches two, so the only injection is the near-cap nudge.
     model.arm(_call("grep"), _text("still talking"), _call("grep"))
 
     events, _ = await _run(model, mode="unattended", budgets=_budgets(max_hops=3))
@@ -576,12 +561,7 @@ async def test_a_truncated_reply_is_not_a_clean_turn_end(model):
 
 @pytest.mark.asyncio
 async def test_an_empty_completion_does_not_spin(model):
-    """Nothing errored — the model said nothing, and that has its own name now.
-
-    It shared `model_error` with a real API failure and with the runner's
-    catch-all, so a Postgres blip, an OpenAI outage and a silent reply were
-    indistinguishable on the status pill.
-    """
+    """A silent completion is its own terminal reason, not `model_error`."""
     model.arm(*[[mc.Finish(reason="stop")]] * 5)
 
     events, _ = await _run(model, mode="unattended", budgets=_budgets(max_hops=5))
@@ -697,12 +677,12 @@ async def _never(name, args):
     raise AssertionError("no tool should run")
 
 
-# --- the checklist scaffold (11.11.1) -------------------------------------------
+# --- the checklist scaffold -----------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_an_unattended_hop_carries_the_checklist_instruction(model):
-    """Nothing asked the model to keep the list current, so nothing ever did."""
+    """The scaffold rides in messages as context, never as a transcript event."""
     model.arm(_call(lp.FINISH_TOOL))
 
     events, msgs = await _run(model, mode="unattended")
@@ -748,7 +728,7 @@ async def test_the_scaffold_carries_what_the_model_last_wrote(model):
     assert "1 still open" in scaffold["content"]
 
 
-# --- intent outranks mechanism (11.11.2.5) --------------------------------------
+# --- intent outranks mechanism --------------------------------------------------
 
 
 async def _cancel_during_hop(intent):
@@ -785,13 +765,8 @@ async def _cancel_during_hop(intent):
 
 @pytest.mark.asyncio
 async def test_a_recorded_stop_makes_the_loop_write_no_terminal():
-    """A stop and a cancel arrive identically — as a CancelledError.
-
-    The loop cannot read its own cancellation and know what it meant, so it asks
-    what the presser recorded. Writing `cancelled` here regardless is what broke
-    Stop: this terminal reached the log first and the caller's `stopped` became a
-    no-op, so Stop cancelled the run and threw away the approved plan.
-    """
+    """Stop and cancel both arrive as CancelledError; only the recorded intent separates
+    them, and a stop's terminal belongs to the caller."""
     assert await _cancel_during_hop("stopped") == [], "a stop is landed by the caller, not here"
 
 
@@ -802,9 +777,5 @@ async def test_a_recorded_cancel_still_writes_its_terminal():
 
 @pytest.mark.asyncio
 async def test_an_unrecorded_cancellation_is_read_as_a_cancel():
-    """A process coming down, a cancellation from somewhere else entirely.
-
-    A terminal that says the run ended beats an idle session nobody is driving,
-    so the absence of an intent reads as a cancel — the safe direction.
-    """
+    """No recorded intent reads as a cancel: a written terminal beats an idle session."""
     assert await _cancel_during_hop(None) == ["cancelled"]

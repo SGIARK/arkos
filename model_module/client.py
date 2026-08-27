@@ -73,13 +73,7 @@ class Finish:
 
 @dataclass(slots=True)
 class RetryDelta:
-    """The client is waiting to try again, and says so before it waits.
-
-    Yielded rather than logged because a run that has gone quiet for eight
-    seconds is indistinguishable from a hung one, and the person watching
-    deserves to know which. Carries the numbers rather than a sentence so the
-    caller decides how to say it.
-    """
+    """The client is waiting to try again, and says so before it waits."""
 
     attempt: int
     of: int
@@ -92,15 +86,9 @@ Delta = TextDelta | ReasoningDelta | ToolCallDelta | Finish | RetryDelta
 
 # --- client -----------------------------------------------------------------
 #
-# ONE CLIENT PER RUNNING LOOP, not one per process. The SDK holds an httpx
-# connection pool, and httpx binds its sockets to the loop that opened them —
-# so a client cached in a module global outlives the loop it belongs to, and the
-# next loop finds a dead pool ("Event loop is closed"). Keying the cache by the
-# RUNNING loop makes the lifetime follow the thing it actually depends on.
-#
-# `harness_module/blobs.py` does the identical thing for the store's HTTP
-# client, and they were fixed together in 11.8.8 on purpose: fixing one and not
-# the other just moves the flake to whichever is constructed first.
+# One client per RUNNING LOOP, not one per process: httpx binds its sockets to
+# the loop that opened them, so a client cached in a module global outlives its
+# loop and the next one finds a dead pool ("Event loop is closed").
 
 _clients: dict[Any, tuple[tuple[str, str, float], AsyncOpenAI]] = {}
 
@@ -116,8 +104,7 @@ def get_client() -> AsyncOpenAI:
     try:
         loop: Any = asyncio.get_running_loop()
     except RuntimeError:
-        # Constructed outside a loop — a config probe, or a synchronous caller.
-        # It gets its own client under a key no loop can equal, and no cache.
+        # No running loop, so nothing to key a cache entry by: uncached client.
         return AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=timeout, max_retries=0)
 
     cached = _clients.get(loop)
@@ -125,8 +112,7 @@ def get_client() -> AsyncOpenAI:
         return cached[1]
     client = AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=timeout, max_retries=0)
     _clients[loop] = (key, client)
-    # Loops that have gone leave nothing to close: their pools died with them,
-    # and the entry is only a reference to collect.
+    # Closed loops need no close(): their pools died with them, only the entry remains.
     for stale in [other for other in _clients if other.is_closed()]:
         _clients.pop(stale, None)
     return client
@@ -147,8 +133,8 @@ _TERMINAL = (
     UnprocessableEntityError,
 )
 
-# A request too long for the model comes back as an ordinary 400, worded
-# differently by each provider, so both the error code and the prose are checked.
+# Context overflow arrives as an ordinary 400 worded differently per provider,
+# so both the error code and the prose are checked.
 _OVERFLOW_CODE = "context_length_exceeded"
 _OVERFLOW_TEXT = re.compile(
     r"context[ _-]?length|maximum context|context window|too many tokens|reduce the length|"
@@ -174,11 +160,8 @@ def _classify(exc: Exception, source: Source) -> ModelError:
     if isinstance(exc, APIConnectionError):
         return ModelError(f"cannot reach the model: {exc}", retryable=True, kind="connect", cause=exc)
     if isinstance(exc, RateLimitError):
-        # ALWAYS retryable (11.11.3). This used to be `source != "background"` —
-        # retryable only for a run with a human waiting — which is backwards for
-        # an unattended product: a background run is the one with nobody to mind
-        # a four-second wait, and it was the one being killed by it. A live 429
-        # that said "try again in 4.404s" ended an autopilot session outright.
+        # Retryable for every source, background included: an unattended run is
+        # the one with nobody to mind a few seconds' wait.
         return ModelError(
             f"model overloaded: {exc}",
             retryable=True,
@@ -217,11 +200,7 @@ def _classify(exc: Exception, source: Source) -> ModelError:
 
 
 def _retry_after(exc: Exception) -> float | None:
-    """The provider's own "wait this long", in seconds, if it sent one.
-
-    Read from the `retry-after` header, which a 429 usually carries. Their
-    number is knowledge; ours is a guess about it.
-    """
+    """The provider's own "wait this long", in seconds, read from the `retry-after` header."""
     response = getattr(exc, "response", None)
     headers = getattr(response, "headers", None)
     if not headers:
@@ -235,19 +214,13 @@ def _retry_after(exc: Exception) -> float | None:
         except (TypeError, ValueError):
             continue
         seconds = value / 1000 if name.endswith("-ms") else value
-        # A provider asking for an hour is not a retry, it is an outage; the
-        # ceiling keeps a wait bounded by something we chose.
+        # Capped: a provider asking for an hour is an outage, not a retry.
         return min(seconds, float(_cfg("llm.retry_backoff_max_s", 8.0)))
     return None
 
 
 def backoff_delay(attempt: int, retry_after: float | None = None) -> float:
-    """How long to wait before `attempt` + 1. Exponential with jitter.
-
-    The provider's `retry-after` wins when present: it knows when the window
-    reopens and this does not. Jitter still applies on top, so a fleet of
-    sessions told the same number does not return in one thundering herd.
-    """
+    """How long to wait before `attempt` + 1, in seconds. Exponential with jitter."""
     base = float(_cfg("llm.retry_backoff_s", 0.5))
     ceiling = float(_cfg("llm.retry_backoff_max_s", 8.0))
     delay = retry_after if retry_after is not None else min(base * (2 ** (attempt - 1)), ceiling)
@@ -266,18 +239,8 @@ async def generate(
 ) -> AsyncIterator[Delta]:
     """One model turn, streamed.
 
-    Args:
-        messages: OpenAI-shape messages, built by the fold.
-        tools: OpenAI-shape tool schemas, or None for a plain completion.
-        source: see `Source`.
-        options: per-call model params from config; `chat_template_kwargs` is
-            lifted into extra_body for SGLang.
-
-    Yields:
-        Deltas as they arrive, then exactly one `Finish`.
-
-    Raises:
-        ModelError: and nothing else. CancelledError propagates.
+    Yields deltas as they arrive, then exactly one `Finish`. Raises ModelError
+    and nothing else; CancelledError propagates.
     """
     try:
         # max(1, ...) keeps the attempt range below non-empty.
@@ -301,8 +264,6 @@ async def generate(
         except ModelError as e:
             if started or not e.retryable or attempt == max_attempts:
                 if attempt > 1:
-                    # Exhaustion is honest: the caller's terminal says how many
-                    # attempts it took, not just that the last one failed.
                     e.attempts = attempt
                 raise
             last = e

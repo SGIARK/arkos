@@ -55,7 +55,7 @@ def test_unknown_kind_is_loud():
 
 
 def test_turn_end_is_not_terminal():
-    """It is the attended 'I have said my piece', the only trigger for idle."""
+    """`turn_end` is the only done reason that is not terminal; it is what makes a session idle."""
     assert not ev.DoneEvent(reason="turn_end").is_terminal()
     assert ev.DoneEvent(reason="max_hops").is_terminal()
 
@@ -72,12 +72,7 @@ def test_a_missing_required_field_is_loud():
 
 
 def test_the_frontend_event_vocabulary_matches_the_backend():
-    """`EVENT_KINDS` in api.jsx registers the SSE listeners.
-
-    A kind present in Python and absent there is never delivered to the browser
-    at all — no error, no frame, just a surface that quietly never updates. It
-    cannot import the Python definition, so the copy is checked against it.
-    """
+    """A kind missing from `EVENT_KINDS` in api.jsx is never delivered to the browser."""
     import pathlib
     import re
     from typing import get_args
@@ -94,11 +89,7 @@ def test_the_frontend_event_vocabulary_matches_the_backend():
 
 
 def test_every_event_kind_has_a_renderer_branch():
-    """A kind the renderer does not name falls through to its default.
-
-    Two of them return null ON PURPOSE — `todo` and `budget` live in the context
-    panel — but that has to be a decision the switch states, not an omission.
-    """
+    """Every kind needs a branch; `todo` and `budget` deliberately render nothing."""
     import pathlib
     import re
     from typing import get_args
@@ -113,13 +104,7 @@ def test_every_event_kind_has_a_renderer_branch():
 
 
 def test_no_event_payload_can_collide_with_the_wire_envelope():
-    """The client flattens `payload` up one level, so a collision is invisible.
-
-    `asEvent` in frontend/api.jsx spreads the payload over the envelope. A field
-    named `seq`, `ts`, `kind` or `version` would be overwritten by the envelope's
-    own value — no error, no warning, an event that simply arrives wrong. This is
-    the check that keeps the two halves safe to keep flattening.
-    """
+    """`asEvent` flattens `payload` over the envelope, so a shared key is silently overwritten."""
     from dataclasses import fields
 
     from agent_module.events import _BY_KIND

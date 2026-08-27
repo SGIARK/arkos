@@ -1,15 +1,7 @@
 """The frame side-channel: what the browser is looking at, while it looks.
 
-Frames are NOT events. They are never appended, never replayed, and carry no
-seq: a video of a run that finished is worth nothing, and putting JPEGs in the
-transcript would make the log unreadable and enormous. What reaches the log is a
-`status` event carrying this stream's URL, so the UI mounts the pane from the
-event stream and drops it when the run ends.
-
-Keyed by `(user_id, session_id)`. The user half is the ownership check's
-business; the session half is what the old implementation got wrong — two of a
-user's sessions driving browsers at once shared one queue and clobbered each
-other's frames.
+Frames are not events: never appended, never replayed, no seq. Keyed by
+`(user_id, session_id)`, so a user's concurrent sessions never share a queue.
 """
 
 from __future__ import annotations
@@ -22,14 +14,15 @@ from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
 
-# Frames held for a subscriber that is not keeping up. Small on purpose: video
-# is only worth watching live, so a slow reader should see the newest frame
-# rather than a backlog of stale ones.
+# Backlog for a subscriber that is not keeping up; small so a slow reader gets
+# the newest frame rather than stale ones.
 _QUEUE_SIZE = 4
 
 Key = tuple[str, str]
 
 
+# Nothing here is appended to the log: a `status` event carries this stream's
+# URL, and that event is what mounts the UI pane.
 class FrameBroker:
     """In-memory fan-out of JPEG frames, per (user, session)."""
 
@@ -38,11 +31,7 @@ class FrameBroker:
         self._queue_size = queue_size
 
     def publish(self, user_id: str, session_id: str, frame: str) -> None:
-        """Hand one base64 JPEG to every viewer. Never blocks, never raises.
-
-        A full queue drops its oldest frame rather than the new one: the newest
-        frame is the only one anybody wants.
-        """
+        """Hand one base64 JPEG to every viewer. Never blocks, never raises."""
         for queue in list(self._subscribers.get((str(user_id), str(session_id)), ())):
             while queue.full():
                 try:

@@ -1,19 +1,7 @@
-"""
-Which MCP servers one session may reach, stored per session and keyed by `server`.
+"""Which MCP servers one session may reach, stored per session and keyed by `server`.
 
-The default is nothing: a server the user has connected is not a server this
-session can reach until it is toggled on. An absent row reads as off, so a fresh
-session gets exactly our own tools and cannot be the one that puts 164 schemas
-in a request.
-
-`server` is the Composio toolkit prefix — `GMAIL`, `LINEAR` — the same identity
-`user_connections` is keyed by, and for the same reason: a `mcp_servers:` config
-key is an in-process label rebuilt at every startup, so nothing durable may
-reference it. It was the `mcp_url` until 11.10, when every app moved behind one
-gateway url and a url stopped telling two servers apart.
-
-This module records and reports the toggles and nothing else. `registry.manifest`
-is where they become reach.
+An absent row reads as off. `server` is the Composio toolkit prefix (`GMAIL`),
+never an `mcp_servers:` config label or an mcp url — neither is durable.
 """
 
 from __future__ import annotations
@@ -34,11 +22,7 @@ def _sid(session_id: str) -> uuid.UUID:
 async def enabled_servers(session_id: str) -> list[str]:
     """Return the servers this session has been given, LONGEST-ENABLED FIRST.
 
-    The order is load-bearing, not cosmetic. When the cap forces a server to be
-    left out, the most recently enabled one goes first — the session keeps the
-    reach it has been working with, and loses the thing that was just added. The
-    caller reads this list front to back and stops when the next server will not
-    fit, so the order here IS the drop rule.
+    The caller fills up to the cap from the front, so this order IS the drop rule.
     """
     rows = await pool.fetch(
         """
@@ -54,8 +38,8 @@ async def enabled_servers(session_id: str) -> list[str]:
 async def set_enabled(session_id: str, server: str, enabled: bool) -> None:
     """Record one server as reachable, or not, for this session.
 
-    `updated_at` moves on every write, including one that re-asserts a toggle
-    already on, which is what makes it the recency the drop rule reads.
+    `updated_at` moves on every write, including a re-assert of a toggle already
+    on; that is the recency the drop rule reads.
     """
     await pool.execute(
         """

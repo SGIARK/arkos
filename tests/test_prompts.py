@@ -25,22 +25,14 @@ def test_the_prompt_teaches_the_disciplines_the_tools_assume():
 
 
 def test_the_prompt_says_whose_computer_it_is():
-    """It refused to install a missing tool because nothing told it where it was.
-
-    The box is disposable and its own, so a missing package is a thing to fix
-    rather than a thing to report, and the user cannot fix it for the model —
-    they cannot even see it.
-    """
+    """The box is disposable and the model's own, so a missing package is fixable, not reportable."""
     prompt = prompts.system_prompt("attended", date="2026-08-18", now="2026-08-20 14:32 UTC")
 
     assert "sudo apt-get" in prompt, "the model has no idea it may install things"
     assert "not the user's machine" in prompt
     assert "~/store/<folder>/ is the ONLY durable path" in prompt
 
-    # The first version of this section said "everything OUTSIDE ~/projects is
-    # scratch", and the model read it exactly as written: it cloned a repo to
-    # ~/projects/arkos, a sibling of the mount, where flush never looks and the
-    # reaper takes it with the box. Only the claimed directories are swept.
+    # Only the claimed directories are swept; anything else dies with the box.
     assert "including any new directory you create under" in prompt.lower()
 
 
@@ -80,9 +72,7 @@ def test_the_first_folder_is_where_the_plan_lands_and_the_prompt_says_so():
 
     assert "plan.md" in unattended
     assert "~/store/<folder>/plan.md" in unattended
-    # It must name the first WRITABLE one, which is what `runner.plan_folder`
-    # picks: a read claim listed first would otherwise be pointed at a file
-    # nothing could have written there.
+    # It must name the first WRITABLE folder, which is what `runner.plan_folder` picks.
     assert "THAT YOU CAN WRITE TO" in unattended
 
 

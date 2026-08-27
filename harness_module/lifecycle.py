@@ -1,9 +1,4 @@
-"""The session state machine, and the sole writer of `sessions.status`.
-
-Every move is a conditional UPDATE on the expected status: a caller that loses the race
-gets None back, and each move that lands appends a lifecycle event in the same
-transaction and publishes it once that transaction has committed.
-"""
+"""The session state machine, and the sole writer of `sessions.status`."""
 
 from __future__ import annotations
 
@@ -32,14 +27,12 @@ Mode = Literal["attended", "unattended"]
 
 TERMINAL: frozenset[str] = frozenset({"completed", "failed", "cancelled"})
 
-# Every value `sessions.status` may hold, matching migration 0's CHECK. Read by
-# callers that validate a status coming in from outside.
+# Mirrors migration 0's CHECK on `sessions.status`.
 ALL_STATUSES: frozenset[str] = frozenset(
     {"pending", "idle", "running", "awaiting_approval", "completed", "failed", "cancelled"}
 )
 
-# Every legal move. Transitions not listed here raise; the triggers for each are
-# in contracts.md.
+# Every legal move; the trigger for each is in contracts.md.
 ALLOWED: frozenset[tuple[str, str]] = frozenset(
     {
         ("pending", "running"),  # the runner claims the lease
@@ -52,12 +45,10 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset(
         ("idle", "running"),  # a human sends a message, or approves
         ("idle", "cancelled"),
         ("awaiting_approval", "running"),  # the respond endpoint wakes it
-        # A declined plan: the park closes and nothing runs. The only answer that
-        # ends a park without waking the session, because it is the only one with
-        # nothing for the model to read.
+        # A declined plan: the only answer that ends a park without waking the session.
         ("awaiting_approval", "idle"),
         ("awaiting_approval", "cancelled"),
-        # A human restarts a finished session, or types into it. Nothing auto-resumes.
+        # Terminal -> running is a human restarting the session; nothing auto-resumes.
         ("completed", "running"),
         ("failed", "running"),
         ("cancelled", "running"),
@@ -78,26 +69,9 @@ async def transition(
 ) -> session_log.StoredEvent | None:
     """Moves a session from `expected` to `new` atomically, appending a lifecycle event.
 
-    The event is published to the session's subscribers AFTER the transaction
-    commits, and publishing lives here rather than in each caller: a status that
-    moves without saying so is a pill that only updates when someone reconnects,
-    and every caller having to remember the publish is how that happened once
-    already. Publishing inside the transaction would be its own bug — a
-    subscriber would be handed a seq that a `Last-Event-ID` reader cannot fetch
-    yet.
-
-    Args:
-        session_id: the session to move.
-        expected: the status the UPDATE matches on.
-        new: the status to move to.
-        reason: recorded on the event, and as `terminal_reason` when `new` is terminal.
-        mode: set in the same UPDATE when given, so status and mode change together.
-
-    Returns:
-        The lifecycle event this call appended — truthy, so `if await
-        transition(...)` still reads as "did I make the move" — or None if
-        another writer got there first. It is already published; the return
-        value is for a caller that needs the seq, not for publishing again.
+    `reason` is also recorded as `terminal_reason` when `new` is terminal, and `mode`
+    is set in the same UPDATE. Returns None when another writer got there first; the
+    returned event has already been published.
 
     Raises:
         IllegalTransition: the move is not in ALLOWED.
@@ -127,8 +101,7 @@ async def transition(
         if moved is None:
             logger.info("session %s: %s -> %s lost the race (not in %s)", session_id, expected, new, expected)
             return None
-        # Same transaction as the UPDATE, so the status and its explanation commit
-        # together.
+        # Same transaction as the UPDATE, so the status and its explanation commit together.
         stored = await session_log.append_tx(conn, session_id, LifecycleEvent(from_=expected, to=new, reason=reason))
         await touch_project(conn, session_id)
 
@@ -141,7 +114,6 @@ async def touch_project(conn: Any, session_id: str) -> None:
     """Mark the session's project as updated. A no-op for a session with no project.
 
     `projects.updated_at` has no trigger, so it moves only where code writes it.
-    `GET /projects` and `list_projects` order by it.
     """
     await conn.execute(
         "UPDATE projects SET updated_at = now() WHERE id = (SELECT project_id FROM sessions WHERE id = $1)",
@@ -152,12 +124,8 @@ async def touch_project(conn: Any, session_id: str) -> None:
 def status_for(done: DoneEvent) -> Status:
     """Returns the status a `done` event moves a running session to.
 
-    `turn_end` and `stopped` are the two triggers for running -> idle, and
-    neither is terminal, so both leave `terminal_reason` and `ended_at` NULL.
-    They differ only in who ended the hop: the model said its piece, or a human
-    pressed Stop. `completed` and `cancelled` map to statuses of the same name;
-    every other reason maps to `failed`, with the reason itself kept in
-    `terminal_reason`.
+    `turn_end` and `stopped` are non-terminal, so both leave `terminal_reason` and
+    `ended_at` NULL.
     """
     if done.reason in ("turn_end", "stopped"):
         return "idle"
@@ -179,8 +147,7 @@ async def sweep_interrupted(reason: str = "interrupted") -> int:
         session_id = str(row["id"])
         try:
             # Dangling calls close first: a session holding one cannot be folded back
-            # into messages. Published, like every other close: a watcher of a
-            # swept session would otherwise see its calls hang open forever.
+            # into messages.
             stream.publish_all(session_id, await session_log.close_dangling(session_id))
             stream.publish(session_id, await session_log.append(session_id, DoneEvent(reason=reason)))
             if await transition(session_id, "running", "failed", reason):

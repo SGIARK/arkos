@@ -44,8 +44,8 @@ class Ask:
     )
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
-        # Closes the call so the session can park. The human's answer arrives
-        # later as a user message, not as this call's result.
+        # Closes the call so the session can park; the answer arrives later as a
+        # user message, not as this call's result.
         return ok(f"Asked: {args['question']}\nThe run is paused until a human answers.")
 
 
@@ -69,17 +69,10 @@ class RequestApproval:
 
 
 class ProposePlan:
-    """The one door into an unattended run.
+    """The one door into an unattended run: only a human approval flips the mode.
 
-    Two things funnel through this tool: the play button (which hands the model
-    a `user{source: system}` instruction to draft one) and the model's own
-    judgement that the transcript already specs the work. There is no third way
-    to start unattended, because deciding is never the model's: it proposes, a
-    human approves, and the approval is what flips the mode.
-
-    The args ARE the plan. They are stored on the approvals row, and on approve
-    the harness writes them to `plan.md` — so what the human read is what the
-    run starts from, the same binding `call` rows give a gated tool call.
+    The args ARE the plan — stored on the approvals row and written to `plan.md`
+    on approve, so the run starts from exactly the text the human read.
     """
 
     spec = ToolSpec(
@@ -147,8 +140,8 @@ class ProposePlan:
         return None
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
-        # Closes the call so the session can park on it. The human's decision
-        # arrives through /approvals/{id}/respond, never as this call's result.
+        # Closes the call so the session can park on it; the decision arrives
+        # through /approvals/{id}/respond, never as this call's result.
         missing = [m for m in (args.get("missing") or []) if str(m).strip()]
         tail = f" It names {len(missing)} open question(s), which the human answers on the card." if missing else ""
         return ok(
@@ -222,25 +215,17 @@ class ReadResult:
         return ok(text)
 
 
-# The runner parks the session after one of these returns, taking the park kind
-# from this map. Each call is closed by its own result first: a transcript with
-# an open tool_call cannot be folded back into messages.
-# Which park tool writes which approval kind. The VALUES are `approvals.Kind`
-# members and are checked against it below, because a kind spelled here that the
-# table's CHECK constraint rejects is an insert that fails at the moment a run
-# parks — the least recoverable moment there is.
+# The runner parks the session after one of these returns, taking the kind from
+# this map. Values must be `approvals.Kind` members or the park insert fails.
 PARK_KINDS: dict[str, str] = {
     Ask.spec.name: "ask",
     RequestApproval.spec.name: "approval",
     ProposePlan.spec.name: "plan",
 }
-# Checked against `approvals.Kind` in the harness, which imports both. A tool
-# module must not depend on the harness, so the assertion lives there.
+# Checked against `approvals.Kind` in the harness, which imports both: a tool
+# module must not depend on the harness.
 PARK_TOOLS = frozenset(PARK_KINDS)
 
-# Re-exported so a caller that has the tool module does not need the events one.
-# The NAME is defined in `agent_module.events`, with the shape it writes, so the
-# spec and the trackers cannot come to name different tools.
 assert TodoWrite.spec.name == TODO_TOOL, "the spec and the shared constant disagree"
 
 TOOLS = [FinishTask(), Ask(), RequestApproval(), ProposePlan(), TodoWrite(), ReadResult()]

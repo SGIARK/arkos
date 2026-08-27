@@ -1,27 +1,9 @@
 """Unanswered questions and consent requests raised by a running session.
 
-A row is opened when a session parks and closed when a human answers.
-
-Three shapes, and the differences matter. `ask` and `approval` are PROSE: the
-model asks a question or describes an intention, and the answer comes back as a
-`user` event for it to read. `call` is a GATED TOOL CALL: the session parked
-with that call still open, the row carries the call that will actually run, and
-answering does not talk to the model at all — it either runs that exact call or
-closes it as declined. Consent binds to the call, never to a description of one.
-
-`plan` is the third, and it is an ARTIFACT: `tool_args` is the proposed plan
-itself, and answering it is what starts an unattended run. It takes three
-answers rather than two — the approve word starts the run, the decline word
-closes the park, and anything else is workshop feedback the model reads and
-revises from. Each `propose_plan` call is a VERSION: a new one supersedes the
-open row rather than sitting beside it, so a session never has two live plans.
-
-There is no kind for a STOPPED run. 11.8.6 gave one a `resume` row and three
-answers; 11.8.7 deleted it, because a stop is not a question and a held run is
-not waiting on consent. A stop lands the session `idle` with its mode kept, and
-an idle session resumes on a message or a plain start — code that already
-existed, with no row to answer, no arm in `respond`, and no exemption in the
-composer's 409.
+`ask`/`approval` are prose answered back to the model; `call` is a gated tool
+call whose row carries the call that will actually run, so consent binds to the
+call and never to a description of one; `plan` carries the proposed plan in
+`tool_args` and each new proposal supersedes the open row rather than joining it.
 """
 
 from __future__ import annotations
@@ -45,19 +27,15 @@ _COLUMNS = (
     "tool_name, tool_args, consumed_at, answered_by"
 )
 
-# What `answered_by` holds when the harness answered its own gate. NULL is a
-# human, which is why this has a name and its absence does not.
+# `answered_by` value for a harness-answered gate; NULL means a human.
 AUTO = "auto"
 
-# What a human sends to resolve a gated call. Free text answers a question; a
-# call is a decision, and it gets a vocabulary of exactly two words.
+# A gated call resolves on exactly these two words; other kinds take free text.
 APPROVE = "approve"
 DECLINE = "decline"
 
-# Written into `answer` when a newer `propose_plan` replaces an open plan row.
-# It closes the row — a superseded plan is not waiting on anybody, so it leaves
-# `open_for` and `/attention` — without pretending a human decided it. It is not
-# the approve word, so `approved` is False on every path that reads it.
+# Written to `answer` when a newer `propose_plan` replaces an open plan row: it
+# closes the row without being the approve word, so `approved` stays False.
 SUPERSEDED = "superseded"
 
 
@@ -76,7 +54,7 @@ class Approval:
     tool_args: dict[str, Any] | None = None
     # Claimed by the wake that executed it. See `consume`.
     consumed_at: datetime | None = None
-    # NULL for a human, `auto` for autopilot answering its own gate (11.11.2).
+    # NULL for a human, `auto` for autopilot answering its own gate.
     answered_by: str | None = None
 
     @property
@@ -95,7 +73,7 @@ class Approval:
 
     @property
     def approved(self) -> bool:
-        """True when a human said yes. Anything that is not `approve` is not consent."""
+        """True only for the exact approve word; anything else is not consent."""
         return (self.answer or "").strip().lower() == APPROVE
 
 
@@ -129,12 +107,8 @@ async def create(
 ) -> Approval:
     """Open a question against a session.
 
-    A partial unique index on the table permits at most one unanswered row per
-    tool call, so a second call for a tool call that is already parked raises.
-
-    `tool_name` and `tool_args` are the gated call itself, stored so the human
-    approves what will run and the resumed turn runs it without asking the model
-    to describe its intention a second time.
+    Raises if the tool call already has an unanswered row: a partial unique index
+    permits at most one per tool call.
     """
     record = await pool.fetchrow(
         f"""
@@ -156,9 +130,8 @@ async def create(
 async def grantable(session_id: str) -> Approval | None:
     """Return the session's answered gated call, claimed or not, newest first.
 
-    The caller decides what to do with it from `consumed_at`: unclaimed means run
-    it, already claimed means a previous wake died mid-flight and the call needs
-    repairing rather than repeating.
+    `consumed_at` tells the caller which: unclaimed means run it, already claimed
+    means an earlier wake died mid-flight and the call needs repair, not a repeat.
     """
     record = await pool.fetchrow(
         f"""
@@ -173,12 +146,7 @@ async def grantable(session_id: str) -> Approval | None:
 
 
 async def consume(approval_id: str) -> Approval | None:
-    """Claim a granted call for execution. Exactly one caller wins.
-
-    The same conditional-update pattern as `answer`, and for the same reason: two
-    wakes racing to resume one parked session must not both send the email. The
-    losers get None and leave the call alone.
-    """
+    """Claim a granted call for execution; exactly one caller wins, losers get None."""
     record = await pool.fetchrow(
         f"""
         UPDATE approvals SET consumed_at = now()
@@ -191,13 +159,9 @@ async def consume(approval_id: str) -> Approval | None:
 
 
 async def supersede_plans(session_id: str) -> int:
-    """Close any open plan row on this session, because a newer one replaced it.
+    """Close any open plan row on this session and return how many were closed.
 
-    Called before writing version n+1. The old row keeps its args — the card
-    diffs the new plan against them — but stops waiting on anybody.
-
-    Returns:
-        How many rows were superseded. Normally 0 or 1.
+    Called before writing version n+1; the old row keeps its args for the diff.
     """
     rows = await pool.fetch(
         """
@@ -212,16 +176,10 @@ async def supersede_plans(session_id: str) -> int:
 
 
 async def reopen(approval_id: str) -> Approval | None:
-    """Un-answer a row, because the action its answer authorised did not happen.
+    """Un-answer a plan row whose authorised action did not happen.
 
-    One caller, and it is a compensating action rather than an edit: approving a
-    plan answers the row and THEN starts the run, so a start that loses the
-    status race would otherwise leave a plan stamped answered that can never be
-    approved again — the human's only recourse being to get the model to propose
-    the whole thing afresh. Reopening puts the card back where it was.
-
-    Deliberately NOT usable to reverse a decision a human made: a `call` row is
-    latched by `consumed_at` and is never reopened, because the tool may have run.
+    Compensating action only, never a way to reverse a human decision: a `call`
+    row is latched by `consumed_at` and is never reopened, as the tool may have run.
     """
     record = await pool.fetchrow(
         f"""
@@ -237,10 +195,8 @@ async def reopen(approval_id: str) -> Approval | None:
 async def plan_history(session_id: str) -> list[Approval]:
     """Every plan this session has proposed, oldest first.
 
-    The version of a row is its 1-based position here, and the row before the
-    newest is what the card diffs against. History rather than a counter column:
-    the versions ARE the rows, and a count that disagreed with them would be a
-    second source of truth for the same fact.
+    A row's version is its 1-based position here; the row before the newest is
+    what the card diffs against.
     """
     rows = await pool.fetch(
         f"SELECT {_COLUMNS} FROM approvals WHERE session_id = $1 AND kind = 'plan' ORDER BY created_at, id",
@@ -277,15 +233,8 @@ async def get(approval_id: str, user_id: str) -> Approval | None:
 async def _announce(session_id: str, reason: str) -> None:
     """Tell the session's owner their waiting list moved.
 
-    Published HERE, from the write, rather than relayed by whatever surface
-    happens to be mounted — the bug this exists for was a park announcing itself
-    only into a session stream, so a human sitting on the desk never heard it.
-
-    The user id is not on `approvals`; it is on the session, so this costs one
-    indexed lookup. Parks and answers are rare enough that the alternative —
-    threading a user id through every caller — buys nothing but a wider seam.
-    Failures are swallowed: a nudge that does not arrive costs one stale list,
-    and it must never be the reason a park fails to record.
+    Published from the write, not by the mounted surface, so a park reaches the
+    user channel and not only a session stream; failures are swallowed on purpose.
     """
     try:
         user_id = await pool.fetchval("SELECT user_id FROM sessions WHERE id = $1", _uuid(session_id))
@@ -296,16 +245,9 @@ async def _announce(session_id: str, reason: str) -> None:
 
 
 async def answer_auto(approval_id: str, text: str) -> Approval | None:
-    """Answer a row as the HARNESS rather than as a human (11.11.2).
+    """Answer a row as the harness rather than as a human, stamping `answered_by`.
 
-    The same update `answer` makes, stamped with who made it. Autopilot answering
-    its own non-destructive gate is a real approval — real row, real answer, real
-    timestamp — and the only thing that differs from a manual one is the
-    answerer, which is exactly what `answered_by` is for.
-
-    It announces on the attention channel like any other answer. A person
-    watching the pane sees the row resolve rather than the list quietly not
-    containing something it never contained.
+    Otherwise identical to `answer`, announcement included.
     """
     record = await pool.fetchrow(
         f"""
@@ -327,8 +269,8 @@ async def answer_auto(approval_id: str, text: str) -> Approval | None:
 async def answer(approval_id: str, text: str) -> Approval | None:
     """Record an answer to an unanswered question.
 
-    The update matches only on `answered_at IS NULL`, so concurrent answers to
-    the same question resolve to one update; the losers return None.
+    Matches only on `answered_at IS NULL`, so concurrent answers resolve to one
+    update and the losers return None.
     """
     record = await pool.fetchrow(
         f"""
@@ -340,8 +282,6 @@ async def answer(approval_id: str, text: str) -> Approval | None:
         text,
     )
     if not record:
-        # A concurrent answer already won. It announced; a second nudge for the
-        # same transition would say nothing new.
         return None
     approval = _row(record)
     await _announce(approval.session_id, "answered")

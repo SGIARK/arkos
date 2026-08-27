@@ -1,7 +1,6 @@
 """The world tools: what the model can see of its own installation.
 
-All reads, each scoped to `ctx.user_id` in the SQL itself. Another user's row
-and a missing row both come back as `not_found`.
+All reads scope to `ctx.user_id` in the SQL; another user's row reads as `not_found`.
 """
 
 from __future__ import annotations
@@ -42,9 +41,7 @@ def _as_uuid(value: Any) -> uuid.UUID | None:
 
 logger = logging.getLogger(__name__)
 
-# The session columns the world tools report, spelled once. Two queries below
-# carried byte-identical copies of this list; a field added to one and not the
-# other is a tool that answers differently depending on which one you called.
+# Shared by both session queries below so they cannot report different fields.
 _SESSION_FIELDS = "id, project_id, title, goal, status, mode, terminal_reason, hops_used, created_at, ended_at"
 
 
@@ -151,8 +148,7 @@ class ListSessions:
     )
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> ResultEnvelope:
-        # A NULL parameter means "no filter", so one query serves every
-        # combination of the two optional arguments.
+        # A NULL parameter means "no filter", so one query serves every argument combination.
         rows = await pool.fetch(
             f"""
             SELECT {_SESSION_FIELDS}
@@ -223,18 +219,7 @@ class GetSession:
 
 
 def _event_row(record: Any) -> dict[str, Any]:
-    """One transcript row, normalised the way every other reader normalises it.
-
-    This used to hand back the raw row. Everything else in the codebase goes
-    through `parse_event`, which renames lifecycle's `from` to `from_` and drops
-    payload keys this reader does not know — so a payload-shape change was
-    applied in one place and silently not here.
-
-    Measured against 400 live rows of the four kinds read here: zero rejected,
-    zero shape changes. What DOES differ is the failure mode — the raw read
-    returned a malformed row, `parse_event` raises on one — so a bad row is
-    skipped rather than allowed to break a whole transcript read.
-    """
+    """One transcript row, normalised through `parse_event` like every other reader."""
     payload = record["payload"]
     payload = json.loads(payload) if isinstance(payload, str) else dict(payload or {})
     try:

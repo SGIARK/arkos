@@ -1,9 +1,4 @@
-"""The process-wide MCP transport.
-
-One `Composio` client is built at startup and shared by every caller; it owns
-the per-user server urls and the cached tool catalogue. Task 11.10.2 swapped it
-in for the gateway that preceded it.
-"""
+"""The process-wide MCP transport: one shared `Composio` client."""
 
 from __future__ import annotations
 
@@ -23,16 +18,10 @@ def connectors() -> Composio | None:
 
 
 async def start() -> Composio | None:
-    """Builds the shared client.
+    """Builds the shared client, or returns None when MCP is not configured.
 
-    Returns None when `mcp.api_key` is unset; the manifest then ships without MCP
-    tools. Google Search no longer rides this wire — it is ours and native since
-    11.10.2 — so an unconfigured backend costs connectors and nothing else.
-
-    Nothing is connected here. Every grant is per user and lives at Composio, and
-    the tool catalogue is read on first use per user rather than at boot — so a
-    backend that is down delays one user's first turn instead of holding up the
-    whole process starting.
+    Connects nothing: grants are per user at Composio and the tool catalogue is
+    read on that user's first use, not at boot.
     """
     global _client
     if _client is not None:

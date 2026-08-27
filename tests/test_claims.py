@@ -1,10 +1,4 @@
-"""Claims end to end: what a session mounts, what it locks, and what it may write.
-
-A claim names a FOLDER of the user's one flat store (11.9), so the lease is per
-folder and two projects writing different folders never contend.
-
-Runs against a real Postgres; the sandbox and the model are fakes.
-"""
+"""Claims end to end: what a session mounts, what it locks, and what it may write."""
 
 from __future__ import annotations
 
@@ -84,12 +78,7 @@ async def _user() -> str:
 
 
 async def _project(user_id: str, title: str, *folders: str) -> str:
-    """A project linking the folders it names, as `POST /projects` makes one.
-
-    Linking, not owning: the folders are the store's and exist because files
-    exist under them. With no folders named it links the one its title implies,
-    which is the shape `POST /projects` produces for the none-case.
-    """
+    """A project linking the folders it names, as `POST /projects` makes one."""
     project_id = await pool.fetchval(
         "INSERT INTO projects (user_id, title, slug) VALUES ($1, $2, $3) RETURNING id",
         uuid.UUID(user_id),
@@ -166,9 +155,6 @@ async def _drive(session_id: str) -> None:
         await asyncio.wait_for(asyncio.shield(task), timeout=45)
 
 
-# --- what a session declares -------------------------------------------------------
-
-
 async def test_a_session_without_claims_gets_a_write_claim_on_every_linked_folder(client):
     await _signed(client)
 
@@ -232,9 +218,6 @@ async def _signed(client: AsyncClient) -> str:
     user_id = await _user()
     await _sign_in(client, user_id)
     return user_id
-
-
-# --- what a session mounts ----------------------------------------------------------
 
 
 async def test_both_claims_mount_and_only_the_write_one_flushes(model):
@@ -314,9 +297,6 @@ async def test_the_discarded_edits_are_disclosed_in_the_transcript(model):
     assert any("discarded" in label and "b.txt" in label for label in labels)
 
 
-# --- what a session locks ------------------------------------------------------------
-
-
 async def test_a_write_claim_takes_a_lease_on_its_folder(model):
     user_id = await _user()
     project_id = await _project(user_id, "Locked")
@@ -362,7 +342,6 @@ async def test_two_projects_writing_different_folders_do_not_wait_on_each_other(
 
     assert await leases.acquire(f"folder:{user_id}:one", first, 60)
     assert await leases.acquire(f"folder:{user_id}:two", second, 60)
-    # The box is not among what they share, so neither waits for the other's.
     assert await sandbox_manager.claim_slot(first)
     assert await sandbox_manager.claim_slot(second)
 

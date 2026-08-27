@@ -1,16 +1,7 @@
-"""Folders are the filesystem; projects link to them (11.9).
+"""Folders are the filesystem; projects link to them.
 
-The model this file pins, stated once because everything below follows from it:
-**the store is ONE flat namespace per user, and a folder is a top-level path
-segment in it — derived from the files, never a row and never a project.** A
-project OWNS no folder; it LINKS folders, as many as it wants, and a folder
-exists exactly as long as files exist under it.
-
-What it replaced: the Files tab grouped its dropdowns by project TITLE, so
-renaming a project renamed the filesystem's headers — while the schema said
-`projects.slug` was the folder and a rename never moved it. The backend
-separated folder from project; the frontend fused them; nothing surfaced
-inheritance at all.
+One flat namespace per user: a folder is a top-level path segment derived from
+the files, never a row, and it lives exactly as long as files exist under it.
 """
 
 from __future__ import annotations
@@ -44,8 +35,8 @@ async def _db(monkeypatch, tmp_path):
     await require_db()
     store.use_blobs(store.FilesystemBlobs(tmp_path))
 
-    # The loop is out of scope here: what a folder claim MOUNTS is
-    # test_workspace's, and what it is RECORDED as is this file's.
+    # The runner is faked: what a claim MOUNTS is test_workspace's, what it is
+    # RECORDED as is this file's.
     started: list[dict] = []
 
     async def fake_start(session_id: str, **kw) -> bool:
@@ -96,7 +87,7 @@ async def test_a_folder_is_derived_and_no_table_holds_one(client):
 
 
 async def test_the_files_view_headers_are_the_stores_segments_not_project_titles(client):
-    """The bug this card exists for: a rename renamed the filesystem's headers."""
+    """Renaming a project must not rename the filesystem's headers."""
     user_id = await _signed(client)
     await store.put_file(user_id, "triage/a.md", b"1")
     made = (await client.post("/projects", json={"title": "inbox triage", "folders": ["triage"]})).json()
@@ -120,8 +111,6 @@ async def test_the_files_listing_is_the_whole_store_and_not_scoped_to_a_project(
     linked = (await client.get(f"/projects/{made['id']}/files")).json()
 
     assert [f["path"] for f in everything] == ["notes/b.md", "triage/a.md"]
-    # The pane is the same rows, narrowed — same ids, same paths, so clicking one
-    # there and finding it here is one file rather than two listings to reconcile.
     assert [f["path"] for f in linked] == ["triage/a.md"]
     assert linked[0]["file_id"] == next(f for f in everything if f["path"] == "triage/a.md")["file_id"]
 
@@ -183,19 +172,13 @@ async def test_renaming_onto_an_occupied_name_is_refused(client):
 
 
 async def test_renaming_a_folder_whose_lease_is_held_is_refused(client):
-    """A box at `~/store/<old>/` would flush its work back under the old name.
-
-    The session's claims and its manifest are in the runner's memory as well as
-    the database, so there is no correcting it from here — and a rename that
-    silently resurrected the folder and lost the turn's work is worse than one
-    that says "stop the run first".
-    """
+    """A box at `~/store/<old>/` would flush its work back under the old name."""
     user_id = await _signed(client)
     await store.put_file(user_id, "triage/a.md", b"1")
     made = (await client.post("/projects", json={"title": "work", "folders": ["triage"]})).json()
     session_id = (await client.post("/sessions", json={"goal": "go", "project_id": made["id"]})).json()["session_id"]
-    # The write lease IS the signal: a session holds it for as long as it is
-    # writing that folder, which is exactly the window a rename must not land in.
+    # The write lease is the signal: a session holds it for the whole time it is
+    # writing that folder, and a rename must not land in that window.
     assert await leases.acquire(f"folder:{user_id}:triage", session_id, 60)
 
     refused = await client.post("/files/rename", json={"path": "triage", "name": "sorted"})
@@ -224,12 +207,7 @@ async def test_dragging_a_directory_to_the_edge_makes_it_a_folder(client):
 
 
 async def test_a_directory_dragged_out_leaves_the_project_that_linked_it(client):
-    """Honest, and the point of dragging it out: it is nobody's work until linked.
-
-    The files are still in the store and still in the Files tab. What they left
-    is the project — which links `triage`, not the folder that just appeared
-    beside it.
-    """
+    """The files stay in the store; only the project link is left behind."""
     user_id = await _signed(client)
     await store.put_file(user_id, "triage/inbox/a.md", b"1")
     made = (await client.post("/projects", json={"title": "work", "folders": ["triage"]})).json()
@@ -238,7 +216,6 @@ async def test_a_directory_dragged_out_leaves_the_project_that_linked_it(client)
 
     assert (await client.get(f"/projects/{made['id']}/files")).json() == []
     assert [f["path"] for f in (await client.get("/files")).json()] == ["inbox/a.md"]
-    # And `+ link` is how it comes back, which is why the picker reads the store.
     assert "inbox" in [f["name"] for f in (await client.get("/folders")).json()]
 
 
@@ -246,11 +223,7 @@ async def test_a_directory_dragged_out_leaves_the_project_that_linked_it(client)
 
 
 async def test_deleting_a_file_keeps_its_bytes_so_undo_is_exact(client):
-    """The rows go; the blobs do not, because nothing collects them.
-
-    That is what makes undo a restore rather than a best effort: the same
-    content comes back under the same id.
-    """
+    """The rows go; the blobs do not, because nothing collects them."""
     user_id = await _signed(client)
     stored = await store.put_file(user_id, "triage/a.md", b"the only copy")
     await store.put_file(user_id, "triage/b.md", b"keep me")
@@ -260,7 +233,6 @@ async def test_deleting_a_file_keeps_its_bytes_so_undo_is_exact(client):
     assert gone.status_code == 200
     assert gone.json()["files"] == 1
     assert [f["path"] for f in (await client.get("/files")).json()] == ["triage/b.md"]
-    # The bytes never moved.
     assert await store.get_blob(store.sha256(b"the only copy")) == b"the only copy"
 
     back = await client.post("/files/undo", json={"batch": gone.json()["batch"]})
@@ -283,12 +255,7 @@ async def test_deleting_a_directory_takes_everything_under_it(client):
 
 
 async def test_deleting_the_last_file_takes_the_folder_and_its_links(client):
-    """A folder exists exactly as long as a file exists under it, so both go.
-
-    A project left linking a folder that is not there is the dangling link this
-    schema goes out of its way to avoid — so the link travels with the files,
-    in the same batch, and comes back with them.
-    """
+    """A folder lives as long as a file under it, so the link travels in the same batch."""
     user_id = await _signed(client)
     await store.put_file(user_id, "triage/a.md", b"1")
     made = (await client.post("/projects", json={"title": "work", "folders": ["triage"]})).json()
@@ -347,15 +314,7 @@ async def test_undoing_twice_finds_nothing_the_second_time(client):
 
 
 async def test_a_destructive_change_is_refused_while_the_folders_lease_is_held(client):
-    """PREVENTION, not synchronization (11.8.8).
-
-    A session holds `folder:{user}:{name}` for the whole time it writes that
-    folder. If nobody holds it there is no live box to diverge from the store;
-    if somebody does, no HTTP handler can correct them — their claims and
-    manifest are in the runner's memory. One lease check replaced `move_through`
-    pushing remote `mv`/`rm` into every live box and reporting the ones that
-    refused.
-    """
+    """Prevention, not synchronization: a held `folder:{user}:{name}` refuses the edit."""
     user_id = await _signed(client)
     await store.put_file(user_id, "triage/a.md", b"1")
     await store.put_file(user_id, "notes/b.md", b"2")
@@ -373,7 +332,6 @@ async def test_a_destructive_change_is_refused_while_the_folders_lease_is_held(c
     assert {r.json()["code"] for r in refused} == {"folder_busy"}
     assert [f["path"] for f in (await client.get("/files")).json()] == ["notes/b.md", "triage/a.md"]
 
-    # And the same operations succeed the moment it is released.
     assert await leases.release(f"folder:{user_id}:triage", session_id)
     assert (await client.post("/files/rename", json={"path": "triage/a.md", "name": "b.md"})).status_code == 200
 
@@ -420,7 +378,6 @@ async def test_a_project_linking_two_folders_claims_both_at_spawn(client):
     claims = await workspace.claims_for(session_id)
     assert sorted(c.folder for c in claims) == ["notes", "triage"]
     assert all(c.mode == "write" for c in claims)
-    # And the window renders exactly the two, in claim order.
     assert sorted((await client.get(f"/sessions/{session_id}")).json()["folders"]) == [
         "notes",
         "triage",
@@ -449,12 +406,9 @@ async def test_a_link_added_later_reaches_the_next_session_not_the_running_one(c
 
     linked = await client.post(f"/projects/{made['id']}/folders", json={"folder": "notes"})
 
-    # The surface shows it at once...
     assert linked.json()["folders"] == ["triage", "notes"]
     assert await pool.fetchval("SELECT count(*) FROM project_folders WHERE project_id = $1", uuid.UUID(made["id"])) == 2
-    # ...the running session's claims are unchanged...
     assert [c.folder for c in await workspace.claims_for(running)] == ["triage"]
-    # ...and the next session's include it.
     later = (await client.post("/sessions", json={"goal": "again", "project_id": made["id"]})).json()["session_id"]
     assert sorted(c.folder for c in await workspace.claims_for(later)) == ["notes", "triage"]
 
@@ -564,12 +518,7 @@ async def test_a_fresh_account_has_no_project_and_no_folder(client):
 
 
 async def test_a_session_with_no_project_says_so_rather_than_naming_itself(client):
-    """The window's header is the PROJECT's name, and a session without one has none.
-
-    It used to fall back to the session's own title, which is what printed
-    "Chat ▸ Chat" in the home chat's header — the same name twice with a crumb
-    between them, promising a container that does not exist.
-    """
+    """The window's header is the PROJECT's name, and a session without one has none."""
     await _signed(client)
     home = (await client.get("/auth/me")).json()["home_session_id"]
     made = (await client.post("/projects", json={"title": "inbox triage"})).json()
@@ -580,8 +529,6 @@ async def test_a_session_with_no_project_says_so_rather_than_naming_itself(clien
 
     assert orphan["project_id"] is None
     assert orphan["project_title"] is None
-    # And a session that HAS one carries the label, so the header does not have
-    # to be told it by whatever surface opened the window.
     assert housed["project_title"] == "inbox triage"
 
 
@@ -606,7 +553,7 @@ async def test_the_home_session_claims_nothing_and_cannot_approve_a_plan(client)
 # The module mark makes every test async; this one reads a file.
 @pytest.mark.asyncio(loop_scope="function")
 async def test_contracts_records_the_store_and_the_links():
-    """The card's own check: contracts is law, and this card changed the law."""
+    """contracts.md is law, and it must record the store and the links."""
     contracts = (__import__("pathlib").Path(__file__).resolve().parent.parent / "docs" / "contracts.md").read_text()
 
     assert "project_folders" in contracts

@@ -1,15 +1,7 @@
 """System prompts and the finish nudge.
 
-The harness builds the opening message list; the loop injects the finish nudge.
-
-The text depends only on the arguments passed in, so the same arguments always
-produce the same prompt. Tool schemas are sent with the request and are not
-described here — with one exception, which is the point of `connected_services`:
-WHICH services this session can reach is not visible from the schemas, so a model
-with Slack switched off would otherwise improvise rather than say so. That
-section is generated from the manifest the turn actually shipped, never from the
-toggles the human set, because the tool cap can drop a server the toggles still
-promise.
+`connected_services` is generated from the manifest the turn actually shipped,
+never from the toggles the human set: the cap can drop a server toggles promise.
 """
 
 from __future__ import annotations
@@ -24,9 +16,8 @@ Mode = Literal["attended", "unattended"]
 def clock(when: datetime) -> str:
     """Format an instant for the model, one way, everywhere.
 
-    Minute resolution and always UTC. Seconds would change the rendered view on
-    every fold for no gain in judgement, and the fold's whole prefix is what the
-    provider caches between hops.
+    Minute resolution, always UTC: the fold's prefix is what the provider caches
+    between hops, and second resolution would change it every fold.
     """
     return when.strftime("%Y-%m-%d %H:%M UTC")
 
@@ -34,9 +25,8 @@ def clock(when: datetime) -> str:
 class Reach(Protocol):
     """One MCP server's standing in the manifest this turn actually shipped.
 
-    `registry.ServerReach` satisfies it. The prompt is built from THIS and never
-    from the toggles: a server the human enabled and the cap then dropped is
-    still enabled, and a prompt built from toggles would promise it.
+    `registry.ServerReach` satisfies it; the prompt is built from this and never
+    from the toggles, which still promise a server the cap dropped.
     """
 
     name: str
@@ -48,10 +38,7 @@ class Reach(Protocol):
 class Mount(Protocol):
     """One folder this session was given, and how it may be used.
 
-    `workspace.Claim` satisfies it. Which folders are on the disk is not visible
-    from the tool schemas either, and unlike a service there is no way to ask:
-    the model would have to `ls` for it. Since 11.9 a session may hold SEVERAL,
-    so "the project directory" is not an answer it can infer any more.
+    `workspace.Claim` satisfies it; a session may hold several.
     """
 
     folder: str
@@ -61,11 +48,8 @@ class Mount(Protocol):
 def mounted_folders(mounts: Sequence[Mount]) -> str:
     """Name the durable directories this session holds, in claim order.
 
-    Order matters and is not cosmetic: `plan.md` is written into the FIRST
-    writable one, and the unattended prompt tells the model to read it there.
-
-    Returns "" when the session holds none — a heading over an empty list would
-    read as a filesystem the model has and cannot find.
+    Order is load-bearing: `plan.md` lives in the FIRST writable one. Returns ""
+    when the session holds none.
     """
     if not mounts:
         return ""
@@ -204,14 +188,8 @@ be hours.
 def connected_services(reach: Sequence[Reach]) -> str:
     """Describe the session's reach, from the manifest that was actually built.
 
-    Three lists, because there are three different things to say and they are not
-    interchangeable: what the model may call, what the human has connected and
-    this session was not given, and what the session WAS given and the tool cap
-    left out anyway. Only the second is fixable by the human, and only that one
-    is offered as fixable.
-
-    Returns "" when nothing is connected at all — an empty heading telling a
-    model about services it does not have is prompt spent on nothing.
+    Three lists: callable now, connected but not enabled here (the only one the
+    human can fix, and the only one offered as such), and enabled but capped out.
     """
     if not reach:
         return ""
@@ -273,20 +251,12 @@ def system_prompt(
     """Build the system message for one session.
 
     Args:
-        mode: selects the finishing section, the only part that differs between
-            the two prompts.
-        date: the session's own date.
-        now: the current date-time, rebuilt every turn. Required rather than
-            defaulted: a prompt with no clock is the bug this argument exists to
-            fix, and a default would let a caller ship it silently.
-        goal: the session's stated goal, when it has one.
-        memory: the user's curated memory document, already capped by the caller.
-            Absent or empty means there is nothing to carry in, not that memory
-            is unavailable — the tools still are.
-        reach: the servers in THIS TURN'S manifest, from `registry.manifest`.
-            Rebuilt every turn, so a toggle flipped between hops changes the
-            prompt on the next one. Never the toggles themselves: see `Reach`.
-        mounts: the folders this session claimed, in claim order. Fixed for the
+        now: rebuilt every turn; required rather than defaulted so a clockless
+            prompt cannot ship silently.
+        memory: the curated memory document, already capped by the caller.
+        reach: the servers in THIS TURN'S manifest, from `registry.manifest`,
+            never the toggles themselves.
+        mounts: the folders this session claimed, in claim order; fixed for the
             session's life, so unlike `reach` this is the same every hop.
     """
     parts = [_SHARED, _UNATTENDED if mode == "unattended" else _ATTENDED]
@@ -307,24 +277,8 @@ def system_prompt(
 def plan_handoff(plan: str | None = None) -> str:
     """The `user{source: system}` event the play button appends.
 
-    The button used to flip the mode and hand the model a transcript. Now it asks
-    for a plan, because a transcript is not a task: the 2026-08-20 Marketplace run
-    went unattended with the model's own unanswered question as the last event.
-
-    Written to be unrefusable. A thin or empty transcript is the case this exists
-    for — the card opens as an intake form, and prose asking the same questions
-    beside it would be the failure, not the answer.
-
-    **The plan state is INJECTED, never discovered.** `plan` is `plan.md`'s
-    content when a run has already happened here, and None when none has. It
-    used to say "read plan.md FIRST", which sent the model to a tool for a fact
-    the harness already had — and after a DECLINED plan that read was a
-    guaranteed FileNotFound, because nothing had written the file. A fact the
-    harness knows goes into the transcript; the model spends its tools on facts
-    only the world has.
-
-    Args:
-        plan: the approved plan this session already ran from, or None.
+    Plan state is INJECTED, never discovered: `plan` is `plan.md`'s content when a
+    run already happened here, and None when none has (the file may not exist).
     """
     ask = (
         "The human pressed run. Draft the plan for this run from what this conversation "
@@ -348,12 +302,7 @@ def plan_reply() -> str:
     """The instruction that follows a reply typed on the plan card.
 
     Appended as `user{source: system}` behind the human's own message, and never
-    rendered: it is the harness talking to the model, not a turn.
-
-    It exists because answering in prose is the tempting move and the wrong one.
-    The card closed when they hit send, so a paragraph leaves the session idle
-    with nothing to approve and the run they were setting up quietly gone. The
-    only reply that reaches them is a new plan.
+    rendered.
     """
     return (
         "That was typed on the plan card, which has now closed. Fold it into the plan and call "
@@ -366,12 +315,7 @@ def plan_reply() -> str:
 
 
 def continue_nudge(finish_tool: str) -> str:
-    """The answer an unattended bare-text hop gets, keeping the prompt's promise.
-
-    The prompt says a hop that stops calling tools "will simply be asked to
-    continue". Before 11.8.5 nothing did: the hop looped with nothing injected,
-    the tail became consecutive assistant messages, and the model degenerated.
-    """
+    """The answer an unattended bare-text hop gets, keeping the prompt's promise."""
     return (
         "Nobody is reading that — this run is unattended. Carry on with the next step "
         f"by calling a tool, or call {finish_tool} with what you did and what blocked you. "
@@ -394,12 +338,7 @@ def finish_nudge(finish_tool: str, hops_left: int) -> str:
 def checklist_scaffold(items: list[dict[str, Any]]) -> str:
     """The per-hop reminder that the checklist is the model's to keep current.
 
-    11.11 seeded the block from the plan's steps and waited for a `todo_write`
-    that nothing ever asked for, so autopilot runs finished with three unchecked
-    boxes under a COMPLETED banner. The discipline belongs in the hop's rhythm
-    rather than in a hope about the model's memory, so the CURRENT state goes
-    back in every hop — a model that can see the list it is behind on is a model
-    that can catch it up.
+    The CURRENT state is re-sent every hop; it is never seeded from the plan.
     """
     if not items:
         return (

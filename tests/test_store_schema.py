@@ -1,11 +1,6 @@
 """The store's schema: the tree is a map, a folder is derived, a link is a row.
 
-Since 11.9 the tree is ONE flat namespace per user — `files (user_id, path)` —
-and a folder is `path.split('/')[0]`, which is why nothing here creates one. A
-project LINKS folders (`project_folders`) and owns none, so deleting a project
-takes its links and leaves every file where it was.
-
-Runs against a real Postgres with the migrations applied.
+Requires a real Postgres with the migrations applied.
 """
 
 from __future__ import annotations
@@ -99,7 +94,7 @@ async def test_the_tree_holds_no_bytes():
 
 
 async def test_the_project_scoped_tree_is_gone():
-    """One store, one table. A second one is a second path for code to grow into."""
+    """One store, one table."""
     assert await pool.fetchval("SELECT to_regclass('public.project_files')") is None
 
 
@@ -136,7 +131,7 @@ async def test_a_project_links_a_folder_and_linking_twice_is_one_link():
 
 
 async def test_two_projects_may_link_the_same_folder():
-    """Nothing owns a folder, so nothing has to be taken from anybody to share it."""
+    """Nothing owns a folder."""
     user_id, first = await _project()
     second = await pool.fetchval("INSERT INTO projects (user_id, title) VALUES ($1, 'other') RETURNING id", user_id)
 
@@ -189,7 +184,7 @@ async def test_a_claim_names_a_folder_and_defaults_to_all_of_it():
 
 
 async def test_one_session_may_claim_two_folders():
-    """Which is the point: a project links several, and every one of them mounts."""
+    """A project links several folders, and every one of them mounts."""
     user_id, _ = await _project()
     session_id = await _session(user_id)
 
@@ -218,7 +213,7 @@ async def test_claims_go_with_their_session():
 
 
 async def test_a_claim_outlives_the_project_that_caused_it():
-    """It names a folder, and the folder is the store's. Nothing to cascade from."""
+    """A claim names a folder, and the folder is the store's, not the project's."""
     user_id, project_id = await _project()
     session_id = await _session(user_id)
     await pool.execute(

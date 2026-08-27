@@ -1,10 +1,7 @@
 """Identity: verifies a Supabase JWT once, then carries a session cookie of our own.
 
-`SUPABASE_JWT_SECRET` verifies tokens issued by Supabase; `ARK_SESSION_SECRET` signs the
-session cookie, minted from `POST /auth/session`.
-
-The cookie is httpOnly, and the browser attaches it to `EventSource` requests, so SSE
-carries no stream token.
+The cookie is httpOnly, so the browser attaches it to `EventSource` and SSE needs
+no stream token of its own.
 """
 
 from __future__ import annotations
@@ -30,12 +27,7 @@ def _secret(name: str) -> str | None:
 
 
 def assert_secure_secrets() -> None:
-    """Refuses to start without a way to sign sessions and a way to verify tokens.
-
-    Verification needs one of two things: a project URL, which is where the
-    signing keys are fetched from, or the shared HS256 secret for a project
-    still signing with one.
-    """
+    """Refuses to start without a way to sign sessions and a way to verify tokens."""
     if not _secret("ARK_SESSION_SECRET"):
         raise RuntimeError(
             "ARK_SESSION_SECRET is unset. Refusing to start: sessions would be unsignable. See .env.example."
@@ -51,9 +43,8 @@ def assert_secure_secrets() -> None:
 # --- verifying somebody else's token ------------------------------------------
 
 
-# Supabase signs with an asymmetric key published at the project's JWKS
-# endpoint. A shared HS256 secret is the older scheme, still used by projects
-# that have not moved.
+# Supabase signs asymmetrically via the project JWKS; HS256 is the older
+# shared-secret scheme some projects still use.
 _ASYMMETRIC = ("ES256", "RS256", "EdDSA")
 
 _jwks_client: Any = None
@@ -68,7 +59,7 @@ def jwks_url() -> str | None:
 
 
 def _jwks() -> Any:
-    """The JWKS client. It caches keys and refetches when it meets an unknown kid."""
+    """The JWKS client; caches keys and refetches on an unknown `kid`."""
     global _jwks_client
     if _jwks_client is None:
         url = jwks_url()
@@ -87,15 +78,8 @@ def reset_jwks() -> None:
 def verify_supabase(token: str) -> dict[str, Any]:
     """Verifies a Supabase access token and returns its claims.
 
-    The algorithm named in the token's header selects which key to check it
-    against, but only from the mechanisms this deployment has: an asymmetric
-    token against the project's published key, HS256 against the shared secret.
-    A token naming anything else is refused. Supabase stamps aud=authenticated,
-    and PyJWT rejects a token whose audience the caller did not name.
-
-    Raises:
-        jwt.PyJWTError: invalid signature, expired, wrong audience, or an
-            algorithm this deployment cannot verify.
+    The header's `alg` picks the key, and only from what this deployment has;
+    anything else is refused. `audience` must be passed or PyJWT rejects the token.
     """
     audience = config.get("auth.jwt_audience") or "authenticated"
     algorithm = jwt.get_unverified_header(token).get("alg", "")
@@ -120,15 +104,8 @@ def verify_supabase(token: str) -> dict[str, Any]:
 async def verify_supabase_off_loop(token: str) -> dict[str, Any]:
     """`verify_supabase`, run off the event loop.
 
-    The asymmetric path fetches the project's JWKS over the network with
-    urllib — synchronously, and PyJWT refetches whenever it meets an unknown
-    `kid`, so it is not a one-time cost that a warm cache retires. Called
-    directly from a request handler it blocks the ONE event loop every session
-    shares, which is the concurrency law's plainest violation.
-
-    HS256 needs no fetch, so most deployments never pay for the thread; the hop
-    is cheap and sign-in is rare, and paying it always beats a rule that holds
-    only for the algorithm somebody happened to configure.
+    The asymmetric path fetches JWKS with blocking urllib, and a warm cache does
+    not retire it: PyJWT refetches on any unknown `kid`.
     """
     return await asyncio.to_thread(verify_supabase, token)
 
@@ -147,10 +124,7 @@ def extract_bearer(authorization: str | None) -> str | None:
 
 
 def mint_session(user_id: str, email: str | None = None) -> str:
-    """Signs a session cookie for an already-verified user.
-
-    Called from `POST /auth/session`, once `verify_supabase` has returned.
-    """
+    """Signs a session cookie for a user `verify_supabase` has already cleared."""
     secret = _secret("ARK_SESSION_SECRET")
     if not secret:
         raise RuntimeError("ARK_SESSION_SECRET is unset")
@@ -169,11 +143,7 @@ def mint_session(user_id: str, email: str | None = None) -> str:
 
 
 def read_session(cookie: str) -> dict[str, Any]:
-    """Verifies a session cookie and returns its claims.
-
-    Raises:
-        jwt.PyJWTError: invalid signature, expired, or issued by someone else.
-    """
+    """Verifies a session cookie and returns its claims."""
     secret = _secret("ARK_SESSION_SECRET")
     if not secret:
         raise jwt.InvalidKeyError("ARK_SESSION_SECRET is unset")

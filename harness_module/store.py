@@ -1,26 +1,9 @@
 """
 The agent's filesystem: the TREE. Bytes live in `blobs`, keyed by their hash.
 
-ONE FLAT NAMESPACE PER USER. A row maps `(user_id, path)` to the hash of that
-path's content, and a FOLDER is the first segment of a path — derived, never a
-row, unique per user by construction, and alive exactly as long as a file exists
-under it (11.9). No project owns a folder; projects LINK folders, which is
-`project_folders`, and deleting a project deletes its links and no files.
-
-`commit_tree` uploads every missing blob before it touches a row, and flips the
-rows in one transaction. A crash between the two leaves the previous tree intact
-and whole: an orphan blob costs storage, a row pointing at a blob that is not
-there costs a file.
-
-Nothing here knows about the sandbox, e2b or tools. The store is the harness's
-(D28) and bytes reach a sandbox by being handed to it, never by it reaching in.
-
-11.8.8 split this file by idea. `blobs.py` is content-addressed bytes and the
-HTTP client that carries them; `memory.py` is the user's notes and curated core,
-which is keyed by user, mounts nowhere, and shared nothing with the tree but a
-filename. The imports go one way — blobs <- store <- workspace — and this module
-re-exports the blob calls it is the natural caller of, so the tree's own users
-do not have to know where bytes are kept.
+One flat namespace per user: a row maps `(user_id, path)` to a content hash, and
+a FOLDER is the first segment of a path — derived, never a row. Imports go one
+way: blobs <- store <- workspace.
 """
 
 from __future__ import annotations
@@ -53,8 +36,7 @@ from harness_module.blobs import (
 
 logger = logging.getLogger(__name__)
 
-# Re-exported so a caller that reads the tree and then wants the bytes has one
-# import. `blobs.py` is the owner; this is a doorway, not a second copy.
+# Blob calls are re-exported here; `blobs.py` owns them, this is only a doorway.
 __all__ = [
     "Blobs",
     "Deletion",
@@ -115,14 +97,9 @@ class FileContent:
 
 # --- the tree ---------------------------------------------------------------------
 #
-# ONE FLAT NAMESPACE PER USER, and a folder is the first segment of a path. It
-# is derived and never stored: it exists exactly as long as a file exists under
-# it, its name is unique per user because `(user_id, path)` is, and no table
-# holds it. Nothing here takes a project id — a project links folders, it does
-# not own them (11.9).
-#
-# `prefix` narrows a read or a commit to part of that namespace. "" or "/" is
-# the whole store; "triage" is one folder; "triage/receipts" is a subtree.
+# A folder is the first segment of a path: derived, never stored, unique per user
+# because `(user_id, path)` is. `prefix` narrows a read or a commit to part of the
+# namespace; "" or "/" is the whole store.
 
 
 async def read_tree(user_id: str, prefix: str = "/") -> list[TreeEntry]:
@@ -151,13 +128,7 @@ class StoredFile:
 
 @dataclass(frozen=True, slots=True)
 class Folder:
-    """A top-level segment of the store, and how many files are under it.
-
-    Not a row and never was. This is the answer to a GROUP BY, which is why a
-    folder cannot be renamed by editing something and cannot exist while empty
-    of everything — including the sentinel that keeps a named-but-unfilled one
-    alive.
-    """
+    """A top-level segment of the store, and how many files are under it."""
 
     name: str
     files: int
@@ -169,12 +140,7 @@ def folder_of(path: str) -> str:
 
 
 async def folders(user_id: str) -> list[Folder]:
-    """Every folder in the user's store, alphabetically, with its file count.
-
-    The count excludes sentinels: a folder that has been named and not filled
-    reads as 0 files, which is what it holds, rather than as 1 file nobody put
-    there.
-    """
+    """Every folder in the user's store, alphabetically, with its file count."""
     rows = await pool.fetch(
         """
         SELECT split_part(path, '/', 1) AS name,
@@ -190,24 +156,15 @@ async def folders(user_id: str) -> list[Folder]:
     return [Folder(name=r["name"], files=int(r["files"])) for r in rows]
 
 
-# The advisory lock two concurrent folder-namings contend on, in a namespace of
-# its own so it cannot collide with any other advisory lock this database grows.
+# Advisory-lock namespace reserved for folder naming; collides with no other lock.
 _NAMING_LOCK = 8809
 
 
 async def unique_folder(user_id: str, base: str) -> str:
     """Reserve a folder name not already taken in this user's store, and return it.
 
-    The none-case of creating a project: no links were picked, so a folder named
-    after the project is made for it. Folder names are unique per user by
-    construction — they are segments of unique paths — so the collision is
-    resolved before the name is used rather than caught after.
-
-    Check-then-act needs a gate, and this one takes it: two projects created at
-    the same moment both read the same set of taken names and both picked the
-    same one, silently, because reserving the folder is a separate write. The
-    lock is transaction-scoped and held across BOTH the read and the sentinel
-    that reserves it, so the second caller sees the first one's folder.
+    The advisory lock is transaction-scoped and held across BOTH the read and the
+    sentinel write, so two concurrent callers cannot reserve the same name.
     """
     async with (await pool.pool()).acquire() as conn, conn.transaction():
         await conn.execute("SELECT pg_advisory_xact_lock($1, hashtext($2))", _NAMING_LOCK, str(user_id))
@@ -221,9 +178,7 @@ async def unique_folder(user_id: str, base: str) -> str:
         while name in taken:
             name = f"{base}-{n}"
             n += 1
-        # Reserved INSIDE the lock: the sentinel is what makes the folder exist,
-        # so a name returned without it is a name the next caller may also pick.
-        # The blob is written first, as everywhere — an empty one, already there.
+        # Reserved INSIDE the lock: the sentinel is what makes the folder exist.
         content_hash = await put_blob(b"")
         await conn.execute(
             """
@@ -239,11 +194,7 @@ async def unique_folder(user_id: str, base: str) -> str:
 
 
 def safe_path(name: str) -> str:
-    """Normalize a name to a path inside the store.
-
-    A leading slash reads as store-relative and empty or `.` segments are
-    dropped, but `..` is refused rather than resolved: rewriting a path the
-    caller asked for into a different one is worse than saying no.
+    """Normalize a name to a path inside the store; `..` is refused, not resolved.
 
     Raises:
         ValueError: the name climbs out of the store or names nothing.
@@ -257,11 +208,6 @@ def safe_path(name: str) -> str:
 
 def in_folder(path: str) -> str:
     """Return `path` if it names a file inside a folder, else refuse.
-
-    Every file in the store is in exactly one folder, because the folder IS the
-    first segment. A file at the top level would be its own folder holding
-    nothing, which no claim could mount and no header could show, so the store
-    does not accept one.
 
     Raises:
         ValueError: the path has no folder segment.
@@ -281,8 +227,8 @@ async def put_file(
     """
     Put one file in the user's store, replacing whatever is at that path.
 
-    Blob first, row after, as everywhere else: a crash between the two costs an
-    orphan blob rather than a row pointing at bytes that are not there.
+    Blob first, row after: a crash between the two costs an orphan blob rather
+    than a row pointing at bytes that are not there.
     """
     in_folder(path)
     content_hash = await put_blob(content)
@@ -306,14 +252,8 @@ async def put_file(
     )
 
 
-# A folder with nothing in it. The tree is flat paths and the sandbox round trip
-# carries files and only files — materialize writes them, `_sweep` finds them,
-# flush commits them — so a directory that is not a file has nowhere to survive:
-# the next flush would replace the subtree from what is on disk and the empty
-# folder would be gone. A zero-byte sentinel IS a file, so it rides the whole
-# pipeline like any other and cannot be silently dropped. It is also what makes
-# a top-level folder exist before anything has been put in it, which is the
-# none-case of creating a project.
+# The sandbox round trip carries files and only files, so an empty folder survives
+# only as a zero-byte file — and this is also what makes an unfilled folder exist.
 DIR_SENTINEL = ".keep"
 
 
@@ -326,21 +266,9 @@ async def move_path(user_id: str, src: str, dst: str) -> list[tuple[str, str]]:
     """
     Move one file, or a whole subtree, to another path in the user's store.
 
-    Blobs never move: they are content-addressed and immutable, so a rename is
-    a row edit and nothing is re-uploaded. Every row moves in one transaction,
-    which is what keeps a half-moved folder from existing. Moving BETWEEN
-    folders is an ordinary move now — one store, one namespace — and needs no
-    copy and no second project.
-
-    **A DIRECTORY may be moved OUT to the top level**, where it becomes a folder
-    of its own: `triage/inbox -> inbox`. That is not a special case bolted on, it
-    is what the model already says — a folder IS a top-level path segment, so
-    promoting a directory to the first position makes one, and demoting a folder
-    into another path would be a rename, which has its own route. A FILE cannot
-    go there: it would be its own folder holding nothing.
-
-    The file/directory question is answered by the ROWS, not by the string, so
-    it is settled inside the transaction after the lookup.
+    Blobs never move: a move is a row edit, all rows in one transaction. A
+    DIRECTORY may move out to the top level, becoming a folder; a FILE may not.
+    File-vs-directory is answered by the ROWS, inside the transaction.
 
     Returns:
         The (from, to) pairs that moved, in path order.
@@ -354,35 +282,30 @@ async def move_path(user_id: str, src: str, dst: str) -> list[tuple[str, str]]:
     if src == dst:
         return []
     if "/" not in src:
-        # A path-prefix rewrite that also has to move every live claim and every
-        # mounted path underneath it. It is a RENAME and `rename_path` is where
-        # it lives, with the checks it needs. Doing it here by accident, because
-        # a folder happens to be a path prefix, would move the ground under a
-        # running session silently.
+        # A top-level folder also lives in the links and the claims: that is
+        # `rename_path`, which rewrites all three.
         raise StoreError(f"{src!r} is a folder; renaming or moving one is not something this can do")
     if dst.startswith(f"{src}/"):
         raise StoreError(f"cannot move {src!r} into itself")
 
     async with (await pool.pool()).acquire() as conn, conn.transaction():
         if "/" not in dst:
-            # Bound for the top level. Only a directory may go: the rows say
-            # which this is, because an exact match means `src` names a file.
+            # Only a directory may go to the top level; an exact row match means
+            # `src` names a file.
             is_file = await conn.fetchval("SELECT 1 FROM files WHERE user_id = $1 AND path = $2", _uuid(user_id), src)
             if is_file:
                 raise StoreError(f"the store's top level holds folders, not files: {dst!r} needs a folder to go in")
         moves = await _rewrite_prefix(conn, user_id, src, dst)
 
-    # mtime is left alone on purpose: a move does not change what the file says,
-    # and materialize decides what to transfer by content hash regardless.
+    # mtime is left alone: a move changes no content, and materialize transfers by hash.
     return moves
 
 
 async def _rewrite_prefix(conn: Any, user_id: str, src: str, dst: str) -> list[tuple[str, str]]:
     """Move every row at or under `src` to the same position under `dst`.
 
-    The shared core of a move and a rename — they differ in which paths they
-    allow, not in what they do to the rows. Runs inside the caller's transaction,
-    so a rename that also rewrites links and claims does all three or none.
+    Runs inside the CALLER's transaction, so a rename that also rewrites links
+    and claims does all three or none.
 
     Raises:
         MissingPath: nothing is at `src`.
@@ -401,8 +324,7 @@ async def _rewrite_prefix(conn: Any, user_id: str, src: str, dst: str) -> list[t
     if not rows:
         raise MissingPath(f"nothing at {src!r}")
 
-    # `src` itself is a file when a row matches it exactly; otherwise it is a
-    # directory and only the part after the prefix is kept.
+    # An exact row match means `src` is a file; otherwise only the suffix is kept.
     moves = [(r["path"], dst if r["path"] == src else dst + r["path"][len(src) :]) for r in rows]
 
     taken = await conn.fetch(
@@ -428,9 +350,7 @@ def renamed_to(path: str, name: str) -> str:
     """The path `path` becomes when its LAST SEGMENT is renamed to `name`.
 
     Raises:
-        ValueError: the name is empty, carries a separator, or is a relative
-            step. A rename changes what a thing is called; moving it somewhere
-            else is a move, and letting a name contain `/` would quietly be one.
+        ValueError: the name is empty, carries a separator, or is a relative step.
     """
     clean = (name or "").strip().strip("/")
     if not clean or "/" in clean or clean in (".", ".."):
@@ -444,18 +364,10 @@ async def rename_path(user_id: str, path: str, name: str) -> list[tuple[str, str
     """
     Rename the last segment of a path: a file, a directory, or a top-level folder.
 
-    A rename is a path-prefix rewrite and nothing is re-uploaded, exactly as a
-    move is. What makes a TOP-LEVEL folder different is that its name is written
-    down in two more places — the projects that link it and the claims that
-    mount it — and a rewrite that moved only the paths would leave a project
-    linking a folder that no longer exists and a session claiming one. All three
-    move in ONE transaction, which is why this reaches past `files`: the folder
-    name is duplicated in exactly three tables, and this is the one operation
-    that changes it.
-
-    It does NOT touch a live sandbox. The caller checks that no box holds the
-    folder first, because a box that materialized `~/store/<old>/` would flush
-    its work back under the old name and resurrect the folder this just renamed.
+    A top-level folder's name is duplicated in exactly three tables — `files`,
+    `project_folders`, `session_claims` — and all three move in ONE transaction.
+    It does NOT touch a live sandbox: the caller must first check that no box
+    holds the folder, or that box's next flush resurrects the old name.
 
     Returns:
         The (from, to) pairs that moved, in path order.
@@ -470,11 +382,8 @@ async def rename_path(user_id: str, path: str, name: str) -> list[tuple[str, str
         return []
 
     async with (await pool.pool()).acquire() as conn, conn.transaction():
-        # The NAME must be free, not merely the paths under it. `_rewrite_prefix`
-        # refuses a collision path by path, which would let `triage -> notes`
-        # succeed by merging two folders whenever their files happened not to
-        # clash — silently, and with no way back. A name that is taken is taken:
-        # merging is a thing someone might want, but it is not a rename.
+        # The NAME must be free, not merely the paths under it: `_rewrite_prefix`
+        # checks collisions path by path, which would silently merge two folders.
         taken = await conn.fetchval(
             "SELECT 1 FROM files WHERE user_id = $1 AND (path = $2 OR path LIKE $3) LIMIT 1",
             _uuid(user_id),
@@ -487,7 +396,7 @@ async def rename_path(user_id: str, path: str, name: str) -> list[tuple[str, str
         moves = await _rewrite_prefix(conn, user_id, path, destination)
 
         if "/" not in path:
-            # A top-level folder. Its name is also in the links and the claims.
+            # A top-level folder: its name is also in the links and the claims.
             await conn.execute(
                 """
                 UPDATE project_folders SET folder = $3
@@ -527,17 +436,10 @@ async def delete_path(user_id: str, path: str) -> Deletion:
     """
     Delete a file or a whole subtree, keeping everything needed to undo it.
 
-    The rows move to `deleted_files`; the BLOBS are untouched, because they are
-    content-addressed, immutable and never collected. That is the whole reason
-    undo can be exact: nothing was destroyed, only unlisted.
-
-    A folder exists exactly as long as a file exists under it, so a delete that
-    empties one takes the folder with it — and the links that named it, which
-    are recorded in the same batch and come back with it. Nothing else in the
-    system may hold a link to a folder that is not there.
-
-    The caller checks first that no live box has the affected folder mounted;
-    a box holding it would put the files back at its next flush.
+    Rows move to `deleted_files`; the BLOBS are untouched, so undo is exact. A
+    delete that empties a folder also drops the links naming it, in the same
+    batch. The caller must first check that no live box has the folder mounted,
+    or its next flush puts the files back.
 
     Returns:
         The deletion, whose `batch` is what `undo_delete` takes.
@@ -577,9 +479,7 @@ async def delete_path(user_id: str, path: str) -> Deletion:
                 batch,
             )
 
-        # Which folders the delete emptied. Asked of the tree AFTER the rows are
-        # gone, so it is the truth rather than a prediction: a folder is derived,
-        # and this is what it now derives to.
+        # Asked AFTER the rows are gone, so it is what the tree now derives to.
         touched = {folder_of(row["path"]) for row in rows}
         emptied = [
             folder
@@ -625,15 +525,12 @@ async def undo_delete(user_id: str, batch: str) -> Deletion:
     """
     Put back exactly what one delete gesture removed.
 
-    The same rows under the same ids, pointing at the same blobs — which are
-    still in the store, since nothing collects them. The links that went with
-    the folders come back too.
+    The same rows under the same ids, pointing at the same blobs, plus the links
+    that went with the folders.
 
     Raises:
         MissingPath: no such batch for this user, or it has already been undone.
-        StoreError: something now occupies a path the delete freed. Refusing
-            beats overwriting: whatever is there was put there afterwards, and
-            it is not this batch's to replace.
+        StoreError: something now occupies a path the delete freed.
     """
     async with (await pool.pool()).acquire() as conn, conn.transaction():
         rows = await conn.fetch(
@@ -697,17 +594,16 @@ async def commit_tree(
     """
     Replace the tree under `prefix` with `contents`.
 
-    Blobs are uploaded before any row is touched, and the rows are flipped in one
-    transaction, so an interrupted commit leaves the previous tree readable and
-    complete.
+    Blobs are uploaded before any row is touched and the rows flip in one
+    transaction, so an interrupted commit leaves the previous tree whole.
 
     Returns:
         The tree that is now under `prefix`.
     """
     hashed = [(f, sha256(f.content)) for f in contents]
 
-    # Blobs first. Uploading one twice is free; a row pointing at a blob that
-    # was never uploaded is a lost file.
+    # Blobs first: uploading one twice is free, a row pointing at a missing blob
+    # is a lost file.
     for content_hash in await missing_blobs({h for _, h in hashed}):
         content = next(f.content for f, h in hashed if h == content_hash)
         await blobs().put(content_hash, content)
@@ -728,9 +624,8 @@ async def commit_entries(
     """
     Replace the tree under `prefix` with entries whose blobs are already stored.
 
-    What a flush uses: only changed files have their bytes uploaded, and every
-    row is written from a hash. The blobs are checked before any row moves, so
-    the tree still cannot come to point at bytes that are not there.
+    Every blob is checked present before any row moves, so the tree cannot come
+    to point at bytes that are not there.
 
     Raises:
         StoreError: an entry names a blob the store does not hold.
@@ -768,11 +663,7 @@ async def commit_entries(
 
 
 def slug(title: str, fallback: str) -> str:
-    """A folder name from a title. Mounted names are read by the model as context.
-
-    Used for the folder a project with no links makes for itself, and for
-    `projects.slug`, which is now nothing but the default that name comes from.
-    """
+    """A folder name from a title. Mounted names are read by the model as context."""
     cleaned = re.sub(r"[^a-z0-9]+", "-", (title or "").lower()).strip("-")
     return cleaned[:48] or fallback
 

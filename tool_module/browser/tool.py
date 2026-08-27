@@ -1,23 +1,7 @@
 """`browser_task`: hand a goal to the browser specialist, and stay in charge of it.
 
-The leash has four strands, and each one exists because its absence was a bug in
-the implementation this replaces:
-
-- **Progress is events.** `browser_use`'s per-step callback becomes ordinary
-  `status` events in the session log, so a three-minute browser call is never a
-  silently frozen UI.
-- **The result is an envelope.** `ok` comes from the run's own history, a
-  failure carries what went wrong, and the full record is stored behind a `ref`.
-  A bare string cannot distinguish "found nothing" from "crashed".
-- **The budget is asked, then enforced.** The step callback stops the agent at
-  the deadline so partial results survive; `wait_for` is the backstop for an
-  agent that ignores being asked.
-- **Nothing is dropped silently.** A `browser_use` version that no longer
-  accepts one of our kwargs logs a WARNING, because progress callbacks quietly
-  vanishing is exactly the opacity this card outlaws.
-
-`browser_use` and its playwright are imported inside the call, so the process
-starts, the manifest builds and every other tool works without them installed.
+`browser_use` and its playwright are imported inside the call, so the process starts,
+the manifest builds and every other tool works without them installed.
 """
 
 from __future__ import annotations
@@ -74,10 +58,6 @@ class BrowserTask:
 
         where = cdp_url()
         if not where:
-            # Loud, and not retryable: there is nothing the model can do about a
-            # container that is not running, and quietly launching a browser in
-            # this process instead would put a page-executing Chromium beside
-            # the harness's credentials.
             return fail(
                 "upstream_error",
                 "The browser container is not reachable: browser.cdp_url is unset (it defaults from "
@@ -86,13 +66,11 @@ class BrowserTask:
                 retryable=False,
             )
 
-        # The browser is shared per user and keeps its profile between calls, so
-        # it is leased rather than capped (contracts' resource table).
+        # Leased, not capped: the browser is shared per user and keeps its profile between calls.
         if ctx.lease is not None:
             await ctx.lease("browser")
 
-        # Announced before the first step, so the pane is mountable while the
-        # run is still worth watching.
+        # Announced before the first step, so the pane is mountable while the run lasts.
         if ctx.emit_status is not None:
             ctx.emit_status("using the browser…", _frames_url(ctx.session_id))
 
@@ -104,8 +82,6 @@ class BrowserTask:
             async with asyncio.timeout(backstop):
                 history = await run.execute()
         except TimeoutError:
-            # The graceful stop was ignored. Whatever the run recorded before
-            # the backstop fired is still worth reporting.
             logger.warning("browser run in session %s ignored its stop and hit the backstop", ctx.session_id)
             return await _envelope(run.partial(), ctx, stopped="hard", steps=run.history_lines)
         except ImportError as e:
@@ -137,7 +113,7 @@ class _Run:
         self.out_of_time = False
         self.steps = 0
         self.max_steps = int(_cfg("browser.max_steps", 25))
-        # Every step as it happened, for the ref blob the label truncates.
+        # Full step records for the ref blob; the status label truncates.
         self.history_lines: list[dict[str, Any]] = []
         self._agent: Any = None
 
@@ -147,18 +123,8 @@ class _Run:
     async def on_step(self, *a: Any, **kw: Any) -> None:
         """Report a step and enforce the budget.
 
-        One `status` event per inner step, which is what makes a three-minute
-        browser call legible instead of a frozen row. The label is capped and
-        the full record goes to the result's ref blob, so `read_result` pages
-        what the label had to cut.
-
-        No per-step tool_call or reasoning events: the inner loop stays behind
-        the one `browser_task` boundary, and a transcript that interleaved its
-        thinking with the outer loop's would be a different contract.
-
-        Asked, not killed: an agent told to stop finishes its step and returns
-        the history it has, which is a partial answer. A cancelled coroutine
-        returns nothing at all.
+        The agent is asked to stop, never cancelled: a stopped agent finishes its step and
+        returns partial history, a cancelled coroutine returns nothing.
         """
         self.steps += 1
         record = _step_record(self.steps, self.max_steps, a, kw)
@@ -193,8 +159,7 @@ class _Run:
         agent_factory = _agent_factory()
         self._agent = agent_factory(self)
 
-        # Frames flow while the run runs, and stop with it. Nobody watching
-        # costs nothing: the broker drops what no subscriber holds.
+        # Frames flow only while the run does; the broker drops what no subscriber holds.
         self._screencast = asyncio.create_task(run_screencast(self._agent, self.ctx.user_id, str(self.ctx.session_id)))
         try:
             result = self._agent.run(max_steps=self.max_steps)
@@ -206,22 +171,15 @@ class _Run:
 
 
 def _agent_factory() -> Any:
-    """Return a callable that builds the vendor's agent for one run.
-
-    Indirected so a test can substitute a fake without a browser, and so the
-    vendor import happens at call time rather than at import time.
-    """
+    """Return a callable that builds the vendor's agent for one run; the seam a fake substitutes at."""
     return _build_browser_use_agent
 
 
 def cdp_url() -> str:
-    """Where the browser is. It is a container, and it is never this process.
+    """Where the browser is: a container, and never this process.
 
-    The browser executes pages the model chose, and this process holds the
-    user's session cookies, the store's secret key and the model's context. A
-    browser launched beside them is a different architecture with a different
-    blast radius, not a degraded mode — so an unset URL refuses rather than
-    falling back to a local Chromium.
+    An unset URL refuses rather than falling back to a local Chromium beside the harness's
+    session cookies, store key and model context.
     """
     return str(_cfg("browser.cdp_url", "") or os.environ.get("BROWSERLESS_URL", "")).strip()
 
@@ -229,9 +187,7 @@ def cdp_url() -> str:
 def _augment_cdp_url(url: str) -> str:
     """Append `stealth=true` to the CDP URL unless stealth is disabled.
 
-    Ported verbatim from the implementation 8.10 deleted: Browserless reads it
-    off the query string, and losing it is the difference between pages loading
-    and pages serving a bot wall.
+    Browserless reads it off the query string; without it pages serve a bot wall.
     """
     if os.environ.get("BROWSER_USE_STEALTH", "1") == "0":
         return url
@@ -265,12 +221,7 @@ def _build_browser_use_agent(run: _Run) -> Any:
 
 
 def _accepted(target: Any, kwargs: dict[str, Any], keep: set[str] | None = None) -> dict[str, Any]:
-    """Keep the kwargs this version of the vendor accepts, and say what was dropped.
-
-    A version bump that renames `register_new_step_callback` would otherwise
-    take every progress event with it and look like a browser that simply went
-    quiet — which is the failure this contract names by name.
-    """
+    """Keep the kwargs this version of the vendor accepts, and log what was dropped."""
     try:
         parameters = inspect.signature(target).parameters
     except (TypeError, ValueError):  # pragma: no cover - a C-implemented callable
@@ -278,9 +229,8 @@ def _accepted(target: Any, kwargs: dict[str, Any], keep: set[str] | None = None)
     if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
         return kwargs
 
-    # `keep` names what the call cannot be made without. `cdp_url` in particular
-    # is swallowed by **kwargs on some versions and absent from the signature on
-    # others, and dropping it would silently launch a local browser.
+    # `keep` forces a kwarg through regardless: `cdp_url` is swallowed by **kwargs on some
+    # versions and absent from the signature on others, and dropping it launches a local browser.
     required = keep or set()
     kept = {k: v for k, v in kwargs.items() if k in parameters or k in required}
     dropped = sorted(set(kwargs) - set(kept))
@@ -296,12 +246,7 @@ def _accepted(target: Any, kwargs: dict[str, Any], keep: set[str] | None = None)
 async def _envelope(
     history: Any, ctx: ToolContext, stopped: str | None = None, steps: list[dict[str, Any]] | None = None
 ) -> ResultEnvelope:
-    """Build the tool result from the run's own history.
-
-    `ok` is the run's verdict, not ours, and a failure says what went wrong. The
-    whole record goes behind a `ref` so the view stays small and the model can
-    page the rest if it needs to.
-    """
+    """Build the tool result from the run's own history: `ok` is the run's verdict, not ours."""
     if history is None:
         return fail("upstream_error", "The browser run produced no history to report.", retryable=True)
 
@@ -317,7 +262,6 @@ async def _envelope(
         "errors": errors,
         "steps": len(_call(history, "model_actions") or []),
         "stopped": stopped,
-        # What the status labels had to cut, in full and in order.
         "step_history": steps or [],
     }
     ref = None
@@ -355,11 +299,8 @@ async def _wait_for_target(agent: Any, timeout_s: float = 10.0) -> bool:
 async def run_screencast(agent: Any, user_id: str, session_id: str) -> None:
     """Stream CDP screencast frames from the focused page to the broker.
 
-    Ported from the implementation 8.10 deleted, with the key changed: frames go
-    to (user, session) rather than to the user alone, so two of one user's
-    sessions browsing at once no longer clobber each other's picture.
-
-    Any failure logs and exits: losing the video must never lose the run.
+    Keyed by (user, session), so one user's concurrent sessions do not clobber each other's
+    picture; any failure logs and exits, because losing the video must never lose the run.
     """
     if not await _wait_for_target(agent):
         logger.info("no agent target within timeout; skipping the screencast")
@@ -414,16 +355,15 @@ async def _ack(cdp_session: Any, frame_session_id: int) -> None:
         )
 
 
-# How much of one step fits on a status line before it stops being glanceable.
+# Max characters of one step that fit on a status line before it stops being glanceable.
 _LABEL_CHARS = 110
 
 
 def _step_record(n: int, of: int, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
     """What the inner loop just did, read out of whatever the vendor handed us.
 
-    browser_use has passed the step callback different shapes across versions,
-    so this reads defensively and settles for the step number when it finds
-    nothing else — a numbered line still says the run is alive.
+    browser_use has passed the step callback different shapes across versions, so this reads
+    defensively and settles for the step number when it finds nothing else.
     """
     payload: dict[str, Any] = {"step": n, "of": of}
     state = kwargs.get("state") or (args[0] if args else None)

@@ -1,13 +1,8 @@
 """
 The operational log: retries, lease churn, timing internals.
 
-Separate from `session_events` by audience. That table is the transcript a human
-reads and a failed append halts the run; this one is diagnostics, written in
-batches by a background task, and a failed write loses a line and nothing else.
-
-What belongs here is what you would query during an incident. Three things do
-today: how long a fold takes, how often a terminal has to be retried, and how
-long sessions wait on a shared resource.
+Separate from `session_events` by audience: that table is the transcript and a failed
+append halts the run; this one is diagnostics, batched, and a failed write loses a line.
 """
 
 from __future__ import annotations
@@ -27,14 +22,14 @@ logger = logging.getLogger(__name__)
 
 Level = Literal["info", "warn", "error"]
 
-# Pending rows. Bounded: under a write outage this drops the oldest diagnostics
-# rather than growing until the process dies.
+# Pending rows, bounded: a write outage drops the oldest diagnostics rather than
+# growing until the process dies.
 _queue: deque[tuple[str, str, Any, Any, dict[str, Any]]] = deque(maxlen=10_000)
 _flusher: asyncio.Task[None] | None = None
 _stopping: asyncio.Event | None = None
 
 
-# How long a shutdown waits for an in-flight write before giving up on it.
+# Seconds a shutdown waits for an in-flight write before giving up on it.
 _SHUTDOWN_GRACE_S = 10.0
 
 
@@ -48,9 +43,8 @@ def record(
 ) -> None:
     """Queue one operational record. Synchronous, and never raises."""
     try:
-        # Round-tripped here rather than at flush: the pool's jsonb codec
-        # encodes with a plain json.dumps, so a value it cannot handle would
-        # take the whole batch down instead of this one line.
+        # Round-tripped here rather than at flush: the pool's jsonb codec encodes with a
+        # plain json.dumps, so a value it cannot handle would take down the whole batch.
         plain = json.loads(json.dumps(fields, default=str))
         _queue.append((level, event, _uuid(session_id), _uuid(user_id), plain))
     except Exception:  # noqa: BLE001 - a diagnostic must never break its caller
@@ -75,8 +69,7 @@ async def flush() -> int:
             [r[4] for r in batch],
         )
     except Exception:
-        # The rows are gone. Re-queueing risks looping on a poison batch while
-        # the transcript, which is the record that matters, is unaffected.
+        # Dropped rather than re-queued: re-queueing risks looping on a poison batch.
         logger.warning("dropped %d system event(s): the write failed", len(batch), exc_info=True)
         return 0
     return len(batch)
@@ -98,9 +91,8 @@ async def start() -> None:
 async def stop() -> None:
     """Stop flushing and write what is left.
 
-    The loop is asked to finish rather than cancelled: a cancel landing inside
-    an in-flight write loses that batch, since `flush` has already taken it off
-    the queue.
+    The loop is asked to finish rather than cancelled: a cancel landing inside an
+    in-flight write loses that batch, which `flush` has already taken off the queue.
     """
     global _flusher, _stopping
     if _stopping is not None:

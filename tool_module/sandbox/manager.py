@@ -1,19 +1,7 @@
-"""
-The per-session e2b sandbox: one box per session, capped per user. The only
-module that touches the e2b SDK.
+"""One e2b sandbox per session, capped per user; the only module that touches the e2b SDK.
 
-The box follows the session and is destroyed once its flush lands: the disk
-holds a cache of the store (D27), so nothing is lost with it. `session_sandboxes`
-is the handle table and the pool at once — a row is a slot, and a user may hold
-`sandbox.max_concurrent_per_user` of them.
-
-The row is written before the box exists and updated with its handle after
-(D24): a process that dies mid-boot leaves a reclaimable slot, never a box
-nothing knows about. Slots carry `expires_at`, renewed on every call into the
-box, so a dead process frees its capacity the way the lease it replaced did.
-
-The SDK is imported inside `_create` and `_connect`, so the process starts and
-the manifest builds without e2b installed.
+The SDK is imported inside `_create` and `_connect`, so the process starts and the
+manifest builds without e2b installed.
 """
 
 from __future__ import annotations
@@ -32,8 +20,8 @@ _DEFAULT_TIMEOUT = 300
 _DEFAULT_MAX_PER_USER = 5
 _DEFAULT_SLOT_TTL = 900
 
-# Sessions that can no longer be using a box, so their slots are reclaimable
-# whatever their expiry says.
+# Sessions that can no longer be using a box: their slots are reclaimable whatever
+# their expiry says.
 _TERMINAL = ("completed", "failed", "cancelled")
 
 
@@ -42,13 +30,7 @@ class SandboxUnavailable(RuntimeError):
 
 
 class BoxNotAwake(RuntimeError):
-    """Raised when a read-only caller asked for a box this process is not holding awake.
-
-    The difference from `SandboxUnavailable` is who is asking. A tool call may
-    boot a box; an HTTP reader may not — a person opening a file browser must
-    never start compute, and a session that has parked or finished has no live
-    disk to show. Both cases read the same to the caller: there is nothing here.
-    """
+    """Raised when a read-only caller asked for a box this process is not holding awake."""
 
 
 def _timeout() -> int:
@@ -72,17 +54,10 @@ def _template() -> str | None:
 
 
 async def claim_slot(session_id: str) -> bool:
-    """
-    Take this session's slot in its user's sandbox pool.
-
-    Expired slots and slots of sessions that are over are reclaimed first, so a
-    process that died holding capacity does not hold it forever. A session that
-    already holds a slot keeps it: the count excludes the caller, so a repeat
-    call renews rather than competes with itself.
+    """Take this session's slot in its user's pool; the count excludes the caller, so a repeat call renews.
 
     Returns:
-        False if the user is at `sandbox.max_concurrent_per_user`. The caller
-        waits and asks again.
+        False if the user is at `sandbox.max_concurrent_per_user`.
     """
     sid = _uuid(session_id)
     reclaimed: list[tuple[str, str]] = []
@@ -138,14 +113,7 @@ async def claim_slot(session_id: str) -> bool:
 
 
 async def sweep_slots() -> int:
-    """Reclaim every expired or finished slot in the pool, killing the boxes they name.
-
-    Run at startup: a process that died holding slots is exactly what this is
-    for, and nothing else notices them until their user next asks for a box.
-
-    Returns:
-        How many slots were freed.
-    """
+    """Reclaim every expired or finished slot in the pool, killing the boxes they name; run at startup."""
     rows = await pool.fetch(
         """
         DELETE FROM session_sandboxes p
@@ -196,8 +164,7 @@ async def _record_box(session_id: str, sandbox_id: str) -> None:
     """Write the handle into the slot the session already holds.
 
     Raises:
-        SandboxUnavailable: the slot is gone, so this box would run unrecorded.
-            The caller kills it rather than leaving it billing.
+        SandboxUnavailable: the slot is gone, so this box would run unrecorded; the caller kills it.
     """
     result = await pool.execute(
         """
@@ -236,12 +203,8 @@ class SandboxManager:
     async def get_or_create(self, session_id: str) -> Any:
         """Return the session's sandbox: the cached handle, the stored one resumed, or a new one.
 
-        Every path renews the slot, so a box in use does not expire under its own
-        session.
-
         Raises:
-            SandboxUnavailable: the session holds no slot. A box is never booted
-                outside the pool that caps it.
+            SandboxUnavailable: the session holds no slot; a box is never booted outside the pool.
         """
         async with self._lock(session_id):
             if not await renew_slot(session_id):
@@ -274,11 +237,7 @@ class SandboxManager:
             return sandbox
 
     async def _resume(self, session_id: str, sandbox_id: str) -> Any | None:
-        """Reconnect to a stored sandbox, or return None if it is gone.
-
-        A process that restarted mid-session left its box running; the row
-        outlived the handle and says where it is.
-        """
+        """Reconnect to a stored sandbox, or return None if it is gone."""
         sandbox = await self._connect(sandbox_id)
         if sandbox is None:
             logger.warning("resume failed for session %s; creating a new sandbox", session_id)
@@ -305,8 +264,8 @@ class SandboxManager:
     def _create(self, session_id: str) -> Any:
         """Create a sandbox. No environment is passed: credentials stay out of it.
 
-        The session id rides along as e2b metadata, so a box whose handle never
-        reached the database can still be identified by an operator.
+        The session id rides along as e2b metadata, so a box whose handle never reached
+        the database is still identifiable by an operator.
         """
         from e2b_code_interpreter import Sandbox
 
@@ -358,17 +317,13 @@ class SandboxManager:
         """List a directory in a box that is already awake.
 
         Raises:
-            BoxNotAwake: nothing is running for this session here. Booting one to
-                answer a browse would charge a person for looking.
+            BoxNotAwake: nothing is running for this session here; a browse never boots a box.
         """
         sandbox = self._require_awake(session_id)
         return _entries(await asyncio.to_thread(sandbox.files.list, path))
 
     async def peek(self, session_id: str, path: str, *, max_bytes: int) -> tuple[bytes, bool]:
-        """Read up to `max_bytes` of a file in a box that is already awake.
-
-        Returns the bytes and whether they were cut short, so a reader can say
-        so instead of showing half a file as if it were the whole one.
+        """Read up to `max_bytes` of a file in an already-awake box; the bool says the read was cut short.
 
         Raises:
             BoxNotAwake: as `browse`.
@@ -385,12 +340,7 @@ class SandboxManager:
         return sandbox
 
     async def pause(self, session_id: str) -> None:
-        """Hibernate the session's box, keeping its slot.
-
-        A parked session is not acting, but it is not over either: the box stops
-        costing compute and its disk survives, so the next turn starts warm. It
-        is killed at terminal, or by the reclaim once the slot expires.
-        """
+        """Hibernate the session's box, keeping its slot: compute stops, the disk survives."""
         sandbox = self._live.pop(session_id, None)
         await renew_slot(session_id)
         if sandbox is None:
@@ -403,12 +353,10 @@ class SandboxManager:
         logger.info("paused the box of session %s", session_id)
 
     async def reap(self, session_id: str) -> None:
-        """Destroy the session's box and free its slot.
+        """Destroy the session's box and free its slot; the caller flushes first.
 
-        The slot goes first and carries the handle out with it, so a kill that
-        fails leaves a box billing rather than a slot no session can use. The
-        caller flushes before it reaps: what is on the disk is a cache of a
-        commit that has already landed.
+        The slot goes first and carries the handle out with it, so a kill that fails
+        leaves a box billing rather than a slot no session can use.
         """
         sandbox = self._live.pop(session_id, None)
         self._locks.pop(session_id, None)

@@ -1,11 +1,8 @@
 """Live fan-out to subscribers: session events, and per-user attention signals.
 
 The log in Postgres is the record; this pushes only. A subscriber whose queue overflows
-receives the LAGGED sentinel and re-reads from the log after its last seq.
-
-TWO CHANNELS, one rule: session events fan out per session, attention fans out
-per USER, and both are published from the code that writes the row. See
-contracts, "ANNOUNCE FROM WHERE IT IS WRITTEN".
+receives the LAGGED sentinel and re-reads from the log after its last seq. Both channels
+are published from the code that writes the row (contracts: ANNOUNCE FROM WHERE IT IS WRITTEN).
 """
 
 from __future__ import annotations
@@ -29,8 +26,8 @@ class Lagged:
 class Closed:
     """Sentinel telling a subscriber the server is going down.
 
-    A stream generator that sees this yields nothing further and RETURNS, which
-    the client reads as a clean end of stream — not an aborted connection.
+    A stream generator that sees this yields nothing further and RETURNS, so the client
+    reads a clean end of stream rather than an aborted connection.
     """
 
 
@@ -43,16 +40,8 @@ Item = StoredEvent | Lagged | Closed
 class _Fanout:
     """The subscriber machinery both channels share.
 
-    Keyed queues, a subscription that cleans up after itself, and — the reason
-    this is a base class rather than two copies — ONE shutdown that reaches
-    every subscriber of every channel.
-
-    THE STREAMS HAVE TO END THEMSELVES. An SSE response is an in-flight request
-    that never finishes, so a graceful shutdown waits for it: uvicorn's reload
-    hung until it was force-quit, and a production restart would wait the same
-    way with real users connected. `--timeout-graceful-shutdown` papers over
-    that by shooting the connection. Hanging up on purpose is the honest
-    version, and it is one behaviour, so it is written once.
+    An SSE response is an in-flight request that never finishes, so a graceful shutdown
+    hangs unless the streams end themselves: `shutdown` does that for every channel at once.
     """
 
     def __init__(self, queue_size: int):
@@ -75,9 +64,8 @@ class _Fanout:
     def shutdown(self) -> int:
         """Wake every subscriber with CLOSED so its generator can return.
 
-        Force-put past a full queue: a subscriber that is behind still has to
-        learn the server is leaving, and what it was behind ON no longer
-        matters. Returns how many were told, for the log and the tests.
+        Force-put past a full queue: a subscriber that is behind still has to learn the
+        server is leaving. Returns how many were told.
         """
         told = 0
         for queues in list(self._subscribers.values()):
@@ -112,14 +100,7 @@ class SessionStream(_Fanout):
                 queue.put_nowait(LAGGED)
 
     def publish_all(self, session_id: str, events: Iterable[StoredEvent]) -> None:
-        """Publish a batch, in order.
-
-        `close_dangling` returns events that were appended without being
-        published, and the append-then-publish pair was copy-pasted at five
-        call sites — where the fifth (`lifecycle.sweep_interrupted`) forgot the
-        publish, so a watcher of a swept session saw the calls hang open
-        forever. One helper is one place to forget it.
-        """
+        """Publish a batch, in order."""
         for event in events:
             self.publish(session_id, event)
 
@@ -136,11 +117,7 @@ class SessionStream(_Fanout):
 class AttentionSignal:
     """A nudge, not a payload: "your waiting list changed, read it again".
 
-    Deliberately carries no approval row. The list is a query at three scopes
-    and the client already knows how to ask; shipping the row here would mean
-    two ways to learn the same fact, which drift. `reason` and `session_id` are
-    for the log and for a client that wants to know whether the change was in
-    the window it is looking at.
+    Deliberately carries no approval row; the client refetches the list itself.
     """
 
     reason: str
@@ -148,13 +125,7 @@ class AttentionSignal:
 
 
 class UserStream(_Fanout):
-    """In-memory fan-out keyed by user: one publisher per user, any subscribers.
-
-    Separate from `SessionStream` rather than a mode of it, because the two
-    carry different things — an ordered log with a seq a reader resumes from,
-    versus a signal with no history worth replaying. A missed nudge costs one
-    stale list until the next one; a missed event costs a hole in a transcript.
-    """
+    """In-memory fan-out keyed by user: one publisher per user, any subscribers."""
 
     def __init__(self, queue_size: int = 64):
         super().__init__(queue_size)
@@ -162,9 +133,8 @@ class UserStream(_Fanout):
     def publish(self, user_id: str, signal: AttentionSignal) -> None:
         """Nudge every subscriber of one user. Never blocks, never raises.
 
-        A full queue is DROPPED rather than sentinelled: the message is "read
-        the list again", so an older copy of the same instruction is worth
-        nothing, and the reader is about to refetch anyway.
+        A full queue is DROPPED rather than sentinelled: an older copy of "read the list
+        again" is worth nothing, and the reader is about to refetch anyway.
         """
         if not user_id:
             return
@@ -192,13 +162,7 @@ attention = UserStream()
 
 
 def shutdown_streams() -> int:
-    """End every open stream, on every channel, cleanly. Called once, from the
-    lifespan's teardown.
-
-    Stated here rather than per endpoint: it is one behaviour — "the server is
-    leaving, hang up" — and a channel added later gets it by being a `_Fanout`
-    rather than by somebody remembering to add a case.
-    """
+    """End every open stream, on every channel, cleanly. Called once, from the lifespan's teardown."""
     told = stream.shutdown() + attention.shutdown()
     if told:
         logger.info("shutdown: ended %d open stream(s)", told)

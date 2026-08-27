@@ -1,9 +1,4 @@
-"""Memory: appended by sessions, searched by them, carried between them.
-
-The store half (append, curate, search) and the four tools over it, plus the
-case the whole thing exists for: something learned in one session is there in
-the next. Runs against a real Postgres; the box is a fake.
-"""
+"""Memory: appended by sessions, searched by them, carried between them."""
 
 from __future__ import annotations
 
@@ -30,14 +25,7 @@ class _Note:
 
 
 async def read_notes(user_id: str) -> list[_Note]:
-    """Every note a user has, oldest first — the name carries the order.
-
-    This lived in `store` until 11.7.5, where it was found to have no production
-    caller: only these tests, verifying what `save_memory` wrote. A public store
-    API that exists for the test suite is the suite's helper, so it moved here.
-    Reading it back through the same query the writer uses is still the right
-    assertion — it just is not a shipped capability.
-    """
+    """Every note a user has, oldest first — the path name carries the order."""
     rows = await pool.fetch(
         "SELECT path, body FROM memory_files WHERE user_id = $1 AND path LIKE $2 ORDER BY path",
         uuid.UUID(str(user_id)),
@@ -276,7 +264,6 @@ async def test_what_one_session_learns_the_next_one_knows():
     await registry.dispatch("read_memory", {}, ctx_a)
     await registry.dispatch("update_memory", {"content": "# Memory\n\nThe user's accountant is Dana Okafor.\n"}, ctx_a)
 
-    # A different session, sharing nothing with the first but the user.
     found = await registry.dispatch("search_memory", {"query": "accountant"}, _ctx(user_id, second))
     folded = await runner.fold(await runner.load(second))
     system = folded.messages[0]["content"]

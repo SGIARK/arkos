@@ -1,8 +1,4 @@
-"""The agent loop: one `run_turn`.
-
-The only caller of the model, and it touches no database. A failed tool comes
-back to the model as a tool_result rather than ending the turn.
-"""
+"""The agent loop: one `run_turn`."""
 
 from __future__ import annotations
 
@@ -42,9 +38,7 @@ Mode = Literal["attended", "unattended"]
 FINISH_TOOL = "finish_task"
 
 # Consecutive bare-text hops an unattended run may take before it is called
-# stalled. One is answered with a continuation, the second with the finish
-# nudge, and the third ends it: two injections is the whole of what the prompt
-# promises, and a fourth would just be the same hop again.
+# stalled: a continuation, then the finish nudge, then the run ends.
 _BARE_TEXT_LIMIT = 3
 
 
@@ -67,8 +61,6 @@ class Budgets:
     def load(cls, mode: Mode = "attended") -> Budgets:
         """Load the budgets for one session mode from config.
 
-        Every value comes from config; none is defaulted here.
-
         Raises:
             RuntimeError: when a key is missing.
         """
@@ -82,13 +74,11 @@ class Budgets:
 
 Dispatch = Callable[[str, dict[str, Any]], Awaitable[ResultEnvelope]]
 StoreBlob = Callable[[str], Awaitable[str]]
-# What the human has said since this was last called. Empty is the common answer.
+# What the human has said since this was last called.
 Steer = Callable[[], Awaitable[list[str]]]
 
-# Reads what the teardown that is cancelling this turn recorded that it MEANT:
-# `"stopped"`, `"cancelled"`, or None when nothing recorded anything (a process
-# coming down, a cancellation from somewhere else entirely). The loop consults
-# it rather than importing the harness, which owns the intent.
+# What the teardown cancelling this turn recorded that it MEANT: `"stopped"`,
+# `"cancelled"`, or None when nothing recorded an intent.
 TeardownIntent = Callable[[], str | None]
 
 
@@ -130,21 +120,13 @@ async def run_turn(
 ) -> AsyncIterator[Event]:
     """Run one turn to its end, yielding events as they happen.
 
-    `messages` is mutated in place.
+    `messages` is OpenAI-shape history and is mutated in place.
 
     Args:
-        messages: OpenAI-shape history, built by the fold.
-        tools: the manifest for this session.
-        budgets: hop, attempt and wall-clock caps, from `Budgets.load`.
         mode: attended turns may end on bare text; unattended may not.
-        dispatch: executes one tool and returns an envelope.
         hops_used: hops already spent, counted from the log across a resume.
-        options: per-call model params from config.
         store_blob: stores the full text of an oversized result and returns its ref.
-        steer: returns anything the human has said since it was last asked. Called
-            once per hop, because the turn owns `messages` and cannot see the log:
-            the loop is the brain and the log is the harness's. Without it a
-            message typed during a run is invisible until the run is over.
+        steer: anything the human has said since it was last asked; called once per hop.
 
     Yields:
         Events from the vocabulary, ending with exactly one `done`.
@@ -155,23 +137,16 @@ async def run_turn(
     deadline = time.monotonic() + budgets.wall_clock_s
     state = _State(budgets=budgets)
     seen_ids: set[str] = set()
-    # The near-cap nudge has its OWN latch. It shares neither its schedule nor
-    # its budget with the bare-text streak below: one fires once, near the hop
-    # cap; the other escalates within a run of silent hops. A single flag let
-    # the streak consume the near-cap nudge, so a run that went bare early and
-    # then bare again on its last hop was never told to finish.
+    # Its own latch: fires once near the hop cap, on a schedule and a budget
+    # separate from the bare-text streak below.
     near_cap_nudged = False
-    # Consecutive hops that produced text and no tool call. Unattended only: the
-    # prompt promises such a hop will be answered, and before 11.8.5 nothing kept
-    # that promise — the tail became consecutive assistant messages with nothing
-    # in between and the model degenerated. A tool-calling hop clears it.
+    # Consecutive hops that produced text and no tool call, unattended only; a
+    # tool-calling hop clears it.
     bare_streak = 0
     model_retries = 0
     reattempt = False
-    # The checklist as the model last wrote it, and the scaffold message that
-    # carries it. Exactly one copy lives in `messages`: it is replaced each hop
-    # rather than appended, or an unattended run accumulates one stale copy per
-    # hop and the model reads the oldest as readily as the newest.
+    # Exactly one scaffold copy may live in `messages`: it is replaced each hop,
+    # never appended, or the model reads a stale checklist as readily as the new one.
     todo = TodoTracker()
     scaffold: dict[str, Any] | None = None
 
@@ -192,24 +167,15 @@ async def run_turn(
             hops_used += 1
             yield BudgetEvent(hops_used=hops_used, hops_max=budgets.max_hops)
 
-        # Anything said since the last hop, injected here and nowhere else: at the
-        # top of a hop every tool result from the previous one is already in
-        # `messages`, so a message typed mid-call lands after the result that was
-        # open when it was typed — which is the ordering the fold applies on
-        # replay, and the ordering the model API requires.
-        #
-        # Not appended as an event: the human's message is already in the log,
-        # put there by the endpoint that accepted it. This only carries it into
-        # the turn already in flight.
+        # Injected here and nowhere else: at the top of a hop the previous hop's
+        # tool results are already in `messages`, the ordering the API requires.
+        # Not an event — the endpoint that accepted the message already logged it.
         if steer is not None:
             for said in await steer():
                 messages.append({"role": "user", "content": said})
 
-        # The checklist discipline, injected into the CONTEXT and not the log
-        # (11.11.1). An unattended run had nothing asking it to keep the list
-        # current, so runs finished with unchecked steps under a completed
-        # banner. Context rather than an event because it is a standing
-        # instruction re-stated every hop, not something that happened.
+        # Into the CONTEXT and not the log: a standing instruction re-stated
+        # every hop, not something that happened.
         if mode == "unattended":
             if scaffold is not None and scaffold in messages:
                 messages.remove(scaffold)
@@ -239,28 +205,21 @@ async def run_turn(
                         yield DoneEvent(reason="turn_end")
                         return
                     if not hop.text:
-                        # An empty reply leaves nothing to continue from. Not a
-                        # model_error: nothing errored, the model said nothing.
+                        # Nothing to continue from, and not a model_error:
+                        # nothing errored, the model said nothing.
                         yield DoneEvent(reason="stalled_progress")
                         return
 
                     bare_streak += 1
                     if bare_streak >= _BARE_TEXT_LIMIT:
-                        # Told to continue, then told to finish, and still only
-                        # text. Ending here is the honest reading and it costs
-                        # the run nothing it was going to use.
                         yield DoneEvent(reason="stalled_progress")
                         return
                     if hops_used < budgets.max_hops:
-                        # Only when a hop remains to read it. Injecting into the
-                        # last one puts an instruction in the transcript that
-                        # nothing ever acted on, which reads as the model having
-                        # ignored it.
+                        # Only nudge while a hop remains to act on the nudge.
                         near_cap = not near_cap_nudged and hops_used == budgets.max_hops - 1
                         if bare_streak > 1 or near_cap:
-                            # A second bare hop gets the finish nudge
-                            # immediately; the near-cap nudge still fires on its
-                            # own schedule, and only its own latch moves here.
+                            # Only the near-cap latch moves here; the streak
+                            # escalates on its own schedule.
                             near_cap_nudged = near_cap_nudged or near_cap
                             injected = prompts.finish_nudge(FINISH_TOOL, budgets.max_hops - hops_used)
                         else:
@@ -270,7 +229,6 @@ async def run_turn(
                     model_retries = 0
                     continue
 
-                # The model is working again, whatever it said last hop.
                 bare_streak = 0
 
                 messages.append(
@@ -308,26 +266,16 @@ async def run_turn(
                 continue
             attempts = getattr(e, "attempts", 1)
             logger.error("model error ends the run after %d attempt(s): %s", attempts, e)
-            # Said in the transcript, not only the log: "it failed" and "it was
-            # tried five times over twenty seconds and then failed" are different
-            # facts to the person reading, and only one of them is the truth.
+            # In the transcript, not only the log: the attempt count is part of
+            # the failure the person is reading.
             yield StatusEvent(label=f"model failed after {attempts} attempt(s): {e.kind}")
             yield DoneEvent(reason="model_error")
             return
         except asyncio.CancelledError:
-            # INTENT OUTRANKS MECHANISM (11.11.2.5). A cancellation is how a stop
-            # and a cancel are BOTH delivered — the mechanism is identical — so
-            # the loop cannot read its own CancelledError and know what it meant.
-            # Whoever pressed the button recorded what they meant; that is the
-            # authority, and this asks rather than assuming.
-            #
-            # Writing `cancelled` here regardless is what broke Stop: this
-            # terminal reached the log first, latched, and the caller's
-            # `stopped` became a no-op — so Stop cancelled the run, threw away
-            # the approved plan, and handed the mode back to attended.
+            # A stop and a cancel arrive by the identical mechanism, so the
+            # recorded intent decides, not this CancelledError.
             if (teardown_intent() if teardown_intent is not None else None) != "stopped":
-                # The run's last event, emitted before the cancellation
-                # propagates. A stop writes nothing here: the caller lands it.
+                # A stop writes no terminal here: its caller lands one.
                 yield DoneEvent(reason="cancelled")
             raise
 
@@ -354,11 +302,8 @@ class _Hop:
             # Streamed, never folded back into messages.
             return ReasoningEvent(text=delta.text)
         if isinstance(delta, model_client.RetryDelta):
-            # The client is about to wait. Said out loud (11.11.3) because a run
-            # gone quiet for eight seconds looks exactly like a hung one, and the
-            # person watching cannot tell which without being told. A status
-            # event, so the run stays RUNNING and no lifecycle state is invented
-            # for "briefly waiting".
+            # A status event, not a lifecycle state: the run stays RUNNING while
+            # the client waits.
             return StatusEvent(
                 label=f"model busy ({delta.kind}) — retry {delta.attempt}/{delta.of}, {delta.delay_s:.1f}s"
             )
@@ -379,8 +324,8 @@ class _Hop:
         calls = [self._calls[i] for i in sorted(self._calls)]
         for call in calls:
             if not call.id or call.id in seen_ids:
-                # `seen_ids` starts empty each turn, so the replacement has to be
-                # unique across every turn of every session.
+                # `seen_ids` is per-turn, so the replacement must be unique
+                # across every turn of every session.
                 call.id = f"call_{uuid.uuid4().hex[:12]}"
             seen_ids.add(call.id)
         return calls
@@ -411,8 +356,8 @@ async def _run_batch(
 ) -> AsyncIterator[Event]:
     """Validate the batch, then dispatch what survives concurrently.
 
-    Results are yielded as they land, not in call order. Every call is closed by
-    exactly one result before this returns, on every exit path.
+    Results land out of call order; every call is closed by exactly one result
+    on every exit path.
     """
     runnable: list[tuple[_PartialCall, dict[str, Any]]] = []
 
@@ -450,7 +395,6 @@ async def _run_batch(
     if not runnable:
         return
 
-    # The task object is what maps a completed dispatch back to its call.
     tasks = {asyncio.create_task(dispatch(c.name, a)): c for c, a in runnable}
     pending = set(tasks)
     try:
@@ -541,9 +485,7 @@ def _parse_args(raw: str) -> tuple[dict[str, Any], str | None]:
 def cap_view(content: str) -> tuple[str, int | None]:
     """Truncate the result to the view cap, returning the original length when it was cut.
 
-    PUBLIC because the harness settles calls outside the loop too — an approved
-    gated call, a park's own result — and a second copy of this rule is a second
-    answer to "how big is too big" that drifts the first time the cap moves.
+    Public: the harness settles calls outside the loop too and must apply this same cap.
     """
     cap = int(_cfg("tools.result_view_cap_chars", 4000))
     if len(content) <= cap:

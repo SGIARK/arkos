@@ -1,9 +1,5 @@
 """Uploading and browsing files without booting a computer.
 
-The store is the USER'S, one flat namespace, and an upload names a path inside a
-folder of it (11.9). A running session whose claim covers that path is written
-through, so it reads the file the same turn.
-
 Runs against a real Postgres; the boxes are fakes.
 """
 
@@ -119,9 +115,6 @@ async def _signed(client: AsyncClient) -> str:
     return user_id
 
 
-# --- the store is where it lands ------------------------------------------------------
-
-
 async def test_an_upload_lands_in_the_store_and_lists_immediately(client, boxes):
     user_id = await _signed(client)
     project_id = await _project(user_id)
@@ -137,7 +130,6 @@ async def test_an_upload_lands_in_the_store_and_lists_immediately(client, boxes)
     assert body["size"] == 5
     assert uuid.UUID(body["file_id"])
     assert [f["path"] for f in listing.json()] == ["taxes/notes.md"]
-    # The same file, seen through the project that links the folder it is in.
     assert [f["path"] for f in linked.json()] == ["taxes/notes.md"]
     entry = (await store.read_tree(user_id))[0]
     assert await store.get_blob(entry.content_hash) == b"hello"
@@ -179,9 +171,6 @@ async def test_re_uploading_a_path_replaces_it(client):
     tree = await store.read_tree(user_id)
     assert len(tree) == 1
     assert await store.get_blob(tree[0].content_hash) == b"second"
-
-
-# --- what is refused ------------------------------------------------------------------
 
 
 async def test_an_oversized_upload_is_refused_in_the_standard_shape(client, monkeypatch):
@@ -248,9 +237,6 @@ async def test_an_empty_file_is_content_like_any_other(client):
     assert await store.get_blob(entry.content_hash) == b""
 
 
-# --- browsing wakes nothing -----------------------------------------------------------
-
-
 async def test_listing_a_hundred_file_project_boots_nothing(client, boxes):
     user_id = await _signed(client)
     project_id = await _project(user_id, "Big")
@@ -263,9 +249,6 @@ async def test_listing_a_hundred_file_project_boots_nothing(client, boxes):
     assert projects.status_code == 200
     assert boxes.boxes == {}, "a listing booted a computer"
     assert boxes.calls == []
-
-
-# --- and into a running session's box --------------------------------------------------
 
 
 @pytest.fixture
@@ -320,7 +303,6 @@ async def test_a_running_session_reads_an_upload_the_same_turn(client, boxes, pa
         await asyncio.wait_for(asyncio.shield(task), timeout=45)
 
     assert uploaded_then_read == [b"from the composer"]
-    # And the session's flush kept it, since the store and the box agree.
     tree = {e.path for e in await store.read_tree(user_id)}
     assert tree == {"live/a.txt", "live/dropped.txt"}
 
@@ -354,12 +336,7 @@ async def test_a_read_claim_that_is_written_through_reports_no_discarded_edits(c
 
 
 async def test_an_upload_over_a_file_the_session_is_editing_fails_the_stale_edit(client, boxes):
-    """Last write wins in the box, and the edit that lost cannot corrupt what won.
-
-    `edit_file` matches `old_string` exactly against the file as it is now, so a
-    model holding a read from before the upload is refused and has to read again.
-    The bytes it would have written are still in the store either way.
-    """
+    """Last write wins in the box, and the edit that lost cannot corrupt what won."""
     user_id = await _signed(client)
     project_id = await _project(user_id, "Live")
     await store.commit_tree(user_id, [store.FileContent(path="live/a.txt", content=b"materialized\n")])
