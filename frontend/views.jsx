@@ -780,9 +780,10 @@ function Login({ gone, onSignedIn, problem: arrived }) {
 /* THE FLOW ALWAYS SAYS SOMETHING. A signup or reset that sends no mail — the
    address is already registered, the sender is rate-limited, or we are inside
    Supabase's 60s per-user window — is indistinguishable from one that did, and
-   silence reads as a dead button. The copy is the same in every case, which is
-   also what keeps the anti-enumeration contract: it never says whether the
-   address exists. */
+   silence reads as a dead button. Each flow has ONE sentence it says whether or
+   not the address exists; the two flows say different things, because
+   anti-enumeration is about telling exists from not-exists WITHIN a flow, not
+   about signup and reset sounding alike. */
 function MailSent({ kind, email, onBack }) {
   const reset = kind === "reset";
   const [cooling, setCooling] = useState(0);
@@ -826,10 +827,7 @@ function MailSent({ kind, email, onBack }) {
       </div>
       <p className="auth-note">
         {reset ? (
-          <React.Fragment>
-            if <b>{email}</b> has a buddy account, a link to set a new password is on its way. it expires
-            in an hour.
-          </React.Fragment>
+          "if buddy knows this address, a reset link is on its way"
         ) : (
           <React.Fragment>
             check your email — if <b>{email}</b> is new to buddy, a confirmation is on its way. click the
