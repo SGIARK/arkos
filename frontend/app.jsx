@@ -159,7 +159,7 @@ function App() {
       <div className="app no-ambient">
         <div className="rail">
           <div className="mark">
-            <span className="glyph">a</span>
+            <span className="glyph">b</span>
             <span className="pip" />
           </div>
           <nav>
@@ -183,7 +183,7 @@ function App() {
         <div className="topbar">
           <div className="crumbs">
             <span>
-              ark <b>v1</b>
+              buddy <b>v1</b>
             </span>
             <span className="sep">/</span>
             <span>

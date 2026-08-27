@@ -374,7 +374,7 @@ function StreamEvent({ event, questions, onAnswered, onError }) {
     case "content":
       return (
         <div className="ev-block ev-assist">
-          <span className="who">ark</span>
+          <span className="who">buddy</span>
           <p>{event.text}</p>
         </div>
       );
@@ -512,7 +512,7 @@ function AskBlock({ item, onAnswered, onError }) {
   if (item.kind === "call") {
     return (
       <div className="ev-block ev-ask ev-gated">
-        <span className="who">ark — wants to run this</span>
+        <span className="who">buddy — wants to run this</span>
         <div className="call">
           <span className="nm">{item.tool_name}</span>
           <span className="age">{relTime(item.created_at)}</span>
@@ -528,7 +528,7 @@ function AskBlock({ item, onAnswered, onError }) {
 
   return (
     <div className="ev-block ev-ask">
-      <span className="who">ark — needs input</span>
+      <span className="who">buddy — needs input</span>
       {item.prompt}
       {item.kind === "approval" ? (
         <div className="opts">

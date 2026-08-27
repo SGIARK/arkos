@@ -548,8 +548,8 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
               className="run-btn"
               title={
                 cancelled
-                  ? "ark reads plan.md and the transcript, then proposes a continuation for your approval."
-                  : "ark drafts a plan first. nothing runs until you approve it."
+                  ? "buddy reads plan.md and the transcript, then proposes a continuation for your approval."
+                  : "buddy drafts a plan first. nothing runs until you approve it."
               }
               onClick={() => {
                 setDrafting(true);
@@ -646,7 +646,7 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
             {drafting && !planCard && (
               <div className="plan-drafting">
                 <Spinner />
-                <span>ark is drafting {cancelled ? "a continuation" : "a plan"} for this run</span>
+                <span>buddy is drafting {cancelled ? "a continuation" : "a plan"} for this run</span>
                 <span className="grow" />
                 <button className="link" onClick={() => api.cancel(sessionId).catch(onError)}>
                   cancel
@@ -692,7 +692,7 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
             }}
           >
             <SessionTools sessionId={sessionId} onError={onError} />
-            <span className="prompt">ark&gt;</span>
+            <span className="prompt">buddy&gt;</span>
             {/* Enter sends, Shift+Enter is a newline; the height cap is the
                 stylesheet's `max-height`. */}
             <textarea
@@ -712,7 +712,7 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
               }}
               /* A stopped run resumes on what is typed here: kind `resume` is
                  exempt from the composer's 409. */
-              placeholder={held ? "type to resume. your note is the next thing ark reads" : "suggest or steer this session…"}
+              placeholder={held ? "type to resume. your note is the next thing buddy reads" : "suggest or steer this session…"}
               spellCheck={false}
               autoComplete="off"
             />
@@ -856,7 +856,7 @@ function SessionTools({ sessionId, onError }) {
                 ? "reading…"
                 : left <= 0
                   ? "cap reached — nothing else can be enabled until something is turned off"
-                  : `${left} of ${budget} slots left · ${doc.ours} reserved for ark's own tools`}
+                  : `${left} of ${budget} slots left · ${doc.ours} reserved for buddy's own tools`}
             </div>
           </div>
 
@@ -896,7 +896,7 @@ function SessionTools({ sessionId, onError }) {
             <span className="tb-refused">
               {refused ? `${refused} needs more slots than are left` : ""}
             </span>
-            <button type="button" className="tb-reset" onClick={clear} disabled={!!busy} title="back to ark's own tools only">
+            <button type="button" className="tb-reset" onClick={clear} disabled={!!busy} title="back to buddy's own tools only">
               reset
             </button>
           </div>
