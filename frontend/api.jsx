@@ -182,7 +182,14 @@ const api = {
     const { data, error } = await client.auth.signUp({
       email,
       password,
-      options: { data: { name } },
+      options: {
+        data: { name },
+        // Stated rather than inherited: without it the confirmation link lands
+        // on whatever the dashboard's Site URL happens to be, which is a
+        // different setting in a different place that nothing here can see.
+        // Same trailing slash, and the same allowlist requirement.
+        emailRedirectTo: API + "/app/",
+      },
     });
     if (error) throw new ApiError("sign_up_failed", error.message);
     const token = data && data.session && data.session.access_token;
@@ -200,7 +207,13 @@ const api = {
     const client = await supabaseClient();
     const { error } = await client.auth.signInWithOAuth({
       provider: "google",
-      options: { redirectTo: API + "/app" },
+      // TRAILING SLASH, deliberately. `/app` is a StaticFiles mount, so the
+      // server answers a slashless request with a 307 to `/app/`. Landing on
+      // the final URL means the return leg never depends on what survives a
+      // redirect. NOTE: Supabase matches this against its Redirect Allowlist,
+      // so the allowlist must name `<origin>/app/` — an entry for `/app` alone
+      // will refuse this and the error comes back on the fragment.
+      options: { redirectTo: API + "/app/" },
     });
     if (error) throw new ApiError("sign_in_failed", error.message);
   },
@@ -215,13 +228,32 @@ const api = {
      cleared, or a reload would replay the same failure forever. */
   async returnFromOAuth() {
     const hash = location.hash || "";
-    if (!hash.includes("access_token=") && !hash.includes("error=")) return null;
+    /* SAY SO EITHER WAY. This ran silently and returned null on a load that
+       should have carried a token, and a silent no-op is indistinguishable from
+       code that never ran at all — which is exactly how the first Google round
+       trip failed: the console showed one 401 from `me()` and nothing else, and
+       the absence proved nothing. `[auth]` so it is greppable in a busy log. */
+    if (!hash.includes("access_token=") && !hash.includes("error=")) {
+      console.log("[auth] no fragment on", location.pathname, "— nothing to exchange");
+      return null;
+    }
     const params = new URLSearchParams(hash.slice(1));
+    // Cleared BEFORE the exchange, so a token cannot be copied out of the
+    // address bar while the request is in flight.
     history.replaceState(null, "", location.pathname + location.search);
     const failed = params.get("error_description") || params.get("error");
-    if (failed) throw new ApiError("sign_in_failed", failed);
+    if (failed) {
+      console.log("[auth] provider refused:", failed);
+      throw new ApiError("sign_in_failed", failed);
+    }
     const token = params.get("access_token");
-    if (!token) return null;
+    if (!token) {
+      // A fragment that carried neither a token nor an error is a shape nobody
+      // predicted; naming its keys is what makes it diagnosable.
+      console.log("[auth] fragment with no access_token, keys:", [...params.keys()].join(","));
+      return null;
+    }
+    console.log("[auth] fragment found on", location.pathname, "— exchanging for the cookie");
     return exchange(token);
   },
 
