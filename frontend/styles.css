@@ -36,6 +36,8 @@
   --shadow-lift: 0 1px 2px rgba(28,27,24,.04), 0 26px 60px -28px rgba(28,27,24,.30);
 
   --ease: cubic-bezier(.4,0,.2,1);
+  /* View entry is a shade snappier than everything else, per the canvas. */
+  --ease-view: cubic-bezier(.3,.9,.2,1);
 }
 
 [data-theme="dark"] {
@@ -299,6 +301,13 @@ main:has(.lg-view) { overflow: hidden; }
   transition: border-color .2s var(--ease), box-shadow .25s var(--ease), transform .25s var(--ease);
 }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+
+/* VIEW ENTRY (12.3.6), copied from `designs/smooth-transitions/` rather than
+   invented: .18s and this curve are the canvas's. Applied to the root a view
+   swaps in, so a tab or project change eases instead of cutting. `both` holds
+   the from-state through the delay, so nothing flashes at full opacity first. */
+@keyframes viewin { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+.viewin { animation: viewin .18s var(--ease-view) both; }
 .card:hover { border-color: var(--ink-faint); box-shadow: var(--shadow); }
 .card .top {
   display: flex; align-items: center; justify-content: space-between;
@@ -369,6 +378,7 @@ textarea.note:focus { border-color: var(--accent-line); }
   font-size: 12.5px;
   transition: border-color .2s var(--ease), box-shadow .25s var(--ease);
 }
+.row { animation: pop .22s var(--ease) both; }
 .row:hover { border-color: var(--ink-faint); box-shadow: var(--shadow); }
 .row .label { display: flex; align-items: center; gap: 11px; min-width: 0; flex: 1; }
 .row .label .text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
@@ -558,9 +568,9 @@ kbd {
   background: var(--surface); border: 1px solid var(--line);
   border-radius: 12px; box-shadow: var(--shadow-lift);
   padding: 30px 32px;
-  animation: pop .3s var(--ease) both;
+  animation: pop .22s var(--ease) both;
 }
-@keyframes pop { from { opacity: 0; transform: translateY(10px) scale(.99); } }
+@keyframes pop { from { opacity: 0; transform: translateY(6px); } }
 .modal h2 { margin: 0 0 4px; font-size: 19px; font-weight: 500; letter-spacing: -0.02em; }
 .modal .sub { margin: 0 0 26px; color: var(--ink-mute); font-size: 12px; }
 .modal section { margin-bottom: 26px; }
@@ -708,6 +718,7 @@ kbd {
 .projects-grid { flex: 1; overflow-y: auto; padding: 30px 56px 40px; }
 .pg-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(220px,1fr)); gap: 16px; }
 .proj-card { position: relative; border: 1px solid var(--line); background: var(--surface); border-radius: 12px; padding: 18px 18px 16px; cursor: pointer; transition: border-color .2s var(--ease), box-shadow .2s var(--ease), transform .2s var(--ease); }
+.proj-card { animation: pop .22s var(--ease) both; }
 .proj-card:hover { border-color: var(--ink-faint); box-shadow: var(--shadow); transform: translateY(-1px); }
 .pc-status { position: absolute; top: 14px; right: 14px; width: 9px; height: 9px; border-radius: 50%; }
 .pc-status.work { background: var(--accent); animation: ping 2.4s var(--ease) infinite; }
@@ -751,7 +762,7 @@ kbd {
 .plan-drafting {
   overflow-wrap: anywhere;
 }
-.ev-block { max-width: 760px; }
+.ev-block { max-width: 760px; animation: pop .22s var(--ease) both; }
 .ev-assist { font-size: 13px; line-height: 1.7; color: var(--ink-soft); }
 .ev-assist .who { display: block; font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-mute); margin-bottom: 6px; }
 .ev-assist p { margin: 0; }
@@ -823,7 +834,7 @@ kbd {
 .ctx-tabs button.active { color: var(--ink); }
 .ctx-tabs .tab-label { position: relative; display: inline-block; padding-bottom: 13px; }
 .ctx-tabs button.active .tab-label::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--accent); }
-.ctx-content { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 0; }
+.ctx-content { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 0; animation: viewin .18s var(--ease-view) both; }
 /* Holding the file tree, the column stops scrolling itself: the tree scrolls
    its own rows and keeps its header and drop zone in place, exactly as in the
    Files tab. Two scrollbars for one list is what sharing the component fixes. */
@@ -1081,7 +1092,7 @@ kbd {
   border: 1px solid var(--ink-faint); border-radius: 14px;
   background: var(--surface); overflow: hidden;
   box-shadow: var(--shadow-lift);
-  animation: pop .25s var(--ease) both;
+  animation: pop .22s var(--ease) both;
 }
 .bw-big .bw-chrome { padding: 11px 16px; }
 .bw-big .bw-where { font-size: 11px; }
@@ -1199,7 +1210,7 @@ kbd {
 .pc-rename-btn {
   flex-shrink: 0; font-size: 10.5px; color: var(--ink-faint); background: none;
   border: none; font-family: var(--mono); padding: 2px 5px; border-radius: 4px;
-  cursor: text; opacity: 0; transition: opacity .15s var(--ease);
+  cursor: text; opacity: 0; transition: opacity .12s var(--ease);
 }
 .proj-card:hover .pc-rename-btn { opacity: 1; }
 .pc-rename-btn:hover { color: var(--ink-soft); background: var(--surface-2); }
@@ -1413,3 +1424,15 @@ kbd {
 .card.approval .plan-brief ol { margin: 0; padding-left: 18px; }
 .card.approval .plan-brief .missing { margin-top: 9px; font-size: 10.5px; color: var(--work); }
 
+
+/* ONE SWITCH TURNS ALL OF IT OFF. Reduced motion is not "less motion" — it is a
+   state change with no animation, so this kills durations rather than shortening
+   them, and `animation: none` rather than a zero duration so the from-state of a
+   `both` animation cannot stick and leave something invisible. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

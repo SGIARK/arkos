@@ -145,7 +145,7 @@ function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJ
 
   if (openProject) {
     return (
-      <div className="lg-view">
+      <div className="lg-view viewin">
         <div className="lg-ctxline">
           <button className="back-btn" onClick={() => setOpenProject(null)}>
             ← projects
@@ -189,7 +189,7 @@ function LookingGlassView({ onError, pulse, waiting: pending, onPulse, jump, onJ
   for (const item of waiting) waitingFor[item.project_id] = (waitingFor[item.project_id] || 0) + 1;
 
   return (
-    <div className="lg-view">
+    <div className="lg-view viewin">
       <div className="projects-grid">
         <div className="pg-head">
           <span className="kicker">projects</span>
@@ -600,7 +600,7 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
       .catch(onError);
 
   return (
-    <div className="lg-view">
+    <div className="lg-view viewin">
       <div className="lg-ctxline">
         {onBack && (
           <button className="back-btn" onClick={onBack}>

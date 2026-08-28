@@ -29,7 +29,7 @@ function DeskView({ onError, waiting: pending, onOpenSession }) {
   }, [waiting, onError]);
 
   return (
-    <div className="view">
+    <div className="view viewin">
       <PageHead
         title="the desk"
         lede="what is waiting on you, what is running, and where the work lives. nothing acts without your say-so."
@@ -109,7 +109,7 @@ function DeskView({ onError, waiting: pending, onOpenSession }) {
 function ApprovalsView({ onError, waiting, onResolved }) {
   // `waiting` is null until App has read it once — distinct from an empty list.
   return (
-    <div className="view">
+    <div className="view viewin">
       <PageHead
         title="approvals"
         lede="questions a run stopped to ask. answering here is answering in its window — one row, wherever you see it."
@@ -271,7 +271,7 @@ function ComputerView({ onError, jumpTo, onJumped }) {
   );
 
   return (
-    <div className="view" style={{ padding: 0, height: "100%" }}>
+    <div className="view viewin" style={{ padding: 0, height: "100%" }}>
       <div className="computer">
         <div className="cv-files">
           <FileTree
