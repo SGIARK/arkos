@@ -6,6 +6,7 @@ Runs against a real Postgres with migration 0 applied; the model is mocked.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -846,7 +847,7 @@ def small_budgets(monkeypatch):
     """A hop cap low enough that a run exhausts it in a few round trips."""
 
     def load(mode="attended"):
-        return runner.Budgets(max_hops=2, wall_clock_s=30.0, per_tool_attempts=3, model_retries=1)
+        return runner.Budgets(max_hops=2, wall_clock_s=30.0, per_tool_attempts=3, model_retries=1, stall_streak=3)
 
     monkeypatch.setattr(runner.Budgets, "load", load)
 
@@ -893,6 +894,41 @@ async def test_the_nudge_lands_in_the_transcript_before_the_budget_runs_out(mode
 
     assert [u.source for u in users] == ["human", "system"]
     assert "finish_task" in users[1].text
+
+
+async def test_a_bookkeeping_loop_ends_the_run_rather_than_reading_as_progress(model, monkeypatch):
+    """The Mercari shape end to end: identical `todo_write` hops must land a terminal.
+
+    Nothing is capped here except the streak — the hop budget is the real one — so
+    what ends this run is the corrected progress definition and nothing else (12.3.9).
+    """
+    session_id = await _session(mode="unattended")
+    await slog.append(session_id, UserEvent(text="do the thing"))
+
+    async def manifest(user_id, mcp=None, session_id=None):
+        return runner.registry.Manifest(specs=[ToolSpec(name="todo_write"), ToolSpec(name="finish_task")])
+
+    def bind(ctx, **kw):
+        async def dispatch(name, args):
+            return ok(f"{name} ran")
+
+        return dispatch
+
+    monkeypatch.setattr(runner.registry, "manifest", manifest)
+    monkeypatch.setattr(runner.registry, "bind", bind)
+    listing = json.dumps({"items": [{"text": "photograph the pants", "status": "in_progress"}]})
+    model.arm(*[_call("todo_write", listing, id=f"t{i}") for i in range(6)])
+
+    await runner.start(session_id)
+    await _settle(session_id)
+
+    row = await pool.fetchrow("SELECT status, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id))
+    events = [e.event for e in await slog.get_events(session_id)]
+    calls = [e for e in events if e.kind == "tool_call"]
+
+    assert (row["status"], row["terminal_reason"]) == ("failed", "stalled_progress")
+    assert len(calls) == int(runner._cfg("budgets.stall_streak", 3)), "it ends ON the streak, not on the hop cap"
+    assert [e.text for e in events if e.kind == "user" and e.source == "system"], "it was told first, then ended"
 
 
 async def test_a_finish_task_that_fails_does_not_complete_the_run(model, monkeypatch, small_budgets):

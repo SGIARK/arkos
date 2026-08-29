@@ -677,55 +677,229 @@ async def _never(name, args):
     raise AssertionError("no tool should run")
 
 
-# --- the checklist scaffold -----------------------------------------------------
+# --- the checklist is standing state (12.3.9) -----------------------------------
+
+TODO_TOOLS = [*TOOLS, lp.ToolSpec(name="todo_write")]
+HEADING = "# Your checklist"
+
+
+def _with_system():
+    """The message list as the fold builds it: a system message, then the human."""
+    return [{"role": "system", "content": "SYSTEM"}, {"role": "user", "content": "go"}]
+
+
+def _todo(items, *, id="t1"):
+    return _call("todo_write", json.dumps({"items": items}), id=id)
 
 
 @pytest.mark.asyncio
-async def test_an_unattended_hop_carries_the_checklist_instruction(model):
-    """The scaffold rides in messages as context, never as a transcript event."""
+async def test_the_checklist_rides_the_system_message_and_never_the_tail(model):
+    """Standing state is not the newest thing said: the tail is what the model answers."""
     model.arm(_call(lp.FINISH_TOOL))
 
-    events, msgs = await _run(model, mode="unattended")
+    events, msgs = await _run(model, mode="unattended", messages=_with_system())
 
-    scaffolds = [m for m in msgs if m["role"] == "user" and "todo_write" in str(m.get("content"))]
-    assert scaffolds, "an unattended hop must carry the checklist discipline"
-    assert not [e for e in events if getattr(e, "kind", "") == "user" and "todo_write" in getattr(e, "text", "")], (
-        "the scaffold is CONTEXT, not a transcript event"
+    assert msgs[0]["role"] == "system" and HEADING in msgs[0]["content"]
+    assert msgs[0]["content"].startswith("SYSTEM"), "the checklist is appended to the prompt, not instead of it"
+    assert not [m for m in msgs if m["role"] == "user" and "todo_write" in str(m.get("content"))], (
+        "no hop may end on an instruction to call todo_write"
+    )
+    assert not [e for e in events if getattr(e, "kind", "") == "user"], "the state is CONTEXT, not a transcript event"
+
+
+@pytest.mark.asyncio
+async def test_the_checklist_state_asks_for_nothing(model):
+    """The imperative is what a run answered every hop; the state names no tool."""
+    model.arm(_call(lp.FINISH_TOOL))
+
+    _, msgs = await _run(model, mode="unattended", messages=_with_system())
+
+    block = msgs[0]["content"].split(HEADING)[1]
+    assert "todo_write" not in block and "Call" not in block
+
+
+@pytest.mark.asyncio
+async def test_an_attended_turn_carries_no_checklist(model):
+    """Attended chat has a human reading it; the checklist is not its rhythm."""
+    model.arm(_text("hi"))
+
+    _, msgs = await _run(model, mode="attended", messages=_with_system())
+
+    assert msgs[0]["content"] == "SYSTEM"
+
+
+@pytest.mark.asyncio
+async def test_only_one_checklist_is_ever_present(model):
+    """Rewritten in place each hop, never appended: two lists is one stale list."""
+    model.arm(_call("grep"), _call("grep", id="c2"), _call(lp.FINISH_TOOL, id="c3"))
+
+    _, msgs = await _run(model, mode="unattended", messages=_with_system())
+
+    assert msgs[0]["content"].count(HEADING) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_checklist_carries_what_the_model_last_wrote(model):
+    """A model that can see the list it is behind on is one that can catch it up."""
+    items = [{"text": "one", "status": "done"}, {"text": "two", "status": "pending"}]
+    model.arm(_todo(items), _call(lp.FINISH_TOOL, id="c2"))
+
+    _, msgs = await _run(model, mode="unattended", messages=_with_system(), tools=TODO_TOOLS)
+
+    assert "one" in msgs[0]["content"] and "two" in msgs[0]["content"]
+    assert "1 still open" in msgs[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_run_states_the_list_it_has(model):
+    """The tracker starts empty every turn, so a resume would otherwise claim there is none."""
+    model.arm(_call(lp.FINISH_TOOL))
+    msgs = _with_system()
+
+    async for _ in lp.run_turn(
+        msgs,
+        TOOLS,
+        _budgets(),
+        "unattended",
+        dispatch=_dispatch(),
+        todo_items=[{"text": "carried over", "status": "in_progress"}],
+    ):
+        pass
+
+    assert "carried over" in msgs[0]["content"]
+    assert "Empty" not in msgs[0]["content"]
+
+
+# --- bookkeeping is not progress ------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_bookkeeping_only_streak_ends_the_run_stalled(model):
+    """The Mercari shape: identical `todo_write` hops read as progress and nothing fired."""
+    items = [{"text": "one", "status": "pending"}]
+    model.arm(_todo(items), _todo(items, id="t2"), _todo(items, id="t3"), _todo(items, id="t4"))
+
+    events, _ = await _run(
+        model, mode="unattended", messages=_with_system(), tools=TODO_TOOLS, budgets=_budgets(max_hops=10)
+    )
+
+    injected = [e for e in events if isinstance(e, ev.UserEvent)]
+    assert len(injected) == 2
+    assert "does not do any" in injected[0].text, "the first says what bookkeeping is not"
+    assert lp.FINISH_TOOL in injected[1].text
+    assert model.hops == 3
+    assert events[-1].reason == "stalled_progress"
+
+
+@pytest.mark.asyncio
+async def test_bookkeeping_between_real_work_never_trips_the_streak(model):
+    """The list stays useful: real work resets the count, so it never escalates."""
+    items = [{"text": "one", "status": "pending"}]
+    model.arm(
+        _todo(items),
+        _call("write_file", id="w1"),
+        _todo(items, id="t2"),
+        _call("write_file", id="w2"),
+        _call(lp.FINISH_TOOL, id="c9"),
+    )
+
+    events, _ = await _run(
+        model, mode="unattended", messages=_with_system(), tools=TODO_TOOLS, budgets=_budgets(max_hops=10)
+    )
+
+    injected = [e for e in events if isinstance(e, ev.UserEvent)]
+    assert all("does not do any" in n.text for n in injected), "never escalates past the opener"
+    assert events[-1].reason == "completed"
+
+
+@pytest.mark.asyncio
+async def test_the_write_a_reminder_asked_for_is_not_charged_as_a_stall(model):
+    """Asking for the list and then scolding the write is two mechanisms disagreeing."""
+    model.arm(
+        _call("write_file", id="w1"),
+        _todo([{"text": "one", "status": "done"}]),
+        _call(lp.FINISH_TOOL, id="c9"),
+    )
+
+    events, _ = await _run(
+        model, mode="unattended", messages=_with_system(), tools=TODO_TOOLS, budgets=_budgets(max_hops=10)
+    )
+
+    assert [e for e in events if isinstance(e, ev.UserEvent)] == []
+    assert events[-1].reason == "completed"
+
+
+@pytest.mark.asyncio
+async def test_a_mixed_hop_is_work(model):
+    """`todo_write` beside a real call is a run keeping its list, not stalling."""
+    items = [{"text": "one", "status": "pending"}]
+    model.arm(
+        [*_todo(items)[:-1], *_call("write_file", id="w1", index=1)],
+        [*_todo(items, id="t2")[:-1], *_call("write_file", id="w2", index=1)],
+        [*_todo(items, id="t3")[:-1], *_call("write_file", id="w3", index=1)],
+        _call(lp.FINISH_TOOL, id="c9"),
+    )
+
+    events, _ = await _run(
+        model, mode="unattended", messages=_with_system(), tools=TODO_TOOLS, budgets=_budgets(max_hops=10)
+    )
+
+    assert [e for e in events if isinstance(e, ev.UserEvent)] == []
+    assert events[-1].reason == "completed"
+
+
+# --- the list is asked for only when it is behind -------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_stale_reminder_fires_once_after_real_work(model):
+    """Work landed and the list did not move: that, and nothing else, asks for a write."""
+    model.arm(_call("write_file", id="w1"), _call("write_file", id="w2"), _call(lp.FINISH_TOOL, id="c9"))
+
+    _, msgs = await _run(
+        model, mode="unattended", messages=_with_system(), tools=TODO_TOOLS, budgets=_budgets(max_hops=10)
+    )
+
+    reminders = [m for m in msgs if m["role"] == "user" and "checklist is behind" in str(m.get("content"))]
+    assert len(reminders) == 1, "asked once per staleness, not once per hop"
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_has_done_nothing_is_never_asked_for_a_list(model):
+    """Before any work there is nothing to be behind on."""
+    model.arm(_call("grep"), _call("grep", id="g2"), _call(lp.FINISH_TOOL, id="c9"))
+
+    _, msgs = await _run(
+        model, mode="unattended", messages=_with_system(), tools=TODO_TOOLS, budgets=_budgets(max_hops=10)
+    )
+
+    assert not [m for m in msgs if m["role"] == "user" and "checklist is behind" in str(m.get("content"))], (
+        "a read leaves nothing for the list to record"
     )
 
 
 @pytest.mark.asyncio
-async def test_an_attended_turn_gets_no_scaffold(model):
-    """Attended chat has a human reading it; the checklist is not its rhythm."""
-    model.arm(_text("hi"))
+async def test_writing_the_list_settles_it(model):
+    """The reminder is answered by the write it asks for, and does not come back."""
+    items = [{"text": "one", "status": "done"}]
+    model.arm(
+        _call("write_file", id="w1"),
+        _todo(items),
+        _call(lp.FINISH_TOOL, id="c9"),
+    )
 
-    _, msgs = await _run(model, mode="attended")
+    _, msgs = await _run(
+        model, mode="unattended", messages=_with_system(), tools=TODO_TOOLS, budgets=_budgets(max_hops=10)
+    )
 
-    assert not [m for m in msgs if m["role"] == "user" and "todo_write" in str(m.get("content"))]
-
-
-@pytest.mark.asyncio
-async def test_only_one_scaffold_is_ever_present(model):
-    """Replaced each hop, not appended: else the model reads the oldest as readily."""
-    model.arm(_call("grep"), _call("grep", id="c2"), _call(lp.FINISH_TOOL, id="c3"))
-
-    _, msgs = await _run(model, mode="unattended")
-
-    scaffolds = [m for m in msgs if m["role"] == "user" and "todo_write" in str(m.get("content"))]
-    assert len(scaffolds) == 1, f"{len(scaffolds)} scaffolds accumulated"
+    reminders = [m for m in msgs if m["role"] == "user" and "checklist is behind" in str(m.get("content"))]
+    assert len(reminders) == 1
 
 
-@pytest.mark.asyncio
-async def test_the_scaffold_carries_what_the_model_last_wrote(model):
-    """A model that can see the list it is behind on is one that can catch it up."""
-    items = [{"text": "one", "status": "done"}, {"text": "two", "status": "pending"}]
-    model.arm(_call("todo_write", json.dumps({"items": items})), _call(lp.FINISH_TOOL, id="c2"))
-
-    _, msgs = await _run(model, mode="unattended", tools=[*TOOLS, lp.ToolSpec(name="todo_write")])
-
-    scaffold = [m for m in msgs if m["role"] == "user" and "todo_write" in str(m.get("content"))][-1]
-    assert "one" in scaffold["content"] and "two" in scaffold["content"]
-    assert "1 still open" in scaffold["content"]
+def test_the_stall_streak_is_a_budget_and_not_a_constant():
+    """`grep _BARE_TEXT_LIMIT` finds nothing: the number is config, like every other budget."""
+    assert not hasattr(lp, "_BARE_TEXT_LIMIT")
+    assert lp.Budgets.load("unattended").stall_streak == int(lp.config.get("budgets.stall_streak"))
 
 
 # --- intent outranks mechanism --------------------------------------------------

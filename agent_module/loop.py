@@ -13,6 +13,7 @@ from typing import Any, Literal
 
 from agent_module import prompts
 from agent_module.events import (
+    TODO_TOOL,
     BudgetEvent,
     ContentEvent,
     DoneEvent,
@@ -37,10 +38,6 @@ Mode = Literal["attended", "unattended"]
 # The only tool that ends an unattended run.
 FINISH_TOOL = "finish_task"
 
-# Consecutive bare-text hops an unattended run may take before it is called
-# stalled: a continuation, then the finish nudge, then the run ends.
-_BARE_TEXT_LIMIT = 3
-
 
 def _require(key: str) -> Any:
     """Read a config value that has no default in code."""
@@ -56,6 +53,9 @@ class Budgets:
     wall_clock_s: float
     per_tool_attempts: int
     model_retries: int
+    # Consecutive UNPRODUCTIVE hops an unattended run may take before it is called
+    # stalled: a continuation, then the finish nudge, then the run ends.
+    stall_streak: int
 
     @classmethod
     def load(cls, mode: Mode = "attended") -> Budgets:
@@ -69,6 +69,7 @@ class Budgets:
             wall_clock_s=float(_require(f"budgets.{mode}.wall_clock_s")),
             per_tool_attempts=int(_require("budgets.per_tool_attempts")),
             model_retries=int(_require("budgets.model_retries")),
+            stall_streak=int(_require("budgets.stall_streak")),
         )
 
 
@@ -103,6 +104,45 @@ class _State:
     repair_pending: bool = False
     # Set when finish_task returns ok, not when it is called.
     finished: bool = False
+    # Consecutive hops that produced no work, unattended only. Bare text is one;
+    # so is a hop whose only calls were bookkeeping.
+    unproductive_streak: int = 0
+    # Its own latch: fires once near the hop cap, on a schedule and a budget
+    # separate from the streak.
+    near_cap_nudged: bool = False
+
+
+def _unproductive(state: _State, budgets: Budgets, hops_used: int, opener: str) -> tuple[bool, str | None]:
+    """Charge one hop that produced no work, and decide what it draws.
+
+    Returns `(ended, injected)`: `ended` means the streak is spent and the run is
+    over; `injected` is the nudge to append, or None when no hop is left to act on
+    one. `opener` is what the FIRST hop of a streak says, which differs by what the
+    hop did — nothing at all, or nothing but bookkeeping.
+    """
+    state.unproductive_streak += 1
+    if state.unproductive_streak >= budgets.stall_streak:
+        return True, None
+    if hops_used >= budgets.max_hops:
+        # Only nudge while a hop remains to act on the nudge.
+        return False, None
+    near_cap = not state.near_cap_nudged and hops_used == budgets.max_hops - 1
+    if state.unproductive_streak > 1 or near_cap:
+        # Only the near-cap latch moves here; the streak escalates on its own schedule.
+        state.near_cap_nudged = state.near_cap_nudged or near_cap
+        return False, prompts.finish_nudge(FINISH_TOOL, budgets.max_hops - hops_used)
+    return False, opener
+
+
+def _changes_the_world(name: str | None, by_name: dict[str, ToolSpec]) -> bool:
+    """Whether a successful call did something the checklist could be behind on.
+
+    A read is not one, and neither is writing the list itself.
+    """
+    if name is None or name == TODO_TOOL:
+        return False
+    spec = by_name.get(name)
+    return spec is None or not spec.readonly
 
 
 async def run_turn(
@@ -117,6 +157,7 @@ async def run_turn(
     store_blob: StoreBlob | None = None,
     steer: Steer | None = None,
     teardown_intent: TeardownIntent | None = None,
+    todo_items: Sequence[dict[str, Any]] = (),
 ) -> AsyncIterator[Event]:
     """Run one turn to its end, yielding events as they happen.
 
@@ -127,6 +168,8 @@ async def run_turn(
         hops_used: hops already spent, counted from the log across a resume.
         store_blob: stores the full text of an oversized result and returns its ref.
         steer: anything the human has said since it was last asked; called once per hop.
+        todo_items: the checklist the log ends on, so a resumed run states the list it
+            actually has rather than claiming it has none.
 
     Yields:
         Events from the vocabulary, ending with exactly one `done`.
@@ -137,18 +180,21 @@ async def run_turn(
     deadline = time.monotonic() + budgets.wall_clock_s
     state = _State(budgets=budgets)
     seen_ids: set[str] = set()
-    # Its own latch: fires once near the hop cap, on a schedule and a budget
-    # separate from the bare-text streak below.
-    near_cap_nudged = False
-    # Consecutive hops that produced text and no tool call, unattended only; a
-    # tool-calling hop clears it.
-    bare_streak = 0
     model_retries = 0
     reattempt = False
-    # Exactly one scaffold copy may live in `messages`: it is replaced each hop,
-    # never appended, or the model reads a stale checklist as readily as the new one.
     todo = TodoTracker()
-    scaffold: dict[str, Any] | None = None
+    todo.items = [dict(item) for item in todo_items]
+    # The checklist is STANDING STATE, so it rides the system message and is
+    # rewritten there each hop — one copy, and never the newest thing in the
+    # context. Restating it as the last message every hop is what taught a run to
+    # answer it every hop (12.3.9).
+    system = messages[0] if messages and messages[0].get("role") == "system" else None
+    if mode == "unattended" and system is None:
+        logger.warning("unattended turn with no system message: the checklist has nowhere to ride")
+    system_base = str(system.get("content") or "") if system is not None else ""
+    # Set when work landed and the list did not move; cleared by the write it draws.
+    list_stale = False
+    reminded = False
 
     while True:
         if hops_used >= budgets.max_hops:
@@ -174,13 +220,17 @@ async def run_turn(
             for said in await steer():
                 messages.append({"role": "user", "content": said})
 
-        # Into the CONTEXT and not the log: a standing instruction re-stated
-        # every hop, not something that happened.
         if mode == "unattended":
-            if scaffold is not None and scaffold in messages:
-                messages.remove(scaffold)
-            scaffold = {"role": "user", "content": prompts.checklist_scaffold(todo.items)}
-            messages.append(scaffold)
+            # Replaced in place, never appended: one copy of the list, carried where
+            # standing state belongs.
+            if system is not None:
+                system["content"] = system_base + prompts.checklist_state(todo.items)
+            if list_stale and not reminded:
+                # The ONE time a run is told to write the list: it is actually behind.
+                # Into the CONTEXT and not the log — derived state, refolded from the
+                # log next turn, not something that happened.
+                reminded = True
+                messages.append({"role": "user", "content": prompts.checklist_stale_nudge()})
 
         hop = _Hop()
         try:
@@ -210,26 +260,22 @@ async def run_turn(
                         yield DoneEvent(reason="stalled_progress")
                         return
 
-                    bare_streak += 1
-                    if bare_streak >= _BARE_TEXT_LIMIT:
+                    ended, injected = _unproductive(state, budgets, hops_used, prompts.continue_nudge(FINISH_TOOL))
+                    if ended:
                         yield DoneEvent(reason="stalled_progress")
                         return
-                    if hops_used < budgets.max_hops:
-                        # Only nudge while a hop remains to act on the nudge.
-                        near_cap = not near_cap_nudged and hops_used == budgets.max_hops - 1
-                        if bare_streak > 1 or near_cap:
-                            # Only the near-cap latch moves here; the streak
-                            # escalates on its own schedule.
-                            near_cap_nudged = near_cap_nudged or near_cap
-                            injected = prompts.finish_nudge(FINISH_TOOL, budgets.max_hops - hops_used)
-                        else:
-                            injected = prompts.continue_nudge(FINISH_TOOL)
+                    if injected is not None:
                         messages.append({"role": "user", "content": injected})
                         yield UserEvent(text=injected, source="system")
                     model_retries = 0
                     continue
 
-                bare_streak = 0
+                # Bookkeeping is not work. A hop whose only calls were `todo_write`
+                # does NOT clear the streak: clearing it on ANY call is what let a run
+                # spend seven hops rewriting one list and read as progress (12.3.9).
+                worked = any(call.name != TODO_TOOL for call in calls)
+                if worked:
+                    state.unproductive_streak = 0
 
                 messages.append(
                     {
@@ -242,13 +288,38 @@ async def run_turn(
                     }
                 )
 
+                names: dict[str, str] = {}
+                wrote_list = False
+                did_work = False
                 for batch in _batch_by_readonly(calls, by_name):
                     async for event in _run_batch(batch, by_name, dispatch, state, messages, store_blob):
                         if isinstance(event, ToolCallEvent):
+                            names[event.id] = event.name
                             todo.saw_call(event.id, event.name, event.args)
                         elif isinstance(event, ToolResultEvent):
-                            todo.saw_result(event.id, event.ok)
+                            if todo.saw_result(event.id, event.ok):
+                                wrote_list = True
+                            elif event.ok and _changes_the_world(names.get(event.id), by_name):
+                                did_work = True
                         yield event
+
+                # A hop that wrote the list is current whatever else it did; otherwise
+                # work done leaves the list behind until it is written.
+                answered_reminder = wrote_list and reminded
+                list_stale = False if wrote_list else (list_stale or did_work)
+                if wrote_list:
+                    reminded = False
+
+                # Writing the list this loop just ASKED for is neither work nor a stall:
+                # charging it would scold the run for doing what it was told.
+                if mode == "unattended" and not worked and not answered_reminder:
+                    ended, injected = _unproductive(state, budgets, hops_used, prompts.bookkeeping_nudge(FINISH_TOOL))
+                    if ended:
+                        yield DoneEvent(reason="stalled_progress")
+                        return
+                    if injected is not None:
+                        messages.append({"role": "user", "content": injected})
+                        yield UserEvent(text=injected, source="system")
 
         except TimeoutError:
             yield DoneEvent(reason="wall_clock")

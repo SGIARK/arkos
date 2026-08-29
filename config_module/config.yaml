@@ -172,6 +172,10 @@ budgets:
   unattended: {max_hops: 15, wall_clock_s: 1800}
   per_tool_attempts: 3
   model_retries: 3          # consecutive hop re-attempts after the client gives up
+  # Consecutive UNPRODUCTIVE hops an unattended run may take before it ends
+  # stalled_progress: bare text, or a hop whose only calls were `todo_write`.
+  # The first draws a continuation, the second the finish nudge, the third ends it.
+  stall_streak: 3
 
 tools:
   # DESTRUCTIVE TOOLS: what autopilot will not do on its own (11.11.2).

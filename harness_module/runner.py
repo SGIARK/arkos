@@ -528,6 +528,9 @@ async def _drive(session_id: str) -> None:
             options=_model_options(),
             store_blob=sink.store_blob,
             steer=_steering(session_id, folded.last_seq),
+            # The list the log ends on, so a RESUMED run's system prompt states the
+            # checklist it has rather than claiming it has none.
+            todo_items=folded.todo,
             # The loop cannot tell a stop from a cancel — both arrive as a
             # CancelledError — so it asks what the presser recorded.
             teardown_intent=lambda: _teardown.get(session_id),

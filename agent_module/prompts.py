@@ -344,22 +344,36 @@ def finish_nudge(finish_tool: str, hops_left: int) -> str:
     )
 
 
-def checklist_scaffold(items: list[dict[str, Any]]) -> str:
-    """The per-hop reminder that the checklist is the model's to keep current.
+def checklist_state(items: list[dict[str, Any]]) -> str:
+    """The checklist as it stands, as a section of the SYSTEM prompt.
 
-    The CURRENT state is re-sent every hop; it is never seeded from the plan.
+    Standing state rides the system message and is refreshed in place, so it is
+    never the newest thing in the context. It STATES and asks for nothing: the
+    discipline is in `_SHARED`, and an imperative restated as the last message
+    every hop is answered every hop (12.3.9).
     """
     if not items:
-        return (
-            "You have no checklist yet. Call `todo_write` with the steps you are working "
-            "through, then keep it current as you go."
-        )
+        return "\n# Your checklist\nEmpty — you have not written one for this run yet.\n"
     marks = {"done": "x", "in_progress": "~"}
     lines = "\n".join(f"  [{marks.get(str(i.get('status', 'pending')), ' ')}] {i.get('text', '')}" for i in items)
     left = sum(1 for i in items if str(i.get("status", "pending")) != "done")
     tail = "everything is checked off" if not left else f"{left} still open"
+    return f"\n# Your checklist\nAs you last wrote it ({tail}):\n{lines}\n"
+
+
+def checklist_stale_nudge() -> str:
+    """The one time a run is told to write the list: work landed and the list did not move."""
     return (
-        f"Your checklist right now ({tail}):\n{lines}\n"
-        "Call `todo_write` with the WHOLE list whenever a step's status changes. "
-        "Keep exactly one item in_progress."
+        "Your checklist is behind — you have completed work since you last wrote it. "
+        "Call `todo_write` with the WHOLE list as it stands now, marked honestly, and "
+        "keep exactly one item in_progress."
+    )
+
+
+def bookkeeping_nudge(finish_tool: str) -> str:
+    """The answer to a hop that only wrote the checklist. Recording progress is not making it."""
+    return (
+        "That hop only updated the checklist. The list RECORDS work, it does not do any, "
+        f"so nothing moved. Take the next real step, or call {finish_tool} with what you did "
+        "and what blocked you. Writing the list again is not an exit."
     )
