@@ -418,21 +418,6 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
   // from the server and is what survives a reload, but it was read before the
   // approval, so the pinned card would not appear until then without this.
   const [approvedHere, setApprovedHere] = useState(null);
-  /* Dismissing a finished plan clears it from THIS surface and nothing else:
-     the row is a permanent fact and is never deleted. Kept per browser rather
-     than in memory, because a reload resurrecting a plan you dismissed reads as
-     the dismissal not having worked. */
-  const dismissKey = `ark-plan-dismissed-${sessionId}`;
-  const [dismissedVersion, setDismissedVersion] = useState(() => {
-    const stored = Number(localStorage.getItem(dismissKey));
-    return Number.isFinite(stored) && stored > 0 ? stored : 0;
-  });
-  const dismissPlan = (version) => {
-    localStorage.setItem(dismissKey, String(version || 1));
-    setDismissedVersion(version || 1);
-    setApprovedHere(null);
-    setResumeNote("");
-  };
 
   /* Renaming the project from its own window. Keyed off the SNAPSHOT's ids
      rather than the grid's navigation state, so it works in a window opened
@@ -497,8 +482,8 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
   const planCard = openPlan;
   /* Everything below reads the server's `plan` — its `answer` is what became of
      it — with one local override for the approval made in THIS window, which the
-     snapshot was read before. Dismissing hides whatever version was dismissed. */
-  const serverPlan = session.plan && session.plan.version > dismissedVersion ? session.plan : null;
+     snapshot was read before. */
+  const serverPlan = session.plan;
   const approvedPlan = approvedHere || (serverPlan && serverPlan.answer === "approve" ? serverPlan : null);
   const abandonedPlan = serverPlan && serverPlan.answer === "decline" ? serverPlan : null;
 
@@ -510,9 +495,9 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
      reload and right in a second tab. */
   const held = session.status === "idle" && unattended;
   const cancelled = !!approvedPlan && session.status === "cancelled";
-  // The pin outlives the run: an approved plan that finished still says where
-  // it was saved. It goes only when the plan is dismissed.
-  const showPin = !!approvedPlan;
+  // The lifecycle is the only authority over the pin: terminal sessions hand
+  // back to attended, while a stopped run stays idle and unattended.
+  const showPin = !!approvedPlan && unattended && ["running", "awaiting_approval", "idle"].includes(session.status);
   const stopStep = session.hops_used || 1;
   /* ▶ is offered when nothing is pending on the human and nothing is in flight:
      an idle session, a finished one, a dismissed plan, or a cancelled run
@@ -816,9 +801,6 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
                 >
                   draft a continuation
                 </button>
-                <button className="link mute" onClick={() => dismissPlan(approvedPlan.version)}>
-                  dismiss
-                </button>
               </div>
             )}
 
@@ -837,9 +819,6 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
                   }}
                 >
                   draft again
-                </button>
-                <button className="link mute" onClick={() => dismissPlan(abandonedPlan.version)}>
-                  dismiss
                 </button>
               </div>
             )}
@@ -1280,4 +1259,3 @@ function BrowserCanvas({ url, label }) {
     </div>
   );
 }
-
