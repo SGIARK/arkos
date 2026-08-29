@@ -279,6 +279,12 @@ const api = {
 
   /* --- the stream ------------------------------------------------------- */
 
+  attentionStream(onEvent) {
+    const source = new EventSource(`${API}/attention/stream`, { withCredentials: true });
+    source.addEventListener("attention", onEvent);
+    return source;
+  },
+
   /* One EventSource per open session. No polling anywhere: the snapshot gives
      the tail of the log and its last seq, and the stream carries everything
      after it. On a drop the browser reconnects on its own and sends

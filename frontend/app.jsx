@@ -85,8 +85,15 @@ function App() {
   /* The pending count in the topbar, and the alert dot on the rail. */
   useEffect(() => {
     if (!user) return;
-    api.attention().then(setWaiting).catch(() => {});
-  }, [user, pulse]);
+    let live = true;
+    const refresh = () => api.attention().then((rows) => live && setWaiting(rows)).catch(() => {});
+    const source = api.attentionStream(refresh);
+    source.addEventListener("open", refresh);
+    return () => {
+      live = false;
+      source.close();
+    };
+  }, [user]);
 
   // `/` focused the ambient bar, which is gone; escape still closes settings.
   useEscape(settings, () => setSettings(false));
