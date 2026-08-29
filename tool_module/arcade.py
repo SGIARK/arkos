@@ -52,6 +52,7 @@ import json
 import logging
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
@@ -74,6 +75,11 @@ META_PREFIX = "Arcade"
 
 # `tools/list` pages at 100. See `list_tools`.
 _MAX_PAGES = 20
+
+# Per-user state is process-local and cheap to rebuild. Keep enough hot users
+# for an active deployment without retaining every identity the process has seen.
+_MAX_CACHED_USERS = 256
+_LOCK_STRIPES = 64
 
 
 class ArcadeError(RuntimeError):
@@ -117,10 +123,11 @@ class ArcadeClient:
         self.gateway_url = gateway_url.rstrip("/")
         self.engine_url = engine_url.rstrip("/")
         self.protocol_version = protocol_version
+        self._max_cached_users = _MAX_CACHED_USERS
         self._http: aiohttp.ClientSession | None = None
         self._http_lock = asyncio.Lock()
-        self._sessions: dict[str, _McpSession] = {}
-        self._session_locks: dict[str, asyncio.Lock] = {}
+        self._sessions: OrderedDict[str, _McpSession] = OrderedDict()
+        self._session_locks = tuple(asyncio.Lock() for _ in range(_LOCK_STRIPES))
 
     # ---------- plumbing ----------
 
@@ -158,22 +165,27 @@ class ArcadeClient:
     # ---------- the MCP handshake ----------
 
     def _lock_for(self, user_id: str) -> asyncio.Lock:
-        lock = self._session_locks.get(user_id)
-        if lock is None:
-            lock = self._session_locks[user_id] = asyncio.Lock()
-        return lock
+        return self._session_locks[hash(user_id) % len(self._session_locks)]
+
+    def _cached_session(self, user_id: str) -> _McpSession | None:
+        live = self._sessions.get(user_id)
+        if live is not None:
+            self._sessions.move_to_end(user_id)
+        return live
 
     async def _session(self, user_id: str) -> str:
         """Return this user's `Mcp-Session-Id`, performing the handshake if needed."""
-        live = self._sessions.get(user_id)
+        live = self._cached_session(user_id)
         if live is not None:
             return live.id
         async with self._lock_for(user_id):
-            live = self._sessions.get(user_id)
+            live = self._cached_session(user_id)
             if live is not None:
                 return live.id
             session_id = await self._handshake(user_id)
             self._sessions[user_id] = _McpSession(session_id, time.monotonic())
+            while len(self._sessions) > self._max_cached_users:
+                self._sessions.popitem(last=False)
             return session_id
 
     async def _handshake(self, user_id: str) -> str:
@@ -420,12 +432,13 @@ class Arcade:
         # in neither the session toggles nor the settings panel.
         self.search_server: str | None = search.get("server") or None
         self._ttl_s = float(_cfg("tools.mcp_cache_ttl_s", 3600))
+        self._max_cached_users = _MAX_CACHED_USERS
         # user_id -> (fetched_at, {prefix: [raw tool, ...]})
-        self._tools: dict[str, tuple[float, dict[str, list[dict[str, Any]]]]] = {}
-        self._tool_locks: dict[str, asyncio.Lock] = {}
+        self._tools: OrderedDict[str, tuple[float, dict[str, list[dict[str, Any]]]]] = OrderedDict()
+        self._tool_locks = tuple(asyncio.Lock() for _ in range(_LOCK_STRIPES))
         # Consent links, in memory only: they expire, and a stale one sends a
         # human to a dead page more confusingly than no link at all.
-        self._setup_urls: dict[tuple[str, str], str] = {}
+        self._setup_urls: OrderedDict[tuple[str, str], str] = OrderedDict()
 
     # ---------- config ----------
 
@@ -452,10 +465,30 @@ class Arcade:
     # ---------- the gateway's tool list ----------
 
     def _lock_for(self, user_id: str) -> asyncio.Lock:
-        lock = self._tool_locks.get(user_id)
-        if lock is None:
-            lock = self._tool_locks[user_id] = asyncio.Lock()
-        return lock
+        return self._tool_locks[hash(user_id) % len(self._tool_locks)]
+
+    def _cached_tools(self, user_id: str) -> tuple[float, dict[str, list[dict[str, Any]]]] | None:
+        cached = self._tools.get(user_id)
+        if cached is not None:
+            self._tools.move_to_end(user_id)
+        return cached
+
+    def _remember_tools(self, user_id: str, tools: dict[str, list[dict[str, Any]]]) -> None:
+        self._tools[user_id] = (time.monotonic(), tools)
+        self._tools.move_to_end(user_id)
+        while len(self._tools) > self._max_cached_users:
+            self._tools.popitem(last=False)
+
+    def _remember_setup_url(self, user_id: str, server: str, url: str | None) -> None:
+        key = (user_id, server)
+        if url is None:
+            self._setup_urls.pop(key, None)
+            return
+        self._setup_urls[key] = url
+        self._setup_urls.move_to_end(key)
+        limit = self._max_cached_users * max(1, len(self.prefixes))
+        while len(self._setup_urls) > limit:
+            self._setup_urls.popitem(last=False)
 
     async def tools_by_server(self, user_id: str, *, refresh: bool = False) -> dict[str, list[dict[str, Any]]]:
         """Return the gateway's tools grouped by prefix, cached per user on the TTL.
@@ -466,13 +499,13 @@ class Arcade:
         another's. A few copies of a small dict is not a cost worth a guess
         about how the gateway scopes its listing.
         """
-        cached = self._tools.get(user_id)
+        cached = self._cached_tools(user_id)
         fresh = cached is not None and (time.monotonic() - cached[0]) < self._ttl_s
         if not refresh and fresh:
             return cached[1]
 
         async with self._lock_for(user_id):
-            cached = self._tools.get(user_id)
+            cached = self._cached_tools(user_id)
             fresh = cached is not None and (time.monotonic() - cached[0]) < self._ttl_s
             if not refresh and fresh:
                 return cached[1]
@@ -483,7 +516,7 @@ class Arcade:
                 # that is down costs one timeout per TTL rather than one per
                 # manifest build.
                 if cached is not None:
-                    self._tools[user_id] = (time.monotonic(), cached[1])
+                    self._remember_tools(user_id, cached[1])
                     logger.warning("tools/list refresh failed for %s: %s", user_id, e)
                     return cached[1]
                 raise
@@ -492,7 +525,7 @@ class Arcade:
                 name = tool.get("name")
                 if name:
                     grouped.setdefault(prefix_of(name), []).append(tool)
-            self._tools[user_id] = (time.monotonic(), grouped)
+            self._remember_tools(user_id, grouped)
             return grouped
 
     def invalidate(self, user_id: str) -> None:
@@ -659,10 +692,7 @@ class Arcade:
         for server, result in zip(prefixes, results, strict=True):
             if isinstance(result, Consent):
                 found[server] = result
-                if result.setup_url:
-                    self._setup_urls[(user_id, server)] = result.setup_url
-                else:
-                    self._setup_urls.pop((user_id, server), None)
+                self._remember_setup_url(user_id, server, result.setup_url)
             else:
                 logger.warning("could not read consent for %s: %s", server, result)
 
@@ -741,10 +771,7 @@ class Arcade:
         """Start one service's consent from the panel, and record what came back."""
         consent = await self.consent(user_id, server)
         await conns.mark(user_id, server, consent.status)
-        if consent.setup_url:
-            self._setup_urls[(user_id, server)] = consent.setup_url
-        else:
-            self._setup_urls.pop((user_id, server), None)
+        self._remember_setup_url(user_id, server, consent.setup_url)
         return {
             "server": server,
             "status": consent.status,
