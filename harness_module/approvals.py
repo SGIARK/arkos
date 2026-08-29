@@ -4,6 +4,8 @@
 call whose row carries the call that will actually run, so consent binds to the
 call and never to a description of one; `plan` carries the proposed plan in
 `tool_args` and each new proposal supersedes the open row rather than joining it.
+An `ask` marked `tool_name = GOAL` is the autopilot button's opening question:
+the harness raised it, and its answer is the goal a plan is drafted from.
 """
 
 from __future__ import annotations
@@ -38,6 +40,13 @@ DECLINE = "decline"
 # closes the row without being the approve word, so `approved` stays False.
 SUPERSEDED = "superseded"
 
+# The `tool_name` on the `ask` row the autopilot button opens with, and the
+# synthetic `tool_call_id` it is bound to. No tool ran: the HARNESS asked the
+# question, and the answer is the goal the plan is drafted from. At most one can
+# be open per session, which is what lets the id be a constant.
+GOAL = "autopilot_goal"
+GOAL_CALL_ID = "autopilot-goal"
+
 
 @dataclass(slots=True)
 class Approval:
@@ -65,6 +74,11 @@ class Approval:
     def gated_call(self) -> bool:
         """True for a parked tool call, whose answer runs code rather than being read."""
         return self.kind == "call"
+
+    @property
+    def is_goal(self) -> bool:
+        """True for the autopilot's opening question, whose answer is the run's goal."""
+        return self.kind == "ask" and self.tool_name == GOAL
 
     @property
     def is_plan(self) -> bool:

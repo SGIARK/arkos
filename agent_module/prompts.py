@@ -274,18 +274,27 @@ def system_prompt(
     return "\n".join(parts)
 
 
+# The autopilot button's opening question, in buddy's voice. The only string in
+# this module a HUMAN reads: it is appended as buddy's own `content` event and
+# copied onto the `ask` row the session parks on.
+GOAL_QUESTION = (
+    "What do you want to do? Tell me the goal for this run and I'll draft a plan "
+    "for you to approve — nothing runs until you do."
+)
+
+
 def plan_handoff(plan: str | None = None) -> str:
-    """The `user{source: system}` event the play button appends.
+    """The `user{source: system}` event that follows the answer to `GOAL_QUESTION`.
 
     Plan state is INJECTED, never discovered: `plan` is `plan.md`'s content when a
     run already happened here, and None when none has (the file may not exist).
     """
     ask = (
-        "The human pressed run. Draft the plan for this run from what this conversation "
-        "already says, and call propose_plan with it — ALWAYS, even if this conversation "
-        "is thin or empty. Do not ask your questions here: whatever you cannot fill in, "
-        "put in `missing` as a question, and leave every other field honest rather than "
-        "invented. Nothing starts until they approve it."
+        "The human pressed run and said what this run is for: their message directly above "
+        "IS the goal, in their own words. Draft the plan from it and call propose_plan with "
+        "it — ALWAYS, even if what they said is thin. Do not ask your questions here: "
+        "whatever you cannot fill in, put in `missing` as a question, and leave every other "
+        "field honest rather than invented. Nothing starts until they approve it."
     )
     if not plan:
         return ask + " No plan exists for this session yet, so this is the first one."

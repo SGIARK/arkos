@@ -99,6 +99,14 @@ async def _propose(session_id: str, args: dict, *, call_id: str = "c1") -> appro
     return row
 
 
+async def _press_play(client: AsyncClient, session_id: str, goal: str = "clear the weekend backlog") -> None:
+    """Press autopilot and answer the question it opens with: the answer is what drafts the plan."""
+    assert (await client.post(f"/sessions/{session_id}/approve")).status_code == 202
+    question = (await approvals.open_for(session_id))[0]
+    assert question.is_goal
+    assert (await client.post(f"/approvals/{question.id}/respond", json={"answer": goal})).status_code == 202
+
+
 # --- the tool parks on the plan -------------------------------------------------
 
 
@@ -356,7 +364,7 @@ async def test_the_handoff_carries_the_plan_rather_than_sending_the_model_to_rea
     user_id = await _user(client)
     _, session_id = await _project_session(user_id, status="idle")
 
-    await client.post(f"/sessions/{session_id}/approve")
+    await _press_play(client, session_id)
     fresh = [e.event for e in await slog.get_events(session_id)][-1]
 
     assert fresh.source == "system"
@@ -366,7 +374,7 @@ async def test_the_handoff_carries_the_plan_rather_than_sending_the_model_to_rea
     # Once a run has happened here, the file's CONTENT rides along.
     await runner.save_plan(session_id, PLAN, 1)
     await pool.execute("UPDATE sessions SET status = 'idle' WHERE id = $1", uuid.UUID(session_id))
-    await client.post(f"/sessions/{session_id}/approve")
+    await _press_play(client, session_id)
     again = [e.event for e in await slog.get_events(session_id)][-1]
 
     assert PLAN["goal"] in again.text, "the plan itself was not injected"
@@ -375,21 +383,32 @@ async def test_the_handoff_carries_the_plan_rather_than_sending_the_model_to_rea
 
 
 @pytest.mark.asyncio
-async def test_play_on_a_cancelled_run_drafts_a_continuation(client):
+async def test_play_on_a_cancelled_run_asks_before_it_continues(client):
     """The header's ▶ on a spent plan: a terminal session is a legal start point.
 
-    The `terminal -> running` reopen exists for this, and the handoff carries the
-    cancelled run's plan, making it a CONTINUATION rather than a fresh v1.
+    It asks there too — the goal of a continuation is no more guessable than the
+    goal of a first run — and only then does the handoff carry the cancelled run's
+    plan, making it a CONTINUATION rather than a fresh v1.
     """
     user_id = await _user(client)
     _, session_id = await _project_session(user_id, status="cancelled")
     await pool.execute("UPDATE sessions SET terminal_reason = 'cancelled' WHERE id = $1", uuid.UUID(session_id))
     await runner.save_plan(session_id, PLAN, 1)
 
-    response = await client.post(f"/sessions/{session_id}/approve")
+    pressed = await client.post(f"/sessions/{session_id}/approve")
 
-    assert response.status_code == 202
-    assert response.json()["mode"] == "attended"
+    assert pressed.status_code == 202
+    assert pressed.json()["started"] is False
+    row = await pool.fetchrow("SELECT status, terminal_reason FROM sessions WHERE id = $1", uuid.UUID(session_id))
+    assert (row["status"], row["terminal_reason"]) == ("awaiting_approval", None), "off terminal, on the question"
+
+    answered = await client.post(
+        f"/approvals/{(await approvals.open_for(session_id))[0].id}/respond",
+        json={"answer": "pick up where it stopped"},
+    )
+
+    assert answered.status_code == 202
+    assert answered.json()["mode"] == "attended"
     events = [e.event for e in await slog.get_events(session_id)]
     assert events[-1].source == "system"
     assert "continuation" in events[-1].text.lower()

@@ -28,7 +28,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from agent_module import prompts
-from agent_module.events import TodoEvent, UserEvent, todo_item
+from agent_module.events import ContentEvent, TodoEvent, UserEvent, todo_item
 from config_module.loader import cfg as _cfg
 from config_module.loader import config
 from db import pool
@@ -1217,6 +1217,9 @@ async def respond_to_approval(
                 f'{{"answer": "{approvals.APPROVE}"}} or {{"answer": "{approvals.DECLINE}"}}.',
             )
 
+    if approval.is_goal:
+        return await _answer_goal(approval, text)
+
     if approval.is_plan:
         return await _answer_plan(approval, text, user_id)
 
@@ -1230,6 +1233,36 @@ async def respond_to_approval(
         await _append(answered.session_id, UserEvent(text=text, source="human"))
     started = await runner.start(answered.session_id, reason="answered")
     return {"accepted": True, "session_id": answered.session_id, "started": started}
+
+
+async def _answer_goal(approval: approvals.Approval, text: str) -> dict[str, Any]:
+    """Answer the autopilot's opening question, or cancel at it.
+
+    The decline word is the ✕ ON the question: the park closes to `idle` with
+    nothing drafted and nothing run. Anything else IS the goal.
+    """
+    if text.strip().lower() == approvals.DECLINE:
+        if await approvals.answer(approval.id, approvals.DECLINE) is None:
+            raise ApiError(409, "already_answered", "That question has already been answered.")
+        await lifecycle.transition(approval.session_id, "awaiting_approval", "idle", "goal_cancelled")
+        return {"accepted": True, "session_id": approval.session_id, "started": False, "mode": "attended"}
+
+    if await approvals.answer(approval.id, text) is None:
+        raise ApiError(409, "already_answered", "That question has already been answered.")
+    return await _plan_from_goal(approval.session_id, text)
+
+
+async def _plan_from_goal(session_id: str, goal: str) -> dict[str, Any]:
+    """Draft a plan from the goal they just gave: their words, then the handoff behind them.
+
+    Everything after this point is the flow the button used to start with — an
+    ordinary ATTENDED turn whose job is to call `propose_plan`.
+    """
+    await _append(session_id, UserEvent(text=goal, source="human"))
+    handoff = prompts.plan_handoff(await runner.read_plan(session_id))
+    await _append(session_id, UserEvent(text=handoff, source="system"))
+    started = await runner.start(session_id, reason="plan_requested")
+    return {"accepted": True, "session_id": session_id, "started": started, "mode": "attended"}
 
 
 async def _answer_plan(approval: approvals.Approval, text: str, user_id: str) -> dict[str, Any]:
@@ -1289,10 +1322,11 @@ async def _answer_plan(approval: approvals.Approval, text: str, user_id: str) ->
 
 @app.post("/sessions/{session_id}/approve", status_code=202)
 async def approve_session(session_id: str, user_id: str = CurrentUser) -> dict[str, Any]:
-    """Ask for a plan for this session. It does NOT start an unattended run.
+    """Ask the human what this run is for. It drafts nothing and runs no turn.
 
-    Appends a `user{source: system}` handoff and starts an ORDINARY ATTENDED
-    turn whose job is to call `propose_plan`; the mode flips only on approval.
+    The button's whole job is the question: buddy asks for the goal and the
+    session PARKS on it, whatever the transcript above says. The answer is the
+    goal, and `_answer_goal` is where the plan turn starts.
     """
     row = await _owned_session(session_id, user_id)
     if row["mode"] == "unattended":
@@ -1302,16 +1336,26 @@ async def approve_session(session_id: str, user_id: str = CurrentUser) -> dict[s
     if row["status"] not in ("idle", "pending") and row["status"] not in lifecycle.TERMINAL:
         raise ApiError(409, "not_idle", f"A session in {row['status']!r} cannot be handed over.")
 
-    # The plan state is INJECTED rather than read by the model: after a declined
-    # plan there is no file to read.
-    handoff = prompts.plan_handoff(await runner.read_plan(session_id))
-    await _append(session_id, UserEvent(text=handoff, source="system"))
-    started = await runner.start(session_id, reason="plan_requested")
-    if not started:
-        # The handoff event stays: the next turn this session runs reads it and
-        # proposes.
-        raise ApiError(409, "not_idle", "The session moved before it could be started.")
-    return {"accepted": True, "started": True, "mode": "attended"}
+    # The status is claimed FIRST: that one conditional UPDATE is what makes two
+    # presses one park.
+    if await lifecycle.transition(session_id, row["status"], "awaiting_approval", "goal_requested") is None:
+        raise ApiError(409, "not_idle", "The session moved before it could be asked.")
+    try:
+        # Buddy's own words, so the question outlives being answered and the model
+        # folds the reply as an answer to it.
+        await _append(session_id, ContentEvent(text=prompts.GOAL_QUESTION))
+        await approvals.create(
+            session_id,
+            approvals.GOAL_CALL_ID,
+            "ask",
+            prompts.GOAL_QUESTION,
+            tool_name=approvals.GOAL,
+        )
+    except Exception:
+        # A park with nothing to answer is worse than no park: hand the session back.
+        await lifecycle.transition(session_id, "awaiting_approval", "idle", "goal_failed")
+        raise
+    return {"accepted": True, "started": False, "parked": True, "mode": "attended"}
 
 
 @app.post("/sessions/{session_id}/stop", status_code=202)
@@ -1968,6 +2012,13 @@ async def _answer_by_message(session_id: str, text: str) -> dict[str, Any]:
             "awaiting_approval",
             f"This session is waiting on {waiting}. Answer it there, where you can see what it does.",
         )
+
+    if open_questions and open_questions[0].is_goal:
+        # Typed in the composer instead of on the question, which is the same act:
+        # the words are the goal, and a plan is drafted from them.
+        if await approvals.answer(open_questions[0].id, text) is None:
+            raise ApiError(409, "already_answered", "That question has already been answered.")
+        return await _plan_from_goal(session_id, text)
 
     if open_questions:
         await approvals.answer(open_questions[0].id, text)

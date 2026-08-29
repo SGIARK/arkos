@@ -16,6 +16,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from agent_module import prompts
 from agent_module.events import ContentEvent, DoneEvent, ToolCallEvent, UserEvent
 from db import pool
 from harness_module import api, approvals, jwt_utils, lifecycle, runner, store
@@ -544,9 +545,9 @@ async def test_a_composer_message_to_a_park_with_no_open_question_wakes_it(clien
 # --- the handoff ----------------------------------------------------------------
 
 
-async def test_play_asks_for_a_plan_and_does_not_flip_the_mode(client):
-    """The play button hands the model a TASK, not a transcript: the mode moves only
-    when the plan that turn produces is approved.
+async def test_play_asks_for_the_goal_and_drafts_nothing(client):
+    """The button's whole job is the question. Planning off ambiguous history is what
+    this removes, so no turn runs and no plan is drafted until they answer.
     """
     user_id = await _signed_in(client)
     session_id = await _session_for(user_id, status="idle", mode="attended")
@@ -555,17 +556,88 @@ async def test_play_asks_for_a_plan_and_does_not_flip_the_mode(client):
 
     assert response.status_code == 202
     assert response.json()["mode"] == "attended"
-    assert response.json()["started"] is True
+    assert response.json()["started"] is False
+    assert response.json()["parked"] is True
+    assert api.started == [], "the press starts no turn"
+
+    events = [e.event for e in await slog.get_events(session_id)]
+    assert [e.kind for e in events] == ["lifecycle", "content"]
+    assert events[1].text == prompts.GOAL_QUESTION, "buddy asks in his own words, and they stay in the transcript"
+
+    row = await pool.fetchrow("SELECT status, mode FROM sessions WHERE id = $1", uuid.UUID(session_id))
+    assert row["status"] == "awaiting_approval"
+    assert row["mode"] == "attended"
+
+    open_rows = await approvals.open_for(session_id)
+    assert [(r.kind, r.tool_name, r.prompt) for r in open_rows] == [("ask", approvals.GOAL, prompts.GOAL_QUESTION)]
+    assert open_rows[0].is_goal
+
+
+async def test_the_answer_to_the_goal_question_is_what_drafts_the_plan(client):
+    """Their reply IS the goal: it lands as their own turn, with the handoff behind it."""
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id, status="idle", mode="attended")
+    await client.post(f"/sessions/{session_id}/approve")
+    question = (await approvals.open_for(session_id))[0]
+
+    response = await client.post(f"/approvals/{question.id}/respond", json={"answer": "clear the backlog in triage/"})
+
+    assert response.status_code == 202
+    assert response.json()["mode"] == "attended"
     assert session_id in api.started
-    assert "mode" not in api.start_calls[-1], "the play button no longer moves the mode"
+    assert "mode" not in api.start_calls[-1], "the play button still never moves the mode"
     assert api.start_calls[-1]["reason"] == "plan_requested"
 
     events = [e.event for e in await slog.get_events(session_id)]
-    assert [e.kind for e in events] == ["user"]
-    assert events[0].source == "system"
-    assert "propose_plan" in events[0].text
-    row = await pool.fetchrow("SELECT mode FROM sessions WHERE id = $1", uuid.UUID(session_id))
-    assert row["mode"] == "attended"
+    assert [e.kind for e in events] == ["lifecycle", "content", "user", "user"]
+    assert (events[2].source, events[2].text) == ("human", "clear the backlog in triage/")
+    assert events[3].source == "system"
+    assert "propose_plan" in events[3].text
+
+
+async def test_cancelling_at_the_goal_question_leaves_the_session_idle(client):
+    """Nothing was drafted and nothing ran, so the way out costs nothing."""
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id, status="idle", mode="attended")
+    await client.post(f"/sessions/{session_id}/approve")
+    question = (await approvals.open_for(session_id))[0]
+
+    response = await client.post(f"/approvals/{question.id}/respond", json={"answer": approvals.DECLINE})
+
+    assert response.status_code == 202
+    assert response.json()["started"] is False
+    assert api.started == []
+    assert await approvals.open_for(session_id) == []
+    row = await pool.fetchrow("SELECT status, mode FROM sessions WHERE id = $1", uuid.UUID(session_id))
+    assert (row["status"], row["mode"]) == ("idle", "attended")
+
+
+async def test_the_goal_can_be_typed_in_the_composer(client):
+    """The composer answers an `ask`, and this one is an ask: same act, same handoff."""
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id, status="idle", mode="attended")
+    await client.post(f"/sessions/{session_id}/approve")
+
+    response = await client.post(f"/sessions/{session_id}/messages", json={"text": "book the flights"})
+
+    assert response.status_code == 202
+    assert api.start_calls[-1]["reason"] == "plan_requested"
+    events = [e.event for e in await slog.get_events(session_id)]
+    assert [(e.kind, getattr(e, "source", None)) for e in events][-2:] == [("user", "human"), ("user", "system")]
+    assert await approvals.open_for(session_id) == []
+
+
+async def test_pressing_play_twice_is_one_question(client):
+    """The status is claimed first, so a second press has nowhere to park."""
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id, status="idle", mode="attended")
+
+    assert (await client.post(f"/sessions/{session_id}/approve")).status_code == 202
+    second = await client.post(f"/sessions/{session_id}/approve")
+
+    assert second.status_code == 409
+    assert second.json()["code"] == "not_idle"
+    assert len(await approvals.open_for(session_id)) == 1
 
 
 async def test_a_running_session_cannot_be_handed_over(client):

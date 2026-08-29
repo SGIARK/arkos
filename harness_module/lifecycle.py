@@ -42,8 +42,16 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset(
         ("running", "completed"),  # done{completed}
         ("running", "failed"),  # done{max_hops|wall_clock|model_error|context_overflow|interrupted}
         ("running", "cancelled"),
-        ("idle", "running"),  # a human sends a message, or approves
+        ("idle", "running"),  # a human sends a message
         ("idle", "cancelled"),
+        # The autopilot button asks for the run's goal before anything is drafted, so
+        # a session can now park without ever having run. Every status the button
+        # accepts moves here, terminal ones included (the "resume" press).
+        ("idle", "awaiting_approval"),
+        ("pending", "awaiting_approval"),
+        ("completed", "awaiting_approval"),
+        ("failed", "awaiting_approval"),
+        ("cancelled", "awaiting_approval"),
         ("awaiting_approval", "running"),  # the respond endpoint wakes it
         # A declined plan: the only answer that ends a park without waking the session.
         ("awaiting_approval", "idle"),

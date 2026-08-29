@@ -489,6 +489,11 @@ function StreamEvent({ event, questions, onAnswered, onError }) {
 /* Mirrors `_AUTO_BADGE` in harness_module/runner.py. */
 const AUTO_BADGE = "auto-approved ";
 
+/* Mirrors `approvals.GOAL`: the `ask` row the autopilot button opens with. Its
+   answer is the run's goal, and the decline word cancels at it. */
+const AUTOPILOT_GOAL = "autopilot_goal";
+const DECLINE = "decline";
+
 /* Mirrors the label agent_module/loop.py builds while the client backs off. */
 const RETRY_LABEL = "model busy ";
 
@@ -496,11 +501,15 @@ function AskBlock({ item, onAnswered, onError }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
 
+  /* The harness asked this one, and its words are already in the transcript
+     above as buddy's own, so the block is the answer box and nothing else. */
+  const isGoal = item.tool_name === AUTOPILOT_GOAL;
+
   const answer = async (value) => {
     setBusy(true);
     try {
       await api.answer(item.approval_id, value);
-      onAnswered();
+      onAnswered(isGoal && value === DECLINE);
     } catch (e) {
       setBusy(false);
       onError(e);
@@ -529,7 +538,7 @@ function AskBlock({ item, onAnswered, onError }) {
   return (
     <div className="ev-block ev-ask">
       <span className="who">buddy — needs input</span>
-      {item.prompt}
+      {!isGoal && item.prompt}
       {item.kind === "approval" ? (
         <div className="opts">
           <span className="opt" onClick={() => !busy && answer("yes")}>approve</span>
@@ -543,9 +552,22 @@ function AskBlock({ item, onAnswered, onError }) {
             if (text.trim()) answer(text.trim());
           }}
         >
-          <input value={text} onChange={(e) => setText(e.target.value)} placeholder="your answer…" disabled={busy} />
+          <input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder={isGoal ? "what this run is for…" : "your answer…"}
+            autoFocus={isGoal}
+            disabled={busy}
+          />
           <button className="opt" type="submit" disabled={busy || !text.trim()}>send</button>
         </form>
+      )}
+      {/* The way out of the press, on the question itself: nothing was drafted
+          and nothing ran, so cancelling here just hands the session back. */}
+      {isGoal && (
+        <div className="opts">
+          <span className="opt" onClick={() => !busy && answer(DECLINE)}>cancel</span>
+        </div>
       )}
     </div>
   );

@@ -539,6 +539,9 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
   }, [tab]);
 
   const openPlan = questions.find((q) => q.kind === "plan") || null;
+  /* The autopilot's opening question. The button is spent while it is open: the
+     press already happened, and its answer is what drafts the plan. */
+  const goalAsk = questions.find((q) => q.kind === "ask" && q.tool_name === AUTOPILOT_GOAL) || null;
   useEffect(() => {
     if (openPlan) {
       setDrafting(false);
@@ -577,7 +580,7 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
   const doneRun = session.status === "completed";
   const shownRows = doneRun ? todoRows.map((r) => ({ ...r, status: TODO_DONE })) : todoRows;
   // Nothing to run yet: the composer is the only control before a session exists.
-  const showRun = !pre && !planCard && !drafting && !held && !running && !unattended;
+  const showRun = !pre && !planCard && !goalAsk && !drafting && !held && !running && !unattended;
 
   /* Cancel is the only press that spends the plan's approval; resume is a plain
      start, because the stop changed nothing to undo. */
@@ -665,15 +668,18 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
               className="run-btn"
               title={
                 cancelled
-                  ? "buddy reads plan.md and the transcript, then proposes a continuation for your approval."
-                  : "buddy drafts a plan first. nothing runs until you approve it."
+                  ? "buddy asks what to carry on with, then proposes a continuation from plan.md for your approval."
+                  : "buddy asks what this run is for, then drafts a plan from your answer. nothing runs until you approve it."
               }
               onClick={() => {
-                setDrafting(true);
-                api.approve(sessionId).catch((e) => {
-                  setDrafting(false);
-                  onError(e);
-                });
+                /* No drafting yet: the press asks a question and parks on it. */
+                api
+                  .approve(sessionId)
+                  .then(() => {
+                    refreshQuestions();
+                    refreshSession();
+                  })
+                  .catch(onError);
               }}
             >
               <span className="glyph">▶</span>
@@ -749,7 +755,13 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
                   key={q.approval_id}
                   item={q}
                   hopLabel={session.hops_used}
-                  onAnswered={refreshQuestions}
+                  onAnswered={(cancelledAtGoal) => {
+                    // Answering the goal is what starts the plan turn; cancelling
+                    // at it starts nothing.
+                    if (q.tool_name === AUTOPILOT_GOAL && !cancelledAtGoal) setDrafting(true);
+                    refreshQuestions();
+                    refreshSession();
+                  }}
                   onError={onError}
                 />
               ))}
