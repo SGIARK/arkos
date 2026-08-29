@@ -20,7 +20,7 @@ from agent_module.events import ContentEvent, DoneEvent, ToolCallEvent, UserEven
 from db import pool
 from harness_module import api, approvals, lifecycle, runner, store
 from harness_module import session_log as slog
-from harness_module.stream import SessionStream, stream
+from harness_module.stream import AttentionStream, SessionStream, stream
 from tests.dbgate import require_db
 
 pytestmark = pytest.mark.asyncio
@@ -857,6 +857,26 @@ async def test_a_malformed_id_is_a_miss_not_a_500(client):
 
 
 # --- the stream -----------------------------------------------------------------
+
+
+async def test_attention_stream_routes_only_to_the_owning_user(monkeypatch):
+    live = AttentionStream()
+    monkeypatch.setattr(api, "attention_stream", live)
+    mine = str(uuid.uuid4())
+    theirs = str(uuid.uuid4())
+    gen = api._attention_event_stream(mine, after_seq=0).__aiter__()
+    next_frame = asyncio.create_task(gen.__anext__())
+    await asyncio.sleep(0)  # subscribed
+
+    live.publish(theirs)
+    await asyncio.sleep(0)
+    assert not next_frame.done()
+    live.publish(mine)
+    frame = await asyncio.wait_for(next_frame, timeout=1)
+    await gen.aclose()
+
+    assert "event: attention" in frame
+    assert f"id: {live.last_seq(mine)}" in frame
 
 
 async def test_the_stream_replays_after_last_event_id_then_goes_live():

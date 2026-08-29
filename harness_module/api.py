@@ -36,7 +36,7 @@ from db import pool
 from db.ids import as_uuid
 from harness_module import approvals, blobs, hands, jwt_utils, leases, lifecycle, runner, store, system_log, workspace
 from harness_module import session_log as slog
-from harness_module.stream import LAGGED, stream
+from harness_module.stream import LAGGED, attention_stream, stream
 from model_module import client as model_client
 from tool_module import registry, session_tools
 from tool_module.browser.stream import broker as frames
@@ -699,6 +699,44 @@ async def attention(
         }
         for r in rows
     ]
+
+
+@app.get("/attention/stream")
+async def attention_events(
+    request: Request,
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    user_id: str = CurrentUser,
+) -> StreamingResponse:
+    """Stream invalidations for the caller's account-level attention list."""
+    after = _int_or(last_event_id or request.query_params.get("last_event_id"), 0)
+    return StreamingResponse(
+        _attention_event_stream(user_id, after),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+async def _attention_event_stream(user_id: str, after_seq: int) -> AsyncIterator[str]:
+    keepalive = float(_cfg("harness.sse_keepalive_s", 15))
+    async with attention_stream.subscribe(user_id) as queue:
+        sent = after_seq
+        if attention_stream.last_seq(user_id) > sent:
+            sent = attention_stream.last_seq(user_id)
+            yield _attention_frame(sent)
+
+        while True:
+            try:
+                seq = await asyncio.wait_for(queue.get(), timeout=keepalive)
+            except TimeoutError:
+                yield ": keepalive\n\n"
+                continue
+            if seq > sent:
+                sent = seq
+                yield _attention_frame(seq)
+
+
+def _attention_frame(seq: int) -> str:
+    return f"id: {seq}\nevent: attention\ndata: {{}}\n\n"
 
 
 async def _plan_context(session_id: str) -> dict[str, Any]:
@@ -2090,4 +2128,3 @@ if _FRONTEND.is_dir():
     app.mount("/app", StaticFiles(directory=_FRONTEND, html=True), name="app")
 else:  # pragma: no cover - only a broken checkout or a partial image
     logger.error("no frontend/ directory at %s; /app will 404", _FRONTEND)
-

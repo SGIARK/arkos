@@ -33,6 +33,7 @@ from typing import Any, Literal
 
 from db import pool
 from db.ids import as_uuid as _uuid
+from harness_module.stream import attention_stream
 
 Kind = Literal["approval", "ask", "call", "plan"]
 
@@ -125,7 +126,8 @@ async def create(
         f"""
         INSERT INTO approvals (session_id, tool_call_id, kind, prompt, tool_name, tool_args)
         VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING {_COLUMNS}
+        RETURNING {_COLUMNS},
+                  (SELECT user_id FROM sessions WHERE id = approvals.session_id) AS user_id
         """,
         _uuid(session_id),
         tool_call_id,
@@ -134,7 +136,9 @@ async def create(
         tool_name,
         json.dumps(tool_args) if tool_args is not None else None,
     )
-    return _row(record)
+    approval = _row(record)
+    attention_stream.publish(str(record["user_id"]))
+    return approval
 
 
 async def grantable(session_id: str) -> Approval | None:
@@ -211,11 +215,16 @@ async def reopen(approval_id: str) -> Approval | None:
         f"""
         UPDATE approvals SET answer = NULL, answered_at = NULL
          WHERE id = $1 AND kind = 'plan' AND consumed_at IS NULL
-        RETURNING {_COLUMNS}
+        RETURNING {_COLUMNS},
+                  (SELECT user_id FROM sessions WHERE id = approvals.session_id) AS user_id
         """,
         _uuid(approval_id),
     )
-    return _row(record) if record else None
+    if record is None:
+        return None
+    approval = _row(record)
+    attention_stream.publish(str(record["user_id"]))
+    return approval
 
 
 async def plan_history(session_id: str) -> list[Approval]:
@@ -267,11 +276,14 @@ async def answer(approval_id: str, text: str) -> Approval | None:
         f"""
         UPDATE approvals SET answer = $2, answered_at = now()
          WHERE id = $1 AND answered_at IS NULL
-        RETURNING {_COLUMNS}
+        RETURNING {_COLUMNS},
+                  (SELECT user_id FROM sessions WHERE id = approvals.session_id) AS user_id
         """,
         _uuid(approval_id),
         text,
     )
-    return _row(record) if record else None
-
-
+    if record is None:
+        return None
+    approval = _row(record)
+    attention_stream.publish(str(record["user_id"]))
+    return approval

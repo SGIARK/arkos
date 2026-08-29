@@ -18,6 +18,7 @@ from agent_module.events import UserEvent
 from db import pool
 from harness_module import api, approvals, runner
 from harness_module import session_log as slog
+from harness_module.stream import attention_stream
 from model_module import client as mc
 from tests.dbgate import require_db
 
@@ -230,6 +231,20 @@ async def test_the_pending_question_survives_a_restart(model):
 
 
 # --- answering ------------------------------------------------------------------
+
+
+async def test_creating_and_answering_publish_one_attention_event_each():
+    user_id = await _user()
+    session_id = await _session(user_id)
+
+    async with attention_stream.subscribe(user_id) as queue:
+        question = await approvals.create(session_id, "c1", "ask", "which invoice?")
+        created = await asyncio.wait_for(queue.get(), timeout=1)
+        await approvals.answer(question.id, "the March one")
+        answered = await asyncio.wait_for(queue.get(), timeout=1)
+
+    assert answered > created
+    assert queue.empty()
 
 
 async def test_responding_answers_the_row_appends_the_answer_and_wakes(client, model, monkeypatch):
