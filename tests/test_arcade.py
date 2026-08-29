@@ -228,6 +228,38 @@ async def test_each_user_gets_their_own_gateway_session():
     assert minted == ["alice", "bob"], "one handshake each, not one per call"
 
 
+async def test_gateway_sessions_evict_the_least_recently_used_user():
+    client = ArcadeClient("k", GATEWAY)
+    client._max_cached_users = 2
+    client._handshake = lambda user_id: _done(f"sid-{user_id}")
+
+    await client._session("alice")
+    await client._session("bob")
+    await client._session("alice")
+    await client._session("carol")
+
+    assert list(client._sessions) == ["alice", "carol"]
+    assert len(client._session_locks) == 64
+
+
+async def test_tool_and_setup_caches_are_bounded():
+    hands = Arcade(SERVERS, MCP_CFG)
+    hands._max_cached_users = 2
+    hands.client = FakeClient()
+
+    await hands.tools_by_server("alice")
+    await hands.tools_by_server("bob")
+    await hands.tools_by_server("alice")
+    await hands.tools_by_server("carol")
+    for user_id in ("alice", "bob", "carol"):
+        for server in hands.prefixes:
+            hands._remember_setup_url(user_id, server, f"https://setup/{user_id}/{server}")
+
+    assert list(hands._tools) == ["alice", "carol"]
+    assert len(hands._setup_urls) == 2 * len(hands.prefixes)
+    assert len(hands._tool_locks) == 64
+
+
 def _done(value):
     """A coroutine that is already finished, for stubbing an awaited accessor."""
 
