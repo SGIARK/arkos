@@ -173,6 +173,7 @@ class TestCoherence:
         data = {
             "leases": {"wait_timeout_s": 90},
             "tools": {"call_timeout_s": 120},
+            "sandbox": {"max_concurrent_per_user": 5},
             "quotas": {"max_unattended_sessions": 5},
             "llm": {"max_tools": 128},
             "browser": {"wall_clock_s": 240, "hard_timeout_s": 300},
@@ -217,6 +218,10 @@ class TestCoherence:
     def test_a_wait_with_too_little_margin_is_refused(self, tmp_path):
         with pytest.raises(RuntimeError, match="wait_timeout_s"):
             self._loader(tmp_path, leases__wait_timeout_s=115).assert_coherent()
+
+    def test_a_cap_below_the_session_quota_is_refused(self, tmp_path):
+        with pytest.raises(RuntimeError, match="could never get a computer"):
+            self._loader(tmp_path, sandbox__max_concurrent_per_user=3).assert_coherent()
 
     def test_the_shipped_config_is_coherent(self):
         """The defaults are the ones that ship, so they are the ones that must agree."""

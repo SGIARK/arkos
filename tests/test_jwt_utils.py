@@ -254,7 +254,7 @@ class TestAsymmetricTokens:
     def test_an_unknown_kid_is_refused_without_a_fetch(self, monkeypatch):
         """12.2.5: `POST /auth/session` is public and the header is the caller's,
         so a miss must cost a dictionary lookup, not a blocking JWKS fetch on the
-        pool shared with blob IO. Verification NEVER
+        pool shared with blob IO and every sandbox call. Verification NEVER
         fetches — the background tick is the only thing that does."""
         private_key = self._es256_key()
         token = jwt.encode(

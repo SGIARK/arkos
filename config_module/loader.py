@@ -124,6 +124,15 @@ class ConfigLoader:
                 "timeout instead of reporting that it never ran"
             )
 
+        boxes = int(self._coherence_number("sandbox.max_concurrent_per_user", missing))
+        sessions = int(self._coherence_number("quotas.max_unattended_sessions", missing))
+        if boxes < sessions:
+            problems.append(
+                f"sandbox.max_concurrent_per_user ({boxes}) is below "
+                f"quotas.max_unattended_sessions ({sessions}): {sessions - boxes} session(s) the "
+                "quota permits could never get a computer"
+            )
+
         # Imported here, not at module scope: `registry` reads this loader, so a
         # top-level import of the tool registry would be a cycle.
         from tool_module.registry import local_tools

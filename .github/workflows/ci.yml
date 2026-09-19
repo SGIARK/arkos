@@ -45,7 +45,7 @@ jobs:
       - name: Install mypy
         run: pip install "$(grep -m1 '^mypy==' requirements-dev.txt | cut -d' ' -f1)"
       - name: Type-check the tool modules
-        run: mypy --follow-imports=silent --ignore-missing-imports --disable-error-code=arg-type tool_module/tools/ tool_module/browser/tool.py
+        run: mypy --follow-imports=silent --ignore-missing-imports --disable-error-code=arg-type tool_module/tools/ tool_module/browser/tool.py tool_module/sandbox/tools.py
 
   # ──────────────────────────────────────────────
   # Stage 2: Tests — the throwaway Postgres lives here.

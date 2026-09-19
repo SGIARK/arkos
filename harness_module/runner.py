@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import posixpath
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -38,6 +39,7 @@ from harness_module import session_log as slog
 from harness_module.stream import stream
 from tool_module import registry
 from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, ToolUnavailable
+from tool_module.sandbox import manager as sandbox_manager
 from tool_module.tools.control import PARK_KINDS
 
 logger = logging.getLogger(__name__)
@@ -793,8 +795,8 @@ async def read_plan(session_id: str) -> str | None:
 async def save_plan(session_id: str, args: dict[str, Any], version: int) -> str | None:
     """Write an approved plan into the session's first linked folder, and return its path.
 
-    The store is where it lands, and the only place it lives. Returns None when the session
-    links no folder to write into.
+    Through the store, not the sandbox: a parked session's box is hibernated, and the next
+    materialize copies the file in. Returns None when the session links no folder to write into.
     """
     row = await pool.fetchrow("SELECT user_id FROM sessions WHERE id = $1", _uuid(session_id))
     folder = await plan_folder(session_id)
@@ -874,6 +876,11 @@ class _Sink:
         self._gated_call: str | None = None
         # Resource keys this session holds, so a second call skips the database.
         self._leases: set[str] = set()
+        # Set once this turn holds a slot in the user's sandbox pool; the row, not this
+        # flag, is what releasing consults.
+        self._sandbox_slot = False
+        # The claims materialized into the sandbox, and the tree they came from.
+        self._workspace: tuple[list[workspace.Claim], dict[str, str]] | None = None
         # The ending already on the record; a later abort completes this one.
         self._pending_done: DoneEvent | None = None
         self._last_seq = 0
@@ -957,12 +964,52 @@ class _Sink:
         return self._park is not None
 
     async def _lease(self, resource: str) -> None:
-        """Claim what the session needs to use a shared resource.
+        """Claim what the session needs to use a shared resource, and fill its cache.
+
+        The sandbox is capacity rather than a lease: the wait is for a free slot in the
+        user's pool. Each write claim leases the FOLDER it names, and the claimed folders
+        are materialized once the box and the leases are held.
 
         Raises:
-            ToolUnavailable: the lease did not free up. The model routes around it.
+            ToolUnavailable: a box or a lease did not free up. The model routes
+                around it.
         """
-        await self._acquire(leases.key(resource, self.session.user_id), f"the {resource}")
+        if resource != "sandbox":
+            await self._acquire(leases.key(resource, self.session.user_id), f"the {resource}")
+            return
+        if self._workspace is not None:
+            return
+
+        claims = await workspace.claims_for(self.session.id)
+        await self._claim_sandbox()
+        for claim in claims:
+            key = workspace.lease_key(claim)
+            if key is not None:
+                await self._acquire(key, f"{claim.folder}/")
+
+        materialized = await workspace.materialize(sandbox_manager.manager(), self.session.id, claims)
+        self._workspace = (claims, materialized.manifest)
+        logger.info(
+            "session %s mounted %d file(s) across %d claim(s)",
+            self.session.id,
+            len(materialized.manifest),
+            len(claims),
+        )
+
+    async def _claim_sandbox(self) -> None:
+        """Take a slot in the user's sandbox pool, waiting and saying so while it is full."""
+        if self._sandbox_slot:
+            return
+        await self._wait_for(
+            lambda: sandbox_manager.claim_slot(self.session.id),
+            resource="sandbox_pool",
+            label="a computer",
+            busy=(
+                f"No computer was free: this account already runs {sandbox_manager.max_per_user()} at "
+                "once. The call never ran, so it is safe to retry later, or do something else first."
+            ),
+        )
+        self._sandbox_slot = True
 
     async def _acquire(self, resource_key: str, label: str) -> None:
         """Take one lease, waiting and saying so while another session holds it."""
@@ -1026,13 +1073,69 @@ class _Sink:
                 raise ToolUnavailable("timeout", busy)
             await asyncio.sleep(poll)
 
-    async def _release_leases(self) -> None:
-        """Give up every resource the session holds."""
+    async def _release_leases(self, *, keep_box: bool = False) -> None:
+        """Commit what the sandbox changed, then give up the box and every resource held.
+
+        `keep_box` is the park: the box is hibernated rather than destroyed, so work outside
+        the claimed mounts survives the wait.
+        """
+        await self._flush_workspace()
+        if keep_box:
+            await self._pause_sandbox()
+        else:
+            await self._release_sandbox()
         if not self._leases:
             return
         with contextlib.suppress(Exception):
             await leases.release_all(self.session.id)
         self._leases.clear()
+
+    async def _pause_sandbox(self) -> None:
+        """Hibernate the session's box, keeping its slot for the turn that resumes it."""
+        try:
+            await sandbox_manager.manager().pause(self.session.id)
+        except Exception:  # noqa: BLE001 - a box left running is not worth failing a park for
+            logger.exception("session %s: pausing the sandbox failed", self.session.id)
+
+    async def _release_sandbox(self) -> None:
+        """Destroy the session's box and free its slot in the user's pool.
+
+        Reached only after `_flush_workspace` returns, so the cache is never destroyed while
+        it holds the only copy of an edit. The row is the authority, not this object.
+        """
+        try:
+            await sandbox_manager.manager().reap(self.session.id)
+        except Exception:  # noqa: BLE001 - a box outliving its run is not worth failing a terminal for
+            logger.exception("session %s: reaping the sandbox failed", self.session.id)
+        self._sandbox_slot = False
+
+    async def _flush_workspace(self) -> None:
+        """Write the sandbox's changes back to the store before the box goes.
+
+        A failure re-raises and nothing is given up: the edits are still on the sandbox disk,
+        and reaping the box or releasing the leases would lose them.
+        """
+        if self._workspace is None:
+            return
+        claims, manifest = self._workspace
+        try:
+            flushed = await workspace.flush(sandbox_manager.manager(), self.session.id, claims, manifest)
+        except Exception as e:  # noqa: BLE001 - recorded, retried by the reaper
+            logger.exception("session %s: flushing the workspace failed", self.session.id)
+            system_log.record("flush_failed", level="error", session_id=self.session.id, error=type(e).__name__)
+            raise
+        self._workspace = None
+        system_log.record(
+            "flush",
+            session_id=self.session.id,
+            committed=flushed.committed,
+            uploaded=flushed.uploaded,
+            discarded=len(flushed.discarded),
+        )
+        if flushed.discarded:
+            names = ", ".join(posixpath.basename(p) for p in flushed.discarded[:5])
+            more = f" and {len(flushed.discarded) - 5} more" if len(flushed.discarded) > 5 else ""
+            self.emit(StatusEvent(label=f"discarded edits to read-only files: {names}{more}"))
 
     def emit(self, event: Event) -> None:
         """Queues one event for the writer. Never blocks.
@@ -1176,7 +1279,7 @@ class _Sink:
                 # Before the drain: a status event queued after the writer stops is a
                 # status event nobody sees. A STOP hibernates the box rather than reaping
                 # it; leases go either way, since a session that is not acting holds none.
-                await self._release_leases()
+                await self._release_leases(keep_box=done.reason == "stopped")
                 await self._sweep_checklist(done)
                 await self._drain()
                 # The invariant refuses a `done` while a call is open.
@@ -1263,7 +1366,7 @@ class _Sink:
             return False
         # A parked session holds no lease. Released before the drain, so anything the flush
         # reports is still recorded; the box is kept, hibernated, for the resuming turn.
-        await self._release_leases()
+        await self._release_leases(keep_box=True)
         await self._drain()
         call_id, name, args = self._park
         kind = PARK_KINDS.get(name)

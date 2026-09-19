@@ -234,9 +234,10 @@ class ListFiles:
     spec = ToolSpec(
         name="list_files",
         description=(
-            "List files in the user's store. Paths start with their folder. Pass `folder` to "
-            "list just one. This reports what is there, not what it contains: nothing in this "
-            "build reads a stored file's bytes back to you."
+            "List files in the user's store. Paths start with their folder, and the folders "
+            "this session was given are mounted at ~/store/<folder>/, so read the contents "
+            "there by path rather than through this tool. Pass `folder` to list just one; "
+            "a folder this session does not hold is still listed here and is NOT on the disk."
         ),
         input_schema={
             "type": "object",

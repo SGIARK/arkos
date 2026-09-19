@@ -6,11 +6,20 @@ see `NOTICE` for where this code came from.
 **Coding standards are `.github/CLAUDE.md`.** Contribution rules, including the
 CLA, are `.github/CONTRIBUTING.md`. `README.md` says how to run it.
 
-**There is no sandbox and no computer.** This build has no box, no shell tool
-and no file tools: an agent here drives a browser, searches the web, reads the
-store's file tree, keeps memory, and calls connected services. Nothing runs a
-command anywhere. If something tells you to edit `tool_module/sandbox/`, or to
-materialize a claim into a box, that instruction predates the cut.
+**The sandbox is HEADLESS: a shell and a filesystem, and nothing a human
+sees.** `tool_module/sandbox/` is an e2b box per session on the `base` template,
+and it backs seven tools: `run_command`, `read_file`, `write_file`, `edit_file`,
+`list_dir`, `grep`, `glob`. The box's disk is a CACHE OF THE STORE:
+`workspace.materialize` copies the session's claimed folders in at the first
+call that needs the box, and `workspace.flush` hashes what is on disk and
+commits it back when the run ends. `~/store/<folder>/` is the only durable path
+in the box; everything else dies with it.
+
+**The VIRTUALIZED computer is a different thing, and it is not here.** The
+desktop, the resident Chromium, the supervisor, the broker, takeover and the
+frame stream were built after this cut and none of it exists in this tree. A box
+here has no display and no one watches it. Do not reach for `box_agent/`; there
+is none.
 
 **The HTTP server is `harness_module/api.py`**, run with
 `uvicorn harness_module.api:app`. `harness_module/` is the control plane:
@@ -55,12 +64,14 @@ fallback, because the fallback would be a Chromium running model-chosen pages
 beside the user's cookies and the store's secret key. The browser is leased per
 user, so one session holds it for a whole run.
 
-**Four identifiers carry side effects if you change them.** `_ISSUER` is `arkos`
+**Five identifiers carry side effects if you change them.** `_ISSUER` is `arkos`
 (every cookie carries `iss=arkos`, and changing it signs everyone out),
 `store.bucket` / `store.prefix` / `store.root` point at the `arkos` bucket
 (changing them orphans every stored blob), and the cookie is `arkos_session`
-signed with `ARKOS_SESSION_SECRET`. They are ordinary identifiers, but they are
-the ones with side effects: change any of them and say what it costs.
+signed with `ARKOS_SESSION_SECRET`. The fifth is the staging paths
+`/tmp/arkos-*.tar` in `harness_module/workspace.py`, which materialize and flush
+must agree on. They are ordinary identifiers, but they are the ones with side
+effects: change any of them and say what it costs.
 
 **CI is `.github/workflows/ci.yml`:** a lint stage (`ruff check .`,
 `ruff format --check .`, and a scoped `mypy`) and a test stage

@@ -35,7 +35,8 @@ async def _db(monkeypatch, tmp_path):
     await require_db()
     store.use_blobs(store.FilesystemBlobs(tmp_path))
 
-    # The runner is faked: a claim's RECORDED shape is what this file is about.
+    # The runner is faked: what a claim MOUNTS is test_workspace's, what it is
+    # RECORDED as is this file's.
     started: list[dict] = []
 
     async def fake_start(session_id: str, **kw) -> bool:
@@ -46,6 +47,7 @@ async def _db(monkeypatch, tmp_path):
     api.started_here = started
     yield
     store.use_blobs(None)
+    await pool.execute("DELETE FROM session_sandboxes WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM sessions WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM files WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM deleted_files WHERE user_id = ANY($1::uuid[])", _seeded)
@@ -481,6 +483,21 @@ async def test_an_approved_plan_lands_in_the_first_linked_folder(client):
         uuid.UUID(user_id),
     )
     assert saved == 1, "the plan did not land in the first linked folder"
+
+
+async def test_the_sandbox_sees_the_plan_at_the_mounted_folder_path(client):
+    """`~/store/<folder>/plan.md` is what the prompt promises, so materialize must agree."""
+    user_id = await _signed(client)
+    await store.put_file(user_id, "triage/a.md", b"1")
+    made = (await client.post("/projects", json={"title": "work", "folders": ["triage"]})).json()
+    session_id = (await client.post("/sessions", json={"goal": "work", "project_id": made["id"]})).json()["session_id"]
+    await store.put_file(user_id, "triage/plan.md", b"# the plan\n")
+
+    claims = await workspace.claims_for(session_id)
+
+    assert [c.mount for c in claims] == ["/home/user/store/triage"]
+    mounted = {f"/home/user/store/{e.path}" for e in await store.read_tree(user_id, claims[0].prefix)}
+    assert "/home/user/store/triage/plan.md" in mounted
 
 
 # --- the home session mints nothing --------------------------------------------------

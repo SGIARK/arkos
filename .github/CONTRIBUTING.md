@@ -30,7 +30,7 @@ Every PR must pass all four before merging:
 ruff check .                     # linting
 ruff format --check .            # formatting
 mypy --follow-imports=silent --ignore-missing-imports --disable-error-code=arg-type \
-    tool_module/tools/ tool_module/browser/tool.py
+    tool_module/tools/ tool_module/browser/tool.py tool_module/sandbox/tools.py
 DB_URL=postgresql://test:test@localhost:5432/test pytest tests/ -q --timeout=120 -m "not integration"
 ```
 

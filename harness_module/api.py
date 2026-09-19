@@ -33,7 +33,7 @@ from config_module.loader import cfg as _cfg
 from config_module.loader import config
 from db import pool
 from db.ids import as_uuid
-from harness_module import approvals, blobs, hands, jwt_utils, leases, lifecycle, runner, store, system_log
+from harness_module import approvals, blobs, hands, jwt_utils, leases, lifecycle, runner, store, system_log, workspace
 from harness_module import session_log as slog
 from harness_module.stream import CLOSED, LAGGED, shutdown_streams, stream
 from harness_module.stream import attention as attention_channel
@@ -41,6 +41,8 @@ from model_module import client as model_client
 from tool_module import registry, session_tools
 from tool_module.browser.stream import broker as frames
 from tool_module.composio_mcp import ComposioError
+from tool_module.sandbox import manager as sandbox_manager
+from tool_module.sandbox import tools as sandbox_tools
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +83,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # still says running.
     with contextlib.suppress(Exception):
         await lifecycle.sweep_interrupted()
+    with contextlib.suppress(Exception):
+        await sandbox_manager.sweep_slots()
     await hands.start()
     await system_log.start()
     keeper = asyncio.create_task(_keys_and_sweep(), name="jwks_and_session_sweep")
@@ -901,12 +905,13 @@ async def create_folder(body: dict[str, Any] = JsonBody, user_id: str = CurrentU
 
     sentinel = store.dir_sentinel(folder)
     await store.put_file(user_id, sentinel, b"")
+    await workspace.write_through(sandbox_manager.manager(), user_id, sentinel, b"")
     return {"path": folder, "sentinel": sentinel}
 
 
 @app.get("/files")
 async def list_files(user_id: str = CurrentUser) -> list[dict[str, Any]]:
-    """The caller's whole store, as tree rows."""
+    """The caller's whole store, as tree rows. No sandbox is woken to answer this."""
     rows = await pool.fetch(
         "SELECT id, path, size, mtime FROM files WHERE user_id = $1 ORDER BY path",
         _uuid(user_id, "user"),
@@ -945,9 +950,10 @@ async def upload_file(
     path: str | None = UploadedPath,
     user_id: str = CurrentUser,
 ) -> dict[str, Any]:
-    """Put a file in the store.
+    """Put a file in the store, and in any box already holding its folder.
 
-    The path must name a folder: the folder is its first segment.
+    A running session whose claim covers the path is written through and reads it
+    the same turn. The path must name a folder: the folder is its first segment.
     """
     try:
         stored_path = store.in_folder(store.safe_path(path or file.filename or ""))
@@ -957,6 +963,7 @@ async def upload_file(
     content = await _read_within_quota(file)
     stored = await store.put_file(user_id, stored_path, content)
     await _touch_linked_projects(user_id, store.folder_of(stored_path))
+    await workspace.write_through(sandbox_manager.manager(), user_id, stored_path, content)
 
     return {
         "file_id": stored.id,
@@ -1008,7 +1015,7 @@ async def rename_file(body: dict[str, Any] = JsonBody, user_id: str = CurrentUse
 
     `name` is a name; a `/` in it is refused. A top-level rename carries the
     project links and claims along in one transaction, and is refused
-    `409 folder_busy` while a running session holds the folder's write lease.
+    `409 folder_busy` while a live box has that folder materialized.
     """
     try:
         path = store.safe_path(str(body.get("path") or ""))
@@ -1049,7 +1056,7 @@ async def _folder_is_free(user_id: str, folder: str) -> str | None:
     """Refuse a destructive change to a folder a running session is writing.
 
     A session holds `folder:{user}:{name}` for as long as it writes that folder.
-    Read claims take no lease and need none.
+    Read claims take no lease and need none: their flush discards.
 
     Raises:
         ApiError: 409 folder_busy, naming the folder.
@@ -1763,6 +1770,61 @@ async def _tools_document(session_id: str, user_id: str, *, refresh: bool = Fals
         "used": sum(s["tool_count"] for s in servers if s["enabled"]),
         "servers": servers,
     }
+
+
+# --- the session's disk ---------------------------------------------------------
+
+
+@app.get("/sessions/{session_id}/fs")
+async def list_sandbox_dir(
+    session_id: str,
+    path: str = sandbox_tools.HOME,
+    user_id: str = CurrentUser,
+) -> dict[str, Any]:
+    """List a directory on the session's live sandbox disk.
+
+    Never boots anything: a box that has parked or been reaped reads as 404.
+    """
+    await _owned_session(session_id, user_id)
+    try:
+        entries = await sandbox_manager.manager().browse(session_id, path)
+    except sandbox_manager.BoxNotAwake as e:
+        raise _no_box(session_id) from e
+    except Exception as e:  # noqa: BLE001 - e2b raises its own types
+        raise ApiError(404, "not_found", f"Could not list {path!r} in this session's box.") from e
+    return {"path": path, "entries": entries}
+
+
+@app.get("/sessions/{session_id}/fs/file")
+async def read_sandbox_file(session_id: str, path: str, user_id: str = CurrentUser) -> dict[str, Any]:
+    """One file from the session's live sandbox disk, on the same terms as the listing.
+
+    Non-UTF-8 comes back `binary`, and a file past `sandbox.browse_max_bytes`
+    comes back cut short with `truncated` set.
+    """
+    await _owned_session(session_id, user_id)
+    cap = int(_cfg("sandbox.browse_max_bytes", 1048576))
+    try:
+        blob, truncated = await sandbox_manager.manager().peek(session_id, path, max_bytes=cap)
+    except sandbox_manager.BoxNotAwake as e:
+        raise _no_box(session_id) from e
+    except Exception as e:  # noqa: BLE001 - e2b raises its own types
+        raise ApiError(404, "not_found", f"Could not read {path!r} in this session's box.") from e
+
+    try:
+        text = blob.decode()
+    except UnicodeDecodeError:
+        return {"path": path, "size": len(blob), "text": None, "binary": True, "truncated": truncated}
+    return {"path": path, "size": len(blob), "text": text, "binary": False, "truncated": truncated}
+
+
+def _no_box(session_id: str) -> ApiError:
+    """The one answer for a session whose disk is not there to read."""
+    return ApiError(
+        404,
+        "not_found",
+        "This session has no computer running. Its disk exists only while it is awake.",
+    )
 
 
 # --- helpers -------------------------------------------------------------------

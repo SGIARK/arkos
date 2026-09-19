@@ -1,7 +1,7 @@
 """One teardown, two landings: stop and cancel are the same `task.cancel()` path.
 
-Cancel is terminal (mode handed back to attended); stop is not (`idle`, mode kept),
-so resuming is just the ordinary start of an idle session.
+Cancel is terminal (mode handed back to attended); stop is not (`idle`, mode kept,
+box hibernated), so resuming is just the ordinary start of an idle session.
 """
 
 from __future__ import annotations
@@ -151,24 +151,24 @@ async def test_the_press_decides_the_landing_of_one_teardown(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_both_landings_give_every_lease_back(monkeypatch):
-    """Neither a stop nor a cancel is acting, so neither holds a shared resource."""
+async def test_a_stopped_run_hibernates_its_box_and_a_cancel_reaps_it(monkeypatch):
+    """A stop is not an ending, so the work outside the mounts is still there."""
     user_id = str(uuid.uuid4())
     _seeded.append(uuid.UUID(user_id))
     await pool.execute("INSERT INTO users (id) VALUES ($1)", uuid.UUID(user_id))
 
-    released: list[str] = []
+    kept: list[bool] = []
     for reason in ("stopped", "cancelled"):
         session_id = await _session(user_id)
         sink = runner._Sink(await runner.load(session_id))
 
-        async def spy(reason=reason) -> None:
-            released.append(reason)
+        async def spy(*, keep_box: bool = False) -> None:
+            kept.append(keep_box)
 
         monkeypatch.setattr(sink, "_release_leases", spy)
         await sink.abort(reason)
 
-    assert released == ["stopped", "cancelled"]
+    assert kept == [True, False], "a stop reaped the box, or a cancel kept it"
 
 
 @pytest.mark.asyncio

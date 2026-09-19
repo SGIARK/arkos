@@ -7,8 +7,9 @@ content-addressed store.
 
 It drives a real browser through a Browserless container, searches the web, and
 reaches Gmail, GitHub, Linear, Outlook, Notion, Google Calendar and Google Drive
-through Composio. It has no sandbox: nothing here runs shell commands or writes
-files on a machine of its own.
+through Composio. Each session also gets a headless e2b sandbox, a shell and a
+filesystem with the user's folders mounted at `~/store/<folder>/`, which is what
+`run_command` and the file tools act on.
 
 Licensed under AGPL-3.0. See `LICENSE`, and `NOTICE` for where this code came
 from.
@@ -107,24 +108,24 @@ cookies and the store's secret key.
 
 ## Running at MIT
 
-Self-hosted: a local GPU serves the model, the browser runs in a container, and
-there is no sandbox to provision.
+A local GPU serves the model; the sandbox is the one part not self-hosted.
 
 1. `docker compose up -d sglang browserless` (sglang needs an NVIDIA GPU).
 2. In `config_module/config.yaml` set `llm.base_url` to `http://localhost:30000/v1`
    (the `/v1` is required) and `llm.model_name` to the model that server was
    launched with: a tool-calling model with a matching `--tool-call-parser`, or
    turns come back as prose and no tool ever runs.
-3. In `.env` set `BROWSERLESS_URL=ws://localhost:3000`, leave `OPENAI_API_KEY`
+3. In `.env` set `BROWSERLESS_URL=ws://localhost:3000` and `E2B_API_KEY` (the
+   shell and the file tools are a metered cloud box), leave `OPENAI_API_KEY`
    empty (SGLang ignores it), and fill in `DB_URL`, the Supabase keys and
-   `ARKOS_SESSION_SECRET`. `COMPOSIO_API_KEY` is optional.
+   `ARKOS_SESSION_SECRET`.
 
 ## Tests and CI
 
 ```bash
 pip install -r requirements-dev.txt
 ruff check . && ruff format --check .
-mypy --follow-imports=silent --ignore-missing-imports --disable-error-code=arg-type tool_module/tools/ tool_module/browser/tool.py
+mypy --follow-imports=silent --ignore-missing-imports --disable-error-code=arg-type tool_module/tools/ tool_module/browser/tool.py tool_module/sandbox/tools.py
 DB_URL=postgresql://test:test@localhost:5432/test python db/migrate.py
 DB_URL=postgresql://test:test@localhost:5432/test pytest tests/ -q --timeout=120 -m "not integration"
 ```

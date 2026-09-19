@@ -95,7 +95,7 @@ services:
       - arkos-network
 
   # ============================================
-  # Browserless - isolated Chromium pool (CDP over WebSocket)
+  # Browserless - Sandboxed Chromium pool (CDP over WebSocket)
   # ============================================
   browserless:
     image: ghcr.io/browserless/chromium:latest

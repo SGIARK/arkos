@@ -1,6 +1,6 @@
-"""Uploading and browsing files.
+"""Uploading and browsing files without booting a computer.
 
-Runs against a real Postgres.
+Runs against a real Postgres; the boxes are fakes.
 """
 
 from __future__ import annotations
@@ -16,10 +16,14 @@ from httpx import ASGITransport, AsyncClient
 
 from agent_module.events import UserEvent
 from db import pool
-from harness_module import api, store
+from harness_module import api, runner, store, workspace
 from harness_module import session_log as slog
+from model_module import client as mc
 from tests.dbgate import require_db
 from tests.runner_tasks import cancel_and_forget
+from tests.test_sandbox_pool import FakeBoxes
+from tool_module import registry
+from tool_module.envelope import ToolContext
 
 pytestmark = pytest.mark.asyncio
 
@@ -27,10 +31,13 @@ _seeded: list[uuid.UUID] = []
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def blob_store(tmp_path):
+async def boxes(tmp_path, monkeypatch):
     await require_db()
     store.use_blobs(store.FilesystemBlobs(tmp_path))
-    yield
+    fake = FakeBoxes()
+    monkeypatch.setattr(runner.sandbox_manager, "manager", lambda: fake)
+    monkeypatch.setattr(api.sandbox_manager, "manager", lambda: fake)
+    yield fake
     store.use_blobs(None)
     cancel_and_forget()
     await asyncio.sleep(0)
@@ -105,7 +112,7 @@ async def _signed(client: AsyncClient) -> str:
     return user_id
 
 
-async def test_an_upload_lands_in_the_store_and_lists_immediately(client):
+async def test_an_upload_lands_in_the_store_and_lists_immediately(client, boxes):
     user_id = await _signed(client)
     project_id = await _project(user_id)
 
@@ -123,6 +130,20 @@ async def test_an_upload_lands_in_the_store_and_lists_immediately(client):
     assert [f["path"] for f in linked.json()] == ["taxes/notes.md"]
     entry = (await store.read_tree(user_id))[0]
     assert await store.get_blob(entry.content_hash) == b"hello"
+    assert boxes.boxes == {}, "browsing booted a computer"
+
+
+async def test_an_upload_to_a_cold_project_is_there_at_the_next_materialize(client, boxes):
+    user_id = await _signed(client)
+    project_id = await _project(user_id, "Cold")
+    await client.post("/files", **_upload("report.txt", b"quarterly", path="cold/report.txt"))
+    session_id = await _session(user_id, project_id)
+    assert await runner.sandbox_manager.claim_slot(session_id)
+
+    claim = workspace.Claim(user_id=user_id, folder="cold")
+    await workspace.materialize(boxes, session_id, [claim])
+
+    assert boxes.box(session_id).files[f"{workspace.MOUNT_ROOT}/cold/report.txt"] == b"quarterly"
 
 
 async def test_a_subdirectory_path_is_kept(client):
@@ -213,7 +234,7 @@ async def test_an_empty_file_is_content_like_any_other(client):
     assert await store.get_blob(entry.content_hash) == b""
 
 
-async def test_listing_a_hundred_file_project_boots_nothing(client):
+async def test_listing_a_hundred_file_project_boots_nothing(client, boxes):
     user_id = await _signed(client)
     project_id = await _project(user_id, "Big")
     await store.commit_tree(user_id, [store.FileContent(path=f"big/f{i:03}.txt", content=b"x") for i in range(100)])
@@ -223,3 +244,121 @@ async def test_listing_a_hundred_file_project_boots_nothing(client):
 
     assert len(listing.json()) == 100
     assert projects.status_code == 200
+    assert boxes.boxes == {}, "a listing booted a computer"
+    assert boxes.calls == []
+
+
+@pytest.fixture
+def patient(monkeypatch):
+    values = {"leases.wait_timeout_s": 10, "leases.poll_s": 0.02, "leases.ttl_s": 60}
+    monkeypatch.setattr(runner, "_cfg", lambda key, default: values.get(key, default))
+
+
+async def test_a_running_session_reads_an_upload_the_same_turn(client, boxes, patient, monkeypatch):
+    """The write-through: the box already holds the project, so it holds the file too."""
+    user_id = await _signed(client)
+    project_id = await _project(user_id, "Live")
+    await store.commit_tree(user_id, [store.FileContent(path="live/a.txt", content=b"1")])
+    session_id = await _session(user_id, project_id)
+
+    uploaded_then_read: list[bytes] = []
+    real_exec = boxes.exec
+
+    async def routed(session, command, timeout=120):
+        if command == "upload-and-read":
+            # Mid-turn, from outside the session: the box is live and materialized.
+            response = await client.post(
+                "/files", **_upload("dropped.txt", b"from the composer", path="live/dropped.txt")
+            )
+            assert response.status_code == 201
+            uploaded_then_read.append(boxes.box(session).files[f"{workspace.MOUNT_ROOT}/live/dropped.txt"])
+            return {"stdout": "read it", "stderr": "", "exit_code": 0}
+        return await real_exec(session, command, timeout)
+
+    boxes.exec = routed
+    hops = [
+        [
+            mc.ToolCallDelta(index=0, id="c1", name="run_command", arguments='{"command": "upload-and-read"}'),
+            mc.Finish(reason="tool_calls"),
+        ]
+    ]
+
+    def generate(messages, tools=None, **kw):
+        deltas = hops.pop(0) if hops else [mc.TextDelta(text="done"), mc.Finish(reason="stop")]
+
+        async def gen():
+            for d in deltas:
+                await asyncio.sleep(0)
+                yield d
+
+        return gen()
+
+    monkeypatch.setattr(mc, "generate", generate)
+    await runner.start(session_id)
+    task = runner._running.get(session_id)
+    if task is not None:
+        await asyncio.wait_for(asyncio.shield(task), timeout=45)
+
+    assert uploaded_then_read == [b"from the composer"]
+    tree = {e.path for e in await store.read_tree(user_id)}
+    assert tree == {"live/a.txt", "live/dropped.txt"}
+
+
+async def test_an_upload_to_a_folder_no_box_holds_writes_through_to_nothing(client, boxes):
+    user_id = await _signed(client)
+    project_id = await _project(user_id, "Nobody")
+    idle_session = await _session(user_id, project_id)
+    assert await runner.sandbox_manager.claim_slot(idle_session)
+
+    await client.post("/files", **_upload("a.txt", b"1", path="nobody/a.txt"))
+
+    assert boxes.boxes == {}, "an upload woke a box that had materialized nothing"
+
+
+async def test_a_read_claim_that_is_written_through_reports_no_discarded_edits(client, boxes):
+    """An uploaded file is in the store, so a read claim is losing nothing by not committing it."""
+    user_id = await _signed(client)
+    project_id = await _project(user_id, "Reference")
+    await store.commit_tree(user_id, [store.FileContent(path="reference/a.txt", content=b"1")])
+    session_id = await _session(user_id, project_id)
+    assert await runner.sandbox_manager.claim_slot(session_id)
+    claim = workspace.Claim(user_id=user_id, folder="reference", mode="read")
+    manifest = (await workspace.materialize(boxes, session_id, [claim])).manifest
+
+    await client.post("/files", **_upload("added.txt", b"uploaded", path="reference/added.txt"))
+    boxes.box(session_id).files[f"{workspace.MOUNT_ROOT}/reference/added.txt"] = b"uploaded"
+    flushed = await workspace.flush(boxes, session_id, [claim], manifest)
+
+    assert flushed.discarded == (), "an upload was reported to the human as a discarded edit"
+
+
+async def test_an_upload_over_a_file_the_session_is_editing_fails_the_stale_edit(client, boxes):
+    """Last write wins in the box, and the edit that lost cannot corrupt what won."""
+    user_id = await _signed(client)
+    project_id = await _project(user_id, "Live")
+    await store.commit_tree(user_id, [store.FileContent(path="live/a.txt", content=b"materialized\n")])
+    session_id = await _session(user_id, project_id, status="running")
+    assert await runner.sandbox_manager.claim_slot(session_id)
+    await workspace.materialize(boxes, session_id, [workspace.Claim(user_id=user_id, folder="live")])
+    mounted = f"{workspace.MOUNT_ROOT}/live/a.txt"
+    ctx = ToolContext(user_id=user_id, session_id=session_id)
+    await registry.dispatch("read_file", {"path": mounted}, ctx)
+
+    # The human uploads over the file between the model's read and its edit.
+    await client.post("/files", **_upload("a.txt", b"from the composer\n", path="live/a.txt"))
+
+    stale = await registry.dispatch(
+        "edit_file", {"path": mounted, "old_string": "materialized", "new_string": "edited"}, ctx
+    )
+
+    assert stale.ok is False
+    assert "old_string does not appear" in stale.content
+    assert boxes.box(session_id).files[mounted] == b"from the composer\n", "a stale edit rewrote the upload"
+
+    await registry.dispatch("read_file", {"path": mounted}, ctx)
+    fresh = await registry.dispatch(
+        "edit_file", {"path": mounted, "old_string": "from the composer", "new_string": "edited"}, ctx
+    )
+
+    assert fresh.ok
+    assert boxes.box(session_id).files[mounted] == b"edited\n"

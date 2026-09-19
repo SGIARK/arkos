@@ -969,13 +969,13 @@ function AuthAside() {
           <span className="caret" />
         </h1>
         <p>
-          arkos drives a real browser and the services you connect, with durable storage that survives
-          between runs. workflows can span days, and it asks before anything leaves your account.
+          arkos works on a real computer and browser, with a persistent filesystem that survives between
+          runs. workflows can span days, and it asks before anything leaves your account.
         </p>
       </div>
       <div className="auth-tags">
         <span>approvals first</span>
-        <span>a real browser</span>
+        <span>disposable compute</span>
         <span>durable storage</span>
       </div>
     </div>

@@ -99,7 +99,7 @@ class ToolContext:
     read_blob: Callable[[str, int, int], Awaitable[str | None]] | None = None
     approve: Callable[[str, dict[str, Any]], Awaitable[bool]] | None = None
     # Claims the session's lease on a shared, stateful resource by name
-    # ("browser"). Raises ToolUnavailable if the wait times out.
+    # ("sandbox", "browser"). Raises ToolUnavailable if the wait times out.
     lease: Callable[[str], Awaitable[None]] | None = None
     # Per-turn state shared between calls, keyed by the tool that owns it.
     scratch: dict[str, Any] = field(default_factory=dict)
