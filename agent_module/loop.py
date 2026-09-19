@@ -118,7 +118,7 @@ def _unproductive(state: _State, budgets: Budgets, hops_used: int, opener: str) 
     Returns `(ended, injected)`: `ended` means the streak is spent and the run is
     over; `injected` is the nudge to append, or None when no hop is left to act on
     one. `opener` is what the FIRST hop of a streak says, which differs by what the
-    hop did — nothing at all, or nothing but bookkeeping.
+    hop did: nothing at all, or nothing but bookkeeping.
     """
     state.unproductive_streak += 1
     if state.unproductive_streak >= budgets.stall_streak:
@@ -185,8 +185,8 @@ async def run_turn(
     todo = TodoTracker()
     todo.items = [dict(item) for item in todo_items]
     # The checklist is STANDING STATE, so it rides the system message and is
-    # rewritten there each hop — one copy, and never the newest thing in the
-    # context. Restating it as the last message every hop is what taught a run to
+    # rewritten there each hop: one copy, and never the newest thing in the
+    # context. Restating it as the last message every hop would teach a run to
     # answer it every hop (12.3.9).
     system = messages[0] if messages and messages[0].get("role") == "system" else None
     if mode == "unattended" and system is None:
@@ -215,7 +215,7 @@ async def run_turn(
 
         # Injected here and nowhere else: at the top of a hop the previous hop's
         # tool results are already in `messages`, the ordering the API requires.
-        # Not an event — the endpoint that accepted the message already logged it.
+        # Not an event: the endpoint that accepted the message already logged it.
         if steer is not None:
             for said in await steer():
                 messages.append({"role": "user", "content": said})
@@ -227,7 +227,7 @@ async def run_turn(
                 system["content"] = system_base + prompts.checklist_state(todo.items)
             if list_stale and not reminded:
                 # The ONE time a run is told to write the list: it is actually behind.
-                # Into the CONTEXT and not the log — derived state, refolded from the
+                # Into the CONTEXT and not the log: derived state, refolded from the
                 # log next turn, not something that happened.
                 reminded = True
                 messages.append({"role": "user", "content": prompts.checklist_stale_nudge()})
@@ -271,8 +271,8 @@ async def run_turn(
                     continue
 
                 # Bookkeeping is not work. A hop whose only calls were `todo_write`
-                # does NOT clear the streak: clearing it on ANY call is what let a run
-                # spend seven hops rewriting one list and read as progress (12.3.9).
+                # does NOT clear the streak: clearing it on ANY call would let a run
+                # spend hops rewriting one list and read as progress (12.3.9).
                 worked = any(call.name != TODO_TOOL for call in calls)
                 if worked:
                     state.unproductive_streak = 0
