@@ -11,7 +11,7 @@ from cancellation import run_to_completion
 pytestmark = pytest.mark.asyncio
 
 
-async def test_the_work_finishes_through_a_cancel_and_the_cancel_is_reported():
+async def test_the_work_finishes_through_a_cancel_and_the_cancel_is_then_honoured():
     gate = asyncio.Event()
     finished: list[str] = []
 
@@ -26,17 +26,18 @@ async def test_the_work_finishes_through_a_cancel_and_the_cancel_is_reported():
     assert not waiter.done(), "the wait gave up on the work at the first cancel"
     gate.set()
 
-    assert await waiter is True
+    await asyncio.wait({waiter})
+    assert waiter.cancelled(), "the cancel was absorbed instead of honoured once the work was done"
     assert finished == ["done"]
 
 
-async def test_an_uncancelled_wait_reports_no_cancel():
-    """The control: True means a cancel was absorbed, not merely that the work finished."""
+async def test_an_uncancelled_wait_returns_normally():
+    """The control: with no cancel, the wait returns normally."""
 
     async def work():
         await asyncio.sleep(0)
 
-    assert await run_to_completion(work()) is False
+    assert await run_to_completion(work()) is None
 
 
 async def test_a_failing_work_ends_the_wait_and_keeps_its_exception():
@@ -44,7 +45,7 @@ async def test_a_failing_work_ends_the_wait_and_keeps_its_exception():
         raise RuntimeError("it broke")
 
     task = asyncio.ensure_future(work())
-    assert await run_to_completion(task) is False
+    await run_to_completion(task)
     assert isinstance(task.exception(), RuntimeError)
 
 

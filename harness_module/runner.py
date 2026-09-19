@@ -564,10 +564,7 @@ async def _drive(session_id: str) -> None:
     except Exception:
         # Not `model_error`: nothing on this path is the model.
         logger.exception("session %s: the turn failed outside the loop", session_id)
-        if await _shielded(_ending(session_id, sink, "internal_error")):
-            # A cancel arrived while the failure was being recorded: the turn is being torn
-            # down, and it must end cancelled rather than as though nobody asked.
-            raise asyncio.CancelledError from None
+        await _shielded(_ending(session_id, sink, "internal_error"))
     finally:
         _teardown.pop(session_id, None)
 
@@ -678,16 +675,14 @@ def _announce_benching(sink: _Sink, shipped: registry.Manifest) -> None:
     )
 
 
-async def _shielded(work: Awaitable[None]) -> bool:
-    """Record an ending to completion however often this turn is cancelled. True if a cancel was absorbed.
-
-    The caller re-raises on True (`run_to_completion`'s rule). A failure to record is logged here.
-    """
+async def _shielded(work: Awaitable[None]) -> None:
+    """Record an ending to completion however often this turn is cancelled; a cancel still ends the turn."""
     task = asyncio.ensure_future(work)
-    absorbed = await run_to_completion(task)
-    if task.done() and not task.cancelled() and task.exception() is not None:
-        logger.error("recording the end of the run failed", exc_info=task.exception())
-    return absorbed
+    try:
+        await run_to_completion(task)
+    finally:
+        if task.done() and not task.cancelled() and task.exception() is not None:
+            logger.error("recording the end of the run failed", exc_info=task.exception())
 
 
 async def _ending(

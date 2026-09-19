@@ -6,15 +6,17 @@ import asyncio
 from collections.abc import Awaitable
 
 
-async def run_to_completion(work: Awaitable[object]) -> bool:
-    """Run `work` to its end even if this coroutine is cancelled meanwhile. True if a cancel was absorbed.
+async def run_to_completion(work: Awaitable[object]) -> None:
+    """Run `work` to its end even if this coroutine is cancelled meanwhile, then honour the cancel.
 
     `asyncio.shield` protects the TASK and not the await, so one cancel raises out of the
     await while the work carries on unobserved; looping on the shield is what makes the
     result always seen. An exception from the work ends the wait and stays on the task.
 
-    THE CALLER MUST RE-RAISE ON TRUE. Absorbing a cancel and returning normally makes the
-    rest of a teardown run as though nobody had cancelled it.
+    A CANCEL THAT ARRIVED IS RE-RAISED HERE, once the work is done, and not left to the
+    caller. It used to return a flag the caller had to remember to re-raise, and one of its
+    first callers forgot: a turn cancelled while recording its failure ended as though
+    nobody had asked. A caller with something to do first does it in a `finally`.
     """
     task = asyncio.ensure_future(work)
     absorbed = False
@@ -25,4 +27,5 @@ async def run_to_completion(work: Awaitable[object]) -> bool:
             absorbed = True
         except Exception:  # noqa: BLE001 - the task keeps its exception for the caller to read
             break
-    return absorbed
+    if absorbed:
+        raise asyncio.CancelledError
