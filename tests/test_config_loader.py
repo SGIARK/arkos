@@ -167,10 +167,15 @@ class TestCoherence:
     """Settings that are each valid and wrong together, caught at startup."""
 
     def _loader(self, tmp_path, **overrides) -> ConfigLoader:
+        # EVERY KEY A COHERENCE RULE READS, because a rule whose key is absent is
+        # now a problem in its own right: an absent key reads as zero and every rule
+        # skips a zero, so the check would pass while comparing nothing.
         data = {
             "leases": {"wait_timeout_s": 90},
             "tools": {"call_timeout_s": 120},
             "quotas": {"max_unattended_sessions": 5},
+            "llm": {"max_tools": 128},
+            "browser": {"wall_clock_s": 240, "hard_timeout_s": 300},
         }
         for dotted, value in overrides.items():
             section, key = dotted.split("__")
@@ -181,6 +186,29 @@ class TestCoherence:
 
     def test_coherent_settings_pass(self, tmp_path):
         self._loader(tmp_path).assert_coherent()
+
+    def test_a_rule_whose_key_is_not_in_the_config_is_itself_a_problem(self, tmp_path):
+        """A check that cannot fail is the same artifact as a test that cannot fail.
+
+        `llm.max_tools` is the key dropped because its rule SKIPS a zero: without
+        this, an absent key reads as zero, the comparison is skipped, and the boot
+        goes on. A key whose rule fires on zero would have failed either way and
+        would not have shown the absence being caught.
+
+        The refusal NAMES THE KEY, because "incoherent configuration" about a rule
+        nobody can find is a worse answer than none.
+        """
+        loader = self._loader(tmp_path)
+        # Drop ONE key a rule reads, leaving everything else coherent, so the refusal
+        # below cannot be about anything but the absence.
+        config_file = tmp_path / "config.yaml"
+        loaded = yaml.safe_load(config_file.read_text())
+        del loaded["llm"]["max_tools"]
+        config_file.write_text(yaml.dump(loaded))
+        loader.reload()
+
+        with pytest.raises(RuntimeError, match="llm.max_tools"):
+            loader.assert_coherent()
 
     def test_a_wait_that_outlives_its_call_is_refused(self, tmp_path):
         with pytest.raises(RuntimeError, match="never ran"):

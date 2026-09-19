@@ -91,12 +91,32 @@ class ConfigLoader:
         self._config = None
         return self.load()
 
-    def assert_coherent(self) -> None:
-        """Raise RuntimeError on settings that are each valid and wrong together."""
-        problems = []
+    def _coherence_number(self, key: str, missing: list[str]) -> float:
+        """One number a coherence rule compares, recording the key if it is not there.
 
-        waiting = float(self.get("leases.wait_timeout_s") or 0)
-        call = float(self.get("tools.call_timeout_s") or 0)
+        A RULE ABOUT A KEY NOBODY SETS IS NOT A RULE. `self.get(key) or 0` reads an
+        absent key as zero, and every rule here is written to skip a zero, so a rule
+        whose keys have been renamed or deleted goes on passing and says nothing.
+        """
+        value = self.get(key)
+        if value is None:
+            missing.append(key)
+            return 0.0
+        return float(value)
+
+    def assert_coherent(self) -> None:
+        """Raise RuntimeError on settings that are each valid and wrong together.
+
+        AND ON A RULE THAT HAS LOST ITS SUBJECT. Every key these comparisons read
+        must exist, because the alternative is a check that cannot fail, which is
+        the same artifact as a test that cannot fail and is harder to notice: it is
+        the fail-closed control, so its silence reads as health.
+        """
+        problems = []
+        missing: list[str] = []
+
+        waiting = self._coherence_number("leases.wait_timeout_s", missing)
+        call = self._coherence_number("tools.call_timeout_s", missing)
         if waiting + _WAIT_MARGIN_S > call:
             problems.append(
                 f"leases.wait_timeout_s ({waiting}) leaves less than {_WAIT_MARGIN_S}s of "
@@ -109,7 +129,7 @@ class ConfigLoader:
         from tool_module.registry import local_tools
 
         ours = len(local_tools())
-        cap = int(self.get("llm.max_tools") or 0)
+        cap = int(self._coherence_number("llm.max_tools", missing))
         if cap and ours >= cap:
             problems.append(
                 f"llm.max_tools ({cap}) is not above the {ours} tools we author ourselves: "
@@ -117,14 +137,20 @@ class ConfigLoader:
                 "service could ever be reached and the meter would read out of a budget of nothing"
             )
 
-        asked = float(self.get("browser.wall_clock_s") or 0)
-        forced = float(self.get("browser.hard_timeout_s") or 0)
+        asked = self._coherence_number("browser.wall_clock_s", missing)
+        forced = self._coherence_number("browser.hard_timeout_s", missing)
         if asked and forced <= asked:
             problems.append(
                 f"browser.hard_timeout_s ({forced}) is not above browser.wall_clock_s ({asked}): "
                 "the backstop would fire before the graceful stop could return partial results"
             )
 
+        if missing:
+            problems.append(
+                f"a coherence rule reads {sorted(set(missing))}, which config.yaml does not define: "
+                "an absent key reads as zero and every rule here skips a zero, so the check would "
+                "pass without comparing anything"
+            )
         if problems:
             raise RuntimeError("incoherent configuration: " + "; ".join(problems))
 
