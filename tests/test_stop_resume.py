@@ -19,6 +19,7 @@ from db import pool
 from harness_module import api, approvals, lifecycle, runner, store
 from harness_module import session_log as slog
 from tests.dbgate import require_db
+from tests.runner_tasks import cancel_and_forget
 from tests.test_api import _supabase_token
 from tool_module.envelope import ResultEnvelope
 
@@ -30,11 +31,7 @@ async def _db(tmp_path):
     await require_db()
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     yield
-    for task in list(runner._reapers) + list(runner._running.values()):
-        task.cancel()
-    runner._running.clear()
-    runner._reapers.clear()
-    runner._teardown.clear()
+    cancel_and_forget()
     await asyncio.sleep(0)
     store.use_blobs(None)
     await pool.execute("DELETE FROM sessions WHERE user_id = ANY($1::uuid[])", _seeded)

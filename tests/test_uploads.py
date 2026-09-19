@@ -16,9 +16,10 @@ from httpx import ASGITransport, AsyncClient
 
 from agent_module.events import UserEvent
 from db import pool
-from harness_module import api, runner, store
+from harness_module import api, store
 from harness_module import session_log as slog
 from tests.dbgate import require_db
+from tests.runner_tasks import cancel_and_forget
 
 pytestmark = pytest.mark.asyncio
 
@@ -31,11 +32,7 @@ async def blob_store(tmp_path):
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     yield
     store.use_blobs(None)
-    for task in list(runner._reapers) + list(runner._running.values()):
-        task.cancel()
-    runner._running.clear()
-    runner._reapers.clear()
-    runner._teardown.clear()
+    cancel_and_forget()
     await asyncio.sleep(0)
     await pool.execute("DELETE FROM sessions WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM files WHERE user_id = ANY($1::uuid[])", _seeded)

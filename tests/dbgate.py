@@ -18,6 +18,10 @@ async def require_db(attempts: int = 3, delay: float = 0.5) -> None:
             return
         except Exception as e:  # noqa: BLE001 - any failure is worth one more try
             last = e
+            # `close` swallows its own failures and clears the reference either
+            # way, which it did not always do: a recovery that raises from
+            # inside an `except` turns a retryable blip into a fixture error,
+            # and that was half of F-1.
             await pool.close()
             if attempt + 1 < attempts:
                 await asyncio.sleep(delay)

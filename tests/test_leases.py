@@ -17,6 +17,7 @@ from harness_module import leases, runner
 from harness_module import session_log as slog
 from model_module import client as mc
 from tests.dbgate import require_db
+from tests.runner_tasks import cancel_and_forget
 from tool_module.browser import tool as browser_tool
 
 pytestmark = pytest.mark.asyncio
@@ -28,11 +29,7 @@ _seeded: list[uuid.UUID] = []
 async def _db():
     await require_db()
     yield
-    for task in list(runner._reapers) + list(runner._running.values()):
-        task.cancel()
-    runner._running.clear()
-    runner._reapers.clear()
-    runner._teardown.clear()
+    cancel_and_forget()
     await asyncio.sleep(0)
     await pool.execute("DELETE FROM sessions WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM users WHERE id = ANY($1::uuid[])", _seeded)
