@@ -1,7 +1,13 @@
 -r requirements.txt
-ruff
+ruff==0.16.4            # PINNED: unpinned, CI installs a newer ruff whose `format` reflows a file
+                        # this one considers clean, so `ruff format --check` is green locally and red
+                        # in CI. A linter that also formats must be pinned or a green means two
+                        # different things on two machines.
+mypy==2.3.1             # PINNED like ruff: the type-check gate (Lint & Format job) must not drift
+                        # green between machines. Scoped to the tool modules that call `fail`.
 pytest
 pytest-asyncio
 pytest-cov
 pytest-mock
+pytest-timeout          # per-test wall clock; a hung async fixture teardown fails one test instead of the run
 httpx

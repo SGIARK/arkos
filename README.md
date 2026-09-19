@@ -1,205 +1,142 @@
-# ARKOS
+# arkos-core
 
-ARK (Automated Resource Knowledgebase) revolutionizes resource management via automation. Using advanced algorithms, it streamlines collection, organization, and access to resource data, facilitating efficient decision-making.
+arkos-core is an agent harness: one loop, one model client, native tool calling.
+A session runs a model against a tool manifest, streams its events to a web UI,
+parks for human approval when a tool needs one, and keeps the user's files in a
+content-addressed store.
 
-## Architecture
+It drives a real browser through a Browserless container, searches the web, and
+reaches Gmail, GitHub, Linear, Outlook, Notion, Google Calendar and Google Drive
+through Composio. Each session also gets a headless e2b sandbox, a shell and a
+filesystem with the user's folders mounted at `~/store/<folder>/`, which is what
+`run_command` and the file tools act on.
 
-```
-┌──────────────┐
-│  arkos app   │  FastAPI server (port configurable)
-│  /v1/chat/   │  OpenAI-compatible chat completions API
-└──┬───┬───┬───┘
-   │   │   │
-   ▼   ▼   ▼
-┌──────┐ ┌──────────┐ ┌──────────────────┐
-│Postgres│ │  SGLang  │ │ Text Embeddings │
-│memory  │ │  (LLM)   │ │ Inference (TEI)  │
-│:5432   │ │  :30000  │ │ :4444            │
-└────────┘ └──────────┘ └──────────────────┘
-```
+Licensed under AGPL-3.0. See `LICENSE`, and `NOTICE` for where this code came
+from.
 
-- **App** -- FastAPI agent that orchestrates state transitions, LLM calls, and tool usage
-- **SGLang** -- serves Qwen 2.5-7B-Instruct for inference (requires GPU)
-- **TEI** -- Hugging Face text embeddings for memory search, runs on port 4444 (requires GPU)
-- **Postgres** -- stores conversation history and OAuth tokens (via Supabase)
+## Where things are
 
-## Languages and Dependencies
+| Path | What it is |
+| --- | --- |
+| `agent_module/loop.py` | the one loop |
+| `model_module/client.py` | the one model client |
+| `harness_module/` | control plane: api · runner · store · blobs · memory · workspace · leases · lifecycle · approvals · session_log · system_log · stream · hands · jwt_utils |
+| `tool_module/` | envelope · registry · connections · session_tools · composio_mcp · tools/ · browser/ |
+| `db/` | migrations and the asyncpg pool |
+| `config_module/` | `config.yaml` and its loader |
+| `frontend/` | the UI |
 
-The entire codebase is in Python, except for a few shell scripts. Docker is needed for quick setup.
+`.github/CONTRIBUTING.md` has the contribution rules, including the CLA every
+pull request needs.
 
-All dependencies are listed in [`requirements.txt`](requirements.txt). Development tools (linting, testing) are in [`requirements-dev.txt`](requirements-dev.txt).
+## Running it
 
-```bash
-pip install -r requirements.txt
-pip install -r requirements-dev.txt  # dev only
-```
+1. Create your env file and set `DB_URL`:
 
-## File Structure
-
-* `base_module/` -- FastAPI app, user auth (JWT/OAuth), tasks API
-* `config_module/` -- YAML configuration loader
-* `db/` -- Postgres schema migrations and maintenance scripts
-* `model_module/` -- LLM inference wrapper (ArkModelLink)
-* `agent_module/` -- agent orchestration and state machine runner
-* `state_module/` -- state graph definitions (agent, tool, user states)
-* `tool_module/` -- MCP (Model Context Protocol) tool integration via Smithery
-* `memory_module/` -- short-term (Postgres) and long-term (mem0) memory
-* `frontend/` -- web UI served at `/app`
-* `tests/` -- pytest test suite
-
-## CI/CD Pipeline
-
-CI/CD is configured via GitHub Actions. All workflows live in `.github/workflows/`.
-
-### CI (`ci.yml`) -- runs on every PR and push to `main`
-
-| Job | What it does | Tools |
-|-----|-------------|-------|
-| **Lint** | Checks code style and formatting | `ruff check .` and `ruff format --check .` |
-| **Test** | Runs unit tests with a Postgres service container | `pytest` with coverage |
-| **Build & Push** | Builds the Docker image and pushes to GHCR | `docker buildx`, pushes to `ghcr.io/sgiark/arkos` |
-
-On PRs, the build job builds without pushing (verification only). On pushes to `main`, the image is tagged with both the commit SHA and `latest` and pushed to GitHub Container Registry.
-
-### Deploy (`deploy.yml`) -- runs on push to `main` *(currently disabled)*
-
-Deploys the app as a Docker container on `ark.mit.edu`:
-1. SSHes in as the `kshitij` user (has docker group access, no sudo needed)
-2. Pulls the latest image from GHCR
-3. Records the current image tag (for rollback)
-4. Stops and removes the old container, starts a new one with `--network host` so it can reach SGLang/TEI/Postgres on localhost
-5. Runs a health check (pings `/health`)
-6. Runs a smoke test (sends a real chat request through the full stack)
-7. Rolls back to the previous image automatically if any step fails
-
-**Setup required on `ark.mit.edu` (one-time):**
-1. Create `/home/kshitij/arkos/.env` with `DB_URL`, `SMITHERY_API_KEY`, `SMITHERY_NAMESPACE`, `HF_TOKEN`, etc.
-2. Either make the `ghcr.io/sgiark/arkos` package public (GitHub > repo > Packages > package settings), or run once as kshitij:
-   ```bash
-   echo $GITHUB_TOKEN | docker login ghcr.io -u <your-gh-username> --password-stdin
-   ```
-
-**Setup required on GitHub (one-time):**
-1. Add `SSH_PRIVATE_KEY` as a repo secret (Settings > Secrets and variables > Actions). This is the private key for the `kshitij` user on ark.mit.edu.
-2. Ensure the corresponding public key is in `~/.ssh/authorized_keys` on the server.
-
-### Monitor (`monitor.yml`) -- runs every 30 minutes *(currently disabled)*
-
-Pings the `/health` endpoint and reports per-service status (SGLang, TEI, Postgres). GitHub sends an email notification if the check fails.
-
-**Setup required:** Add `MONITOR_URL` as a GitHub repo secret (e.g., `http://ark.mit.edu:1112`).
-
-### Health Check Endpoint
-
-`GET /health` returns the status of all services:
-
-```json
-{
-  "status": "ok",
-  "services": {
-    "sglang": "running",
-    "tei": "running",
-    "postgres": "running"
-  },
-  "port": 1112
-}
-```
-
-Returns `200` if all services are running, `503` if any service is down (status becomes `"degraded"`).
-
-### Running CI Checks Locally
-
-```bash
-ruff check .                              # linting
-ruff format --check .                     # formatting
-pytest tests/ -v -m "not integration"     # unit tests
-```
-
-## Deployment Environment: MIT SIPB Shared Server (ark.mit.edu)
-
-ARK OS is deployed on a **shared server** where multiple team members work simultaneously. This means:
-- **Port conflicts** can occur when multiple users run the same services
-- The **LLM inference server (port 30000)** is shared among all users
-- You should use **unique ports** for your API server instance
-
-### Start Inference Engine (REQUIRED FIRST)
-
-The LLM server MUST be running before starting any ARK OS applications.
-
-#### Check if LLM Server is Already Running
-
-Since this is a shared server, someone else may have already started it:
-
-```bash
-# Check if port 30000 is in use
-lsof -i :30000
-
-# Or verify it's responding
-curl http://localhost:30000/v1/models
-```
-
-If you see output, the LLM server is already running -- you can skip starting it.
-
-#### Starting the LLM Server (if not running)
-
-Before starting, check with your team to avoid conflicts.
-
-```bash
-bash model_module/run.sh
-```
-
-This starts the SGLang server on port 30000 using Docker and GPU. Wait for "server started" messages (may take 1-2 minutes on first run).
-
-```bash
-bash model_module/run_tei.sh
-```
-
-This starts the Huggingface-TEI server on port 4444 using Docker and GPU.
-
-### Setting .env Variables
-
-You need to create a `.env` and set `DB_URL` before starting the application:
-
-1. Copy example env file:
    ```bash
    cp .env.example .env
    ```
-2. Edit `.env`:
-   ```bash
-   DB_URL=postgresql://postgres:your-password@localhost:5432/postgres
+
+   ```
+   DB_URL=postgresql://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres
    ```
 
-### Running the Application
+   Percent-encode the password: a raw `@` reparses the DSN and everything after
+   it silently becomes the host. `.env.example` carries the encoding table and
+   the pooler DSN for IPv4-only networks.
 
-1. **Start the API server**:
+   The server then refuses to start without two things, with no demo bypass.
+   `ARKOS_SESSION_SECRET` signs the session cookie we issue. The second is SOME
+   way to verify a Supabase token, and a project URL is enough: derived from the
+   DSN above, which carries the project ref, or set as `SUPABASE_URL`, because
+   current projects sign with a key published at the project's JWKS endpoint.
+   `SUPABASE_JWT_SECRET` is only for a project still on the legacy shared
+   secret; on a current one it stays empty. A non-Supabase Postgres has neither,
+   and will not start until you set one.
+
+2. Install dependencies and apply the migrations:
+
    ```bash
-   python base_module/app.py
+   pip install -r requirements.txt
+   python db/migrate.py
    ```
-   This starts the FastAPI server on the port configured in `config_module/config.yaml` (`app.port`).
 
-2. **Access the UI**: Port-forward to `app.port` (default `1114`) and navigate to `/app` in your browser.
+   `db/migrate.py` applies `db/migrations/*.sql` in lexical order and records
+   each one in `schema_migrations`, so re-running it is safe. Nothing applies
+   them at startup: the API comes up happily against an unmigrated database and
+   fails on the first request that touches a table.
 
-### Docker Compose (Full Stack)
+   It prints the host and database it is about to touch, and REFUSES anything
+   that is not local unless you say `--production`. `DB_URL` from the
+   environment wins over `.env`, so a local apply is one variable:
 
-To run the entire stack (app + SGLang + TEI + Supabase) with Docker:
+   ```bash
+   DB_URL=postgresql://test:test@localhost:5432/test python db/migrate.py
+   python db/migrate.py --production   # the remote project named in .env
+   ```
+
+3. Start the API server on the port `app.public_url` names:
+
+   ```bash
+   python -m uvicorn harness_module.api:app --port 1121
+   ```
+
+   The port is not optional and `app.port` is not read by anything: uvicorn's
+   own default is 8000. Every mutation is origin-checked against
+   `app.public_url` (`http://localhost:1121` by default), so a UI served from
+   any other port loads, reads fine, and gets 403 on every POST. Change both or
+   neither.
+
+4. Open `http://localhost:1121/app`.
+
+The browser tool needs the browserless container, which is the only service in
+`docker-compose.yml` this build uses:
 
 ```bash
-docker compose up -d
+docker compose up -d browserless
 ```
 
-This requires an NVIDIA GPU with Docker GPU support configured.
+Name the service. A bare `docker compose up -d` fails: the `app` service builds
+a `Dockerfile` that is not in this tree, and `sglang` and `tei` are optional GPU
+services (see "Running at MIT" below).
 
-## Contributors
+Then set `BROWSERLESS_URL=ws://localhost:3000` in `.env`. Compose hands the
+containerised `app` service `ws://browserless:3000`, which resolves to nothing
+from your host, and an unset url makes `browser_task` refuse: deliberately,
+because the fallback would be a Chromium running model-chosen pages beside your
+cookies and the store's secret key.
 
-| Name                  | Role           | GitHub username | Affiliation   |
-| --------------------  | -------------- | --------------- | --------------|
-| Nathaniel Morgan      | Project leader | nmorgan         | MIT           |
-| Joshua Guo            | Frontend       | duck_master     | MIT           |
-| Ilya Gulko            | Backend        | gulkily         | MIT           |
-| Jack Luo              | Backend        | thejackluo      | Georgia Tech  |
-| Bryce Roberts         | Backend        | BryceRoberts13  | MIT           |
-| Angela Liu            | Backend        | angelaliu6      | MIT           |
-| Ishaana Misra         | Backend        | ishaanam        | MIT           |
-| Hudson Hilal          | Backend        | hhilal123       | MIT           |
-| Calvin Baker          | Backend        | Calvinlb404     | MIT           |
-| Kshitij Duraphe       | DevOps         | ksd3            | BU            |
+## Running at MIT
+
+A local GPU serves the model; the sandbox is the one part not self-hosted.
+
+1. `docker compose up -d sglang browserless` (sglang needs an NVIDIA GPU).
+2. In `config_module/config.yaml` set `llm.base_url` to `http://localhost:30000/v1`
+   (the `/v1` is required) and `llm.model_name` to the model that server was
+   launched with: a tool-calling model with a matching `--tool-call-parser`, or
+   turns come back as prose and no tool ever runs.
+3. In `.env` set `BROWSERLESS_URL=ws://localhost:3000` and `E2B_API_KEY` (the
+   shell and the file tools are a metered cloud box), leave `OPENAI_API_KEY`
+   empty (SGLang ignores it), and fill in `DB_URL`, the Supabase keys and
+   `ARKOS_SESSION_SECRET`.
+
+## Tests and CI
+
+```bash
+pip install -r requirements-dev.txt
+ruff check . && ruff format --check .
+mypy --follow-imports=silent --ignore-missing-imports --disable-error-code=arg-type tool_module/tools/ tool_module/browser/tool.py tool_module/sandbox/tools.py
+DB_URL=postgresql://test:test@localhost:5432/test python db/migrate.py
+DB_URL=postgresql://test:test@localhost:5432/test pytest tests/ -q --timeout=120 -m "not integration"
+```
+
+Those are the commands `.github/workflows/ci.yml` runs: a lint stage (ruff plus
+the type check) and a test stage against a throwaway `postgres:15` service. Run
+them yourself first; a red push is a slower way to learn the same thing.
+
+The suite needs a database with the migrations applied. It FAILS rather than
+skips when it finds a reachable database with no schema, because a suite that
+skips itself green is worse than one that goes red. `tests/conftest.py` captures
+`DB_URL` before it reads `.env` and throws the `.env` one away, because the
+suite truncates tables and a developer's `.env` may point at a real project.
+Integration tests are deselected in CI and need live credentials.

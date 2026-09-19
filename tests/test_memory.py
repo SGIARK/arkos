@@ -1,222 +1,328 @@
-"""Tests for memory_module/memory.py: serialize, deserialize, and ROLE/CLASS mappings."""
+"""Memory: appended by sessions, searched by them, carried between them."""
 
-from unittest.mock import MagicMock, patch
+from __future__ import annotations
+
+import asyncio
+import uuid
 
 import pytest
+import pytest_asyncio
 
-from memory_module.memory import CLASS_TO_ROLE, ROLE_TO_CLASS
-from model_module.ArkModelNew import (
-    AIMessage,
-    SystemMessage,
-    ToolMessage,
-    UserMessage,
-)
-
-# --- Role/Class Mappings ---
-
-
-class TestRoleMappings:
-    def test_role_to_class_user(self):
-        assert ROLE_TO_CLASS["user"] is UserMessage
-
-    def test_role_to_class_assistant(self):
-        assert ROLE_TO_CLASS["assistant"] is AIMessage
-
-    def test_role_to_class_system(self):
-        assert ROLE_TO_CLASS["system"] is SystemMessage
-
-    def test_role_to_class_tool(self):
-        assert ROLE_TO_CLASS["tool"] is ToolMessage
-
-    def test_class_to_role_user(self):
-        assert CLASS_TO_ROLE[UserMessage] == "user"
-
-    def test_class_to_role_ai(self):
-        assert CLASS_TO_ROLE[AIMessage] == "assistant"
-
-    def test_class_to_role_system(self):
-        assert CLASS_TO_ROLE[SystemMessage] == "system"
-
-    def test_class_to_role_tool(self):
-        assert CLASS_TO_ROLE[ToolMessage] == "tool"
-
-    def test_mappings_are_inverses(self):
-        for role, cls in ROLE_TO_CLASS.items():
-            assert CLASS_TO_ROLE[cls] == role
+from db import pool
+from harness_module import memory, runner, store, workspace
+from tests.dbgate import require_db
+from tests.test_workspace import FakeSandbox, _sweeping
+from tool_module import registry
+from tool_module.envelope import ToolContext
+from tool_module.sandbox import manager as sandbox_manager
 
 
-# --- Serialize / Deserialize (standalone, no DB needed) ---
+class _Note:
+    """One note, as these tests read them back."""
+
+    def __init__(self, path: str, text: str):
+        self.path, self.text = path, text
 
 
-class TestSerializeDeserialize:
-    """Test serialize/deserialize by calling the methods directly without a Memory instance."""
-
-    def _serialize(self, message):
-        """Call serialize logic directly (same as Memory.serialize)."""
-        return message.model_dump_json()
-
-    def _deserialize(self, message_str, role):
-        """Call deserialize logic directly (same as Memory.deserialize)."""
-        cls = ROLE_TO_CLASS.get(role)
-        if cls is None:
-            raise ValueError(f"Unknown role: {role}")
-        return cls.model_validate_json(message_str)
-
-    def test_serialize_user_message(self):
-        msg = UserMessage(content="hello")
-        json_str = self._serialize(msg)
-        assert '"content":"hello"' in json_str or '"content": "hello"' in json_str
-
-    def test_serialize_ai_message(self):
-        msg = AIMessage(content="response")
-        json_str = self._serialize(msg)
-        assert "response" in json_str
-
-    def test_serialize_system_message(self):
-        msg = SystemMessage(content="be helpful")
-        json_str = self._serialize(msg)
-        assert "be helpful" in json_str
-
-    def test_serialize_tool_message(self):
-        msg = ToolMessage(content="tool result")
-        json_str = self._serialize(msg)
-        assert "tool result" in json_str
-
-    def test_deserialize_user_message(self):
-        msg = UserMessage(content="test")
-        json_str = self._serialize(msg)
-        restored = self._deserialize(json_str, "user")
-        assert isinstance(restored, UserMessage)
-        assert restored.content == "test"
-        assert restored.role == "user"
-
-    def test_deserialize_ai_message(self):
-        msg = AIMessage(content="ai response")
-        json_str = self._serialize(msg)
-        restored = self._deserialize(json_str, "assistant")
-        assert isinstance(restored, AIMessage)
-        assert restored.content == "ai response"
-
-    def test_deserialize_system_message(self):
-        msg = SystemMessage(content="system msg")
-        json_str = self._serialize(msg)
-        restored = self._deserialize(json_str, "system")
-        assert isinstance(restored, SystemMessage)
-
-    def test_deserialize_tool_message(self):
-        msg = ToolMessage(content="result", tool_calls={"name": "calc"})
-        json_str = self._serialize(msg)
-        restored = self._deserialize(json_str, "tool")
-        assert isinstance(restored, ToolMessage)
-        assert restored.tool_calls == {"name": "calc"}
-
-    def test_deserialize_unknown_role_raises(self):
-        with pytest.raises(ValueError, match="Unknown role"):
-            self._deserialize('{"content":"x","role":"unknown"}', "unknown")
-
-    def test_roundtrip_all_message_types(self):
-        messages = [
-            UserMessage(content="hello"),
-            AIMessage(content="hi there"),
-            SystemMessage(content="be concise"),
-            ToolMessage(content="42", tool_calls={"name": "calc"}),
-        ]
-        roles = ["user", "assistant", "system", "tool"]
-
-        for msg, role in zip(messages, roles, strict=False):
-            json_str = self._serialize(msg)
-            restored = self._deserialize(json_str, role)
-            assert restored.content == msg.content
-            assert restored.role == msg.role
+async def read_notes(user_id: str) -> list[_Note]:
+    """Every note a user has, oldest first — the path name carries the order."""
+    rows = await pool.fetch(
+        "SELECT path, body FROM memory_files WHERE user_id = $1 AND path LIKE $2 ORDER BY path",
+        uuid.UUID(str(user_id)),
+        f"{memory.NOTES_DIR}/%",
+    )
+    return [_Note(path=r["path"], text=r["body"]) for r in rows]
 
 
-# --- Memory class with mocked DB ---
+pytestmark = pytest.mark.asyncio
+
+_seeded: list[uuid.UUID] = []
 
 
-class TestMemoryWithMockedDB:
-    @pytest.fixture
-    def memory_instance(self):
-        """Create a Memory instance with mocked database pool and mem0."""
-        with (
-            patch("memory_module.memory._get_pool") as mock_pool,
-            patch("memory_module.memory.Mem0Memory"),
-        ):
-            mock_conn = MagicMock()
-            mock_cursor = MagicMock()
-            mock_conn.cursor.return_value = mock_cursor
-            mock_pool_instance = MagicMock()
-            mock_pool_instance.getconn.return_value = mock_conn
-            mock_pool.return_value = mock_pool_instance
+@pytest_asyncio.fixture(autouse=True)
+async def _db(tmp_path):
+    await require_db()
+    store.use_blobs(store.FilesystemBlobs(tmp_path))
+    yield
+    store.use_blobs(None)
+    await pool.execute("DELETE FROM sessions WHERE user_id = ANY($1::uuid[])", _seeded)
+    await pool.execute("DELETE FROM files WHERE user_id = ANY($1::uuid[])", _seeded)
+    await pool.execute("DELETE FROM projects WHERE user_id = ANY($1::uuid[])", _seeded)
+    await pool.execute("DELETE FROM users WHERE id = ANY($1::uuid[])", _seeded)
+    _seeded.clear()
+    await pool.close()
 
-            from memory_module.memory import Memory
 
-            mem = Memory(
-                user_id="test_user",
-                session_id="test_session",
-                db_url="postgresql://fake",
-                use_long_term=False,
-            )
-            mem._pool = mock_pool_instance
-            yield mem, mock_conn, mock_cursor
+async def _user() -> str:
+    user_id = uuid.uuid4()
+    await pool.execute("INSERT INTO users (id) VALUES ($1)", user_id)
+    _seeded.append(user_id)
+    return str(user_id)
 
-    def test_init(self, memory_instance):
-        mem, _, _ = memory_instance
-        assert mem.user_id == "test_user"
-        assert mem.session_id == "test_session"
 
-    def test_start_new_session(self, memory_instance):
-        mem, _, _ = memory_instance
-        old_session = mem.session_id
-        new_session = mem.start_new_session()
-        assert new_session != old_session
-        assert mem.session_id == new_session
+async def _session(user_id: str, project_id: str | None = None) -> str:
+    return str(
+        await pool.fetchval(
+            "INSERT INTO sessions (user_id, project_id, mode, status) VALUES ($1, $2, 'attended', 'idle') RETURNING id",
+            uuid.UUID(user_id),
+            uuid.UUID(project_id) if project_id else None,
+        )
+    )
 
-    def test_serialize(self, memory_instance):
-        mem, _, _ = memory_instance
-        msg = UserMessage(content="test")
-        result = mem.serialize(msg)
-        assert isinstance(result, str)
-        assert "test" in result
 
-    def test_deserialize(self, memory_instance):
-        mem, _, _ = memory_instance
-        msg = UserMessage(content="hello")
-        json_str = mem.serialize(msg)
-        restored = mem.deserialize(json_str, "user")
-        assert isinstance(restored, UserMessage)
-        assert restored.content == "hello"
+def _ctx(user_id: str, session_id: str | None = None) -> ToolContext:
+    return ToolContext(user_id=user_id, session_id=session_id)
 
-    @pytest.mark.asyncio
-    async def test_add_memory_inserts_to_db(self, memory_instance):
-        mem, mock_conn, mock_cursor = memory_instance
-        msg = UserMessage(content="test message")
-        result = await mem.add_memory(msg)
-        assert result is True
-        # _insert() runs in a thread via asyncio.to_thread; by the time await
-        # returns, the cursor + commit calls have happened.
-        mock_cursor.execute.assert_called_once()
-        mock_conn.commit.assert_called_once()
 
-    @pytest.mark.asyncio
-    async def test_retrieve_short_memory(self, memory_instance):
-        mem, mock_conn, mock_cursor = memory_instance
-        # Simulate DB returning rows
-        user_msg = UserMessage(content="hi")
-        ai_msg = AIMessage(content="hello")
-        mock_cursor.fetchall.return_value = [
-            ("user", user_msg.model_dump_json()),
-            ("assistant", ai_msg.model_dump_json()),
-        ]
+# --- the append gate ----------------------------------------------------------------
 
-        result = await mem.retrieve_short_memory(turns=5)
-        assert len(result) == 2
-        assert isinstance(result[0], UserMessage)
-        assert isinstance(result[1], AIMessage)
 
-    @pytest.mark.asyncio
-    async def test_retrieve_long_memory_disabled(self, memory_instance):
-        mem, _, _ = memory_instance
-        # use_long_term is False
-        result = await mem.retrieve_long_memory()
-        assert isinstance(result, SystemMessage)
-        assert result.content == ""
+async def test_a_note_is_a_file_of_its_own():
+    user_id = await _user()
+
+    path = await memory.append_note(user_id, "the human prefers short replies")
+
+    assert path.startswith(f"{memory.NOTES_DIR}/")
+    notes = await read_notes(user_id)
+    assert [(n.path, n.text) for n in notes] == [(path, "the human prefers short replies")]
+
+
+async def test_concurrent_appends_land_as_separate_files():
+    """No read-modify-write anywhere on this path, so a race cannot lose a note."""
+    user_id = await _user()
+
+    paths = await asyncio.gather(*(memory.append_note(user_id, f"note {i}") for i in range(10)))
+
+    assert len(set(paths)) == 10
+    assert {n.text for n in await read_notes(user_id)} == {f"note {i}" for i in range(10)}
+
+
+async def test_notes_read_back_oldest_first():
+    user_id = await _user()
+    first = await memory.append_note(user_id, "one")
+    second = await memory.append_note(user_id, "two")
+
+    assert [n.path for n in await read_notes(user_id)] == [first, second]
+
+
+async def test_one_users_memory_is_not_anothers():
+    mine, theirs = await _user(), await _user()
+    await memory.append_note(theirs, "not yours")
+    await memory.update_memory(theirs, "# Theirs\n")
+
+    await memory.append_note(mine, "mine")
+
+    assert [n.text for n in await read_notes(mine)] == ["mine"]
+    assert await memory.read_memory(mine) == ""
+    assert await memory.search_memory(mine, "yours") == []
+
+
+# --- the curated core ---------------------------------------------------------------
+
+
+async def test_the_core_reads_empty_until_it_is_curated():
+    user_id = await _user()
+    await memory.append_note(user_id, "a note is not the core")
+
+    assert await memory.read_memory(user_id) == ""
+
+
+async def test_curating_replaces_the_core_whole():
+    user_id = await _user()
+
+    await memory.update_memory(user_id, "# Memory\n\nShort replies.\n")
+    await memory.update_memory(user_id, "# Memory\n\nShort replies. Ships on Fridays.\n")
+
+    assert await memory.read_memory(user_id) == "# Memory\n\nShort replies. Ships on Fridays.\n"
+    assert await read_notes(user_id) == [], "the core came back as a note"
+    rows = await pool.fetchval(
+        "SELECT count(*) FROM memory_files WHERE user_id = $1 AND path = $2",
+        uuid.UUID(user_id),
+        memory.MEMORY_CORE,
+    )
+    assert rows == 1, "a rewrite left a second core behind"
+
+
+async def test_two_curations_at_once_serialize_on_the_gate():
+    """One of them wins whole. Neither writes half a document, and neither errors."""
+    user_id = await _user()
+
+    await asyncio.gather(
+        memory.update_memory(user_id, "# A\n" + "a" * 500),
+        memory.update_memory(user_id, "# B\n" + "b" * 500),
+    )
+
+    core = await memory.read_memory(user_id)
+    assert core in ("# A\n" + "a" * 500, "# B\n" + "b" * 500)
+
+
+# --- search -------------------------------------------------------------------------
+
+
+async def test_search_finds_a_saved_note():
+    user_id = await _user()
+    await memory.append_note(user_id, "The user's accountant is Dana Okafor, reachable at the Tuesday standup.")
+    await memory.append_note(user_id, "Deployments go out on Fridays, never before the invoices are filed.")
+
+    hits = await memory.search_memory(user_id, "accountant")
+
+    assert [h.text for h in hits] == ["The user's accountant is Dana Okafor, reachable at the Tuesday standup."]
+    assert hits[0].is_core is False
+
+
+async def test_search_covers_the_core_as_well_as_the_notes():
+    user_id = await _user()
+    await memory.update_memory(user_id, "# Memory\n\nInvoices are filed before any deployment.\n")
+
+    hits = await memory.search_memory(user_id, "invoices")
+
+    assert [h.is_core for h in hits] == [True]
+
+
+async def test_a_query_that_matches_nothing_returns_nothing():
+    user_id = await _user()
+    await memory.append_note(user_id, "something else entirely")
+
+    assert await memory.search_memory(user_id, "kangaroo") == []
+    assert await memory.search_memory(user_id, "   ") == []
+
+
+# --- the tools ----------------------------------------------------------------------
+
+
+async def test_save_memory_then_search_memory_finds_it():
+    user_id = await _user()
+    ctx = _ctx(user_id)
+
+    saved = await registry.dispatch("save_memory", {"text": "The user bills in euros."}, ctx)
+    found = await registry.dispatch("search_memory", {"query": "bills"}, ctx)
+
+    assert saved.ok
+    assert found.ok
+    assert "euros" in found.content
+
+
+async def test_save_memory_refuses_a_transcript():
+    user_id = await _user()
+
+    result = await registry.dispatch("save_memory", {"text": "x" * 3000}, _ctx(user_id))
+
+    assert result.ok is False
+    assert "at most" in result.content
+    assert await read_notes(user_id) == []
+
+
+async def test_update_memory_requires_reading_the_document_first():
+    """The prompt's copy is capped, so a rewrite from it would drop the tail."""
+    user_id = await _user()
+    await memory.update_memory(user_id, "# Memory\n\nOne. Two. Three.\n")
+    ctx = _ctx(user_id)
+
+    blind = await registry.dispatch("update_memory", {"content": "# Memory\n\nOne.\n"}, ctx)
+
+    assert blind.ok is False
+    assert "read_memory" in blind.content
+    assert await memory.read_memory(user_id) == "# Memory\n\nOne. Two. Three.\n"
+
+    read = await registry.dispatch("read_memory", {}, ctx)
+    rewritten = await registry.dispatch("update_memory", {"content": "# Memory\n\nOne. Two.\n"}, ctx)
+
+    assert "Three" in read.content
+    assert rewritten.ok
+    assert await memory.read_memory(user_id) == "# Memory\n\nOne. Two.\n"
+
+
+async def test_read_memory_says_so_when_there_is_nothing_yet():
+    result = await registry.dispatch("read_memory", {}, _ctx(await _user()))
+
+    assert result.ok
+    assert "empty" in result.content
+
+
+async def test_the_memory_tools_ship_in_the_manifest():
+    specs = {s.name: s for s in (await registry.manifest(await _user())).specs}
+
+    for name in ("save_memory", "search_memory", "read_memory", "update_memory"):
+        assert name in specs, f"{name} is missing from the manifest"
+    assert {n for n in specs if n.endswith("_memory") and specs[n].readonly} == {
+        "search_memory",
+        "read_memory",
+    }
+
+
+# --- across sessions ----------------------------------------------------------------
+
+
+async def test_what_one_session_learns_the_next_one_knows():
+    """The case memory exists for: session A curates, session B is told without asking."""
+    user_id = await _user()
+    first = await _session(user_id)
+    second = await _session(user_id)
+    ctx_a = _ctx(user_id, first)
+
+    await registry.dispatch("save_memory", {"text": "The user's accountant is Dana Okafor."}, ctx_a)
+    await registry.dispatch("read_memory", {}, ctx_a)
+    await registry.dispatch("update_memory", {"content": "# Memory\n\nThe user's accountant is Dana Okafor.\n"}, ctx_a)
+
+    found = await registry.dispatch("search_memory", {"query": "accountant"}, _ctx(user_id, second))
+    folded = await runner.fold(await runner.load(second))
+    system = folded.messages[0]["content"]
+
+    assert "Dana Okafor" in found.content, "the note did not survive into the next session"
+    assert "Dana Okafor" in system, "the curated core did not reach the next session's prompt"
+    assert folded.messages[0]["role"] == "system"
+
+
+async def test_the_prompt_carries_a_capped_core_and_says_where_the_rest_is(monkeypatch):
+    user_id = await _user()
+    session_id = await _session(user_id)
+    await memory.update_memory(user_id, "# Memory\n\n" + "long. " * 500)
+    monkeypatch.setattr(runner, "_cfg", lambda key, default: 200 if key == "memory.prompt_max_chars" else default)
+
+    system = (await runner.fold(await runner.load(session_id))).messages[0]["content"]
+
+    assert "read_memory" in system
+    assert 0 < system.count("long.") < 40, "the cap did not hold"
+    assert (await registry.dispatch("read_memory", {}, _ctx(user_id))).content.count("long.") == 500
+
+
+async def test_a_session_with_no_memory_gets_a_prompt_without_the_section():
+    session_id = await _session(await _user())
+
+    system = (await runner.fold(await runner.load(session_id))).messages[0]["content"]
+
+    assert "# MEMORY.md" not in system
+    assert "save_memory" in system, "the guidance is not conditional on there being memory"
+
+
+# --- and it still does not mount ------------------------------------------------------
+
+
+async def test_a_session_claiming_everything_still_has_no_memory_in_its_box():
+    """D30 is open; until it is settled the default posture is that memory stays out."""
+    user_id = await _user()
+    project_id = str(
+        await pool.fetchval(
+            "INSERT INTO projects (user_id, title) VALUES ($1, 'Taxes') RETURNING id", uuid.UUID(user_id)
+        )
+    )
+    session_id = await _session(user_id, project_id)
+    assert await sandbox_manager.claim_slot(session_id)
+    await memory.append_note(user_id, "the most sensitive distillate in the system")
+    await memory.update_memory(user_id, "# Memory\n")
+    await store.commit_tree(
+        user_id,
+        [store.FileContent(path="taxes/a.txt", content=b"1"), store.FileContent(path="taxes-ro/b.txt", content=b"2")],
+    )
+    sandbox = _sweeping(FakeSandbox())
+
+    claims = [
+        workspace.Claim(user_id=user_id, folder="taxes"),
+        workspace.Claim(user_id=user_id, folder="taxes-ro", mode="read"),
+    ]
+    await workspace.materialize(sandbox, session_id, claims)
+
+    landed = set(sandbox.files)
+    assert f"{workspace.MOUNT_ROOT}/taxes/a.txt" in landed
+    assert not [p for p in landed if "memory" in p.lower()], "memory reached the box"
+    assert not [p for p in landed if p.endswith(memory.MEMORY_CORE)]

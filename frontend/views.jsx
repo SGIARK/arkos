@@ -1,225 +1,366 @@
 /* =========================================================
-   views
+   views — desk · approvals · files, plus settings and sign-in
    ========================================================= */
 
-function PageHead({ title, accent, lede }) {
-  return (
-    <div className="head">
-      <h1>{title}{accent && <span className="accent">{accent}</span>}<span className="caret" /></h1>
-      {lede && <div className="lede">{lede}</div>}
-    </div>
-  );
-}
-
 /* ---------- DESK ---------- */
-function DeskView({ data, onResolve, dismissed, onDismiss }) {
-  const activeTasks = data.tasks.filter((t) => t.state === "run");
-  const completedTasks = data.tasks.filter(
-    (t) => (t.state === "done" || t.state === "stop") && !dismissed.has(t.id)
-  );
-  const pendingItems = data.approvals.length + completedTasks.length;
+
+function DeskView({ onError, waiting: pending, onOpenSession }) {
+  const waiting = pending || [];
+  const [running, setRunning] = useState([]);
+  const [projects, setProjects] = useState([]);
+
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      try {
+        const [r, p] = await Promise.all([api.sessions("running"), api.projects()]);
+        if (dead) return;
+        setRunning(r);
+        setProjects(p);
+      } catch (e) {
+        if (!dead) onError(e);
+      }
+    })();
+    return () => {
+      dead = true;
+    };
+    // `waiting` is a dep on purpose: App changing the pending set is also the
+    // moment the running list is worth re-reading.
+  }, [waiting, onError]);
 
   return (
-    <div className="view view-wide">
+    <div className="view viewin">
       <PageHead
-        title="buddy's desk"
-        lede="your digital life, handled in the background. buddy watches, triages, and workshops plans for your approval."
+        title="the desk"
+        lede="what is waiting on you, what is running, and where the work lives. nothing acts without your say-so."
       />
       <div className="zones">
         <section className="zone">
           <header>
-            <span className="kicker">pending approvals</span>
-            <span className="n">{data.approvals.length}</span>
+            <span className="kicker">waiting on you</span>
+            <span className="n">{waiting.length}</span>
           </header>
           <div className="stack">
-            {pendingItems === 0
-              ? <Empty glyph="✓">nothing waiting on you</Empty>
-              : <>
-                  {data.approvals.map((a) => <ApprovalCard key={a.id} item={a} onResolve={onResolve} />)}
-                  {completedTasks.map((t) => <CompletedTaskCard key={t.id} item={t} onDismiss={onDismiss} />)}
-                </>}
+            {waiting.length === 0 ? (
+              <Empty glyph="✓">nothing waiting on you</Empty>
+            ) : (
+              waiting.map((a) => (
+                <ApprovalCard key={a.approval_id} item={a} onResolve={onOpenSession ? () => {} : undefined} onError={onError} />
+              ))
+            )}
           </div>
         </section>
 
         <section className="zone">
           <header>
-            <span className="kicker">active tasks</span>
-            <span className="n">{activeTasks.length}</span>
+            <span className="kicker">running</span>
+            <span className="n">{running.length}</span>
           </header>
           <div className="stack">
-            {activeTasks.length === 0
-              ? <Empty glyph="○">buddy is idle</Empty>
-              : activeTasks.map((t) => <TaskRow key={t.id} item={t} />)}
+            {running.length === 0 ? (
+              <Empty glyph="○">nothing running</Empty>
+            ) : (
+              running.map((s) => (
+                <div className="row" key={s.session_id} onClick={() => onOpenSession(s.session_id)}>
+                  <span className="label">
+                    <Spinner />
+                    <span className="text">
+                      {s.title || "untitled session"}
+                      <span className="src"> · {s.project_title || "no project"}</span>
+                    </span>
+                  </span>
+                  <span className="when">
+                    {s.hops_used}/{s.hops_max}
+                  </span>
+                </div>
+              ))
+            )}
           </div>
         </section>
 
         <section className="zone">
           <header>
-            <span className="kicker">watching</span>
-            <span className="n">{data.watching.length}</span>
+            <span className="kicker">projects</span>
+            <span className="n">{projects.length}</span>
           </header>
           <div className="stack">
-            {data.watching.map((w) => <WatchRow key={w.id} item={w} />)}
+            {projects.length === 0 ? (
+              <Empty glyph="◇">no projects yet</Empty>
+            ) : (
+              projects.slice(0, 8).map((p) => (
+                <div className="row" key={p.id}>
+                  <span className="label">
+                    <Dot status={p.status_rollup} />
+                    <span className="text">{p.title}</span>
+                  </span>
+                  <span className="when">{relTime(p.updated_at)}</span>
+                </div>
+              ))
+            )}
           </div>
         </section>
-      </div>
-    </div>
-  );
-}
-
-/* ---------- TASKS ---------- */
-function TasksView({ data }) {
-  const running = data.tasks.filter((t) => t.state === "run");
-  return (
-    <div className="view">
-      <PageHead title="tasks" lede="what buddy is working on right now. expand to follow its thinking." />
-      <div className="stack" style={{ maxWidth: 820 }}>
-        {running.length === 0
-          ? <Empty glyph="○">buddy is idle</Empty>
-          : running.map((t) => <TaskRow key={t.id} item={t} />)}
-      </div>
-    </div>
-  );
-}
-
-/* ---------- WATCHING ---------- */
-function WatchingView({ data }) {
-  return (
-    <div className="view">
-      <PageHead title="watching" lede="the sources buddy keeps an eye on, and how often it checks." />
-      <div className="stack" style={{ maxWidth: 820 }}>
-        {data.watching.map((w) => <WatchRow key={w.id} item={w} />)}
       </div>
     </div>
   );
 }
 
 /* ---------- APPROVALS ---------- */
-function ApprovalsView({ data, onResolve }) {
+
+function ApprovalsView({ onError, waiting, onResolved }) {
+  // `waiting` is null until App has read it once — distinct from an empty list.
   return (
-    <div className="view">
-      <PageHead title="approvals" lede="plans buddy has workshopped and is holding for your ok. nothing acts without it." />
-      <div className="stack" style={{ maxWidth: 620 }}>
-        {data.approvals.length === 0
-          ? <Empty glyph="✓">all caught up — nothing waiting on you</Empty>
-          : data.approvals.map((a) => <ApprovalCard key={a.id} item={a} onResolve={onResolve} />)}
+    <div className="view viewin">
+      <PageHead
+        title="approvals"
+        lede="questions a run stopped to ask. answering here is answering in its window — one row, wherever you see it."
+      />
+      <div className="stack appr">
+        {waiting === null && <Empty>reading…</Empty>}
+        {waiting !== null && waiting.length === 0 && <Empty glyph="✓">all caught up — nothing waiting on you</Empty>}
+        {(waiting || []).map((a) => (
+          <ApprovalCard
+            key={a.approval_id}
+            item={a}
+            onResolve={onResolved}
+            onError={onError}
+          />
+        ))}
       </div>
     </div>
   );
 }
 
-/* ---------- CHAT ---------- */
-function ChatView({ data, onApprovePlan, onDeclinePlan }) {
-  return (
-    <div className="view">
-      <PageHead title="chat" lede="think out loud with buddy. it remembers, and turns the useful bits into standing rules." />
-      <div className="chat-wrap">
-        {data.chat.length === 0
-          ? <Empty glyph="·">say hi — buddy is listening</Empty>
-          : data.chat.map((m, i) => (
-            <div className={"msg " + (m.who === "you" ? "user" : "buddy")} key={i}>
-              <span className="who">{m.who === "you" ? (data.user || "you") : "buddy"}</span>
-              {m.text && <span className="bubble">{m.text}</span>}
-              {m.parseError && !m.plan && (
-                <span className="bubble" style={{ color: "var(--err, #c0392b)", fontSize: "0.85em" }}>
-                  ⚠ {m.parseError}
-                </span>
-              )}
-              {m.plan && (
-                <PlanCard
-                  plan={m.plan}
-                  resolved={m.planResolved}
-                  error={m.planError}
-                  onApprove={() => onApprovePlan(m.plan, i)}
-                  onDecline={() => onDeclinePlan(i)}
-                />
-              )}
-            </div>
-          ))}
-      </div>
-    </div>
+/* ---------- FILES ---------- */
+
+/* One flat namespace per user; folders are the top-level path segments, and a
+   project links folders rather than owning them. Reads the store directly, so
+   it wakes no box (D27); `FileTree` is shared with the session working-files
+   pane and only the scope it loads differs. */
+function ComputerView({ onError, jumpTo, onJumped }) {
+  const [open, setOpen] = useState(null);
+  const [count, setCount] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [drag, setDrag] = useState({ dragging: false, target: "", moving: null });
+  const cancelled = useRef(false);
+  // `draft` null means reading; any string means edit mode, dirty or not.
+  const [draft, setDraft] = useState(null);
+  const [saving, setSaving] = useState(false);
+  // Bumped to make the tree re-read after a write that happened outside it.
+  const [pulse, setPulse] = useState(0);
+
+  const load = useCallback(() => api.storeFiles(), [pulse]);
+
+  const read = useCallback(
+    async (file) => {
+      setDraft(null);
+      setOpen({ path: file.path, loading: true });
+      try {
+        setOpen(await api.file(file.file_id));
+      } catch (e) {
+        setOpen(null);
+        onError(e);
+      }
+    },
+    [onError]
   );
-}
 
-/* ---------- COMPUTER ---------- */
-function ComputerView({ data }) {
-  const [path, setPath] = useState("/home/user");
-  const [entries, setEntries] = useState([]);
-  const [filePath, setFilePath] = useState(null);
-  const [body, setBody] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState(null);
-
-  async function browse(p) {
-    setLoading(true); setErr(null); setFilePath(null); setBody(null);
+  /* Writes the durable copy, not a scratch edit: a session already holding the
+     folder is written through, others pick it up at their next materialize. */
+  const save = async () => {
+    if (draft === null || !open) return;
+    setSaving(true);
     try {
-      const es = await api.computerFiles(p);
-      setEntries(es);
-      setPath(p);
+      await api.saveFile(open.path, draft);
+      setOpen({ ...open, text: draft, size: new Blob([draft]).size });
+      setDraft(null);
+      setPulse((n) => n + 1);
     } catch (e) {
-      setErr("could not read directory");
-      setEntries([]);
-    } finally { setLoading(false); }
-  }
-
-  async function openFile(p) {
-    setFilePath(p); setBody("loading…");
-    try {
-      const j = await api.computerFile(p);
-      setBody((j.content || "") + (j.truncated ? "\n\n… (truncated, file is " + j.size + " bytes)" : ""));
-    } catch (e) {
-      setBody("(could not read file)");
+      onError(e);
+    } finally {
+      setSaving(false);
     }
-  }
+  };
 
-  useEffect(() => { browse("/home/user"); }, []);
+  const canEdit = !!open && !open.loading && !open.binary;
+  const dirty = draft !== null && draft !== (open && open.text);
 
-  function goUp() {
-    const parts = path.split("/").filter(Boolean);
-    parts.pop();
-    browse("/" + parts.join("/") || "/");
-  }
+  /* Enter or blur commits, Escape cancels; outer slashes are stripped so the
+     name cannot read as absolute, and `a/b` nests. The server is written before
+     the tree redraws — no client-only folder that a reload would contradict. */
+  const commitFolder = async () => {
+    /* Escape unmounts the input and removing a focused element fires blur, which
+       would commit the cancelled name; read and clear the flag so blur is a no-op. */
+    if (cancelled.current) {
+      cancelled.current = false;
+      return;
+    }
+    const name = newName.trim().replace(/^\/+|\/+$/g, "");
+    setCreating(false);
+    setNewName("");
+    if (!name) return;
+    try {
+      await api.newFolder(name);
+      setPulse((n) => n + 1);
+    } catch (e) {
+      onError(e);
+    }
+  };
 
-  // dirs first, then files, alphabetical
-  const sorted = [...entries].sort((a, b) => ((b.is_dir ? 1 : 0) - (a.is_dir ? 1 : 0)) || a.name.localeCompare(b.name));
-  const running = data.computerTasks.filter((t) => ["running", "pending"].includes(t.status)).length;
+  // Sentinels are structure, not content, so the count excludes them.
+  const shown = count === null ? null : count.filter((f) => !isSentinel(f.path));
+
+  /* `add` is the tree's own uploader, handed back so `+ file` and a drop run
+     the same code. */
+  const header = ({ busy, add }) => (
+    <React.Fragment>
+      <div className="cv-head">
+        <span className="path">
+          {busy ? "working…" : shown ? `${shown.length} file${shown.length === 1 ? "" : "s"}` : "…"}
+        </span>
+        <span className="cv-acts">
+          <label className="cv-add" title="add files to the store">
+            + file
+            <input
+              type="file"
+              multiple
+              hidden
+              onChange={(e) => {
+                // Into the folder being aimed at, else the one being read.
+                add(e.target.files, drag.target || dirOf(open && open.path));
+                e.target.value = "";
+              }}
+            />
+          </label>
+          <span
+            className="cv-add"
+            title="new folder"
+            onClick={() => {
+              // A previous Escape may have left the flag set with no blur to clear it.
+              cancelled.current = false;
+              setCreating(true);
+              setNewName("");
+            }}
+          >
+            + folder
+          </span>
+        </span>
+      </div>
+      {creating && (
+        <div className="cv-newdir">
+          <span className="g">▸</span>
+          <input
+            value={newName}
+            autoFocus
+            spellCheck={false}
+            placeholder="folder name"
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commitFolder();
+              if (e.key === "Escape") {
+                cancelled.current = true;
+                setCreating(false);
+                setNewName("");
+              }
+            }}
+            onBlur={commitFolder}
+          />
+        </div>
+      )}
+    </React.Fragment>
+  );
 
   return (
-    <div className="view view-wide" style={{ padding: 0, height: "100%" }}>
+    <div className="view viewin" style={{ padding: 0, height: "100%" }}>
       <div className="computer">
         <div className="cv-files">
-          <div className="cv-head">
-            <span className="path">{path}</span>
-            <button className="icon-btn" onClick={goUp} disabled={path === "/" || loading}>up ↑</button>
-          </div>
-          <div className="cv-entries">
-            {loading ? (
-              <div className="cv-entry" style={{ color: "var(--ink-mute)" }}><span className="nm"><span className="g">·</span>loading…</span></div>
-            ) : err ? (
-              <div className="cv-entry" style={{ color: "var(--ink-mute)" }}><span className="nm"><span className="g">·</span>{err}</span></div>
-            ) : sorted.length === 0 ? (
-              <div className="cv-entry" style={{ color: "var(--ink-mute)" }}><span className="nm"><span className="g">·</span>(empty)</span></div>
-            ) : sorted.map((e, i) => (
-              <div className={"cv-entry" + (e.is_dir ? " dir" : "") + (filePath === e.path ? " sel" : "")} key={i}
-                onClick={() => e.is_dir ? browse(e.path) : openFile(e.path)}>
-                <span className="nm"><span className="g">{e.is_dir ? "▸" : "·"}</span>{e.name}</span>
-                {!e.is_dir && e.size != null && <span className="sz">{fmtSize(e.size)}</span>}
-              </div>
-            ))}
-          </div>
+          <FileTree
+            load={load}
+            onOpen={read}
+            onError={onError}
+            onFiles={setCount}
+            reveal={jumpTo}
+            onRevealed={onJumped}
+            header={header}
+            onDragState={setDrag}
+            zoneIdle={{ label: "drop files into a folder", empty: "nothing in the store yet" }}
+          />
         </div>
+
         <div className="cv-read">
+          {/* Sits over the reader, never the tree, and names the drop target —
+              the top level takes folders, not files. */}
+          {drag.dragging && (
+            <div className={"cv-drop" + (drag.target || drag.movingDir ? "" : " nowhere")}>
+              <span>
+                {drag.target
+                  ? `${drag.moving ? "move" : "drop"} into ${drag.target}/`
+                  : drag.movingDir
+                    ? `move ${drag.moving.split("/").pop()}/ out to the top level`
+                    : "aim at a folder — the top level holds folders, not files"}
+              </span>
+            </div>
+          )}
           <div className="cv-read-head">
-            <span>{filePath ? filePath : "select a file to read"}</span>
-            {running > 0 && <span style={{ display: "flex", alignItems: "center", gap: 8 }}><span className="spin" /> {running} running</span>}
+            <span className="path">
+              {open ? open.path : "select a file to read"}
+              {dirty && <span className="dirty"> ●</span>}
+            </span>
+            <span className="acts">
+              {open && !open.loading && <span>{fileSize(open.size)}</span>}
+              {canEdit && (
+                <button
+                  className="cv-edit"
+                  onClick={() => setDraft(draft === null ? open.text || "" : null)}
+                >
+                  {draft === null ? "edit" : "reading"}
+                </button>
+              )}
+              {dirty && (
+                <button className="cv-revert" onClick={() => setDraft(open.text || "")}>
+                  revert
+                </button>
+              )}
+            </span>
           </div>
-          {body !== null ? (
-            <pre className="cv-read-body">{body.split("\n").map((ln, i) => (
-              <div key={i}><span className="ln">{String(i + 1).padStart(2, " ")}</span>{ln || " "}</div>
-            ))}</pre>
+          {draft !== null ? (
+            <React.Fragment>
+              <textarea
+                className="cv-editor"
+                value={draft}
+                spellCheck={false}
+                onChange={(e) => setDraft(e.target.value)}
+              />
+              <div className="cv-editbar">
+                <span>
+                  {dirty
+                    ? "unsaved changes in the store's copy"
+                    : "editing the store's copy — sessions mount it on their next box"}
+                </span>
+                <button className="cv-save" onClick={save} disabled={saving || !dirty}>
+                  {saving ? "saving…" : "save"}
+                </button>
+              </div>
+            </React.Fragment>
+          ) : open && open.loading ? (
+            <div className="cv-read-body" style={{ fontStyle: "italic", color: "var(--ink-mute)" }}>
+              reading…
+            </div>
+          ) : open && open.binary ? (
+            <div className="cv-binary">this file is not text — {fileSize(open.size)} of it</div>
+          ) : open ? (
+            <pre className="cv-read-body">
+              {(open.text || "").split("\n").map((line, i) => (
+                <div key={i}>
+                  <span className="ln">{String(i + 1).padStart(3, " ")}</span>
+                  {line || " "}
+                </div>
+              ))}
+            </pre>
           ) : (
             <div className="cv-read-body" style={{ color: "var(--ink-mute)", fontStyle: "italic" }}>
-              buddy keeps a workspace here. click a file on the left to read it.
+              your files live in the store, not on a computer. click one to read it — nothing has to be
+              awake. a folder is a top-level directory here, and a project links the ones it works in.
             </div>
           )}
         </div>
@@ -228,149 +369,165 @@ function ComputerView({ data }) {
   );
 }
 
-function fmtSize(n) {
-  if (n == null) return "";
-  if (n < 1024) return n + " b";
-  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " kb";
-  return (n / 1024 / 1024).toFixed(1) + " mb";
-}
+/* ---------- SETTINGS ---------- */
 
-/* ---------- SETTINGS MODAL ---------- */
-function SettingsModal({ data, onClose, onSignOut }) {
-  const [services, setServices] = useState(null);   // { shared, per_user, error }
+function SettingsModal({ user, onClose, onSignOut, onError }) {
+  const [rows, setRows] = useState(null);
+  const [problem, setProblem] = useState(null);
   const [busy, setBusy] = useState({});
-  const [authLink, setAuthLink] = useState({});     // service -> setup_url, shown if popup was blocked
-  const pollRef = useRef(null);
+  const [links, setLinks] = useState({});
+  /* Server whose disconnect has been clicked once and awaits confirmation. */
+  const [armed, setArmed] = useState(null);
+  const poll = useRef(null);
 
-  // Slack DM notifications. `slackSaved` is the id currently linked on the
-  // backend (from /auth/me); `slackId` is the editable input value.
-  const [slackId, setSlackId] = useState("");
-  const [slackSaved, setSlackSaved] = useState(null);
-  const [slackBusy, setSlackBusy] = useState(false);
-  const [slackErr, setSlackErr] = useState("");
-
-  async function refresh() {
-    setServices(await api.services());
-  }
-  useEffect(() => {
-    refresh();
-    // Prefill the Slack field with whatever id is already linked server-side.
-    (async () => {
-      const me = await api.me();
-      if (me && me.slack_user_id) { setSlackSaved(me.slack_user_id); setSlackId(me.slack_user_id); }
-    })();
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  const refresh = useCallback(async () => {
+    try {
+      setRows(await api.connections());
+      setProblem(null);
+    } catch (e) {
+      setProblem(e.message || "could not read connections");
+    }
   }, []);
 
-  // Mirror the backend's validation so a bad id is caught before the round trip.
-  const SLACK_RE = /^U[A-Z0-9]{8,}$/;
-  async function saveSlack() {
-    const v = slackId.trim();
-    if (!SLACK_RE.test(v)) { setSlackErr("member id looks like U012AB3CD"); return; }
-    setSlackErr(""); setSlackBusy(true);
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  /* The consent popup is cross-origin (Composio, then the provider), so nothing
+     signals this page when it finishes; regaining focus is the event, and
+     contracts forbids polling `api.connections()`. */
+  useEffect(() => {
+    const again = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", again);
+    document.addEventListener("visibilitychange", again);
+    return () => {
+      window.removeEventListener("focus", again);
+      document.removeEventListener("visibilitychange", again);
+      if (poll.current) clearInterval(poll.current);
+    };
+  }, [refresh]);
+
+  /* The only signal a user who never leaves the tab produces; one watcher at a
+     time, and it reads `popup.closed` rather than fetching. */
+  function watch(popup) {
+    if (!popup) return;
+    if (poll.current) clearInterval(poll.current);
+    poll.current = setInterval(() => {
+      if (!popup.closed) return;
+      clearInterval(poll.current);
+      poll.current = null;
+      refresh();
+    }, 500);
+  }
+
+  /* `GET /connections` returns the setup url with the row so the popup can open
+     synchronously inside the click — after an await the browser has lost the
+     user gesture and blocks it silently. */
+  function connect(row) {
+    const href = links[row.server] || row.setup_url;
+    if (href) {
+      watch(window.open(href, "ark_oauth", "width=560,height=720"));
+      return;
+    }
+    /* No link on the row: mint one and render it as an anchor, since the click
+       on that anchor is a fresh gesture the browser will honour. */
+    setBusy((b) => ({ ...b, [row.server]: true }));
+    api
+      .connect(row.server)
+      .then((result) => {
+        if (result.status === "connected") return refresh();
+        if (result.setup_url) setLinks((m) => ({ ...m, [row.server]: result.setup_url }));
+        else setProblem("could not start authorization for " + (row.name || row.server));
+      })
+      .catch((e) => setProblem(e.message || String(e)))
+      .finally(() => setBusy((b) => ({ ...b, [row.server]: false })));
+  }
+
+  /* One sign-in can back several services, so a row with siblings takes two
+     clicks: the first names what else goes, the second confirms. */
+  async function disconnect(row) {
+    const shared = row.shares_with || [];
+    if (shared.length && armed !== row.server) {
+      setArmed(row.server);
+      return;
+    }
+    setArmed(null);
+    setBusy((b) => ({ ...b, [row.server]: true }));
     try {
-      await api.slackConnect(v);
-      setSlackSaved(v);
+      await api.disconnect(row.server);
+      setLinks({});
+      await refresh();
     } catch (e) {
-      setSlackErr("couldn't save — " + (e.message || e));
+      setProblem(e.message || String(e));
     } finally {
-      setSlackBusy(false);
+      setBusy((b) => ({ ...b, [row.server]: false }));
     }
   }
-
-  function startPoll(service, popup) {
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(async () => {
-      const s = await api.services();
-      setServices(s);
-      const svc = (s.per_user || []).find((x) => x.service === service);
-      if ((svc && svc.connected) || (popup && popup.closed)) {
-        clearInterval(pollRef.current); pollRef.current = null;
-        setTimeout(refresh, 400);
-      }
-    }, 2000);
-  }
-
-  function connect(service) {
-    // Open the popup SYNCHRONOUSLY inside the click handler. If we open it
-    // after `await api.connectService`, the browser has lost the user-gesture
-    // and silently blocks it (the "nothing happens" bug). We open a blank
-    // window now and navigate it once Smithery hands back the setup_url.
-    const popup = window.open("about:blank", "ark_oauth", "width=560,height=720");
-    setBusy((b) => ({ ...b, [service]: true }));
-    setAuthLink((m) => ({ ...m, [service]: null }));
-    api.connectService(service).then((j) => {
-      if (j.status === "connected") { if (popup) popup.close(); refresh(); return; }
-      if (j.setup_url) {
-        // Smithery's setupUrl doesn't always embed the returnUrl we sent in the
-        // body. Append it as a query param so the OAuth flow redirects back to
-        // ark's callback page and completes the connection.
-        let setupUrl = j.setup_url;
-        if (j.return_url) {
-          try {
-            const u = new URL(setupUrl);
-            u.searchParams.set("returnUrl", j.return_url);
-            setupUrl = u.toString();
-          } catch { /* keep original if URL parse fails */ }
-        }
-        if (popup && !popup.closed) popup.location.href = setupUrl;
-        else setAuthLink((m) => ({ ...m, [service]: setupUrl }));  // blocked: surface a link
-        startPoll(service, popup);
-      } else {
-        if (popup) popup.close();
-        setServices((s) => ({ ...(s || {}), error: j.error || "could not start authorization" }));
-        refresh();
-      }
-    }).catch((e) => {
-      if (popup) popup.close();
-      setServices((s) => ({ ...(s || {}), error: String(e) }));
-    }).finally(() => {
-      setBusy((b) => ({ ...b, [service]: false }));
-    });
-  }
-
-  async function disconnect(service) {
-    setBusy((b) => ({ ...b, [service]: true }));
-    await api.disconnectService(service);
-    await refresh();
-    setBusy((b) => ({ ...b, [service]: false }));
-  }
-
-  const perUser = (services && services.per_user) || [];
-  const shared = (services && services.shared) || [];
-  const all = [...perUser, ...shared];
-  const isPerUser = (svc) => perUser.some((s) => s.service === svc.service);
 
   return (
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h2>settings</h2>
-        <p className="sub">connections, account, and backend.</p>
+        <p className="sub">connections and account.</p>
 
         <section>
           <span className="kicker">tools &amp; connections</span>
-          {services === null ? (
-            <div className="soft" style={{ fontSize: 12, padding: "8px 2px" }}>loading…</div>
-          ) : services.error ? (
-            <div className="soft" style={{ fontSize: 12, padding: "8px 2px", color: "var(--bad, #c0392b)" }}>{services.error}</div>
-          ) : all.length === 0 ? (
-            <div className="soft" style={{ fontSize: 12, padding: "8px 2px" }}>no services configured. add entries to <code>mcp_servers</code> in config.yaml.</div>
-          ) : all.map((c) => {
-            const connected = !!c.connected;
-            const perU = isPerUser(c);
+          {rows === null && <div className="soft" style={{ fontSize: 12 }}>loading…</div>}
+          {problem && <div className="soft" style={{ fontSize: 12, color: "var(--stop)" }}>{problem}</div>}
+          {rows !== null && !rows.length && (
+            <div className="soft" style={{ fontSize: 12 }}>
+              no servers configured. add entries to <code>mcp_servers</code> in config.yaml.
+            </div>
+          )}
+          {(rows || []).map((row) => {
+            const connected = row.status === "connected";
+            const asking = armed === row.server;
+            const shared = row.shares_with || [];
             return (
-              <div className="conn" key={c.service}>
-                <span className="meta"><Dot kind={connected ? "live" : ""} /> <span className="nm">{c.name || c.service}</span></span>
+              <div className="conn" key={row.server}>
+                <span className="meta">
+                  <Dot kind={connected ? "live" : ""} />
+                  <span className="nm">{row.name || row.server}</span>
+                  {/* Scopes are shown only before connecting: what the click grants. */}
+                  {!connected && !!(row.scopes || []).length && (
+                    <span className="soft" style={{ fontSize: 10, marginLeft: 8 }}>
+                      grants {scopeNames(row.scopes).join(", ")}
+                    </span>
+                  )}
+                  {connected && !!shared.length && (
+                    <span className="soft" style={{ fontSize: 10, marginLeft: 8 }}>
+                      shares a sign-in with {shared.join(", ")}
+                    </span>
+                  )}
+                </span>
                 <span style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <span className={"st" + (connected ? " on" : "")}>{connected ? "connected" : (perU ? "not connected" : "shared")}</span>
-                  {perU ? (
-                    connected
-                      ? <button className="btn" disabled={busy[c.service]} onClick={() => disconnect(c.service)}>disconnect</button>
-                      : authLink[c.service]
-                        ? <a className="btn primary" href={authLink[c.service]} target="ark_oauth" rel="noopener" onClick={() => startPoll(c.service, null)}>authorize →</a>
-                        : <button className="btn primary" disabled={busy[c.service]} onClick={() => connect(c.service)}>{busy[c.service] ? "…" : "connect"}</button>
+                  <span className={"st" + (connected ? " on" : "")}>
+                    {connected ? `connected · ${row.tool_count} tools` : row.status}
+                  </span>
+                  {connected ? (
+                    <button
+                      className={asking ? "btn danger" : "btn"}
+                      disabled={busy[row.server]}
+                      onClick={() => disconnect(row)}
+                    >
+                      {asking ? `also disconnects ${shared.join(" and ")} — confirm` : "disconnect"}
+                    </button>
+                  ) : links[row.server] ? (
+                    <a
+                      className="btn primary"
+                      href={links[row.server]}
+                      target="ark_oauth"
+                      rel="noopener"
+                      onClick={() => watch(null)}
+                    >
+                      authorize →
+                    </a>
                   ) : (
-                    <span className="soft" style={{ fontSize: 10 }}>always on</span>
+                    <button className="btn primary" disabled={busy[row.server]} onClick={() => connect(row)}>
+                      {busy[row.server] ? "…" : "connect"}
+                    </button>
                   )}
                 </span>
               </div>
@@ -379,38 +536,14 @@ function SettingsModal({ data, onClose, onSignOut }) {
         </section>
 
         <section>
-          <span className="kicker">notifications</span>
-          <div className="soft" style={{ fontSize: 11, lineHeight: 1.7, marginBottom: 8 }}>
-            get a Slack DM when tasks start or finish. find your member id in your
-            Slack profile → ••• → copy member ID.
-          </div>
-          <div className="conn">
-            <span className="meta">
-              <Dot kind={slackSaved ? "live" : ""} /> <span className="nm">Slack DMs</span>
-            </span>
-            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <input value={slackId} placeholder="U012AB3CD" spellCheck={false}
-                onChange={(e) => setSlackId(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && saveSlack()}
-                style={{ fontFamily: "var(--mono)", fontSize: 11, width: 120 }} />
-              <button className="btn primary" disabled={slackBusy} onClick={saveSlack}>{slackBusy ? "…" : "save"}</button>
-            </span>
-          </div>
-          {slackErr
-            ? <div className="soft" style={{ fontSize: 11, color: "var(--bad, #c0392b)", paddingTop: 4 }}>{slackErr}</div>
-            : slackSaved && <div className="soft" style={{ fontSize: 11, paddingTop: 4 }}>linked to <b style={{ color: "var(--ink)" }}>{slackSaved}</b></div>}
-        </section>
-
-        <section>
           <span className="kicker">account</span>
           <div className="soft" style={{ fontSize: 12, lineHeight: 1.9 }}>
-            signed in as <b style={{ color: "var(--ink)" }}>{data.user || "—"}</b><br />
-            backend · <b style={{ color: "var(--ink)" }}>{data.backend}</b>
+            signed in as <b style={{ color: "var(--ink)" }}>{(user && (user.email || user.user_id)) || "—"}</b>
           </div>
         </section>
 
         <div className="foot">
-          <span className="mute" style={{ fontSize: 10.5 }}>changes save automatically</span>
+          <span className="mute" style={{ fontSize: 10.5 }}>changes save immediately</span>
           <div style={{ display: "flex", gap: 8 }}>
             <button className="btn danger" onClick={onSignOut}>sign out</button>
             <button className="btn" onClick={onClose}>close</button>
@@ -421,45 +554,430 @@ function SettingsModal({ data, onClose, onSignOut }) {
   );
 }
 
-/* ---------- LOGIN ---------- */
-function Login({ gone, onEnter }) {
-  const [name, setName] = useState("");
-  const [backend, setBackend] = useState("");
-  const [err, setErr] = useState("");
-  const [busy, setBusy] = useState(false);
-  const inputRef = useRef(null);
-  useEffect(() => { if (!gone && inputRef.current) inputRef.current.focus(); }, [gone]);
+/* Last path segment of an OAuth scope url: `.../auth/gmail.readonly` reads as
+   "gmail.readonly". */
+function scopeNames(scopes) {
+  return (scopes || []).map((scope) => {
+    const tail = String(scope).split("/").filter(Boolean).pop();
+    return tail || String(scope);
+  });
+}
 
-  function submit() {
-    const n = name.trim();
-    if (n.length < 2) { setErr("username must be at least 2 characters"); return; }
-    setErr(""); setBusy(true);
-    onEnter(n, backend.trim(), (msg) => { setErr(msg); setBusy(false); });
+/* ---------- SIGN IN ---------- */
+
+/* Sign-up, sign-in and Google are three ways to get a Supabase token and one
+   way to be signed in: `api` trades any of them for our cookie via
+   `POST /auth/session`, the only endpoint that reads a bearer. */
+function Login({ gone, onSignedIn, problem: arrived, notice, startMode }) {
+  // in | up | forgot
+  const [mode, setMode] = useState(startMode || "in");
+  // An error carried in from the boot belongs to the screen as it opened, not
+  // to whatever the person does next.
+  const [stale, setStale] = useState(false);
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState(null);
+  /* "signup" | "reset" — a flow that ends in the mail rather than in the app.
+     Set on EVERY outcome that sends nothing back, because an address that is
+     already registered, rate-limited, or inside the 60s window is
+     indistinguishable from success and must not read as a dead button. */
+  const [sent, setSent] = useState(null);
+  const first = useRef(null);
+
+  const up = mode === "up";
+  const forgot = mode === "forgot";
+  const shown = problem || (stale ? null : arrived);
+
+  useEffect(() => {
+    if (!gone && first.current) first.current.focus();
+  }, [gone, mode]);
+
+  const ready = forgot
+    ? email.trim()
+    : up
+      ? name.trim() && email.trim() && password.length >= MIN_PASSWORD
+      : email.trim() && password;
+
+  async function submit() {
+    if (!ready || busy) return;
+    setBusy(true);
+    setProblem(null);
+    try {
+      if (forgot) {
+        await api.sendReset(email.trim());
+        setSent("reset");
+      } else if (up) {
+        const out = await api.signUp(name.trim(), email.trim(), password);
+        if (out.confirm) setSent("signup");
+        else onSignedIn(out.me);
+      } else {
+        onSignedIn(await api.signIn(email.trim(), password));
+      }
+    } catch (e) {
+      setProblem(
+        forgot
+          ? "could not send the reset email"
+          : up
+            ? e.message || "could not create the account"
+            : "that email and password do not match, or the address has not been confirmed yet"
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function google() {
+    if (busy) return;
+    setBusy(true);
+    setProblem(null);
+    try {
+      // Navigates the tab away; nothing after this runs on success.
+      await api.signInWithGoogle();
+    } catch (e) {
+      setProblem(e.message || "could not start google sign-in");
+      setBusy(false);
+    }
+  }
+
+  /* Email confirmation is ON: the account is unusable until the link is clicked.
+     Supabase gives the same answer for an address that already exists, so this
+     screen must not distinguish the two either. */
+  if (sent) {
+    return (
+      <div className={"auth" + (gone ? " gone" : "")}>
+        <AuthAside />
+        <div className="auth-right">
+          <MailSent
+            kind={sent}
+            email={email.trim()}
+            onBack={() => {
+              setSent(null);
+              setMode("in");
+              setPassword("");
+            }}
+          />
+        </div>
+      </div>
+    );
   }
 
   return (
-    <div className={"login" + (gone ? " gone" : "")}>
-      <div className="login-card">
-        <div className="mark-lg">ark<span className="pip" /></div>
-        <p>buddy handles your digital life in the background. pick a name to begin — no passwords, no email. just you and your buddy.</p>
-        <div className="field">
-          <label>username</label>
-          <input ref={inputRef} value={name} placeholder="e.g. nate" spellCheck={false}
-            onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
-        </div>
-        <div className="field opt">
-          <label>backend url — optional override</label>
-          <input value={backend} placeholder="ark.mit.edu" spellCheck={false}
-            onChange={(e) => setBackend(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
-        </div>
-        {err && <div className="login-err" style={{ color: "var(--bad, #c0392b)", fontSize: 12, marginTop: 4 }}>{err}</div>}
-        <div className="go">
-          <span className="hint">press enter to continue</span>
-          <button className="btn primary lg" onClick={submit} disabled={!name.trim() || busy}>{busy ? "…" : "enter →"}</button>
+    <div className={"auth" + (gone ? " gone" : "")}>
+      <AuthAside />
+      <div className="auth-right">
+        <div className="auth-card">
+          <div className="auth-head">
+            <span className="kicker">{forgot ? "reset password" : up ? "new account" : "sign in"}</span>
+            <span className="title">
+              {forgot ? "we will email you a link" : up ? "make an account" : "welcome back"}
+            </span>
+          </div>
+
+          <div className="auth-fields">
+            {up && (
+              <label className="auth-field">
+                <span className="lab">name</span>
+                <input
+                  ref={up ? first : null}
+                  value={name}
+                  spellCheck={false}
+                  autoComplete="name"
+                  placeholder="what should arkos call you?"
+                  onChange={(e) => setName(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && submit()}
+                />
+              </label>
+            )}
+            <label className="auth-field">
+              <span className="lab">username</span>
+              <input
+                ref={up ? null : first}
+                type="email"
+                value={email}
+                spellCheck={false}
+                autoComplete="username"
+                placeholder="nathaniel@arkos.computer"
+                onChange={(e) => setEmail(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && submit()}
+              />
+            </label>
+            {!forgot && (
+            <label className="auth-field">
+              <span className="lab-row">
+                <span className="lab">password</span>
+                {!up && (
+                  <span
+                    className="auth-forgot"
+                    onClick={() => {
+                      setMode("forgot");
+                      setProblem(null);
+                      setStale(true);
+                    }}
+                  >
+                    forgot
+                  </span>
+                )}
+              </span>
+              <input
+                type="password"
+                value={password}
+                placeholder={up ? `at least ${MIN_PASSWORD} characters` : "••••••••"}
+                autoComplete={up ? "new-password" : "current-password"}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && submit()}
+              />
+            </label>
+            )}
+          </div>
+
+          <div className="auth-actions">
+            <button className="auth-cta" onClick={submit} disabled={busy || !ready}>
+              {busy ? "…" : forgot ? "email me a link" : up ? "create account" : "sign in"}
+            </button>
+            {/* Google is a way IN, not a way to reset a password it does not
+                hold — hidden here rather than offered and refused. */}
+            {!forgot && (
+              <React.Fragment>
+                <div className="auth-or">
+                  <span className="rule" />
+                  or
+                  <span className="rule" />
+                </div>
+                <button className="auth-google" onClick={google} disabled={busy}>
+                  <span className="g">G</span>
+                  continue with google
+                </button>
+              </React.Fragment>
+            )}
+          </div>
+
+          {notice && !problem && <p className="auth-note quiet">{notice}</p>}
+          {shown && <p className="auth-problem">{shown}</p>}
+
+          <div className="auth-switch">
+            {forgot ? (
+              <span
+                className="auth-link"
+                onClick={() => {
+                  setMode("in");
+                  setProblem(null);
+                  setStale(true);
+                }}
+              >
+                back to sign in
+              </span>
+            ) : (
+              <React.Fragment>
+                {up ? "already have an account?" : "no account yet?"}{" "}
+                <span
+                  className="auth-link"
+                  onClick={() => {
+                    setMode(up ? "in" : "up");
+                    setProblem(null);
+                    setStale(true);
+                  }}
+                >
+                  {up ? "sign in" : "make one"}
+                </span>
+              </React.Fragment>
+            )}
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-Object.assign(window, { PageHead, DeskView, TasksView, WatchingView, ApprovalsView, ChatView, ComputerView, SettingsModal, Login });
+/* THE FLOW ALWAYS SAYS SOMETHING. A signup or reset that sends no mail — the
+   address is already registered, the sender is rate-limited, or we are inside
+   Supabase's 60s per-user window — is indistinguishable from one that did, and
+   silence reads as a dead button. Each flow has ONE sentence it says whether or
+   not the address exists; the two flows say different things, because
+   anti-enumeration is about telling exists from not-exists WITHIN a flow, not
+   about signup and reset sounding alike. */
+// Supabase's own per-user interval, so the button can say why it is dim
+// instead of failing at the server.
+const RESEND_WAIT = 60;
+// One password rule, stated wherever a password is typed.
+const MIN_PASSWORD = 8;
+
+function MailSent({ kind, email, onBack }) {
+  const reset = kind === "reset";
+  /* Starts COOLING. This mounts at second 0 of Supabase's per-user window —
+     the mail was just sent — so a button enabled here is a button that cannot
+     work, and its refusal would name the window and thereby the account. */
+  const [cooling, setCooling] = useState(RESEND_WAIT);
+  const [note, setNote] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const id = setInterval(() => setCooling((n) => (n > 0 ? n - 1 : 0)), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  async function again() {
+    if (cooling || busy) return;
+    setBusy(true);
+    setNote(null);
+    try {
+      if (reset) await api.sendReset(email);
+      else await api.resendSignup(email);
+      setNote("sent again — check your inbox and your spam folder.");
+      setCooling(RESEND_WAIT);
+    } catch (e) {
+      /* FIXED COPY, never the provider's. Its refusals name the per-user
+         window, which answers "does this address exist?" — the question this
+         whole screen exists not to answer. */
+      setNote("if there is anything to send, it is on its way. try again in a minute.");
+      setCooling(RESEND_WAIT);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="auth-card">
+      <div className="auth-head">
+        <span className="kicker">check your email</span>
+        <span className="title">{reset ? "reset on its way" : "almost there"}</span>
+      </div>
+      <p className="auth-note">
+        {reset ? (
+          "if arkos knows this address, a reset link is on its way"
+        ) : (
+          <React.Fragment>
+            check your email — if <b>{email}</b> is new to arkos, a confirmation is on its way. click the
+            link and you are in.
+          </React.Fragment>
+        )}
+      </p>
+      <div className="auth-actions">
+        <button className="auth-google" onClick={again} disabled={!!cooling || busy}>
+          {cooling ? `send again in ${cooling}s` : busy ? "…" : "send it again"}
+        </button>
+      </div>
+      {note && <p className="auth-note quiet">{note}</p>}
+      <div className="auth-switch">
+        <span className="auth-link" onClick={onBack}>
+          back to sign in
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/* The recovery landing. The link carries a token good for exactly one thing —
+   changing the password — so this screen is the whole of what it can do, and
+   it is reachable only with that token in hand. */
+function ResetPassword({ onDone, onGiveUp }) {
+  const [password, setPassword] = useState("");
+  const [again, setAgain] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState(null);
+  const first = useRef(null);
+
+  useEffect(() => {
+    if (first.current) first.current.focus();
+  }, []);
+
+  const mismatch = again.length > 0 && password !== again;
+  const ready = password.length >= MIN_PASSWORD && password === again;
+
+  async function submit() {
+    if (!ready || busy) return;
+    setBusy(true);
+    setProblem(null);
+    try {
+      await api.completeReset(password);
+      onDone();
+    } catch (e) {
+      setProblem(e.message || "could not set the new password");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="auth">
+      <AuthAside />
+      <div className="auth-right">
+        <div className="auth-card">
+          <div className="auth-head">
+            <span className="kicker">reset password</span>
+            <span className="title">choose a new one</span>
+          </div>
+          <div className="auth-fields">
+            <label className="auth-field">
+              <span className="lab">new password</span>
+              <input
+                ref={first}
+                type="password"
+                value={password}
+                placeholder={`at least ${MIN_PASSWORD} characters`}
+                autoComplete="new-password"
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && submit()}
+              />
+            </label>
+            <label className="auth-field">
+              <span className="lab">again</span>
+              <input
+                type="password"
+                value={again}
+                placeholder="••••••••"
+                autoComplete="new-password"
+                onChange={(e) => setAgain(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && submit()}
+              />
+            </label>
+          </div>
+          <div className="auth-actions">
+            <button className="auth-cta" onClick={submit} disabled={busy || !ready}>
+              {busy ? "…" : "set new password"}
+            </button>
+          </div>
+          {mismatch && <p className="auth-note quiet">those two do not match yet.</p>}
+          {problem && <p className="auth-problem">{problem}</p>}
+          <div className="auth-switch">
+            <span className="auth-link" onClick={onGiveUp}>
+              back to sign in
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AuthAside() {
+  return (
+    <div className="auth-aside">
+      <div className="auth-mark">
+        <span className="glyph">b</span>
+        <span className="pip" />
+        <span className="word">arkos</span>
+      </div>
+      <div className="auth-pitch">
+        <h1>
+          a digital intern
+          <br />
+          still on the job
+          <br />
+          next week.
+          <span className="caret" />
+        </h1>
+        <p>
+          arkos works on a real computer and browser, with a persistent filesystem that survives between
+          runs. workflows can span days, and it asks before anything leaves your account.
+        </p>
+      </div>
+      <div className="auth-tags">
+        <span>approvals first</span>
+        <span>disposable compute</span>
+        <span>durable storage</span>
+      </div>
+    </div>
+  );
+}

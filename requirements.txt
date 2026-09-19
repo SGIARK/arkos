@@ -1,20 +1,46 @@
-openai>=1.61.0
+# Runtime dependencies. Dev/test extras live in requirements-dev.txt.
+
+# --- model ---
+openai>=1.61.0            # AsyncOpenAI against whatever llm.base_url points at
+
+# --- config ---
 pyyaml>=6.0.2
-pydantic>=2.10.6
-requests>=2.32.3
-fastapi>=0.115.0
-uvicorn>=0.32.0
-psycopg2-binary>=2.9.11
-vecs
-mem0ai
-sentence-transformers
 python-dotenv>=1.0.0
-aiohttp>=3.9.0
-httpx>=0.27.0
-tiktoken>=0.7.0
-json-repair>=0.30.0
-google-auth-oauthlib>=1.2.0
+
+# --- http surface (harness_module/api.py) ---
+fastapi>=0.115.0
+starlette>=0.40.0         # BackgroundTask, imported directly by api.py. A FastAPI
+                          # dependency, named here because we import it ourselves.
+uvicorn>=0.32.0           # not imported; the Dockerfile CMD runs it
+pydantic>=2.10.6          # a FastAPI dependency; pinned for the floor, not imported directly
+python-multipart>=0.0.9   # multipart form parsing, for POST /projects/{id}/files
 PyJWT>=2.8.0
+cryptography>=42.0.0      # PyJWT needs it for the ES256 tokens Supabase signs
+                          # with. On a Python whose platform tag predates the
+                          # published wheels, pip falls back to building from
+                          # Rust source: install with --only-binary=:all:.
+
+# --- database ---
+asyncpg>=0.29.0           # db/pool.py, the async path, one pool per process
+psycopg2-binary>=2.9.11   # db/migrate.py, its one consumer. Settled 8.10: it stays.
+                          # A migration runner is a sync CLI run by a person, and
+                          # porting it to asyncpg would buy nothing but one fewer
+                          # line here.
+
+# --- store (harness_module/store.py) ---
+# Bytes go to Supabase Storage over its REST API, so httpx below is the whole
+# client. No S3 SDK: the bucket is reached with the same HTTP stack as everything
+# else, and the backend is swappable behind a three-method protocol.
+
+# --- tools ---
+aiohttp>=3.9.0            # Arcade MCP gateway transport
+httpx>=0.27.0             # the store's Supabase Storage client
+e2b-code-interpreter>=2.7.0   # imported lazily, so the app boots without it.
+                              # STAYS: the 08-17 audit line calling it droppable
+                              # predates 8a, which made the sandbox live.
+
+# Back with Task 9, which rebuilt the browser against contracts. Imported inside
+# the call, so the process starts, the manifest builds and every other tool works
+# on a host that has neither.
 browser-use>=0.12.0,<0.13
 playwright>=1.49.0
-e2b-code-interpreter>=2.7.0

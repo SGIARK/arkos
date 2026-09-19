@@ -1,4 +1,4 @@
-"""Tests for ConfigLoader in config_module/loader.py."""
+"""ConfigLoader in config_module/loader.py."""
 
 from pathlib import Path
 
@@ -78,7 +78,7 @@ class TestConfigLoaderLoad:
         loader = ConfigLoader(simple_config)
         first = loader.load()
         second = loader.load()
-        assert first is second  # Same object reference = cached
+        assert first is second
 
 
 class TestConfigLoaderGet:
@@ -152,7 +152,6 @@ class TestConfigLoaderReload:
 
         assert loader.load()["version"] == 1
 
-        # Update file
         config_file.write_text(yaml.dump({"version": 2}))
         reloaded = loader.reload()
         assert reloaded["version"] == 2
@@ -161,4 +160,69 @@ class TestConfigLoaderReload:
         loader = ConfigLoader(simple_config)
         first = loader.load()
         reloaded = loader.reload()
-        assert first is not reloaded  # Different objects after reload
+        assert first is not reloaded
+
+
+class TestCoherence:
+    """Settings that are each valid and wrong together, caught at startup."""
+
+    def _loader(self, tmp_path, **overrides) -> ConfigLoader:
+        # EVERY KEY A COHERENCE RULE READS, because a rule whose key is absent is
+        # now a problem in its own right: an absent key reads as zero and every rule
+        # skips a zero, so the check would pass while comparing nothing.
+        data = {
+            "leases": {"wait_timeout_s": 90},
+            "tools": {"call_timeout_s": 120},
+            "sandbox": {"max_concurrent_per_user": 5},
+            "quotas": {"max_unattended_sessions": 5},
+            "llm": {"max_tools": 128},
+            "browser": {"wall_clock_s": 240, "hard_timeout_s": 300},
+        }
+        for dotted, value in overrides.items():
+            section, key = dotted.split("__")
+            data[section][key] = value
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump(data))
+        return ConfigLoader(str(config_file))
+
+    def test_coherent_settings_pass(self, tmp_path):
+        self._loader(tmp_path).assert_coherent()
+
+    def test_a_rule_whose_key_is_not_in_the_config_is_itself_a_problem(self, tmp_path):
+        """A check that cannot fail is the same artifact as a test that cannot fail.
+
+        `llm.max_tools` is the key dropped because its rule SKIPS a zero: without
+        this, an absent key reads as zero, the comparison is skipped, and the boot
+        goes on. A key whose rule fires on zero would have failed either way and
+        would not have shown the absence being caught.
+
+        The refusal NAMES THE KEY, because "incoherent configuration" about a rule
+        nobody can find is a worse answer than none.
+        """
+        loader = self._loader(tmp_path)
+        # Drop ONE key a rule reads, leaving everything else coherent, so the refusal
+        # below cannot be about anything but the absence.
+        config_file = tmp_path / "config.yaml"
+        loaded = yaml.safe_load(config_file.read_text())
+        del loaded["llm"]["max_tools"]
+        config_file.write_text(yaml.dump(loaded))
+        loader.reload()
+
+        with pytest.raises(RuntimeError, match="llm.max_tools"):
+            loader.assert_coherent()
+
+    def test_a_wait_that_outlives_its_call_is_refused(self, tmp_path):
+        with pytest.raises(RuntimeError, match="never ran"):
+            self._loader(tmp_path, leases__wait_timeout_s=120).assert_coherent()
+
+    def test_a_wait_with_too_little_margin_is_refused(self, tmp_path):
+        with pytest.raises(RuntimeError, match="wait_timeout_s"):
+            self._loader(tmp_path, leases__wait_timeout_s=115).assert_coherent()
+
+    def test_a_cap_below_the_session_quota_is_refused(self, tmp_path):
+        with pytest.raises(RuntimeError, match="could never get a computer"):
+            self._loader(tmp_path, sandbox__max_concurrent_per_user=3).assert_coherent()
+
+    def test_the_shipped_config_is_coherent(self):
+        """The defaults are the ones that ship, so they are the ones that must agree."""
+        ConfigLoader().assert_coherent()

@@ -1,19 +1,27 @@
 #!/usr/bin/env python3
-"""
-Migration runner for Arkos database schema.
+"""Migration runner: apply pending db/migrations/*.sql in lexical order.
 
-Applies every pending migration in db/migrations/ in lexical order.
-Tracks applied migrations in a small `schema_migrations` table.
-Reads connection from DB_URL env var or constructs from POSTGRES_PASSWORD.
+IT SAYS WHERE IT IS GOING AND REFUSES A REMOTE TARGET WITHOUT BEING TOLD (G4,
+2026-09-13). `load_dotenv` plus `DB_URL` meant a bare `python db/migrate.py`
+aimed at the Supabase project, with no target argument, no printed destination
+and no confirmation, so an operator applying a local migration LOCALLY reached
+production instead. That happened, and it was benign only because the table
+involved held no rows.
+
+The local path stays one variable, since `override=False` means an exported
+`DB_URL` wins over `.env`, and the dangerous path grows a deliberate gesture:
+`--production`. There is only ONE database and it is production (owner,
+2026-09-12), so this is not a staging mechanism; it is the difference between
+meaning it and reaching it.
 """
 
 import os
 import sys
+import urllib.parse
 from pathlib import Path
 
 import psycopg2
 
-# Load the same .env the app uses before reading DB_URL.
 _PROJECT_ROOT = Path(__file__).parent.parent
 try:
     from dotenv import load_dotenv  # type: ignore
@@ -24,17 +32,11 @@ except Exception:
 
 
 def get_connection_url():
-    """
-    Resolve the Postgres connection URL the same way the running backend does:
-      1. DB_URL env var (from shell or .env)
-      2. config_module.loader's ConfigLoader (substitutes ${DB_URL} from .env)
-      3. Constructed default from POSTGRES_* env vars
-    """
+    """Resolve the Postgres URL from DB_URL, else config.yaml, else POSTGRES_* vars."""
     db_url = os.environ.get("DB_URL")
     if db_url:
         return db_url
 
-    # Fall back to ConfigLoader so we stay in sync with base_module/app.py
     try:
         sys.path.insert(0, str(_PROJECT_ROOT))
         from config_module.loader import config  # type: ignore
@@ -52,6 +54,38 @@ def get_connection_url():
     user = os.environ.get("POSTGRES_USER", "postgres")
 
     return f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
+
+
+# Hosts that cannot be anybody's production database. Anything else needs
+# `--production`, including a name that merely looks internal: the point is that
+# the operator said so, not that the runner guessed well.
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", ""})
+
+
+def describe(db_url: str) -> tuple[str, str]:
+    """The host and database a DSN names, for printing. Never the credentials."""
+    parsed = urllib.parse.urlsplit(db_url)
+    return parsed.hostname or "", (parsed.path or "").lstrip("/") or "?"
+
+
+def check_target(db_url: str, *, production_intended: bool) -> str | None:
+    """Return why this target is refused, or None to proceed.
+
+    FAIL CLOSED ON THE REMOTE CASE, which is the asymmetry that matters: a local
+    apply that is refused costs a retry with a flag, and a production apply
+    nobody meant costs whatever the migration did to real rows.
+    """
+    host, name = describe(db_url)
+    if host in _LOCAL_HOSTS or production_intended:
+        return None
+    return (
+        f"refusing to migrate {name} at {host}: that is not a local database.\n"
+        "There is one database and it is production, so this needs saying out loud:\n"
+        "  python db/migrate.py --production\n"
+        "To migrate a local database instead, name it explicitly, which also keeps\n"
+        "`.env` out of it:\n"
+        "  DB_URL=postgresql://test:test@localhost:5432/test python db/migrate.py"
+    )
 
 
 def ensure_migrations_table(conn):
@@ -83,7 +117,20 @@ def apply_migration(conn, path: Path) -> None:
 
 def main():
     try:
+        production_intended = "--production" in sys.argv[1:]
         db_url = get_connection_url()
+
+        # PRINTED BEFORE ANYTHING IS TOUCHED, and printed whatever the verdict,
+        # because the operator who was about to be surprised is the one who
+        # needs it. Host and database only: a DSN carries a password.
+        host, name = describe(db_url)
+        print(f"target: {name} at {host or '(local socket)'}")
+
+        refusal = check_target(db_url, production_intended=production_intended)
+        if refusal:
+            print(refusal, file=sys.stderr)
+            return 2
+
         conn = psycopg2.connect(db_url)
 
         ensure_migrations_table(conn)

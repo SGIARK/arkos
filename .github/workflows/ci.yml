@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev_refactor]
   pull_request:
     branches: [main]
 
@@ -24,8 +24,10 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # The PIN, not the latest: an unpinned install here is the skew the pin exists
+      # to remove.
       - name: Install ruff
-        run: pip install ruff
+        run: pip install "$(grep -m1 '^ruff==' requirements-dev.txt | cut -d' ' -f1)"
 
       - name: Ruff lint check
         run: ruff check .
@@ -33,8 +35,22 @@ jobs:
       - name: Ruff format check
         run: ruff format --check .
 
+      # Type-check the tool modules so the fail()-arity class (a one-argument call to
+      # fail, which is (error_kind, content)) is caught here rather than on a refusal
+      # path nobody exercises. VERIFIED it can see a positive: making one call
+      # one-argument makes mypy report `[call-arg] Missing positional argument
+      # "content"`. follow-imports=silent so only these files gate; arg-type is
+      # disabled (pre-existing optional-into-str issues), call-arg is the class this
+      # step exists for and stays on.
+      - name: Install mypy
+        run: pip install "$(grep -m1 '^mypy==' requirements-dev.txt | cut -d' ' -f1)"
+      - name: Type-check the tool modules
+        run: mypy --follow-imports=silent --ignore-missing-imports --disable-error-code=arg-type tool_module/tools/ tool_module/browser/tool.py tool_module/sandbox/tools.py
+
   # ──────────────────────────────────────────────
-  # Stage 2: Tests
+  # Stage 2: Tests — the throwaway Postgres lives here.
+  # A fresh arkos_test database is conjured per run and destroyed after;
+  # tests never see a production DSN.
   # ──────────────────────────────────────────────
   test:
     name: Tests
@@ -73,35 +89,24 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
 
+      # WITHOUT THIS THE SUITE RUNS AGAINST AN EMPTY DATABASE. The service
+      # container answers, so `dbgate.require_db` is satisfied and ~500 tests
+      # proceed to fail one by one on `relation "sessions" does not exist`. CI
+      # had never passed once in 79 runs since it was restored on 2026-08-25,
+      # and this is the whole of the first cause.
+      - name: Apply migrations
+        env:
+          DB_URL: postgresql://postgres:postgres@localhost:5432/arkos_test
+          PYTHONPATH: ${{ github.workspace }}
+        run: python db/migrate.py
+
       - name: Run tests
         env:
           DB_URL: postgresql://postgres:postgres@localhost:5432/arkos_test
           OPENAI_API_KEY: sk-test-dummy-key
           PYTHONPATH: ${{ github.workspace }}
-        run: pytest tests/ -v --cov=. --cov-report=term-missing -m "not integration"
+        run: pytest tests/ -q --timeout=120 -m "not integration"
 
-  # ──────────────────────────────────────────────
-  # Stage 3: Build the Docker image to verify the Dockerfile still works.
-  # Image is NOT pushed anywhere — there's no production deployment yet, so
-  # publishing to a registry would just be noise. Restore the GHCR push
-  # step (see git history for this file at the previous revision) when
-  # there's a product worth deploying.
-  # ──────────────────────────────────────────────
-  build:
-    name: Build Docker Image
-    runs-on: ubuntu-latest
-    needs: [lint, test]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: false
-          tags: arkos:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+  # Stage 3 (Docker image build) from the old repo's CI is intentionally
+  # absent: the Dockerfile left the tree in the 2026-08-25 refactor.
+  # Restore a build stage when the deploy story lands (Task 14).

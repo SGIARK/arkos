@@ -14,10 +14,23 @@
 **/__pycache__/
 **/*.pyc
 
+# editor swap files — two were tracked until 2026-08-16
+*.swp
+*.swo
+*~
+
 .env
 *.env
 !.env.example
 /scripts/*
+# ...except the one that rebuilds the production MCP server from the
+# tracked roster. `allowed_tools` cannot be updated in place, so this is how a
+# roster change ships.
+!/scripts/composio_server.py
 
 # cursor
 .cursor/*
+.arkos-store/
+
+# The 11.10.1 Composio spike: throwaway, its own venv and its own .env.
+/spike-composio/
