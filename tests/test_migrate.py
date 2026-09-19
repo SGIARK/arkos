@@ -120,4 +120,42 @@ class TestMainSmoke:
             assert migrate.main() == 0
 
 
+class TestTheSupabaseAccountStub:
+    """0024 adds a constraint, so it must make every EXISTING row satisfy it.
+
+    M-0024: the stub branch created `auth.users` and an INSERT trigger and never
+    copied the rows already in `public.users`, so the constraint was added
+    against rows that could not satisfy it and the whole migration rolled back —
+    on any non-Supabase database that already had users, which is every
+    long-lived local and staging one. A fresh database has none, which is why CI
+    never saw it, and nothing after 0024 could fix it because the runner stops at
+    the first failure.
+    """
+
+    def test_the_stub_backfills_the_rows_that_are_already_there(self):
+        sql = (
+            Path(__file__).resolve().parent.parent / "db" / "migrations" / "0024_users_are_supabase_accounts.sql"
+        ).read_text()
+        stub = sql[
+            sql.index("IF to_regclass('auth.users') IS NULL THEN") : sql.index("-- The two breaks in the chain.")
+        ]
+
+        assert "INSERT INTO auth.users (id) SELECT id FROM public.users" in stub, (
+            "0024 adds users_id_is_a_supabase_account without backfilling existing rows; "
+            "it will roll back on any populated non-Supabase database (M-0024)"
+        )
+        # Inside the stub branch, so Supabase — where the accounts are real — never sees it.
+        assert stub.index("INSERT INTO auth.users (id) SELECT") > stub.index("CREATE TRIGGER users_stub_account")
+
+    def test_the_constraint_is_added_after_the_stub_block(self):
+        """Order is the whole fix: backfill first, constrain second, one transaction."""
+        sql = (
+            Path(__file__).resolve().parent.parent / "db" / "migrations" / "0024_users_are_supabase_accounts.sql"
+        ).read_text()
+
+        assert sql.index("INSERT INTO auth.users (id) SELECT id FROM public.users") < sql.index(
+            "ADD CONSTRAINT users_id_is_a_supabase_account"
+        )
+
+
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")

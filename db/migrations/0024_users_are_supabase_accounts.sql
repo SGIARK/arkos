@@ -49,6 +49,19 @@ BEGIN
         CREATE TRIGGER users_stub_account
             BEFORE INSERT ON public.users
             FOR EACH ROW EXECUTE FUNCTION auth.ensure_stub_account();
+
+        -- AND THE ROWS THAT ARE ALREADY HERE (M-0024, fixed 2026-09-11). The
+        -- trigger only fires on INSERT, so without this the constraint below is
+        -- added against rows that cannot satisfy it and the whole migration
+        -- rolls back — on any non-Supabase database that already has users,
+        -- which is every long-lived local and staging one. A fresh database has
+        -- no rows, which is why CI never saw it.
+        --
+        -- A migration that adds a constraint must make every existing row
+        -- satisfy it in the same transaction. Inside the stub branch, so it can
+        -- never touch Supabase: there `auth.users` exists, this whole block is
+        -- skipped, and the accounts are real.
+        INSERT INTO auth.users (id) SELECT id FROM public.users ON CONFLICT DO NOTHING;
     END IF;
 END $$;
 
