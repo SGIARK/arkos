@@ -75,6 +75,17 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
 
+      # WITHOUT THIS THE SUITE RUNS AGAINST AN EMPTY DATABASE. The service
+      # container answers, so `dbgate.require_db` is satisfied and ~500 tests
+      # proceed to fail one by one on `relation "sessions" does not exist`. CI
+      # had never passed once in 79 runs since it was restored on 2026-08-25,
+      # and this is the whole of the first cause.
+      - name: Apply migrations
+        env:
+          DB_URL: postgresql://postgres:postgres@localhost:5432/buddy_test
+          PYTHONPATH: ${{ github.workspace }}
+        run: python db/migrate.py
+
       - name: Run tests
         env:
           DB_URL: postgresql://postgres:postgres@localhost:5432/buddy_test
