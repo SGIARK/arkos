@@ -24,14 +24,28 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # The PIN, not the latest: an unpinned install here is the skew the pin exists
+      # to remove.
       - name: Install ruff
-        run: pip install ruff
+        run: pip install "$(grep -m1 '^ruff==' requirements-dev.txt | cut -d' ' -f1)"
 
       - name: Ruff lint check
         run: ruff check .
 
       - name: Ruff format check
         run: ruff format --check .
+
+      # Type-check the tool modules so the fail()-arity class (a one-argument call to
+      # fail, which is (error_kind, content)) is caught here rather than on a refusal
+      # path nobody exercises. VERIFIED it can see a positive: making one call
+      # one-argument makes mypy report `[call-arg] Missing positional argument
+      # "content"`. follow-imports=silent so only these files gate; arg-type is
+      # disabled (pre-existing optional-into-str issues), call-arg is the class this
+      # step exists for and stays on.
+      - name: Install mypy
+        run: pip install "$(grep -m1 '^mypy==' requirements-dev.txt | cut -d' ' -f1)"
+      - name: Type-check the tool modules
+        run: mypy --follow-imports=silent --ignore-missing-imports --disable-error-code=arg-type tool_module/tools/ tool_module/browser/tool.py
 
   # ──────────────────────────────────────────────
   # Stage 2: Tests — the throwaway Postgres lives here.
