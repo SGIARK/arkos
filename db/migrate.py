@@ -1,8 +1,23 @@
 #!/usr/bin/env python3
-"""Migration runner: apply pending db/migrations/*.sql in lexical order."""
+"""Migration runner: apply pending db/migrations/*.sql in lexical order.
+
+IT SAYS WHERE IT IS GOING AND REFUSES A REMOTE TARGET WITHOUT BEING TOLD (G4,
+2026-09-13). `load_dotenv` plus `DB_URL` meant a bare `python db/migrate.py`
+aimed at the Supabase project, with no target argument, no printed destination
+and no confirmation, so an operator applying a local migration LOCALLY reached
+production instead. That happened, and it was benign only because the table
+involved held no rows.
+
+The local path stays one variable, since `override=False` means an exported
+`DB_URL` wins over `.env`, and the dangerous path grows a deliberate gesture:
+`--production`. There is only ONE database and it is production (owner,
+2026-09-12), so this is not a staging mechanism; it is the difference between
+meaning it and reaching it.
+"""
 
 import os
 import sys
+import urllib.parse
 from pathlib import Path
 
 import psycopg2
@@ -41,6 +56,38 @@ def get_connection_url():
     return f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
 
 
+# Hosts that cannot be anybody's production database. Anything else needs
+# `--production`, including a name that merely looks internal: the point is that
+# the operator said so, not that the runner guessed well.
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", ""})
+
+
+def describe(db_url: str) -> tuple[str, str]:
+    """The host and database a DSN names, for printing. Never the credentials."""
+    parsed = urllib.parse.urlsplit(db_url)
+    return parsed.hostname or "", (parsed.path or "").lstrip("/") or "?"
+
+
+def check_target(db_url: str, *, production_intended: bool) -> str | None:
+    """Return why this target is refused, or None to proceed.
+
+    FAIL CLOSED ON THE REMOTE CASE, which is the asymmetry that matters: a local
+    apply that is refused costs a retry with a flag, and a production apply
+    nobody meant costs whatever the migration did to real rows.
+    """
+    host, name = describe(db_url)
+    if host in _LOCAL_HOSTS or production_intended:
+        return None
+    return (
+        f"refusing to migrate {name} at {host}: that is not a local database.\n"
+        "There is one database and it is production, so this needs saying out loud:\n"
+        "  python db/migrate.py --production\n"
+        "To migrate a local database instead, name it explicitly, which also keeps\n"
+        "`.env` out of it:\n"
+        "  DB_URL=postgresql://test:test@localhost:5432/test python db/migrate.py"
+    )
+
+
 def ensure_migrations_table(conn):
     with conn.cursor() as cur:
         cur.execute(
@@ -70,7 +117,20 @@ def apply_migration(conn, path: Path) -> None:
 
 def main():
     try:
+        production_intended = "--production" in sys.argv[1:]
         db_url = get_connection_url()
+
+        # PRINTED BEFORE ANYTHING IS TOUCHED, and printed whatever the verdict,
+        # because the operator who was about to be surprised is the one who
+        # needs it. Host and database only: a DSN carries a password.
+        host, name = describe(db_url)
+        print(f"target: {name} at {host or '(local socket)'}")
+
+        refusal = check_target(db_url, production_intended=production_intended)
+        if refusal:
+            print(refusal, file=sys.stderr)
+            return 2
+
         conn = psycopg2.connect(db_url)
 
         ensure_migrations_table(conn)

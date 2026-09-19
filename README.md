@@ -67,6 +67,19 @@ Code layout:
    them at startup: the API comes up happily against an unmigrated database and
    fails on the first request that touches a table.
 
+   It prints the host and database it is about to touch, and REFUSES anything
+   that is not local unless you say `--production`. `DB_URL` from the environment
+   wins over `.env`, so a local apply is one variable:
+
+   ```bash
+   DB_URL=postgresql://test:test@localhost:5432/test python db/migrate.py
+   python db/migrate.py --production   # the Supabase project named in .env
+   ```
+
+   That flag is not a staging mechanism, since there is one database and it is
+   production. It exists because the no-argument form used to reach production
+   silently, and did.
+
 3. Start the API server on the port `app.public_url` names:
 
    ```bash
