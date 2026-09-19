@@ -1,5 +1,5 @@
 /* =========================================================
-   buddy — the app's stylesheet
+   arkos — the app's stylesheet
    refined monospace · calm editorial · near-monochrome
 
    This file is the design project (claude.ai/design), verbatim above
@@ -797,7 +797,7 @@ kbd {
 .ev-ask .opt { font-size: 11px; border: 1px solid var(--accent-line); color: var(--accent); background: var(--surface); padding: 5px 11px; border-radius: 100px; cursor: pointer; transition: all .15s var(--ease); }
 .ev-ask .opt:hover { background: var(--accent); color: var(--surface); border-color: var(--accent); }
 /* The composer grows with what is in it (11.12). `align-items: flex-start` and
-   the glyph's own line-height keep `buddy>` and the tools chip level with the
+   the glyph's own line-height keep `arkos>` and the tools chip level with the
    FIRST line as the box grows, rather than drifting to the middle of a
    forty-line paste. */
 .lg-composer { position: relative; border-top: 1px solid var(--line); background: var(--surface); display: flex; align-items: flex-start; gap: 12px; padding: 12px 40px; flex-shrink: 0; }
@@ -936,7 +936,7 @@ kbd {
 .banner button { background: none; border: none; font-family: var(--mono); font-size: 11px; color: var(--ink-mute); cursor: pointer; }
 .banner button:hover { color: var(--ink); }
 
-/* The stream's own user turn: the design drew buddy's side only. */
+/* The stream's own user turn: the design drew arkos's side only. */
 .ev-user { align-self: flex-end; max-width: 620px; }
 .ev-user .who { display: block; font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
 .ev-user .said {

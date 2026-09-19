@@ -127,7 +127,7 @@ def _end_streams_on_signal() -> None:
             logger.debug("could not chain %s; streams will end at lifespan shutdown", signame)
 
 
-app = FastAPI(title="Buddy", lifespan=lifespan)
+app = FastAPI(title="Arkos", lifespan=lifespan)
 
 _origin = str(_cfg("app.public_url", "")).rstrip("/")
 app.add_middleware(
@@ -231,7 +231,7 @@ def _check_auth_rate(request: Request) -> None:
 
 async def current_user(request: Request) -> str:
     """Resolve the caller from the session cookie, and origin-check mutations."""
-    cookie = request.cookies.get(str(_cfg("auth.cookie_name", "buddy_session")))
+    cookie = request.cookies.get(str(_cfg("auth.cookie_name", "arkos_session")))
     if not cookie:
         raise ApiError(401, "unauthenticated", "No session. Sign in first.")
     try:
@@ -330,7 +330,7 @@ async def create_auth_session(request: Request, authorization: str | None = Head
 
     out = Response(status_code=204)
     out.set_cookie(
-        key=str(_cfg("auth.cookie_name", "buddy_session")),
+        key=str(_cfg("auth.cookie_name", "arkos_session")),
         value=cookie,
         max_age=int(_cfg("auth.session_ttl_s", 604800)),
         httponly=True,
@@ -361,7 +361,7 @@ def _from_recovery_link(claims: dict[str, Any]) -> bool:
 
 
 def _display_name(claims: dict[str, Any]) -> str | None:
-    """What the buddy should call this person, from the SIGNED token only.
+    """What arkos should call this person, from the SIGNED token only.
 
     `name` is what our sign-up form writes, `full_name` what Google's OIDC
     profile carries. None rather than a fallback: the column is COALESCEd.
@@ -429,7 +429,7 @@ async def delete_auth_session(request: Request) -> Response:
     cookie is self-signed, so a copy taken before this call would otherwise keep
     working for the rest of its seven days.
     """
-    cookie = request.cookies.get(str(_cfg("auth.cookie_name", "buddy_session")))
+    cookie = request.cookies.get(str(_cfg("auth.cookie_name", "arkos_session")))
     if not cookie:
         logger.info("sign-out with no session cookie; nothing to revoke")
     else:
@@ -443,7 +443,7 @@ async def delete_auth_session(request: Request) -> Response:
             # endpoint exists to prevent.
             logger.warning("sign-out could not revoke its session row", exc_info=True)
     out = Response(status_code=204)
-    out.delete_cookie(key=str(_cfg("auth.cookie_name", "buddy_session")), path="/")
+    out.delete_cookie(key=str(_cfg("auth.cookie_name", "arkos_session")), path="/")
     return out
 
 
@@ -1317,7 +1317,7 @@ async def _answer_plan(approval: approvals.Approval, text: str, user_id: str) ->
 async def approve_session(session_id: str, user_id: str = CurrentUser) -> dict[str, Any]:
     """Ask the human what this run is for. It drafts nothing and runs no turn.
 
-    The button's whole job is the question: buddy asks for the goal and the
+    The button's whole job is the question: arkos asks for the goal and the
     session PARKS on it, whatever the transcript above says. The answer is the
     goal, and `_answer_goal` is where the plan turn starts.
     """
@@ -1334,7 +1334,7 @@ async def approve_session(session_id: str, user_id: str = CurrentUser) -> dict[s
     if await lifecycle.transition(session_id, row["status"], "awaiting_approval", "goal_requested") is None:
         raise ApiError(409, "not_idle", "The session moved before it could be asked.")
     try:
-        # Buddy's own words, so the question outlives being answered and the model
+        # Arkos's own words, so the question outlives being answered and the model
         # folds the reply as an answer to it.
         await _append(session_id, ContentEvent(text=prompts.GOAL_QUESTION))
         await approvals.create(
@@ -1618,7 +1618,7 @@ _CLOSE_POPUP = """<!doctype html><meta charset="utf-8"><title>Connected</title>
 <body style="font:14px system-ui;padding:2rem;color:#333">
 <p>__STATUS__. You can close this window.</p>
 <script>
-  try { window.opener && window.opener.postMessage({source:"buddy", kind:"connection"}, "*"); } catch (e) {}
+  try { window.opener && window.opener.postMessage({source:"arkos", kind:"connection"}, "*"); } catch (e) {}
   setTimeout(function () { window.close(); }, 400);
 </script>
 </body>"""

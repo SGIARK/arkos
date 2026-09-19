@@ -1,3 +1,10 @@
+[project]
+name = "arkos-core"
+version = "0.1.0"
+description = "An agent harness: one loop, one model client, native tool calling."
+requires-python = ">=3.11"
+license = "AGPL-3.0-or-later"
+
 [tool.pytest.ini_options]
 # Only collect tests from the tests/ directory. Without this, pytest also
 # tries to import any test_*.py at the repo root or inside source modules,

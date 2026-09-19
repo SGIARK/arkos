@@ -684,7 +684,7 @@ function Login({ gone, onSignedIn, problem: arrived, notice, startMode }) {
                   value={name}
                   spellCheck={false}
                   autoComplete="name"
-                  placeholder="what should buddy call you?"
+                  placeholder="what should arkos call you?"
                   onChange={(e) => setName(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && submit()}
                 />
@@ -698,7 +698,7 @@ function Login({ gone, onSignedIn, problem: arrived, notice, startMode }) {
                 value={email}
                 spellCheck={false}
                 autoComplete="username"
-                placeholder="nathaniel@buddy.computer"
+                placeholder="nathaniel@arkos.computer"
                 onChange={(e) => setEmail(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && submit()}
               />
@@ -845,10 +845,10 @@ function MailSent({ kind, email, onBack }) {
       </div>
       <p className="auth-note">
         {reset ? (
-          "if buddy knows this address, a reset link is on its way"
+          "if arkos knows this address, a reset link is on its way"
         ) : (
           <React.Fragment>
-            check your email — if <b>{email}</b> is new to buddy, a confirmation is on its way. click the
+            check your email — if <b>{email}</b> is new to arkos, a confirmation is on its way. click the
             link and you are in.
           </React.Fragment>
         )}
@@ -957,7 +957,7 @@ function AuthAside() {
       <div className="auth-mark">
         <span className="glyph">b</span>
         <span className="pip" />
-        <span className="word">buddy</span>
+        <span className="word">arkos</span>
       </div>
       <div className="auth-pitch">
         <h1>
@@ -969,7 +969,7 @@ function AuthAside() {
           <span className="caret" />
         </h1>
         <p>
-          buddy drives a real browser and the services you connect, with durable storage that survives
+          arkos drives a real browser and the services you connect, with durable storage that survives
           between runs. workflows can span days, and it asks before anything leaves your account.
         </p>
       </div>

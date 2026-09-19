@@ -27,7 +27,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - buddy-network
+      - arkos-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:1112/health"]
       interval: 30s
@@ -61,7 +61,7 @@ services:
               capabilities: [gpu]
     restart: unless-stopped
     networks:
-      - buddy-network
+      - arkos-network
 
   # ============================================
   # Huggingface Text Embeddings Inference
@@ -92,7 +92,7 @@ services:
       start_period: 60s
     restart: unless-stopped
     networks:
-      - buddy-network
+      - arkos-network
 
   # ============================================
   # Browserless - isolated Chromium pool (CDP over WebSocket)
@@ -112,7 +112,7 @@ services:
       - TIMEOUT=${BROWSERLESS_TIMEOUT:-330000}
     restart: unless-stopped
     networks:
-      - buddy-network
+      - arkos-network
 
   # ============================================
   # Supabase Services
@@ -136,7 +136,7 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - buddy-network
+      - arkos-network
 
   supabase-auth:
     image: supabase/gotrue:v2.164.0
@@ -164,7 +164,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - buddy-network
+      - arkos-network
 
   supabase-rest:
     image: postgrest/postgrest:v12.2.3
@@ -183,7 +183,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - buddy-network
+      - arkos-network
 
   supabase-storage:
     image: supabase/storage-api:v1.11.13
@@ -214,7 +214,7 @@ services:
         condition: service_started
     restart: unless-stopped
     networks:
-      - buddy-network
+      - arkos-network
 
 volumes:
   supabase_db_data:
@@ -223,5 +223,5 @@ volumes:
   tei_cache:
 
 networks:
-  buddy-network:
+  arkos-network:
     driver: bridge

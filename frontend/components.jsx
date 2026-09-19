@@ -374,7 +374,7 @@ function StreamEvent({ event, questions, onAnswered, onError }) {
     case "content":
       return (
         <div className="ev-block ev-assist">
-          <span className="who">buddy</span>
+          <span className="who">arkos</span>
           <p>{event.text}</p>
         </div>
       );
@@ -502,7 +502,7 @@ function AskBlock({ item, onAnswered, onError }) {
   const [busy, setBusy] = useState(false);
 
   /* The harness asked this one, and its words are already in the transcript
-     above as buddy's own, so the block is the answer box and nothing else. */
+     above as arkos's own, so the block is the answer box and nothing else. */
   const isGoal = item.tool_name === AUTOPILOT_GOAL;
 
   const answer = async (value) => {
@@ -521,7 +521,7 @@ function AskBlock({ item, onAnswered, onError }) {
   if (item.kind === "call") {
     return (
       <div className="ev-block ev-ask ev-gated">
-        <span className="who">buddy — wants to run this</span>
+        <span className="who">arkos — wants to run this</span>
         <div className="call">
           <span className="nm">{item.tool_name}</span>
           <span className="age">{relTime(item.created_at)}</span>
@@ -537,7 +537,7 @@ function AskBlock({ item, onAnswered, onError }) {
 
   return (
     <div className="ev-block ev-ask">
-      <span className="who">buddy — needs input</span>
+      <span className="who">arkos — needs input</span>
       {!isGoal && item.prompt}
       {item.kind === "approval" ? (
         <div className="opts">

@@ -64,7 +64,7 @@ def mounted_folders(mounts: Sequence[Mount]) -> str:
     return "\n".join(lines) + "\n"
 
 
-_SHARED = """You are buddy. You do work on the user's behalf by USING TOOLS: driving a \
+_SHARED = """You are arkos. You do work on the user's behalf by USING TOOLS: driving a \
 browser, searching the web, and calling the services they have connected. You act; you do \
 not merely describe what could be done.
 
@@ -255,8 +255,8 @@ def system_prompt(
     return "\n".join(parts)
 
 
-# The autopilot button's opening question, in buddy's voice. The only string in
-# this module a HUMAN reads: it is appended as buddy's own `content` event and
+# The autopilot button's opening question, in arkos's voice. The only string in
+# this module a HUMAN reads: it is appended as arkos's own `content` event and
 # copied onto the `ask` row the session parks on.
 GOAL_QUESTION = (
     "What do you want to do? Tell me the goal for this run and I'll draft a plan "

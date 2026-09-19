@@ -34,7 +34,7 @@ SERVERS = {
         "auto_approve": ["LINEAR_GET_LINEAR_ISSUE"],
     },
 }
-MCP_CFG = {"server_id": "srv-1", "api_key": "k", "callback_url": "https://buddy.test/connections/done"}
+MCP_CFG = {"server_id": "srv-1", "api_key": "k", "callback_url": "https://arkos.test/connections/done"}
 
 
 def _tool(name: str) -> dict:
@@ -268,7 +268,7 @@ async def test_connect_mints_a_link_against_the_configured_auth_config(db):
 
     row = await hands.connect(user_id, "GMAIL")
 
-    assert client.linked == [(user_id, "ac_gmail", "https://buddy.test/connections/done")]
+    assert client.linked == [(user_id, "ac_gmail", "https://arkos.test/connections/done")]
     assert row["setup_url"].startswith("https://connect.composio.dev/")
     assert row["status"] == conns.PENDING
 

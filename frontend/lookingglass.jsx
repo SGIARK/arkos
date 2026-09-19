@@ -436,7 +436,7 @@ function Composer({ placeholder, onSend, chip = null, autoFocus = false }) {
       }}
     >
       {chip}
-      <span className="prompt">buddy&gt;</span>
+      <span className="prompt">arkos&gt;</span>
       {/* Enter sends, Shift+Enter is a newline; the height cap is the
           stylesheet's `max-height`. */}
       <textarea
@@ -505,7 +505,7 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
         }
       : null);
 
-  const [tab, setTab] = useState(() => localStorage.getItem("buddy-canvas") || "files");
+  const [tab, setTab] = useState(() => localStorage.getItem("arkos-canvas") || "files");
   const [headRename, setHeadRename] = useState(false);
   const [headText, setHeadText] = useState("");
   const tail = useRef(null);
@@ -535,7 +535,7 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
   };
 
   useEffect(() => {
-    localStorage.setItem("buddy-canvas", tab);
+    localStorage.setItem("arkos-canvas", tab);
   }, [tab]);
 
   const openPlan = questions.find((q) => q.kind === "plan") || null;
@@ -668,8 +668,8 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
               className="run-btn"
               title={
                 cancelled
-                  ? "buddy asks what to carry on with, then proposes a continuation from plan.md for your approval."
-                  : "buddy asks what this run is for, then drafts a plan from your answer. nothing runs until you approve it."
+                  ? "arkos asks what to carry on with, then proposes a continuation from plan.md for your approval."
+                  : "arkos asks what this run is for, then drafts a plan from your answer. nothing runs until you approve it."
               }
               onClick={() => {
                 /* No drafting yet: the press asks a question and parks on it. */
@@ -775,7 +775,7 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
             {drafting && !planCard && (
               <div className="plan-drafting">
                 <Spinner />
-                <span>buddy is drafting {cancelled ? "a continuation" : "a plan"} for this run</span>
+                <span>arkos is drafting {cancelled ? "a continuation" : "a plan"} for this run</span>
                 <span className="grow" />
                 <button className="link" onClick={() => api.cancel(sessionId).catch(onError)}>
                   cancel
@@ -820,9 +820,9 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
                exempt from the composer's 409. */
             placeholder={
               pre
-                ? "what should buddy do?"
+                ? "what should arkos do?"
                 : held
-                  ? "type to resume. your note is the next thing buddy reads"
+                  ? "type to resume. your note is the next thing arkos reads"
                   : "suggest or steer this session…"
             }
             onSend={async (said) => {
@@ -983,7 +983,7 @@ function SessionTools({ sessionId, onError }) {
                 ? "reading…"
                 : left <= 0
                   ? "cap reached — nothing else can be enabled until something is turned off"
-                  : `${left} of ${budget} slots left · ${doc.ours} reserved for buddy's own tools`}
+                  : `${left} of ${budget} slots left · ${doc.ours} reserved for arkos's own tools`}
             </div>
           </div>
 
@@ -1023,7 +1023,7 @@ function SessionTools({ sessionId, onError }) {
             <span className="tb-refused">
               {refused ? `${refused} needs more slots than are left` : ""}
             </span>
-            <button type="button" className="tb-reset" onClick={clear} disabled={!!busy} title="back to buddy's own tools only">
+            <button type="button" className="tb-reset" onClick={clear} disabled={!!busy} title="back to arkos's own tools only">
               reset
             </button>
           </div>

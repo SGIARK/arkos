@@ -30,7 +30,7 @@
 
 # cursor
 .cursor/*
-.buddy-store/
+.arkos-store/
 
 # The 11.10.1 Composio spike: throwaway, its own venv and its own .env.
 /spike-composio/

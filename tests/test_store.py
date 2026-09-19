@@ -551,7 +551,7 @@ async def test_a_non_supabase_dsn_derives_nothing(monkeypatch):
     monkeypatch.setattr(
         blobs,
         "_cfg",
-        lambda key, default: "postgresql://user:pw@localhost:5432/buddy" if key == "database.url" else default,
+        lambda key, default: "postgresql://user:pw@localhost:5432/arkos" if key == "database.url" else default,
     )
 
     assert blobs.project_url() is None

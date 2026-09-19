@@ -1,133 +1,74 @@
-# Buddy
+# arkos-core
 
-Mid-redesign. The old architecture guidelines are gone: they mandated state
-graphs, `StateOutput`, routers, and mem0, all of which this redesign deletes.
-They were removed from the tree entirely — read them in `git log` if you need
-the history.
+An agent harness: one loop, one model client, native tool calling. AGPL-3.0;
+see `NOTICE` for where this code came from.
 
-**Start at `docs/single_loop_redesign_spec.md`.** It routes to everything else.
+**Coding standards are `.github/CLAUDE.md`.** Contribution rules, including the
+CLA, are `.github/CONTRIBUTING.md`. `README.md` says how to run it.
 
-`docs/contracts.md` is law. The spec says what to build; contracts says whether
-it is correct. If they disagree, contracts wins and the spec is the bug.
+**There is no sandbox and no computer.** This build has no box, no shell tool
+and no file tools: an agent here drives a browser, searches the web, reads the
+store's file tree, keeps memory, and calls connected services. Nothing runs a
+command anywhere. If something tells you to edit `tool_module/sandbox/`, or to
+materialize a claim into a box, that instruction predates the cut.
 
-**Do not resurrect the pre-redesign architecture.** It is deleted, not archived:
-there is no `docs/deprecated/`, and any pointer to that path is stale. Do not
-cite it or follow its task numbers. Stale pointers to it in docstrings should be
-deleted, not followed.
-
-**The project is Buddy** (`the-real-buddy/buddy-core`), inside and out —
-prose, identifiers and infrastructure names alike. Nothing needs sweeping and
-there is no carve-out to respect.
-
-Five identifiers carry side effects if you change them, and 12.3.5 moved them
-all at once, pre-launch and with the user table already empty, which is the only
-time they are free: `_ISSUER` is
-`buddy` (every cookie carries `iss=buddy`, and changing it signs everyone out),
-`store.bucket` / `store.prefix` / `store.root` point at the `buddy` bucket
-(changing them orphans every stored blob), the staging paths in
-`harness_module/workspace.py` are `/tmp/buddy-*.tar` (materialize and flush must
-agree on them), and the cookie is `buddy_session` signed with
-`BUDDY_SESSION_SECRET`. They are ordinary identifiers now, but they are still
-the ones with side effects: change any of them and say what it costs.
-
-**CI is `.github/workflows/ci.yml`, and it runs on this branch.** It was deleted
-on 2026-08-25 and restored the same afternoon (`79fab01`) carrying only what
-works: a lint stage (`ruff check .`, `ruff format --check .`) and a test stage
-(`pytest tests/ -q --timeout=120 -m "not integration"`) against a `postgres:15`
-service, on push to `main` and `dev_refactor`. Run both yourself before claiming
-a change is green — a red push is a slower way to learn the same thing. The
-deploy and monitor jobs did NOT come back and should not be recreated from
-`git log`: they pushed to a container registry and a university host that were
-never this project's infrastructure. Integration tests are deselected in CI and need
-real credentials.
-
-**The old architecture is GONE as of 2026-08-13** (Tasks 7 and 8, pulled forward).
-`state_module`, `memory_module` and `computer_module` no longer exist, and
-neither do `app.py`, `task_runner.py` or `ArkModelNew.py`. If something tells you
-to edit one of those, that instruction is stale — check `git log`, do not
-recreate the file.
-
-**The HTTP server is `harness_module/api.py`** (Task 4), run with
+**The HTTP server is `harness_module/api.py`**, run with
 `uvicorn harness_module.api:app`. `harness_module/` is the control plane:
 api · runner · store · blobs · memory · workspace · leases · lifecycle ·
 approvals · session_log · system_log · stream · hands · jwt_utils.
 
-**The store is three files, one idea each** (11.8.8): `blobs.py` is
-content-addressed bytes and the HTTP client that carries them, `store.py` is the
-TREE (`files (user_id, path)`, folders derived from paths), `memory.py` is the
-user's notes and curated core and mounts nowhere. Imports go ONE way —
-blobs ← store ← workspace — and `store.py` re-exports the blob calls so a caller
-that reads a tree and then wants bytes needs one import. `workspace.py` is a
-transfer engine: materialize, flush, seal.
+**The store is three files, one idea each.** `blobs.py` is content-addressed
+bytes and the HTTP client that carries them, `store.py` is the TREE
+(`files (user_id, path)`, folders derived from paths), `memory.py` is the user's
+notes and curated core. Imports go ONE way, blobs to store to workspace, and
+`store.py` re-exports the blob calls so a caller that reads a tree and then
+wants bytes needs one import. `workspace.py` is the CLAIMS: which folders a
+session may see. No bytes move through it.
 
-**Deleted code is still documentation.** When rebuilding something 8.10 removed,
-read the deleted implementation in git history for operational facts contracts
-does not carry — connection URLs, protocol choices, hard-won workarounds.
-Contracts states the invariants; the old code knows the wiring. (Task 9 was
-rebuilt "against contracts, not those files" and silently lost the Browserless
-CDP connection, because no document said where the browser runs.)
+**All MCP traffic flows through Composio.** `tool_module/composio_mcp.py` is the
+only client. A "server" is a toolkit PREFIX in UPPER SNAKE (`GMAIL_*`,
+`GOOGLEDRIVE_*`), and that prefix is the durable key: `user_connections` and
+`session_tools` are keyed by it, never by the MCP url (derived per user, and
+re-mintable) and never by the `mcp_servers:` config label. A Composio grant is
+per TOOLKIT, so reading Gmail says nothing about Calendar. Web search does NOT
+ride this wire: it is `web_search`, a local SerpAPI tool on an app-level key.
 
-**The browser is `tool_module/browser/`** (Task 9), and it runs in the
-browserless container from `docker-compose.yml` — reached only over CDP at
-`browser.cdp_url`, defaulting from `BROWSERLESS_URL`. It never launches a
-browser in the harness process. The pre-redesign `browser_tool.py`,
-`browser_actions.py`, `browser_stream.py` and `browser_routes.py` are deleted
-(8.10); they are in `git log` and are still worth reading for wiring.
-
-Where the live code is: `agent_module/loop.py` (the one loop),
-`model_module/client.py` (the one model client), `tool_module/`
-(envelope · registry · connections · session_tools · composio_mcp · tools/),
-`db/pool.py` (asyncpg; the psycopg2 helpers are gone — do not add
-more).
-
-**All MCP traffic flows through COMPOSIO** (11.10.2). `tool_module/composio_mcp.py`
-is the only client. Arcade and Smithery are both gone — no `kind: smithery` path,
-no `arcade.py`, no dormant branch — and `git log` is the only place to read them.
-A "server" is a toolkit PREFIX in UPPER SNAKE (`GMAIL_*`, `GOOGLEDRIVE_*`), the
-vendor's own name, and that prefix is the durable key: `user_connections` and
-`session_tools` are keyed by it, never by the MCP url (which is derived per user
-and can be re-minted) and never by the `mcp_servers:` config label. Consent is
-PANEL-FIRST: `POST /connections/{server}/connect` mints a link against Composio's
-MANAGED auth config, the popup connects, and `/connections/done` settles the row.
-Scopes are NOT tunable on a managed config. Status is one
-`GET /api/v3/connected_accounts` listing that answers for every toolkit at once,
-and a Composio grant is per TOOLKIT — so reading Gmail says nothing about
-Calendar, and disconnecting one leaves the other. That per-provider coupling was
-the Arcade problem this replaced. Web search does NOT ride this wire: it is
-`web_search`, a local SerpAPI tool on an app-level key, and `always()` returns
-`[]`, so nothing enters `ours` from the connector wire. It is still OURS — always
-in the manifest, counted in `ours`, in no toggle and no settings row.
-
-**A session reaches only the MCP servers it was given** (11.4 + 11.5). The
-toggles are `session_tools`, keyed by the Composio toolkit prefix and never by the
-`mcp_servers:` config label. `registry.manifest` is the ONE builder of a turn's tool list and
-it cannot exceed `llm.max_tools` whatever the toggles say — whole servers are
+**A session reaches only the MCP servers it was given.** The toggles are
+`session_tools`. `registry.manifest` is the ONE builder of a turn's tool list
+and it cannot exceed `llm.max_tools` whatever the toggles say: whole servers are
 benched, most-recently-enabled first, and a benched server gets a `status` event
 and a `system_events` row. **The system prompt is generated from the manifest
 that shipped, never from the toggles**, which is why `_drive` builds the
 manifest before it folds. Do not add a second path that assembles tool specs.
 
-**A gated tool call PARKS the turn on itself** (11.7). `requires_approval` with
-no grant leaves that call OPEN in the transcript, and the `approvals` row of
-kind `call` carries the real `(tool_name, tool_args)` — consent binds to the
-call, never to prose about it. Answering is `approve`/`decline`, and approving
-runs that exact call once through normal dispatch, latched by `consumed_at`.
-Never re-run a consumed-but-unclosed call: repair it as interrupted.
+**A gated tool call PARKS the turn on itself.** `requires_approval` with no
+grant leaves that call OPEN in the transcript, and the `approvals` row of kind
+`call` carries the real `(tool_name, tool_args)`: consent binds to the call,
+never to prose about it. Answering is `approve`/`decline`, and approving runs
+that exact call once through normal dispatch, latched by `consumed_at`. Never
+re-run a consumed-but-unclosed call: repair it as interrupted.
 
-**The designs live under `designs/`** — checked-in copies of the Claude Design
-project, one directory per canvas (`new-frontend/` is the 11.4 frame,
-`planning-card/`, `filesystem_revamp/`, `settings-usage/`, `sign-up/`,
-`email-templates/`). Where a
-design and `frontend/` disagree, the design wins and `frontend/` is amended, not
-the other way round.
+**The browser is `browser_task`, and it runs in a Browserless container** over
+CDP. `tool_module/browser/endpoint.py` resolves `cdp_url()` from
+`browser.cdp_url` or `BROWSERLESS_URL`; an unset url is a refusal, not a
+fallback, because the fallback would be a Chromium running model-chosen pages
+beside the user's cookies and the store's secret key. The browser is leased per
+user, so one session holds it for a whole run.
 
-**An export is re-drafted in place, so check its date before trusting a
-reading.** `designs/filesystem_revamp/` gained rename mid-build on 2026-08-20
-and delete plus undo on 2026-08-21, each time overwriting the same file — a
-card's "not this card" list can be overtaken by the canvas it was written
-against. The exports were at the repo root until 2026-08-21 and are now only
-under `designs/`; a path without that prefix is a stale pointer.
+**Four identifiers carry side effects if you change them.** `_ISSUER` is `arkos`
+(every cookie carries `iss=arkos`, and changing it signs everyone out),
+`store.bucket` / `store.prefix` / `store.root` point at the `arkos` bucket
+(changing them orphans every stored blob), and the cookie is `arkos_session`
+signed with `ARKOS_SESSION_SECRET`. They are ordinary identifiers, but they are
+the ones with side effects: change any of them and say what it costs.
 
-Coding standards still need the rewrite Task 7 promised. Until then: ruff, type
-hints on every signature, `async def` for anything that awaits, no blocking IO in
-an async path, no `print()` in production paths.
+**CI is `.github/workflows/ci.yml`:** a lint stage (`ruff check .`,
+`ruff format --check .`, and a scoped `mypy`) and a test stage
+(`pytest tests/ -q --timeout=120 -m "not integration"`) against a `postgres:15`
+service with the migrations applied. Run all of them yourself before claiming a
+change is green; a red push is a slower way to learn the same thing. Integration
+tests are deselected in CI and need real credentials.
+
+Until the standards doc says otherwise: ruff, type hints on every signature,
+`async def` for anything that awaits, no blocking IO in an async path, no
+`print()` in production paths.

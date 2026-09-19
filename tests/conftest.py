@@ -1,4 +1,4 @@
-"""Shared fixtures for buddy tests."""
+"""Shared fixtures for arkos tests."""
 
 import os
 import sys
@@ -35,8 +35,8 @@ os.environ.setdefault("SERPAPI_API_KEY", "serp-test-dummy-key")
 # `or`, not setdefault: setdefault treats an empty value from .env as already set.
 if not os.environ.get("SUPABASE_JWT_SECRET"):
     os.environ["SUPABASE_JWT_SECRET"] = "test-supabase-secret-at-least-32-chars"
-if not os.environ.get("BUDDY_SESSION_SECRET"):
-    os.environ["BUDDY_SESSION_SECRET"] = "test-session-secret-at-least-32-chars"
+if not os.environ.get("ARKOS_SESSION_SECRET"):
+    os.environ["ARKOS_SESSION_SECRET"] = "test-session-secret-at-least-32-chars"
 
 
 @pytest.fixture(autouse=True)

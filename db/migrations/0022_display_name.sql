@@ -1,4 +1,4 @@
--- What the buddy should call you (Task 12.1).
+-- What arkos should call you.
 --
 -- Sign-up asks for a name, because an assistant that has to address someone and
 -- has only their email address addresses them as their email address. The name
@@ -15,7 +15,7 @@
 -- NULLABLE, with no default and no backfill. Every user who predates this
 -- column signed up when nothing asked for a name, so there is no name to write:
 -- inventing one from the local part of their email would assert something this
--- migration cannot know, and "Nathaniel" and "nathaniel+buddy" are not the same
+-- migration cannot know, and "Nathaniel" and "nathaniel+arkos" are not the same
 -- claim. NULL means nobody has said, and the caller falls back to the email —
 -- which is exactly what it did before this column existed.
 --
@@ -30,7 +30,7 @@ BEGIN;
 ALTER TABLE users ADD COLUMN display_name TEXT;
 
 COMMENT ON COLUMN users.display_name IS
-    'What the buddy calls this person. From Supabase user_metadata (name, or '
+    'What arkos calls this person. From Supabase user_metadata (name, or '
     'full_name from Google) at sign-in. NULL means nobody has said; fall back '
     'to email. A label, never an identity.';
 

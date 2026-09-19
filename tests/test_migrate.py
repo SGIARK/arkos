@@ -20,14 +20,14 @@ class TestGetConnectionUrl:
         monkeypatch.setenv("POSTGRES_PASSWORD", "secret")
         monkeypatch.setenv("POSTGRES_HOST", "db.example.com")
         monkeypatch.setenv("POSTGRES_PORT", "6543")
-        monkeypatch.setenv("POSTGRES_DB", "buddy")
+        monkeypatch.setenv("POSTGRES_DB", "arkos")
         monkeypatch.setenv("POSTGRES_USER", "supabase")
 
         # Force the ConfigLoader path to fail so the constructed default runs.
         with patch("config_module.loader.config.get", side_effect=RuntimeError("no config")):
             url = migrate.get_connection_url()
 
-        assert url == "postgresql://supabase:secret@db.example.com:6543/buddy"
+        assert url == "postgresql://supabase:secret@db.example.com:6543/arkos"
 
     def test_constructed_default_fills_missing_values(self, monkeypatch):
         monkeypatch.delenv("DB_URL", raising=False)
@@ -121,8 +121,8 @@ class TestTheTargetGate:
         """Including CI's, which runs the real runner against a service container."""
         for dsn in (
             "postgresql://test:test@localhost:5432/test",
-            "postgresql://postgres:postgres@localhost:5432/buddy_test",
-            "postgresql://postgres:postgres@127.0.0.1:5432/buddy_test",
+            "postgresql://postgres:postgres@localhost:5432/arkos_test",
+            "postgresql://postgres:postgres@127.0.0.1:5432/arkos_test",
         ):
             assert migrate.check_target(dsn, production_intended=False) is None, dsn
 

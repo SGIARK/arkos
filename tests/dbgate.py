@@ -13,7 +13,7 @@ async def require_db(attempts: int = 3, delay: float = 0.5) -> None:
     """Skip when there is no database; FAIL when there is one and it has no schema.
 
     THE MESSAGE USED TO PROMISE WHAT THE CHECK DID NOT DO. It said "needs the
-    buddy database (migrations applied)" and tested `SELECT 1`, which is
+    arkos database (migrations applied)" and tested `SELECT 1`, which is
     connectivity. In CI the service container answered, the gate passed, and
     ~500 tests ran against an empty schema and failed one by one instead of
     saying why once.

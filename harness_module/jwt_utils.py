@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 _ALG = "HS256"
 
 # Issuer claim on the cookies minted here; `read_session` requires it.
-_ISSUER = "buddy"
+_ISSUER = "arkos"
 
 
 def _secret(name: str) -> str | None:
@@ -34,9 +34,9 @@ def _secret(name: str) -> str | None:
 
 def assert_secure_secrets() -> None:
     """Refuses to start without a way to sign sessions and a way to verify tokens."""
-    if not _secret("BUDDY_SESSION_SECRET"):
+    if not _secret("ARKOS_SESSION_SECRET"):
         raise RuntimeError(
-            "BUDDY_SESSION_SECRET is unset. Refusing to start: sessions would be unsignable. See .env.example."
+            "ARKOS_SESSION_SECRET is unset. Refusing to start: sessions would be unsignable. See .env.example."
         )
     if not jwks_url() and not _secret("SUPABASE_JWT_SECRET"):
         raise RuntimeError(
@@ -96,7 +96,7 @@ def reset_jwks() -> None:
 
 
 def _jwks_file() -> pathlib.Path:
-    return pathlib.Path(str(config.get("auth.jwks_cache_file") or "/tmp/buddy-jwks.json"))
+    return pathlib.Path(str(config.get("auth.jwks_cache_file") or "/tmp/arkos-jwks.json"))
 
 
 def prime_jwks_from_disk() -> bool:
@@ -231,9 +231,9 @@ def extract_bearer(authorization: str | None) -> str | None:
 
 def mint_session(user_id: str, email: str | None = None) -> tuple[str, str, datetime]:
     """Signs a session cookie for a user `verify_supabase` has already cleared."""
-    secret = _secret("BUDDY_SESSION_SECRET")
+    secret = _secret("ARKOS_SESSION_SECRET")
     if not secret:
-        raise RuntimeError("BUDDY_SESSION_SECRET is unset")
+        raise RuntimeError("ARKOS_SESSION_SECRET is unset")
     now = datetime.now(UTC)
     jti = str(uuid.uuid4())
     expires = now + timedelta(seconds=int(config.get("auth.session_ttl_s") or 604800))
@@ -257,9 +257,9 @@ def mint_session(user_id: str, email: str | None = None) -> tuple[str, str, date
 
 def read_session(cookie: str) -> dict[str, Any]:
     """Verifies a session cookie and returns its claims."""
-    secret = _secret("BUDDY_SESSION_SECRET")
+    secret = _secret("ARKOS_SESSION_SECRET")
     if not secret:
-        raise jwt.InvalidKeyError("BUDDY_SESSION_SECRET is unset")
+        raise jwt.InvalidKeyError("ARKOS_SESSION_SECRET is unset")
     # `jti` is required: a cookie minted before 12.2.5 cannot be revoked, and a
     # session the server cannot take back is the thing this replaced.
     return jwt.decode(cookie, secret, algorithms=[_ALG], issuer=_ISSUER, options={"require": ["sub", "exp", "jti"]})

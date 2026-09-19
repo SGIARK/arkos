@@ -26,7 +26,7 @@ import urllib.request
 ROOT = pathlib.Path(__file__).parent.parent
 ROSTER = ROOT / "config_module" / "composio_tools.json"
 BASE = "https://backend.composio.dev"
-UA = "buddy-ops/1"
+UA = "arkos-ops/1"
 
 
 def api_key() -> str:
@@ -106,7 +106,7 @@ def verify() -> int:
 
 def mint() -> int:
     doc, want = roster()
-    name = f"buddy-prod-{len(want)}"
+    name = f"arkos-prod-{len(want)}"
     status, body = rest(
         "POST",
         "/api/v3.1/mcp/servers/custom",
