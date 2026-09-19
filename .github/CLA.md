@@ -2,7 +2,7 @@
 
 # Contributor License Agreement (CLA)
 
-Thank you for your interest in contributing to arkos-core. This Contributor License Agreement (“Agreement”) clarifies the rights granted by contributors to Nathaniel Morgan and any entity he designates as the arkos project owner (the “Owner”).
+Thank you for your interest in contributing to arkos-core. This Contributor License Agreement (“Agreement”) clarifies the rights granted by contributors to the Owner, as defined in Section 1.
 
 ---
 
@@ -23,6 +23,8 @@ They are non-binding and do not modify the legal terms of this Agreement.
 
 ## 1. Definitions
 
+- **“Owner”** means Nathaniel Morgan and Buddy, a company pending incorporation. Until Buddy is incorporated the Owner is Nathaniel Morgan alone, and upon its incorporation every right granted under this Agreement vests in Buddy as well, automatically and without further consent from You or any further act by either of them. This is the only definition of the Owner in this Agreement; every other clause uses the defined term.
+
 - **“You” (or “Your”)** means the individual or legal entity submitting a Contribution.
 
 - **“Contribution”** means any original work of authorship, including code, documentation, or other material, that is intentionally submitted by You to arkos-core for inclusion in the project.
@@ -37,7 +39,7 @@ They are non-binding and do not modify the legal terms of this Agreement.
 
 ## 2. Grant of Copyright License
 
-You hereby grant to Nathaniel Morgan and any entity he designates as the arkos project owner (the “Owner”) a perpetual, worldwide, non-exclusive, irrevocable, royalty-free copyright license to:
+You hereby grant to the Owner a perpetual, worldwide, non-exclusive, irrevocable, royalty-free copyright license to:
 
 - use  
 - reproduce  
@@ -50,7 +52,7 @@ You hereby grant to Nathaniel Morgan and any entity he designates as the arkos p
 
 Your Contributions and derivative works thereof, as part of arkos-core or any related software, products, services, or hosted offerings, under any license terms chosen by the Owner, including proprietary or commercial licenses.
 
-This license expressly extends to use of the Contribution in the Owner’s proprietary products and hosted services, including the product known as buddy, under any license the Owner chooses. The Owner may use, modify and distribute the Contribution in those products and services without any obligation to release the resulting work under an open-source license.
+This license expressly extends to use of the Contribution in the Owner’s proprietary products and hosted services, including the closed-source product known as buddy (a product, distinct from the company named in Section 1 that shares its name), under any license the Owner chooses. The Owner may use, modify and distribute the Contribution in those products and services without any obligation to release the resulting work under an open-source license.
 
 This Agreement does not change the public license of arkos-core. Your Contribution is also licensed to the public under the GNU Affero General Public License, version 3 or later, as part of arkos-core, and that grant is unaffected by the rights granted to the Owner above.
 
@@ -64,7 +66,7 @@ You grant the Owner the right to assign this license, in full and together with 
 
 ## 3. Grant of Patent License
 
-You hereby grant to Nathaniel Morgan and any entity he designates as the arkos project owner (the “Owner”) a perpetual, worldwide, non-exclusive, irrevocable, royalty-free patent license to make, have made, use, offer to sell, sell, import, and otherwise transfer arkos-core, where such license applies only to those patent claims licensable by You that are necessarily infringed by Your Contribution or by combination of Your Contribution with arkos-core.
+You hereby grant to the Owner a perpetual, worldwide, non-exclusive, irrevocable, royalty-free patent license to make, have made, use, offer to sell, sell, import, and otherwise transfer arkos-core, where such license applies only to those patent claims licensable by You that are necessarily infringed by Your Contribution or by combination of Your Contribution with arkos-core.
 
 If You initiate patent litigation against any entity alleging that arkos-core or a Contribution incorporated into arkos-core constitutes patent infringement, then any patent licenses granted to You under this Agreement shall terminate as of the date such litigation is filed.
 
