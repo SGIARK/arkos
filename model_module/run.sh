@@ -5,7 +5,7 @@ export HF_TOKEN=""
 
 docker run --gpus '"device=1"' \
   --shm-size 32g \
-  -p 30000:30000 \
+  -p 127.0.0.1:30000:30000 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   --env HF_TOKEN=$HF_TOKEN \
   --env PYTHONPATH=/sgl-workspace/sglang/python \
