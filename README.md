@@ -105,6 +105,20 @@ from your host, and an unset url makes `browser_task` refuse: deliberately,
 because the fallback would be a Chromium running model-chosen pages beside your
 cookies and the store's secret key.
 
+## Running at MIT
+
+Self-hosted: a local GPU serves the model, the browser runs in a container, and
+there is no sandbox to provision.
+
+1. `docker compose up -d sglang browserless` (sglang needs an NVIDIA GPU).
+2. In `config_module/config.yaml` set `llm.base_url` to `http://localhost:30000/v1`
+   (the `/v1` is required) and `llm.model_name` to the model that server was
+   launched with: a tool-calling model with a matching `--tool-call-parser`, or
+   turns come back as prose and no tool ever runs.
+3. In `.env` set `BROWSERLESS_URL=ws://localhost:3000`, leave `OPENAI_API_KEY`
+   empty (SGLang ignores it), and fill in `DB_URL`, the Supabase keys and
+   `ARKOS_SESSION_SECRET`. `COMPOSIO_API_KEY` is optional.
+
 ## Tests and CI
 
 ```bash

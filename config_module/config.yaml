@@ -139,6 +139,32 @@ approvals:
   # Uncomment only to get the old unattended-style behaviour back.
   # attended_auto_approve: true
 
+# DEPLOYMENT PROFILE: MIT (self-hosted, local inference, no sandbox)
+#
+# The defaults below point at a hosted provider. To run the MIT profile, change
+# the three `llm` keys and nothing else:
+#
+#   llm.base_url:   "http://localhost:30000/v1"   the local SGLang server, which
+#                   serves an OpenAI-compatible API. `docker compose up -d sglang`
+#                   starts one on port 30000 (it needs an NVIDIA GPU); the `/v1`
+#                   suffix is required, because the SDK appends paths to it.
+#   llm.model_name: whatever that server was launched with, e.g.
+#                   "Qwen/Qwen2.5-7B-Instruct". It must be a tool-calling model
+#                   served with a matching --tool-call-parser, or every turn comes
+#                   back as prose and no tool is ever called.
+#   llm.api_key:    leave it; the SDK demands a value and SGLang does not check it.
+#                   With OPENAI_API_KEY unset, client.py sends "-".
+#
+# THE BROWSER IS THE ONLY EXTERNAL RUNTIME: `browser_task` is enabled in this
+# profile and needs the browserless container (`docker compose up -d browserless`,
+# then BROWSERLESS_URL=ws://localhost:3000). NOTHING ELSE RUNS CODE. There is no
+# sandbox in this build: no shell tool, no file tools, and no per-session box to
+# provision, bill or reap.
+#
+# Everything else this profile needs is unchanged: a Postgres in DB_URL, a
+# Supabase project for sign-in and blob storage, and COMPOSIO_API_KEY for the
+# connectors (leave it empty and the connector tools simply do not appear).
+
 llm:
   # OpenAI-compatible endpoint; client.py is an AsyncOpenAI against base_url.
   base_url: "https://api.openai.com/v1"
