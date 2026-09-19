@@ -76,8 +76,8 @@ browser in the harness process. The pre-redesign `browser_tool.py`,
 
 Where the live code is: `agent_module/loop.py` (the one loop),
 `model_module/client.py` (the one model client), `tool_module/`
-(envelope · registry · connections · session_tools · composio_mcp · tools/ ·
-sandbox), `db/pool.py` (asyncpg; the psycopg2 helpers are gone — do not add
+(envelope · registry · connections · session_tools · composio_mcp · tools/),
+`db/pool.py` (asyncpg; the psycopg2 helpers are gone — do not add
 more).
 
 **All MCP traffic flows through COMPOSIO** (11.10.2). `tool_module/composio_mcp.py`

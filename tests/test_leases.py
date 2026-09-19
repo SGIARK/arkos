@@ -17,8 +17,7 @@ from harness_module import leases, runner
 from harness_module import session_log as slog
 from model_module import client as mc
 from tests.dbgate import require_db
-from tool_module.sandbox import manager as sandbox_manager
-from tool_module.sandbox import tools as sandbox_tools
+from tool_module.browser import tool as browser_tool
 
 pytestmark = pytest.mark.asyncio
 
@@ -142,33 +141,49 @@ async def test_concurrent_claims_produce_one_holder():
 
 
 @pytest.fixture
-def sandbox(monkeypatch):
-    """A sandbox that records calls, so no e2b is involved."""
+def browser(monkeypatch):
+    """A browser that records the tasks it was given, so no container is involved."""
 
     class Fake:
         def __init__(self):
-            self.commands = []
-            self.files = {}
+            self.tasks = []
 
-        async def exec(self, session_id, command, timeout=120):
-            self.commands.append(command)
-            return {"stdout": "ok", "stderr": "", "exit_code": 0}
+        def __call__(self, run):
+            self.tasks.append(run.task)
+            return self
 
-        async def write_file(self, session_id, path, content):
-            self.files[path] = content
+        def stop(self):
+            pass
 
-        async def read_file(self, session_id, path):
-            return self.files[path]
-
-        async def pause(self, session_id):
-            await sandbox_manager.renew_slot(session_id)
-
-        async def reap(self, session_id):
-            await sandbox_manager.release_slot(session_id)
+        async def run(self, max_steps=25):
+            return _FakeHistory()
 
     fake = Fake()
-    monkeypatch.setattr(sandbox_tools.sandbox_manager, "manager", lambda: fake)
+    monkeypatch.setattr(browser_tool, "cdp_url", lambda: "ws://browserless:3000", raising=False)
+    monkeypatch.setattr(browser_tool, "_agent_factory", lambda: fake)
     return fake
+
+
+class _FakeHistory:
+    """The shape browser_use hands back, reduced to what the envelope reads."""
+
+    def final_result(self):
+        return "done"
+
+    def errors(self):
+        return []
+
+    def is_successful(self):
+        return True
+
+    def has_errors(self):
+        return False
+
+    def urls(self):
+        return ["https://example.com"]
+
+    def model_actions(self):
+        return [{"step": 0}]
 
 
 @pytest.fixture
@@ -213,36 +228,46 @@ async def _drive(session_id: str) -> None:
         await asyncio.wait_for(asyncio.shield(task), timeout=45)
 
 
-async def test_a_session_leaves_no_lease_behind(sandbox, model, impatient):
+async def test_a_session_leaves_no_lease_behind(browser, model, impatient):
     session_id = await _session(mode="attended", status="idle")
     await slog.append(session_id, UserEvent(text="go"))
-    model(_call("run_command", '{"command": "ls"}'), _text("done"))
+    model(_call("browser_task", '{"task": "look something up"}'), _text("done"))
 
     await _drive(session_id)
 
-    assert sandbox.commands == ["ls"]
+    assert browser.tasks == ["look something up"]
     held = await pool.fetchval("SELECT count(*) FROM resource_leases WHERE session_id = $1", uuid.UUID(session_id))
     assert held == 0, "a lease outlived the run"
 
 
-async def test_the_sandbox_is_never_leased(sandbox, model, impatient):
-    """A box belongs to one session, so there is nothing to serialize."""
+async def test_the_browser_is_leased_for_the_whole_run(browser, model, impatient):
+    """It keeps its profile between calls, so one session holds it while it runs."""
     session_id = await _session(mode="attended", status="idle")
     await slog.append(session_id, UserEvent(text="go"))
-    model(_call("run_command", '{"command": "ls"}'), _text("done"))
+    taken: list[str] = []
+    model(_call("browser_task", '{"task": "look"}'), _text("done"))
 
-    await _drive(session_id)
+    original = leases.acquire
 
-    keys = [r["resource_key"] for r in await pool.fetch("SELECT resource_key FROM resource_leases")]
-    assert not [k for k in keys if k.startswith("sandbox:")]
+    async def watched(resource_key, holder, ttl):
+        taken.append(resource_key)
+        return await original(resource_key, holder, ttl)
+
+    leases.acquire = watched
+    try:
+        await _drive(session_id)
+    finally:
+        leases.acquire = original
+
+    assert [k for k in taken if k.startswith("browser:")], "the browser was driven without its lease"
 
 
-async def test_a_park_gives_the_leases_back(sandbox, model, impatient):
+async def test_a_park_gives_the_leases_back(browser, model, impatient):
     """A parked session is not acting, so it holds nothing."""
     session_id = await _session(mode="attended", status="idle")
     await slog.append(session_id, UserEvent(text="go"))
     model(
-        _call("run_command", '{"command": "ls"}'),
+        _call("browser_task", '{"task": "look"}'),
         _call("ask", '{"question": "which one?"}', id="c2"),
     )
 
@@ -252,5 +277,3 @@ async def test_a_park_gives_the_leases_back(sandbox, model, impatient):
     assert row["status"] == "awaiting_approval"
     held = await pool.fetchval("SELECT count(*) FROM resource_leases WHERE session_id = $1", uuid.UUID(session_id))
     assert held == 0
-    slot = await pool.fetchval("SELECT count(*) FROM session_sandboxes WHERE session_id = $1", uuid.UUID(session_id))
-    assert slot == 1, "the box is hibernated on a park, not given up"

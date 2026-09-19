@@ -24,7 +24,7 @@ Code layout:
 | `agent_module/loop.py` | the one loop |
 | `model_module/client.py` | the one model client |
 | `harness_module/` | control plane — api · runner · store · blobs · memory · workspace · leases · lifecycle · approvals · session_log · system_log · stream · hands · jwt_utils |
-| `tool_module/` | envelope · registry · connections · session_tools · composio_mcp · tools/ · sandbox · browser/ |
+| `tool_module/` | envelope · registry · connections · session_tools · composio_mcp · tools/ · browser/ |
 | `db/pool.py` | asyncpg pool |
 | `config_module/` | `config.yaml` and its loader |
 | `frontend/` | the UI |

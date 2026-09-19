@@ -593,7 +593,7 @@ async def test_a_setup_failure_is_an_internal_error_not_a_model_error(monkeypatc
     session_id = await _session(status="idle")
 
     async def explode(_session):
-        raise RuntimeError("the sandbox would not boot")
+        raise RuntimeError("the manifest would not build")
 
     monkeypatch.setattr(runner, "_manifest_for", explode)
     assert await runner.start(session_id)

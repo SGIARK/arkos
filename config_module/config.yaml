@@ -11,8 +11,8 @@ app:
 auth:
   jwt_audience: "authenticated"   # what Supabase stamps on its access tokens
   # How long to wait on the JWKS endpoint. Short on purpose: the fetch is
-  # blocking and runs on the pool shared with blob IO and every sandbox call,
-  # so an unreachable endpoint must fail fast rather than hold a thread. The
+  # blocking and runs on the pool shared with blob IO, so an unreachable
+  # endpoint must fail fast rather than hold a thread. The
   # keys are cached and refreshed on our own clock, so this is only ever paid
   # once per refresh window.
   jwks_timeout_s: 5
@@ -60,8 +60,7 @@ context:
 store:
   # Where the agent's files live. Bytes are content-addressed under
   # {prefix}/blobs/{hh}/{sha256}; the tree is rows in `files`, ONE flat namespace
-  # per user, where a folder is the first segment of a path. The sandbox disk is
-  # a cache of this, not the other way round.
+  # per user, where a folder is the first segment of a path.
   #
   # supabase   -- a Storage bucket, over its REST API. Needs SUPABASE_URL and
   #               SUPABASE_SERVICE_KEY in the environment, and the bucket below.
@@ -86,8 +85,8 @@ browser:
   # Left literal and empty rather than "${BROWSERLESS_URL}": an unset ${VAR} in
   # this file raises at config LOAD, so a machine with no browser container
   # would fail to start the whole app instead of failing one tool. Set this, or
-  # set BROWSERLESS_URL in the environment — the tool reads this first and falls
-  # back to the variable. Same reasoning as the Supabase and e2b keys.
+  # set BROWSERLESS_URL in the environment: the tool reads this first and falls
+  # back to the variable. Same reasoning as the Supabase keys.
   cdp_url: ""
   max_steps: 25                   # the vendor's own cap on how many steps it plans
   wall_clock_s: 240               # at this point it is ASKED to stop, keeping partial results
@@ -231,20 +230,6 @@ database:
   pool_min_size: 1
   pool_max_size: 10
 
-
-# Per-session e2b sandbox (files + shell). The E2B SDK reads E2B_API_KEY from the
-# environment directly, so the key is not referenced here.
-sandbox:
-  template: "base"                         # e2b template
-  timeout_seconds: 300                     # seconds a sandbox stays alive while working
-  max_concurrent_per_user: 5               # boxes one user runs at once; a session over the cap
-                                           # waits with a status event until one is reaped. At or
-                                           # above quotas.max_unattended_sessions, checked at boot
-  slot_ttl_s: 900                          # a slot expires unless a call into its box renews it,
-                                           # so a process that dies frees its capacity
-  browse_max_bytes: 1048576                # cap on one HTTP read of the live disk
-                                           # (GET /sessions/{id}/fs/file). Over it the
-                                           # response is cut short and says so.
 
 # All MCP traffic flows through ONE Composio MCP server. Composio hosts the OAuth
 # apps — MANAGED ones, already verified with each provider — and holds every

@@ -1,4 +1,4 @@
-"""Claims end to end: what a session mounts, what it locks, and what it may write."""
+"""Claims end to end: what a session is given, and what each claim locks."""
 
 from __future__ import annotations
 
@@ -11,14 +11,9 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from agent_module.events import UserEvent
 from db import pool
 from harness_module import api, leases, runner, store, workspace
-from harness_module import session_log as slog
-from model_module import client as mc
 from tests.dbgate import require_db
-from tests.test_workspace import FakeSandbox, _sweeping
-from tool_module.sandbox import manager as sandbox_manager
 
 pytestmark = pytest.mark.asyncio
 
@@ -26,21 +21,9 @@ _seeded: list[uuid.UUID] = []
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _db(tmp_path, monkeypatch):
+async def _db(tmp_path):
     await require_db()
     store.use_blobs(store.FilesystemBlobs(tmp_path))
-    sandbox = _sweeping(FakeSandbox())
-
-    async def reap(session_id):
-        await runner.sandbox_manager.release_slot(session_id)
-
-    async def pause(session_id):
-        await runner.sandbox_manager.renew_slot(session_id)
-
-    sandbox.reap = reap
-    sandbox.pause = pause
-    monkeypatch.setattr(runner.sandbox_manager, "manager", lambda: sandbox)
-    api.sandbox = sandbox
     yield
     store.use_blobs(None)
     for task in list(runner._reapers) + list(runner._running.values()):
@@ -124,37 +107,6 @@ def _file(path: str, content: str) -> store.FileContent:
     return store.FileContent(path=path, content=content.encode())
 
 
-@pytest.fixture
-def model(monkeypatch):
-    def arm(*hops):
-        remaining = list(hops)
-
-        def generate(messages, tools=None, **kw):
-            deltas = remaining.pop(0) if remaining else [mc.TextDelta(text="done"), mc.Finish(reason="stop")]
-
-            async def gen():
-                for d in deltas:
-                    await asyncio.sleep(0)
-                    yield d
-
-            return gen()
-
-        monkeypatch.setattr(mc, "generate", generate)
-
-    return arm
-
-
-def _call(name: str, args: str, call_id: str = "c1"):
-    return [mc.ToolCallDelta(index=0, id=call_id, name=name, arguments=args), mc.Finish(reason="tool_calls")]
-
-
-async def _drive(session_id: str) -> None:
-    await runner.start(session_id)
-    task = runner._running.get(session_id)
-    if task is not None:
-        await asyncio.wait_for(asyncio.shield(task), timeout=45)
-
-
 async def test_a_session_without_claims_gets_a_write_claim_on_every_linked_folder(client):
     await _signed(client)
 
@@ -220,109 +172,6 @@ async def _signed(client: AsyncClient) -> str:
     return user_id
 
 
-async def test_both_claims_mount_and_only_the_write_one_flushes(model):
-    user_id = await _user()
-    writable = await _project(user_id, "Writable")
-    await store.commit_tree(user_id, [_file("writable/a.txt", "A original"), _file("readable/b.txt", "B original")])
-    session_id = await _session(user_id, writable)
-    await _claim_row(session_id, "writable", "write")
-    await _claim_row(session_id, "readable", "read")
-    await slog.append(session_id, UserEvent(text="go"))
-
-    model(_call("run_command", '{"command": "true"}'), [mc.TextDelta(text="ok"), mc.Finish(reason="stop")])
-    sandbox = runner.sandbox_manager.manager()
-
-    async def edit_then_finish(user_id_, command, timeout=120):
-        sandbox.files[f"{workspace.MOUNT_ROOT}/writable/a.txt"] = b"A edited"
-        sandbox.files[f"{workspace.MOUNT_ROOT}/readable/b.txt"] = b"B edited"
-        return {"stdout": "", "stderr": "", "exit_code": 0}
-
-    real_exec = sandbox.exec
-
-    async def routed(user_id_, command, timeout=120):
-        if command == "true":
-            return await edit_then_finish(user_id_, command, timeout)
-        return await real_exec(user_id_, command, timeout)
-
-    sandbox.exec = routed
-    await _drive(session_id)
-
-    tree = {e.path: e for e in await store.read_tree(user_id)}
-
-    assert await store.get_blob(tree["writable/a.txt"].content_hash) == b"A edited"
-    assert await store.get_blob(tree["readable/b.txt"].content_hash) == b"B original", "a read claim was written"
-
-
-async def test_nothing_unclaimed_appears_in_the_sandbox(model):
-    user_id = await _user()
-    claimed = await _project(user_id, "Claimed")
-    await store.commit_tree(user_id, [_file("claimed/mine.txt", "1"), _file("unclaimed/theirs.txt", "2")])
-    session_id = await _session(user_id, claimed)
-    await _claim_row(session_id, "claimed", "write")
-    await slog.append(session_id, UserEvent(text="go"))
-    model(_call("run_command", '{"command": "ls"}'))
-
-    await _drive(session_id)
-    sandbox = runner.sandbox_manager.manager()
-
-    assert any("mine.txt" in p for p in sandbox.files)
-    assert not any("theirs.txt" in p for p in sandbox.files)
-    assert not any("unclaimed" in p for p in sandbox.files)
-
-
-async def test_the_discarded_edits_are_disclosed_in_the_transcript(model):
-    """The person who watched the edits is reading the transcript, not system_events."""
-    user_id = await _user()
-    readable = await _project(user_id, "Readable")
-    await store.commit_tree(user_id, [_file("readable/b.txt", "original")])
-    session_id = await _session(user_id, readable)
-    await _claim_row(session_id, "readable", "read")
-    await slog.append(session_id, UserEvent(text="go"))
-
-    sandbox = runner.sandbox_manager.manager()
-    real_exec = sandbox.exec
-
-    async def routed(user_id_, command, timeout=120):
-        if command == "edit":
-            sandbox.files[f"{workspace.MOUNT_ROOT}/readable/b.txt"] = b"edited anyway"
-            return {"stdout": "", "stderr": "", "exit_code": 0}
-        return await real_exec(user_id_, command, timeout)
-
-    sandbox.exec = routed
-    model(_call("run_command", '{"command": "edit"}'))
-    await _drive(session_id)
-
-    labels = [e.event.label for e in await slog.get_events(session_id) if e.event.kind == "status"]
-
-    assert any("discarded" in label and "b.txt" in label for label in labels)
-
-
-async def test_a_write_claim_takes_a_lease_on_its_folder(model):
-    user_id = await _user()
-    project_id = await _project(user_id, "Locked")
-    await store.commit_tree(user_id, [_file("locked/a.txt", "1")])
-    session_id = await _session(user_id, project_id)
-    await _claim_row(session_id, "locked", "write")
-    await slog.append(session_id, UserEvent(text="go"))
-
-    held: list[str | None] = []
-    model(_call("run_command", '{"command": "check"}'))
-    sandbox = runner.sandbox_manager.manager()
-    real_exec = sandbox.exec
-
-    async def routed(user_id_, command, timeout=120):
-        if command == "check":
-            held.append(await leases.holder(f"folder:{user_id}:locked"))
-            return {"stdout": "", "stderr": "", "exit_code": 0}
-        return await real_exec(user_id_, command, timeout)
-
-    sandbox.exec = routed
-    await _drive(session_id)
-
-    assert held == [session_id], "the folder was not leased while the session held it"
-    assert await leases.holder(f"folder:{user_id}:locked") is None, "the lease outlived the run"
-
-
 async def test_a_read_claim_takes_no_folder_lease():
     claims = [
         workspace.Claim(user_id="u", folder="one", mode="read"),
@@ -342,8 +191,6 @@ async def test_two_projects_writing_different_folders_do_not_wait_on_each_other(
 
     assert await leases.acquire(f"folder:{user_id}:one", first, 60)
     assert await leases.acquire(f"folder:{user_id}:two", second, 60)
-    assert await sandbox_manager.claim_slot(first)
-    assert await sandbox_manager.claim_slot(second)
 
 
 async def test_two_projects_writing_the_SAME_folder_still_serialize():
@@ -354,31 +201,3 @@ async def test_two_projects_writing_the_SAME_folder_still_serialize():
 
     assert await leases.acquire(f"folder:{user_id}:shared", mine, 60)
     assert not await leases.acquire(f"folder:{user_id}:shared", theirs, 60)
-
-
-async def test_a_second_session_claiming_the_same_project_waits_and_says_so(model, monkeypatch):
-    user_id = await _user()
-    project_id = await _project(user_id, "Contested")
-    await store.commit_tree(user_id, [_file("contested/a.txt", "1")])
-    holder = await _session(user_id, project_id, status="running")
-    await leases.acquire(f"folder:{user_id}:contested", holder, 60)
-
-    waiter = await _session(user_id, project_id)
-    await _claim_row(waiter, "contested", "write")
-    await slog.append(waiter, UserEvent(text="go"))
-    monkeypatch.setattr(
-        runner,
-        "_cfg",
-        lambda key, default: {"leases.wait_timeout_s": 0.2, "leases.poll_s": 0.05}.get(key, default),
-    )
-    model(_call("run_command", '{"command": "ls"}'), [mc.TextDelta(text="gave up"), mc.Finish(reason="stop")])
-
-    await _drive(waiter)
-    events = [e.event for e in await slog.get_events(waiter)]
-    labels = [e.label for e in events if e.kind == "status"]
-    results = [e for e in events if e.kind == "tool_result"]
-
-    assert any("contested" in label for label in labels)
-    assert results[0].error_kind == "timeout"
-    budgets = [e for e in events if e.kind == "budget"]
-    assert len(budgets) <= 2, "waiting on a lease burned hops"

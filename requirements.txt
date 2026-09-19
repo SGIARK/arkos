@@ -35,9 +35,6 @@ psycopg2-binary>=2.9.11   # db/migrate.py, its one consumer. Settled 8.10: it st
 # --- tools ---
 aiohttp>=3.9.0            # Arcade MCP gateway transport
 httpx>=0.27.0             # the store's Supabase Storage client
-e2b-code-interpreter>=2.7.0   # imported lazily, so the app boots without it.
-                              # STAYS: the 08-17 audit line calling it droppable
-                              # predates 8a, which made the sandbox live.
 
 # Back with Task 9, which rebuilt the browser against contracts. Imported inside
 # the call, so the process starts, the manifest builds and every other tool works

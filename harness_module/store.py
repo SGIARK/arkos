@@ -252,8 +252,8 @@ async def put_file(
     )
 
 
-# The sandbox round trip carries files and only files, so an empty folder survives
-# only as a zero-byte file — and this is also what makes an unfilled folder exist.
+# The tree carries files and only files, so an empty folder survives only as a
+# zero-byte file, which is also what makes an unfilled folder exist.
 DIR_SENTINEL = ".keep"
 
 
@@ -366,8 +366,7 @@ async def rename_path(user_id: str, path: str, name: str) -> list[tuple[str, str
 
     A top-level folder's name is duplicated in exactly three tables — `files`,
     `project_folders`, `session_claims` — and all three move in ONE transaction.
-    It does NOT touch a live sandbox: the caller must first check that no box
-    holds the folder, or that box's next flush resurrects the old name.
+    Nothing outside those tables holds the name: the store is where a folder lives.
 
     Returns:
         The (from, to) pairs that moved, in path order.

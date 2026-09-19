@@ -35,8 +35,7 @@ async def _db(monkeypatch, tmp_path):
     await require_db()
     store.use_blobs(store.FilesystemBlobs(tmp_path))
 
-    # The runner is faked: what a claim MOUNTS is test_workspace's, what it is
-    # RECORDED as is this file's.
+    # The runner is faked: a claim's RECORDED shape is what this file is about.
     started: list[dict] = []
 
     async def fake_start(session_id: str, **kw) -> bool:
@@ -47,7 +46,6 @@ async def _db(monkeypatch, tmp_path):
     api.started_here = started
     yield
     store.use_blobs(None)
-    await pool.execute("DELETE FROM session_sandboxes WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM sessions WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM files WHERE user_id = ANY($1::uuid[])", _seeded)
     await pool.execute("DELETE FROM deleted_files WHERE user_id = ANY($1::uuid[])", _seeded)
@@ -485,21 +483,6 @@ async def test_an_approved_plan_lands_in_the_first_linked_folder(client):
     assert saved == 1, "the plan did not land in the first linked folder"
 
 
-async def test_the_sandbox_sees_the_plan_at_the_mounted_folder_path(client):
-    """`~/store/<folder>/plan.md` is what the prompt promises, so materialize must agree."""
-    user_id = await _signed(client)
-    await store.put_file(user_id, "triage/a.md", b"1")
-    made = (await client.post("/projects", json={"title": "work", "folders": ["triage"]})).json()
-    session_id = (await client.post("/sessions", json={"goal": "work", "project_id": made["id"]})).json()["session_id"]
-    await store.put_file(user_id, "triage/plan.md", b"# the plan\n")
-
-    claims = await workspace.claims_for(session_id)
-
-    assert [c.mount for c in claims] == ["/home/user/store/triage"]
-    mounted = {f"/home/user/store/{e.path}" for e in await store.read_tree(user_id, claims[0].prefix)}
-    assert "/home/user/store/triage/plan.md" in mounted
-
-
 # --- the home session mints nothing --------------------------------------------------
 
 
@@ -545,18 +528,3 @@ async def test_the_home_session_claims_nothing_and_cannot_approve_a_plan(client)
     assert response.status_code == 409
     assert response.json()["code"] == "no_folder"
     assert [r.id for r in await approvals.open_for(home)] == [row.id], "the plan was spent"
-
-
-# --- the amendment check -------------------------------------------------------------
-
-
-# The module mark makes every test async; this one reads a file.
-@pytest.mark.asyncio(loop_scope="function")
-async def test_contracts_records_the_store_and_the_links():
-    """contracts.md is law, and it must record the store and the links."""
-    contracts = (__import__("pathlib").Path(__file__).resolve().parent.parent / "docs" / "contracts.md").read_text()
-
-    assert "project_folders" in contracts
-    assert "`files` `{user_id, path, content_hash, size, mtime}`" in contracts.replace("**", "")
-    assert "folder:{user_id}:{name}" in contracts
-    assert "~/store/<folder>/" in contracts

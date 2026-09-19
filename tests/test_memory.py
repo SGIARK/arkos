@@ -9,12 +9,10 @@ import pytest
 import pytest_asyncio
 
 from db import pool
-from harness_module import memory, runner, store, workspace
+from harness_module import memory, runner, store
 from tests.dbgate import require_db
-from tests.test_workspace import FakeSandbox, _sweeping
 from tool_module import registry
 from tool_module.envelope import ToolContext
-from tool_module.sandbox import manager as sandbox_manager
 
 
 class _Note:
@@ -293,36 +291,3 @@ async def test_a_session_with_no_memory_gets_a_prompt_without_the_section():
 
     assert "# MEMORY.md" not in system
     assert "save_memory" in system, "the guidance is not conditional on there being memory"
-
-
-# --- and it still does not mount ------------------------------------------------------
-
-
-async def test_a_session_claiming_everything_still_has_no_memory_in_its_box():
-    """D30 is open; until it is settled the default posture is that memory stays out."""
-    user_id = await _user()
-    project_id = str(
-        await pool.fetchval(
-            "INSERT INTO projects (user_id, title) VALUES ($1, 'Taxes') RETURNING id", uuid.UUID(user_id)
-        )
-    )
-    session_id = await _session(user_id, project_id)
-    assert await sandbox_manager.claim_slot(session_id)
-    await memory.append_note(user_id, "the most sensitive distillate in the system")
-    await memory.update_memory(user_id, "# Memory\n")
-    await store.commit_tree(
-        user_id,
-        [store.FileContent(path="taxes/a.txt", content=b"1"), store.FileContent(path="taxes-ro/b.txt", content=b"2")],
-    )
-    sandbox = _sweeping(FakeSandbox())
-
-    claims = [
-        workspace.Claim(user_id=user_id, folder="taxes"),
-        workspace.Claim(user_id=user_id, folder="taxes-ro", mode="read"),
-    ]
-    await workspace.materialize(sandbox, session_id, claims)
-
-    landed = set(sandbox.files)
-    assert f"{workspace.MOUNT_ROOT}/taxes/a.txt" in landed
-    assert not [p for p in landed if "memory" in p.lower()], "memory reached the box"
-    assert not [p for p in landed if p.endswith(memory.MEMORY_CORE)]

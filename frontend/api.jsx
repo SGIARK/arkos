@@ -421,13 +421,13 @@ const api = {
      is a path segment and not a row. */
   newFolder: (path) => request("POST", "/folders", { path }),
 
-  /* A row edit — blobs are content-addressed and never move — which the server
-     also pushes into any live sandbox. Moving a top-level FOLDER is refused. */
+  /* A row edit; blobs are content-addressed and never move. Moving a top-level
+     FOLDER is refused. */
   moveFile: (from, to) => request("POST", "/files/move", { from, to }),
 
   /* `name` is a NAME: a `/` in it is refused rather than making this a move.
      Renaming a top-level folder carries its project links and claims, and is
-     refused while a running session has it mounted (`409 folder_busy`). */
+     refused while a running session holds its write lease (`409 folder_busy`). */
   renameFile: (path, name) => request("POST", "/files/rename", { path, name }),
 
   /* The rows go and the BLOBS do not, so the returned `batch` takes it back
@@ -459,14 +459,6 @@ const api = {
   sessionTools: (sessionId) => request("GET", `/sessions/${sessionId}/tools`),
   setSessionTool: (sessionId, server, enabled) =>
     request("PUT", `/sessions/${sessionId}/tools/${encodeURIComponent(server)}`, { enabled }),
-
-  /* --- the session's live disk ------------------------------------------ */
-
-  /* Nothing here boots a box: a parked or finished session 404s. */
-  sandboxDir: (sessionId, path) =>
-    request("GET", `/sessions/${sessionId}/fs${path ? `?path=${encodeURIComponent(path)}` : ""}`),
-  sandboxFile: (sessionId, path) =>
-    request("GET", `/sessions/${sessionId}/fs/file?path=${encodeURIComponent(path)}`),
 
   /* --- what a human may do ---------------------------------------------- */
 

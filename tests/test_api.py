@@ -967,8 +967,8 @@ async def test_attention_in_another_users_window_reads_as_absent(client):
     assert (await client.get(f"/attention?session_id={their_session}")).status_code == 404
 
 
-async def test_an_uploaded_file_is_in_the_project_and_in_the_next_sandbox(client, tmp_path):
-    """End to end: upload a file, and a session reads it from its box."""
+async def test_an_uploaded_file_is_in_the_project_and_in_the_store(client, tmp_path):
+    """End to end: upload a file, and the project it belongs to lists it."""
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     try:
         user_id = await _signed_in(client)
@@ -1454,124 +1454,6 @@ async def test_the_toggles_are_per_session(client, mcp):
     assert (await client.get(f"/sessions/{other}/tools")).json()["used"] == 0
 
 
-# --- the session's live disk -------------------------------------------------------
-
-
-class _FakeBox:
-    """One awake box, enough of the e2b handle for `browse` and `peek`."""
-
-    class _Entry:
-        def __init__(self, name, path, kind, size):
-            self.name, self.path, self.type, self.size = name, path, kind, size
-
-    class _Files:
-        def __init__(self, blobs):
-            self._blobs = blobs
-
-        def list(self, path):
-            return [
-                _FakeBox._Entry("notes", f"{path}/notes", "dir", 0),
-                _FakeBox._Entry("out.txt", f"{path}/out.txt", "file", 5),
-            ]
-
-        def read(self, path, format=None):
-            if path not in self._blobs:
-                raise FileNotFoundError(path)
-            return self._blobs[path]
-
-    def __init__(self, blobs):
-        self.files = _FakeBox._Files(blobs)
-
-
-@pytest.fixture
-def awake(monkeypatch):
-    """Put a box in the manager's live map for one session, without booting anything."""
-
-    def use(session_id, blobs=None):
-        manager = api.sandbox_manager.manager()
-        # Copy first: the manager is process-wide, so teardown must restore a map
-        # this never touched.
-        live = dict(manager._live)
-        monkeypatch.setattr(manager, "_live", live)
-        live[session_id] = _FakeBox(blobs or {})
-
-    return use
-
-
-async def test_the_disk_lists_only_while_the_box_is_awake(client, awake):
-    user_id = await _signed_in(client)
-    session_id = await _session_for(user_id)
-
-    parked = await client.get(f"/sessions/{session_id}/fs")
-    assert parked.status_code == 404, "a parked or reaped box has no disk to show"
-
-    awake(session_id)
-    listed = await client.get(f"/sessions/{session_id}/fs", params={"path": "/home/user"})
-
-    assert listed.status_code == 200
-    assert listed.json()["path"] == "/home/user"
-    assert [e["name"] for e in listed.json()["entries"]] == ["notes", "out.txt"]
-    assert [e["is_dir"] for e in listed.json()["entries"]] == [True, False]
-
-
-async def test_the_disk_reads_a_file_and_says_when_it_is_not_text(client, awake):
-    user_id = await _signed_in(client)
-    session_id = await _session_for(user_id)
-    awake(session_id, {"/home/user/out.txt": b"hello", "/home/user/pic.png": b"\x89PNG\xff\xfe"})
-
-    text = await client.get(f"/sessions/{session_id}/fs/file", params={"path": "/home/user/out.txt"})
-    assert text.status_code == 200
-    assert text.json()["text"] == "hello"
-    assert text.json()["binary"] is False
-    assert text.json()["truncated"] is False
-
-    binary = await client.get(f"/sessions/{session_id}/fs/file", params={"path": "/home/user/pic.png"})
-    assert binary.json()["binary"] is True
-    assert binary.json()["text"] is None
-
-
-async def test_a_long_file_is_cut_short_and_says_so(client, awake, monkeypatch):
-    user_id = await _signed_in(client)
-    session_id = await _session_for(user_id)
-    awake(session_id, {"/home/user/big.log": b"x" * 100})
-    real = api._cfg
-    monkeypatch.setattr(
-        api, "_cfg", lambda key, default: 10 if key == "sandbox.browse_max_bytes" else real(key, default)
-    )
-
-    body = (await client.get(f"/sessions/{session_id}/fs/file", params={"path": "/home/user/big.log"})).json()
-
-    assert body["text"] == "x" * 10
-    assert body["truncated"] is True
-
-
-async def test_a_missing_path_on_a_live_box_is_not_found(client, awake):
-    user_id = await _signed_in(client)
-    session_id = await _session_for(user_id)
-    awake(session_id)
-
-    gone = await client.get(f"/sessions/{session_id}/fs/file", params={"path": "/home/user/nope"})
-
-    assert gone.status_code == 404
-
-
-async def test_the_disk_endpoints_are_scoped_to_the_session_owner(client, awake):
-    """Ownership-checked the way the frame stream is."""
-    theirs = str(uuid.uuid4())
-    _seeded.append(uuid.UUID(theirs))
-    await pool.execute("INSERT INTO users (id) VALUES ($1)", uuid.UUID(theirs))
-    their_session = await _session_for(theirs)
-    awake(their_session, {"/home/user/secret": b"theirs"})
-    await _signed_in(client)
-
-    assert (await client.get(f"/sessions/{their_session}/fs")).status_code == 404
-    read = await client.get(f"/sessions/{their_session}/fs/file", params={"path": "/home/user/secret"})
-    assert read.status_code == 404
-
-
-# --- projects made and renamed deliberately ----------------------------------------
-
-
 async def test_a_project_created_with_no_links_makes_a_folder_of_its_own(client, tmp_path):
     """The none-case is not "no files": a folder named after it appears in the store."""
     store.use_blobs(store.FilesystemBlobs(tmp_path))
@@ -1736,7 +1618,7 @@ async def test_a_rename_to_nothing_is_refused(client):
     assert "keep me" in [p["title"] for p in (await client.get("/projects")).json()]
 
 
-async def test_a_rename_touches_no_folder_and_no_mount(client, tmp_path):
+async def test_a_rename_touches_no_folder_and_no_claim(client, tmp_path):
     """Folders are store segments, so renaming a project cannot reach one."""
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     try:
@@ -1748,15 +1630,15 @@ async def test_a_rename_touches_no_folder_and_no_mount(client, tmp_path):
         session_id = (await client.post("/sessions", json={"goal": "go", "project_id": made["id"]})).json()[
             "session_id"
         ]
-        before = (await workspace.claims_for(session_id))[0].mount
+        before = (await workspace.claims_for(session_id))[0].folder
         headers = (await client.get("/folders")).json()
 
         renamed = await client.patch(f"/projects/{made['id']}", json={"title": "something else entirely"})
 
         assert renamed.json()["title"] == "something else entirely"
         assert renamed.json()["folders"] == ["inbox-triage"], "the link did not follow the label"
-        after = (await workspace.claims_for(session_id))[0].mount
-        assert after == before == "/home/user/store/inbox-triage"
+        after = (await workspace.claims_for(session_id))[0].folder
+        assert after == before == "inbox-triage"
         assert (await client.get("/folders")).json() == headers, "a rename moved the store's headers"
     finally:
         store.use_blobs(None)
@@ -1831,7 +1713,7 @@ async def _new_session() -> str:
 
 async def test_a_new_folder_is_durable_before_anything_is_in_it(client, tmp_path):
     """A folder is a path segment with no row of its own: the `.keep` sentinel is
-    what makes it exist, and what survives a round trip through a sandbox.
+    what makes it exist.
     """
     store.use_blobs(store.FilesystemBlobs(tmp_path))
     try:
@@ -1843,7 +1725,7 @@ async def test_a_new_folder_is_durable_before_anything_is_in_it(client, tmp_path
         assert made.status_code == 201
         assert made.json()["path"] == "receipts/2026"
         assert [f["path"] for f in listed] == ["receipts/2026/.keep"]
-        # It is a real tree entry, so materialize carries it into the box.
+        # It is a real tree entry, not a special case in the listing.
         assert [e.path for e in await store.read_tree(user_id)] == ["receipts/2026/.keep"]
         # Its TOP segment is the folder, which is what the Files tab heads with.
         assert (await client.get("/folders")).json() == [{"name": "receipts", "files": 0}]

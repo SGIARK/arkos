@@ -73,7 +73,7 @@ def _jwks() -> Any:
         if url is None:
             return None
         # A SHORT timeout on purpose: this runs on the default thread pool,
-        # shared with blob IO and every sandbox call, and 30s of holding one
+        # shared with blob IO, and 30s of holding one
         # thread because an endpoint is unreachable is the outage, not the fix.
         _jwks_client = jwt.PyJWKClient(
             url,
@@ -166,8 +166,7 @@ def _signing_key(token: str) -> Any:
     An unknown kid is a 401 and no network at all (12.2.5). `POST /auth/session`
     is public and the header is the caller's, so a miss must cost a dictionary
     lookup — PyJWKClient's own behaviour is to refetch, which would hand an
-    unauthenticated caller a lever on the pool shared with blob IO and every
-    sandbox call.
+    unauthenticated caller a lever on the pool shared with blob IO.
     """
     client = _jwks()
     if client is None:
