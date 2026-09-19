@@ -85,7 +85,9 @@ async def test_the_tree_holds_no_bytes():
     """Bytes live in the store, addressed by hash."""
     columns = {
         r["column_name"]
-        for r in await pool.fetch("SELECT column_name FROM information_schema.columns WHERE table_name = 'files'")
+        for r in await pool.fetch(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'files'"
+        )
     }
 
     assert {"user_id", "path", "content_hash", "size", "mtime"} <= columns
