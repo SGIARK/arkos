@@ -28,6 +28,7 @@ from agent_module.events import (
     ViewTransformEvent,
 )
 from agent_module.loop import Budgets, Dispatch, cap_view, run_turn
+from cancellation import run_to_completion
 from config_module.loader import cfg as _cfg
 from config_module.loader import config
 from db import pool
@@ -563,7 +564,10 @@ async def _drive(session_id: str) -> None:
     except Exception:
         # Not `model_error`: nothing on this path is the model.
         logger.exception("session %s: the turn failed outside the loop", session_id)
-        await _shielded(_ending(session_id, sink, "internal_error"))
+        if await _shielded(_ending(session_id, sink, "internal_error")):
+            # A cancel arrived while the failure was being recorded: the turn is being torn
+            # down, and it must end cancelled rather than as though nobody asked.
+            raise asyncio.CancelledError from None
     finally:
         _teardown.pop(session_id, None)
 
@@ -674,19 +678,16 @@ def _announce_benching(sink: _Sink, shipped: registry.Manifest) -> None:
     )
 
 
-async def _shielded(work: Awaitable[None]) -> None:
-    """Runs `work` to completion even if this task is cancelled again while it runs."""
+async def _shielded(work: Awaitable[None]) -> bool:
+    """Record an ending to completion however often this turn is cancelled. True if a cancel was absorbed.
+
+    The caller re-raises on True (`run_to_completion`'s rule). A failure to record is logged here.
+    """
     task = asyncio.ensure_future(work)
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            # A further cancel reaches the shield, not the task, so keep waiting.
-            if task.done():
-                break
-        except Exception:
-            logger.exception("recording the end of the run failed")
-            break
+    absorbed = await run_to_completion(task)
+    if task.done() and not task.cancelled() and task.exception() is not None:
+        logger.error("recording the end of the run failed", exc_info=task.exception())
+    return absorbed
 
 
 async def _ending(
