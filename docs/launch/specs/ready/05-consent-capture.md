@@ -1,4 +1,4 @@
-# // Feature Spec: Consent Capture (NMORGAN)
+# // Feature Spec: Consent Capture (VBAKER)
 
 *Ready 05 · Wave 2 · needs ready 01. Record that each user accepted the current Terms and Privacy Policy, and hold back new work until they have.*
 

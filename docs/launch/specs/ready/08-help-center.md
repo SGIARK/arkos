@@ -1,4 +1,4 @@
-# // Feature Spec: Help Center (NMORGAN)
+# // Feature Spec: Help Center (VBAKER)
 
 *Ready 08 · Wave 3 · after ready 02 and 03, because it describes deletion and export. Eleven short guide pages, written only from facts checked against the code.*
 

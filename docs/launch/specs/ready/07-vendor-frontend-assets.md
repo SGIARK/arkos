@@ -1,4 +1,4 @@
-# // Feature Spec: Host Our Own Scripts and Fonts (NMORGAN)
+# // Feature Spec: Host Our Own Scripts and Fonts (VBAKER)
 
 *Ready 07 · Wave 2 · needs ready 01 and 04. Serve React, Babel, supabase-js and the font from arkos itself instead of unpkg and Google Fonts.*
 

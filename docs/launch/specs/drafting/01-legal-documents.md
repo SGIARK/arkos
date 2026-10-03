@@ -1,4 +1,4 @@
-# // Feature Spec: Legal Documents (NMORGAN)
+# // Feature Spec: Legal Documents (VBAKER)
 
 *Drafting 01 · start once ready 01's page shell exists. Write every legal page now, with placeholders where a decision is open. Publishing waits for the decisions and a lawyer's review, and ready 09 enforces that.*
 

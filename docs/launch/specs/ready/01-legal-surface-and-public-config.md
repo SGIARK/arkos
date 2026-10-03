@@ -1,4 +1,4 @@
-# // Feature Spec: Legal Surface & Public Config (NMORGAN)
+# // Feature Spec: Legal Surface & Public Config (VBAKER)
 
 *Ready 01 · Wave 1 · no blockers. The empty pages and links every legal and help page needs, plus one place the sign-in screen reads public settings from.*
 

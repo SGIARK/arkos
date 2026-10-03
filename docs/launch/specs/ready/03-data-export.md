@@ -1,4 +1,4 @@
-# // Feature Spec: Data Export (NMORGAN)
+# // Feature Spec: Data Export (VBAKER)
 
 *Ready 03 · Wave 1 · no blockers. One button that downloads everything arkos holds about you as a ZIP.*
 

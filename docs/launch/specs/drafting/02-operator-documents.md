@@ -1,4 +1,4 @@
-# // Feature Spec: Operator Documents (NMORGAN)
+# // Feature Spec: Operator Documents (VBAKER)
 
 *Drafting 02 · can start now. The team's own rulebook: how arkos protects data, what to do in a breach, who may see user data, and what is kept. Finished once D2 and D9 are answered.*
 

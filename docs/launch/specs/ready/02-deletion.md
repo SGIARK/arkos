@@ -1,4 +1,4 @@
-# // Feature Spec: Deletion (NMORGAN)
+# // Feature Spec: Deletion (VBAKER)
 
 *Ready 02 · How arkos deletes things, and the work to get there. Tasks 1–5 before launch, Task 6 after.*
 

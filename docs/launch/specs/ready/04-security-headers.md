@@ -1,4 +1,4 @@
-# // Feature Spec: Security Headers & security.txt (NMORGAN)
+# // Feature Spec: Security Headers & security.txt (VBAKER)
 
 *Ready 04 · Wave 1 · no blockers. The cheap, standard browser protections, and a published contact for security reports.*
 

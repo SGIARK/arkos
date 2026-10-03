@@ -1,4 +1,4 @@
-# // Feature Spec: Launch Gate Script (NMORGAN)
+# // Feature Spec: Launch Gate Script (VBAKER)
 
 *Ready 09 · Wave 3 · needs ready 01. One command that says whether arkos is allowed to launch.*
 

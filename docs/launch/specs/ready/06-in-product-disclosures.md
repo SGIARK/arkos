@@ -1,4 +1,4 @@
-# // Feature Spec: In-Product Disclosures (NMORGAN)
+# // Feature Spec: In-Product Disclosures (VBAKER)
 
 *Ready 06 · Wave 2 · needs ready 01. Short warnings shown at the moment they matter, not buried in a policy.*
 
