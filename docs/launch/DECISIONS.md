@@ -144,7 +144,7 @@ the recommendation. Change one by editing the named spec or config; nothing else
 | Was | Default now in effect | Where |
 |---|---|---|
 | D11 self-host fonts and scripts | Yes, vendor them | ready 07 |
-| D12 inactive accounts | Never deleted at launch; the sweep is post-launch work | ready 02, Part D |
+| D12 inactive accounts | Never deleted at launch; the sweep is post-launch work | ready 02, Task 6 |
 | D13 project delete | Sessions are detached, not deleted | ready 02 |
 | D14 consent records on account deletion | Kept (no foreign key) | ready 05 |
 | D15 export contents | Operational logs excluded; 2 GB ceiling | ready 03 |

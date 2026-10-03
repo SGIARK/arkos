@@ -31,16 +31,16 @@ Specs in the same wave don't depend on each other and can run in parallel.
 | Wave | Spec | Depends on |
 |---|---|---|
 | 1 | [01 Legal Surface & Public Config](ready/01-legal-surface-and-public-config.md) | — |
-| 1 | [02 Deletion](ready/02-deletion.md), Part A (Tasks 1–3) and Task 4 | — |
+| 1 | [02 Deletion](ready/02-deletion.md), Tasks 1–2 and conversation delete in Task 3 | — |
 | 1 | [03 Data Export](ready/03-data-export.md) | — |
 | 1 | [04 Security Headers & security.txt](ready/04-security-headers.md) | — |
-| 2 | [02 Deletion](ready/02-deletion.md), Tasks 5–9 | its Part A; Tasks 8–9 also need 01 |
+| 2 | [02 Deletion](ready/02-deletion.md), rest of Task 3, Tasks 4–5 | its Tasks 1–2; Task 5 also needs 01 |
 | 2 | [05 Consent Capture](ready/05-consent-capture.md) | 01 |
 | 2 | [06 In-Product Disclosures](ready/06-in-product-disclosures.md) | 01 |
 | 2 | [07 Host Our Own Scripts and Fonts](ready/07-vendor-frontend-assets.md) | 01, 04 |
 | 3 | [08 Help Center](ready/08-help-center.md) | 01; describes 02 and 03 |
 | 3 | [09 Launch Gate Script](ready/09-launch-gate-script.md) | 01 |
-| after launch | [02 Deletion](ready/02-deletion.md), Part D (Tasks 10–11) | its Task 6; D16 |
+| after launch | [02 Deletion](ready/02-deletion.md), Task 6 | its Task 4; D16 |
 
 `harness_module/account.py` is shared by 02 (deletion) and 03 (export). Whichever
 merges first creates it.
@@ -61,12 +61,13 @@ that file on its own when someone needs to review how deletion works.
 
 ## History
 
+- **2026-10-03, deletion condensed:** ready 02's 11 tasks merged into 6, with a task summary table; the Notion copy uses fold-out task cards.
 - **2026-10-03, plain-language rewrite:** every spec rewritten to the nmorgan rules P-004 to P-006: plain words with a short glossary where needed, file lists instead of function-by-function touch points, no code stubs except short SQL or config, and tests as one table. Same tasks, tests and decisions.
 - **2026-10-02, consolidation:** File Data Cleanup, Account Deletion, Session
   Delete & Retention, Project Delete and the Inactive Account Sweep merged into
   ready 02 Deletion. The other ready specs were renumbered: Legal Surface 02→01,
   Consent 07→05, Disclosures 08→06, Vendor Assets 12→07, Help Center 09→08, Launch
-  Gate 10→09. `deferred/` went away; the sweep is Deletion Part D.
+  Gate 10→09. `deferred/` went away; the sweep became a Deletion task.
 - **2026-10-02, verification pass:** four claims fixed against the code. Memory is
   blob-backed; `Composio.disconnect` swallows a failed revoke; the CSP must allow
   inline script; the projects view has no empty state.

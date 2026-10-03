@@ -62,7 +62,7 @@ Plain HTML pages in `frontend/help/`, using the legal pages' stylesheet. Each en
 **Problem:** limits, data handling and common failures aren't written down.
 **Done when:** the remaining six pages cover their rows; each number on the Limits page is tagged with the config setting it comes from; Your data describes export and deletion as built.
 **Touch point:** six new pages in `frontend/help/`.
-**Priority:** Medium | **Effort:** 1 day | **Blockers:** Task 1; ready 02 (Parts A–C) and ready 03 merged
+**Priority:** Medium | **Effort:** 1 day | **Blockers:** Task 1; ready 02 (Tasks 1–5) and ready 03 merged
 **Out of scope:** the Privacy Policy itself.
 **Acceptance test:** Test 2.
 

@@ -701,7 +701,7 @@ Tests: archive contains each section for a seeded user; no token-like fields in
   - purge `deleted_files` / `deleted_links` older than
     `retention.deleted_files_days` (30);
   - sweep unreferenced blobs (same refcount rule as PR 8), batched;
-  - (inactive-account sweep: after launch, `specs/ready/02-deletion.md` Part D).
+  - (inactive-account sweep: after launch, `specs/ready/02-deletion.md` Task 6).
 - `config_module/config.yaml` `retention:` block.
 
 Tests: purge removes only rows past the window; blob sweep keeps referenced

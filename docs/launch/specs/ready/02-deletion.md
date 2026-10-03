@@ -1,6 +1,6 @@
 # // Feature Spec: Deletion (NMORGAN)
 
-*Ready 02 · How arkos deletes things, and the work to get there. Parts A–C before launch, Part D after.*
+*Ready 02 · How arkos deletes things, and the work to get there. Tasks 1–5 before launch, Task 6 after.*
 
 ---
 
@@ -17,7 +17,7 @@
 ---
 
 # Problem
-Today a user can only delete files, and even those aren't really gone: they're hidden, and their contents stay in storage forever. Conversations, projects and accounts can't be deleted at all, and the database would refuse an account or project delete if we tried. Disconnecting Gmail or another account can leave arkos's access to it switched on. Until this is fixed, the Privacy Policy can't promise deletion. Success: users can delete each kind of thing, and a test proves nothing is left behind.
+Today users can only delete files, and even those stay in storage forever. Conversations, projects and accounts can't be deleted, and the database would refuse an account or project delete. Disconnecting an account can leave arkos's access to it switched on. Until this is fixed, the Privacy Policy can't promise deletion. Success: users can delete each kind of thing, and a test proves nothing is left behind.
 
 ---
 
@@ -27,11 +27,9 @@ Two terms used below:
 - **Blob:** the stored contents of a file. Identical files share one blob, even between users, so a blob can only be removed once nothing points at it.
 
 What's true today:
-- Most data already cascades from its user or its conversation. Three links don't, and they block deletion: conversation → user, sandbox → user, conversation → project.
-- Deleting a file moves it to an undo list. Nothing ever empties that list.
-- Blobs can be written but never deleted. Three tables point at them: files, the undo list, and the agent's memory.
-- The existing "disconnect" button quietly ignores a failed revoke at Composio and forgets the connection anyway.
-- Cleanup jobs run once when the server starts (that's how the 30-day log cleanup works). There's no scheduler.
+- Three database links block deletion: conversation → user, sandbox → user, conversation → project.
+- Blobs can be written but never deleted. Files, the undo list and the agent's memory all point at them.
+- The "disconnect" button ignores a failed revoke at Composio and forgets the connection anyway.
 
 ---
 
@@ -58,40 +56,36 @@ Kept on purpose: consent records (proof the user agreed to the Terms) and 30 day
 
 **Defaults:** 30-day undo (`retention.deleted_files_days`; D7 is still open). Deleting a project keeps its conversations.
 
-**Not in scope:** undo for accounts, projects or conversations; admin deletes; bulk delete.
+**Not in scope:** undo for accounts, projects or conversations; admin or bulk deletes; a trash view; a scheduler; confirmation or reminder emails.
 
 ---
 
 # Implementation Plan
-**Order:** Tasks 1–4 can start now. Tasks 5–9 follow. Part D waits until after launch.
 
-## Part A — Groundwork
+| # | Task | Effort | Needs |
+|---|---|---|---|
+| 1 | Delete unused blobs | ½ day | — |
+| 2 | Fix the three database links | ½ day | — |
+| 3 | Delete conversations and projects | 1 day | Task 2 (projects only) |
+| 4 | Delete an account | 1½ days | Tasks 1, 2 |
+| 5 | Expire undo after 30 days | ½ day | Task 1; ready 01 |
+| 6 | Delete inactive accounts (after launch) | 1 day | Task 4; an email sender (D16) |
 
-## Task 1: Let storage delete a blob
-**Problem:** blobs can't be deleted.
-**Done when:** deleting a blob removes it, and deleting one that's already gone is not an error.
-**Touch point:** `harness_module/blobs.py` (add `delete` to both storage backends).
-**Priority:** High | **Effort:** <2h | **Blockers:** none
-**Out of scope:** deleting many at once.
-**Acceptance test:** Test 1.
-
----
-
-## Task 2: Delete only unused blobs
-**Problem:** a blob may be shared, so it can't be deleted blindly.
-**Done when:** `delete_unreferenced(hashes)` removes only blobs that no file, undo entry or memory note points at.
-**Touch point:** `harness_module/store.py`.
-**Priority:** High | **Effort:** <2h | **Blockers:** Task 1
+## Task 1: Delete unused blobs
+**Problem:** blobs can't be deleted, and a shared one mustn't be.
+**Done when:** storage can delete a blob (a missing one isn't an error), and `delete_unreferenced` removes only blobs that no file, undo entry or memory note points at.
+**Touch point:** `harness_module/blobs.py` (delete in both storage backends); `harness_module/store.py` (`delete_unreferenced`).
+**Priority:** High | **Effort:** ½ day | **Blockers:** none
 **Out of scope:** scanning all of storage for strays.
-**Acceptance test:** Tests 2–3.
+**Acceptance test:** Tests 1–3.
 
 ---
 
-## Task 3: Fix the three database links
+## Task 2: Fix the three database links
 **Problem:** deleting a user or a project fails.
 **Done when:** deleting a user removes all their data; deleting a project keeps its conversations (unlinked) and its files.
 **Touch point:** one new migration in `db/migrations/` (next free number).
-**Priority:** High | **Effort:** <4h | **Blockers:** none
+**Priority:** High | **Effort:** ½ day | **Blockers:** none
 **Out of scope:** editing old migrations.
 **Acceptance test:** Tests 4–6.
 
@@ -109,95 +103,51 @@ ALTER TABLE sessions       -- conversation → project: unlink, don't delete
 
 ---
 
-## Part B — Delete buttons
-
-## Task 4: Delete a conversation
-**Problem:** a user can't remove a conversation.
-**Done when:** the owner can delete it; anyone else gets "not found"; a conversation that's still running must be stopped first.
-**Touch point:** `harness_module/api.py` (`DELETE /sessions/{id}`); `frontend/lookingglass.jsx` (button with a confirm click).
-**Priority:** High | **Effort:** <4h | **Blockers:** none
-**Out of scope:** deleting several at once.
-**Acceptance test:** Tests 7–8.
+## Task 3: Delete conversations and projects
+**Problem:** neither can be removed.
+**Done when:** the owner can delete either with a confirm click, and anyone else gets "not found"; anything still running must be stopped first; a project's confirm says "its conversations and files stay", and they do.
+**Touch point:** `harness_module/api.py` (`DELETE /sessions/{id}`, `DELETE /projects/{id}`); `frontend/lookingglass.jsx` (the two buttons).
+**Priority:** High | **Effort:** 1 day | **Blockers:** Task 2 (project delete only)
+**Out of scope:** bulk delete.
+**Acceptance test:** Tests 7–9.
 
 ---
 
-## Task 5: Delete a project
-**Problem:** projects pile up forever.
-**Done when:** the owner can delete a project; the confirm says "its conversations and files stay"; a project with a running conversation can't be deleted until it's stopped.
-**Touch point:** `harness_module/api.py` (`DELETE /projects/{id}`); `frontend/lookingglass.jsx` (project card).
-**Priority:** Medium | **Effort:** <4h | **Blockers:** Task 3
-**Out of scope:** moving conversations to another project.
-**Acceptance test:** Test 9.
+## Task 4: Delete an account
+**Problem:** an account spans the database, file storage, Composio and Supabase, and a half-finished delete must be finishable.
+**Done when:** in Settings, the user types their email to confirm (a wrong email does nothing). arkos then:
+1. Signs them out everywhere.
+2. Stops their running conversations.
+3. Revokes every Composio connection, including any arkos lost track of. If one fails, it stops.
+4. Notes which blobs they used.
+5. Deletes their Supabase account, which removes all their records.
+6. Removes the blobs nobody else uses.
 
----
-
-## Task 6: Delete an account (behind the scenes)
-**Problem:** an account touches the database, file storage, Composio and Supabase, and a half-finished delete must be finishable.
-**Done when:** `delete_account` runs these steps in order, and running it again finishes or does nothing:
-1. Sign the user out everywhere.
-2. Stop their running conversations.
-3. Revoke every connection Composio holds for them, including any arkos lost track of. If one fails, stop.
-4. Note which blobs they used.
-5. Delete their Supabase account, which removes all their records.
-6. Remove the blobs nobody else uses.
-**Touch point:** new `harness_module/account.py`; `tool_module/composio_mcp.py` (add `revoke_all`, which reports failures instead of hiding them).
-**Priority:** High | **Effort:** 1 day | **Blockers:** Tasks 2, 3
-**Out of scope:** the screen (Task 7).
-**Acceptance test:** Tests 10–12.
-
----
-
-## Task 7: Delete an account (the screen)
-**Problem:** users have no way to start it.
-**Done when:** Settings has a "delete account" section that says what will be removed and suggests downloading data first; the user types their email to confirm; afterwards they land on sign-in with "your account has been deleted". A wrong email changes nothing.
-**Touch point:** `harness_module/api.py` (`DELETE /auth/me`); `frontend/views.jsx` (Settings).
-**Priority:** High | **Effort:** <4h | **Blockers:** Task 6
+The user lands on sign-in with "your account has been deleted". Running it again finishes the job or does nothing.
+**Touch point:** new `harness_module/account.py`; `tool_module/composio_mcp.py` (`revoke_all`, which reports failures); `harness_module/api.py` (`DELETE /auth/me`); `frontend/views.jsx` (Settings).
+**Priority:** High | **Effort:** 1½ days | **Blockers:** Tasks 1, 2
 **Out of scope:** a confirmation email.
-**Acceptance test:** Test 13; in the browser, delete a test account, then sign up again with the same email.
+**Acceptance test:** Tests 10–13; in the browser, delete a test account, then sign up again with the same email.
 
 ---
 
-## Part C — Cleanup
-
-## Task 8: Empty the undo list after 30 days
-**Problem:** deleted files are kept forever.
-**Done when:** at server start, undo entries older than 30 days are removed, with their saved project links and any blobs nobody uses. Newer entries are untouched.
-**Touch point:** new `harness_module/retention.py`; `harness_module/api.py` (run it at startup).
-**Priority:** High | **Effort:** <4h | **Blockers:** Task 2; ready 01 (the setting)
-**Out of scope:** a scheduler.
+## Task 5: Expire undo after 30 days
+**Problem:** deleted files are kept forever, and users don't know undo expires.
+**Done when:** at server start, undo entries older than 30 days are removed with their saved project links and unused blobs; newer ones are untouched; the undo button reads "undo (kept 30 days)".
+**Touch point:** new `harness_module/retention.py`; `harness_module/api.py` (run it at startup); `frontend/components.jsx` (the label).
+**Priority:** High | **Effort:** ½ day | **Blockers:** Task 1; ready 01 (the setting)
+**Out of scope:** a trash view.
 **Acceptance test:** Tests 14–15.
 
 ---
 
-## Task 9: Show how long undo lasts
-**Problem:** users don't know undo expires.
-**Done when:** the file tree's undo button reads "undo (kept 30 days)", using the configured number.
-**Touch point:** `frontend/components.jsx`.
-**Priority:** Low | **Effort:** <1h | **Blockers:** ready 01
-**Out of scope:** a trash view.
-**Acceptance test:** check it in the browser after deleting a file.
-
----
-
-## Part D — After launch
-
-## Task 10: Record each sign-in
-**Problem:** there's no way to tell an account is inactive.
-**Done when:** each sign-in saves the time and cancels any pending inactivity warning.
-**Touch point:** one new migration; `harness_module/api.py` (sign-in).
-**Priority:** Low | **Effort:** <2h | **Blockers:** none
-**Out of scope:** the sweep.
-**Acceptance test:** Test 16.
-
----
-
-## Task 11: Delete inactive accounts
+## Task 6: Delete inactive accounts (after launch)
 **Problem:** unused accounts keep their data and connected-account access forever.
-**Done when:** once switched on, accounts unused for 12 months get one warning email and are deleted 30 days later unless the user signs in. Off by default.
-**Touch point:** `harness_module/retention.py`; `config_module/config.yaml`.
-**Priority:** Low | **Effort:** 1 day | **Blockers:** Tasks 6, 10; an email sender (D16)
+**Done when:** each sign-in records its time; once switched on, accounts unused for 12 months get one warning email and are deleted 30 days later unless the user signs in. Off by default.
+**Touch point:** one new migration; `harness_module/api.py` (sign-in); `harness_module/retention.py`; `config_module/config.yaml`.
+**Priority:** Low | **Effort:** 1 day | **Blockers:** Task 4; an email sender (D16)
 **Out of scope:** reminder emails.
-**Acceptance test:** Tests 17–18.
+**Acceptance test:** Tests 16–18.
 
 ---
 
@@ -230,8 +180,8 @@ Composio, Supabase's admin API and stopping conversations are mocked; storage us
 # Open Questions
 Checks for whoever builds this. None needs a decision.
 1. Task 1: what Supabase Storage returns when deleting a file that's already gone.
-2. Task 6: Supabase's admin endpoint and key for deleting a user.
-3. Tasks 4 and 6: whether stopping a conversation also frees its sandbox. If the sandbox moves off e2b (branch `docs/e2b-local-migration-spec`), use that branch's release call.
+2. Task 4: Supabase's admin endpoint and key for deleting a user.
+3. Tasks 3 and 4: whether stopping a conversation also frees its sandbox. If the sandbox moves off e2b (branch `docs/e2b-local-migration-spec`), use that branch's release call.
 
 ---
 

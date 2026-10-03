@@ -49,7 +49,7 @@ Markdown files next to the plan, not public pages. Each is short and practical: 
 
 ## Task 2: Data-access policy, retention record, launch checklist
 **Problem:** there's no rule for staff access to user data, no map from data-keeping promises to the code that keeps them, and no tracked launch checklist.
-**Done when:** `DATA_ACCESS_POLICY.md` follows D9's default (named people only, for listed reasons, every access logged, no personal copies, access removed when someone leaves); `RETENTION.md` has one row per line of plan §4.3 naming what enforces it (inactive accounts: ready 02 Part D, after launch); `LAUNCH_CHECKLIST.md` copies plan §9, adds the spend caps (D19) and "register a copyright agent with the US Copyright Office (recommended)", with who and when columns.
+**Done when:** `DATA_ACCESS_POLICY.md` follows D9's default (named people only, for listed reasons, every access logged, no personal copies, access removed when someone leaves); `RETENTION.md` has one row per line of plan §4.3 naming what enforces it (inactive accounts: ready 02 Task 6, after launch); `LAUNCH_CHECKLIST.md` copies plan §9, adds the spend caps (D19) and "register a copyright agent with the US Copyright Office (recommended)", with who and when columns.
 **Touch point:** new `docs/launch/internal/DATA_ACCESS_POLICY.md`, `RETENTION.md`, `LAUNCH_CHECKLIST.md`.
 **Priority:** High | **Effort:** <4h | **Blockers:** none
 **Out of scope:** tooling to audit access logs.
