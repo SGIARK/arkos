@@ -1,6 +1,6 @@
 # // Feature Spec: Launch Gate Script (NMORGAN)
 
-*Ready 10 · Wave 3 · blocked by ready 02. One command that says whether we're allowed to launch, including whether the decisions queue is clear. The operator documents it used to carry moved to drafting 02.*
+*Ready 09 · Wave 3 · blocked by ready 01. One command that says whether we're allowed to launch, including whether the decisions queue is clear. The operator documents it used to carry moved to drafting 02.*
 
 ---
 
@@ -49,7 +49,7 @@ A list of named checks, each returning pass/fail plus a reason, printed as a tab
 **Problem:** nothing mechanical blocks an unready launch.
 **Done when:** each check in the table behaves as stated against a fixture tree; output is one line per check; exit code is 1 on any blocking failure and 0 otherwise.
 **Touch point:** new `scripts/check_launch_ready.py`.
-**Priority:** High | **Effort:** <4h | **Blockers:** ready 02 (`legal:` block and page metas)
+**Priority:** High | **Effort:** <4h | **Blockers:** ready 01 (`legal:` block and page metas)
 **Out of scope:** auto-fixing.
 **Acceptance test:** Tests 1–4.
 

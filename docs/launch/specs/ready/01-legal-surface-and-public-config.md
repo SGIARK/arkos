@@ -1,6 +1,6 @@
 # // Feature Spec: Legal Surface & Public Config (NMORGAN)
 
-*Ready 02 · Wave 1 · no blockers. The page shell every legal and help page drops into, the links that reach it, and the one public config endpoint every other spec reads from.*
+*Ready 01 · Wave 1 · no blockers. The page shell every legal and help page drops into, the links that reach it, and the one public config endpoint every other spec reads from.*
 
 ---
 
@@ -32,13 +32,13 @@ Every script and stylesheet in `frontend/index.html` carries `?v=49`, and any `.
 # Proposed Approach
 1. Static pages under `frontend/legal/` and `frontend/help/`: plain HTML, readable with JS off, one `legal.css` on top of `styles.css`.
 2. Config owns every policy number, so decisions change a value, not code: a `legal:` block (versions, minimum age, source URL) and a `retention:` block.
-3. `/auth/config` gains `legal`, `limits` and `build` in one change. Ready 06, 07 and 08 read these fields and never edit the endpoint.
+3. `/auth/config` gains `legal`, `limits` and `build` in one change. Ready 02, 07 and 08 read these fields and never edit the endpoint.
 4. Short 307 redirects (`/terms`, `/privacy`, `/acceptable-use`, `/legal`, `/help`) as stable URLs for consent screens and email.
 5. One `LegalLinks` component on the three auth screens and in a new "about & legal" section in Settings.
 
 **Decisions applied (defaults from `DECISIONS.md`):** D5 → `legal.min_age: 18`. D7 → `retention.deleted_files_days: 30`. D2 → the footer renders `{{MIT_RELATIONSHIP_STATEMENT}}` until it's resolved. Build SHA comes from `ARKOS_BUILD_SHA`, falling back to `"dev"`; that's an engineering default, not a decision.
 
-**Not in scope:** document text (drafting 01), help text (ready 09), consent (ready 07).
+**Not in scope:** document text (drafting 01), help text (ready 08), consent (ready 05).
 
 ---
 
@@ -118,7 +118,7 @@ function LegalLinks({ compact = false, build = null }) { /* <nav className="lega
 
 ## Test 3: `test_auth_config_carries_public_policy`
 **What it verifies:** unauthenticated `GET /auth/config` returns `legal`, `limits` and `build`, equal to the config values (and `"dev"` with the env var unset).
-**Why this matters:** ready 06, 07 and 08 read these fields and never touch the endpoint.
+**Why this matters:** ready 02, 05 and 06 read these fields and never touch the endpoint.
 
 ---
 

@@ -1,6 +1,6 @@
 # // Feature Spec: Consent Capture (NMORGAN)
 
-*Ready 07 · Wave 2 · blocked by ready 02. Record that each user accepted the current Terms and Privacy Policy, and refuse new work until they have. It works the same whatever the documents end up saying.*
+*Ready 05 · Wave 2 · blocked by ready 01. Record that each user accepted the current Terms and Privacy Policy, and refuse new work until they have. It works the same whatever the documents end up saying.*
 
 ---
 
@@ -26,7 +26,7 @@ Both sign-in paths end in `POST /auth/session`, then the app calls `GET /auth/me
 
 # Proposed Approach
 1. One append-only table, `legal_acceptances`, one row per (user, document, version), with no IP or user agent.
-2. `harness_module/consent.py`: current versions come from `legal:` config (ready 02); a user needs consent if either current version has no row.
+2. `harness_module/consent.py`: current versions come from `legal:` config (ready 01); a user needs consent if either current version has no row.
 3. `/auth/me` reports it, `POST /auth/consent` records it, and `ConsentedUser` refuses work-creating endpoints with `403 consent_required`.
 4. A blocking `ConsentGate` after sign-in. Reads, sign-out, export and account delete stay open, so someone who refuses new terms can still leave with their data.
 
@@ -64,7 +64,7 @@ CREATE TABLE legal_acceptances (
 **Problem:** nothing decides whether a user is current, and nothing records acceptance.
 **Done when:** `GET /auth/me` includes `consent: {required, terms_version, privacy_version}`; `POST /auth/consent` with current versions and `age_confirmed: true` writes two rows and returns 204; stale versions return `409 stale_version`; `age_confirmed: false` returns 422.
 **Touch point:** new `harness_module/consent.py`; `harness_module/api.py` (`auth_me`, new `record_consent`).
-**Priority:** High | **Effort:** <4h | **Blockers:** Task 1, ready 02
+**Priority:** High | **Effort:** <4h | **Blockers:** Task 1, ready 01
 **Out of scope:** enforcement.
 **Acceptance test:** `test_new_user_needs_consent`, `test_stale_version_is_refused`.
 

@@ -1,6 +1,6 @@
 # // Feature Spec: In-Product Disclosures (NMORGAN)
 
-*Ready 08 · Wave 2 · blocked by ready 02. The warnings a user sees at the moment they matter, not buried in a policy.*
+*Ready 06 · Wave 2 · blocked by ready 01. The warnings a user sees at the moment they matter, not buried in a policy.*
 
 ---
 
@@ -25,14 +25,14 @@ The Terms will say the user is responsible for what they approve, but the approv
 
 `SettingsModal.connect(row)` opens the Composio popup synchronously inside the click, and a comment there warns that any `await` first loses the user gesture. So the interstitial is a separate confirm click that then calls the existing `connect`.
 
-The autopilot button is in `SessionDetail` (`{cancelled ? "resume" : "autopilot"}`). The unattended wall clock comes from `limits.unattended_wall_clock_s` in `/auth/config` (ready 02).
+The autopilot button is in `SessionDetail` (`{cancelled ? "resume" : "autopilot"}`). The unattended wall clock comes from `limits.unattended_wall_clock_s` in `/auth/config` (ready 01).
 
 ---
 
 # Proposed Approach
-Copy changes plus one backend field. The strings below are used verbatim; editing copy later is a text change, not a decision this spec waits on. Acknowledgments (beta banner, per-toolkit connect) live in `localStorage`, wrapped in try/catch, so a blocked store just shows the notice again. The beta banner doesn't come back on a Terms change, because the consent gate (ready 07) already handles that.
+Copy changes plus one backend field. The strings below are used verbatim; editing copy later is a text change, not a decision this spec waits on. Acknowledgments (beta banner, per-toolkit connect) live in `localStorage`, wrapped in try/catch, so a blocked store just shows the notice again. The beta banner doesn't come back on a Terms change, because the consent gate (ready 05) already handles that.
 
-**Not in scope:** legal text (drafting 01); help pages (ready 09); a full accessibility audit (only controls touched here are fixed).
+**Not in scope:** legal text (drafting 01); help pages (ready 08); a full accessibility audit (only controls touched here are fixed).
 
 ---
 
@@ -72,7 +72,7 @@ Copy changes plus one backend field. The strings below are used verbatim; editin
 **Problem:** risky moments in Files and autopilot carry no guidance, and auth links aren't keyboard-reachable.
 **Done when:** `ComputerView` shows "Don't upload passwords, government ID numbers, health records, other students' records, or export-controlled research data." linking `responsible-use.html`; the autopilot button has "Autopilot keeps working without you for up to N minutes, and still asks before anything on the always-ask list." (N from `limits.unattended_wall_clock_s`); `Login`'s `<span onClick>` controls (`auth-forgot`, `auth-link`) become `<button type="button">` with the same look.
 **Touch point:** `frontend/views.jsx` (`ComputerView`, `Login`); `frontend/lookingglass.jsx` (`SessionDetail`); `frontend/styles.css`; `frontend/index.html` (`?v=`).
-**Priority:** Medium | **Effort:** <4h | **Blockers:** ready 02 (`limits`)
+**Priority:** Medium | **Effort:** <4h | **Blockers:** ready 01 (`limits`)
 **Out of scope:** blocking uploads by content.
 **Acceptance test:** keyboard only: Tab reaches "forgot" and "make one", and Enter activates them; copy is visible at 375px.
 

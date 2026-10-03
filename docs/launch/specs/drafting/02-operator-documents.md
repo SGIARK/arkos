@@ -26,7 +26,7 @@ The containment levers already exist, and the runbook names them:
 - `POST /sessions/{id}/cancel` stops runs.
 - Composio, e2b, SerpAPI, OpenAI and Supabase keys come from the environment (names in Sources), so rotation is an env change plus a restart.
 
-Retention enforcement lives in code: `system_log.prune` (30 days, at boot), the auth-session sweep in `_keys_and_sweep`, and, once built, ready 06's `purge_deleted_files` and ready 05's `delete_account`.
+Retention enforcement lives in code: `system_log.prune` (30 days, at boot), the auth-session sweep in `_keys_and_sweep`, and, once built, ready 02's `purge_deleted_files` and `delete_account`.
 
 ---
 
@@ -51,16 +51,16 @@ Markdown in the repo, beside the plan, not public pages. Each document is short 
 
 ## Task 2: Access policy, retention record, launch checklist
 **Problem:** there's no rule for insider access, no map from retention promises to the code that keeps them, and no tracked checklist.
-**Done when:** `DATA_ACCESS_POLICY.md` implements D9's default (named operators, allowed reasons, logging each access, no personal copies, offboarding) with `{{…}}` names; `RETENTION.md` has one row per §4.3 line naming the enforcing function, endpoint or config key, or "not yet enforced — deferred 01" (the inactive-account sweep, post-launch); `LAUNCH_CHECKLIST.md` copies plan §9, adds the D19 spend caps and a "register a DMCA designated agent with the US Copyright Office (recommended, not blocking)" line, and has columns for who and when.
+**Done when:** `DATA_ACCESS_POLICY.md` implements D9's default (named operators, allowed reasons, logging each access, no personal copies, offboarding) with `{{…}}` names; `RETENTION.md` has one row per §4.3 line naming the enforcing function, endpoint or config key, or "not yet enforced — ready 02 (Part D, after launch)" (the inactive-account sweep, post-launch); `LAUNCH_CHECKLIST.md` copies plan §9, adds the D19 spend caps and a "register a DMCA designated agent with the US Copyright Office (recommended, not blocking)" line, and has columns for who and when.
 **Touch point:** new `docs/launch/internal/{DATA_ACCESS_POLICY,RETENTION,LAUNCH_CHECKLIST}.md`.
-**Priority:** High | **Effort:** <4h | **Blockers:** none (rows for ready 05 and 06 name their planned functions)
+**Priority:** High | **Effort:** <4h | **Blockers:** none (rows for ready 02 name its planned functions)
 **Out of scope:** audit tooling for access logs.
 **Acceptance test:** every function or config key named in `RETENTION.md` exists in the repo, or is marked as belonging to an unmerged spec by its number.
 
 ---
 
 # Tests
-None automated. These are operator documents, checked by the reviews in each acceptance test. Ready 10 blocks launch while D9 and D19 are open.
+None automated. These are operator documents, checked by the reviews in each acceptance test. Ready 09 blocks launch while D9 and D19 are open.
 
 ---
 

@@ -33,7 +33,7 @@ date in `Resolution`, then do what `On resolve` says. `scripts/check_launch_read
 - **Who:** owner · **Blocks launch:** yes
 - **Options:** the values below, or others
 - **Default / recommendation:** undo for deleted files 30 days · conversations, files and memory kept until the user deletes them · system log 30 days (already in code) · all data deleted within 90 days of shutting the service down
-- **Where it lands:** `retention.deleted_files_days` (ready 02, 06); the retention table in the Privacy Policy (drafting 01); `RETENTION.md` (drafting 02)
+- **Where it lands:** `retention.deleted_files_days` (ready 01, 02); the retention table in the Privacy Policy (drafting 01); `RETENTION.md` (drafting 02)
 - **On resolve:** set config; fill the Privacy Policy table. Until then the code ships with the 30-day default, and nothing here blocks building.
 - **Resolution:** —
 
@@ -42,7 +42,7 @@ date in `Resolution`, then do what `On resolve` says. `scripts/check_launch_read
 - **Who:** owner + world · **Blocks launch:** yes
 - **Options:** which domain; which provider sends mail
 - **Default / recommendation:** support@, privacy@, security@ and legal@ on a domain you control, with at least two people on each; Supabase Auth on custom SMTP for sign-up mail.
-- **Where it lands:** `{{SUPPORT_EMAIL}}`, `{{PRIVACY_EMAIL}}`, `{{SECURITY_EMAIL}}`, `{{LEGAL_EMAIL}}` (drafting 01, ready 09); `security.contact` (ready 04)
+- **Where it lands:** `{{SUPPORT_EMAIL}}`, `{{PRIVACY_EMAIL}}`, `{{SECURITY_EMAIL}}`, `{{LEGAL_EMAIL}}` (drafting 01, ready 08); `security.contact` (ready 04)
 - **On resolve:** create the inboxes; replace the placeholders; set `security.contact`.
 - **Resolution:** —
 
@@ -91,7 +91,7 @@ date in `Resolution`, then do what `On resolve` says. `scripts/check_launch_read
 - **Who:** owner + counsel · **Blocks launch:** yes
 - **Options:** independent project · MIT-lab research project · official MIT service
 - **Default / recommendation:** independent. Say plainly "not operated, sponsored or endorsed by MIT", and use no MIT marks.
-- **Where it lands:** `{{MIT_RELATIONSHIP_STATEMENT}}` (ready 02 footer, drafting 01); whether the WISP applies (drafting 02)
+- **Where it lands:** `{{MIT_RELATIONSHIP_STATEMENT}}` (ready 01 footer, drafting 01); whether the WISP applies (drafting 02)
 - **On resolve:** fill the statement; if MIT-operated, hand the legal documents to MIT OGC.
 - **Resolution:** —
 
@@ -109,7 +109,7 @@ date in `Resolution`, then do what `On resolve` says. `scripts/check_launch_read
 - **Who:** counsel · **Blocks launch:** yes
 - **Options:** —
 - **Default / recommendation:** MIT OGC if D2 = MIT-operated, otherwise outside counsel.
-- **Where it lands:** everything in drafting 01; the consent copy in ready 07
+- **Where it lands:** everything in drafting 01; the consent copy in ready 05
 - **On resolve:** record the reviewer and date in `changelog.html`; remove the "Draft" banners.
 - **Resolution:** —
 
@@ -143,9 +143,9 @@ the recommendation. Change one by editing the named spec or config; nothing else
 
 | Was | Default now in effect | Where |
 |---|---|---|
-| D11 self-host fonts and scripts | Yes, vendor them | ready 12 |
-| D12 inactive accounts | Never deleted at launch; the sweep is post-launch work | `specs/deferred/` |
-| D13 project delete | Sessions are detached, not deleted | ready 11 |
-| D14 consent records on account deletion | Kept (no foreign key) | ready 07 |
+| D11 self-host fonts and scripts | Yes, vendor them | ready 07 |
+| D12 inactive accounts | Never deleted at launch; the sweep is post-launch work | ready 02, Part D |
+| D13 project delete | Sessions are detached, not deleted | ready 02 |
+| D14 consent records on account deletion | Kept (no foreign key) | ready 05 |
 | D15 export contents | Operational logs excluded; 2 GB ceiling | ready 03 |
 | D18 DMCA agent | Registration is a launch-checklist task, not a decision; `copyright.html` names `{{LEGAL_EMAIL}}` as the contact | drafting 01, drafting 02 |

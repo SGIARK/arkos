@@ -1,6 +1,6 @@
 # // Feature Spec: Help Center (NMORGAN)
 
-*Ready 09 · Wave 3 · built after ready 03, 05 and 06, because it describes their flows. Eleven static guide pages, written only from verified facts.*
+*Ready 08 · Wave 3 · built after ready 02 (Deletion) and ready 03 (Data Export), because it describes their flows. Eleven static guide pages, written only from verified facts.*
 
 ---
 
@@ -8,7 +8,7 @@
 - `docs/launch/LAUNCH_READINESS_PLAN.md` §7.11 (page list), §10 (verified facts)
 - `frontend/app.jsx` (`NAV`), `frontend/views.jsx` (`DeskView`, `ApprovalsView`, `MailSent`), `frontend/lookingglass.jsx` (`LookingGlassView`, `SessionTools`), `frontend/components.jsx` (`Empty`, `StreamEvent`)
 - `config_module/config.yaml` (`quotas`, `budgets`, `sandbox`, `memory`, `llm.max_tools`, `mcp_servers`)
-- Depends on: ready 02 (page shell)
+- Depends on: ready 01 (page shell)
 
 **Status:** Ready | **Author:** Vin Baker | **Last updated:** 2026-09-25
 
@@ -37,7 +37,7 @@ Plain HTML in `frontend/help/`, sharing `legal/legal.css`, each page ending "Sti
 **Problem:** new users have no walkthrough.
 **Done when:** `index.html`, `getting-started.html`, `projects-and-sessions.html`, `approvals-and-autopilot.html` and `connecting-accounts.html` cover their §7.11 rows; the seven connectors are named exactly as `mcp_servers.*.name`; the benching behaviour and the 128 cap are explained on the connections page under `#tool-limit`.
 **Touch point:** `frontend/help/{index,getting-started,projects-and-sessions,approvals-and-autopilot,connecting-accounts}.html`.
-**Priority:** High | **Effort:** 1 day | **Blockers:** ready 02
+**Priority:** High | **Effort:** 1 day | **Blockers:** ready 01
 **Out of scope:** reference pages.
 **Acceptance test:** `test_help_pages_exist_and_link_up`.
 
@@ -45,9 +45,9 @@ Plain HTML in `frontend/help/`, sharing `legal/legal.css`, each page ending "Sti
 
 ## Task 2: Reference and troubleshooting pages
 **Problem:** limits, data handling and failure modes are undocumented.
-**Done when:** `files-and-memory.html`, `limits.html`, `your-data.html`, `responsible-use.html`, `faq.html` (10–15 Q&As) and `troubleshooting.html` cover their §7.11 rows; `limits.html` marks each number `data-config="<dotted.key>"`; `your-data.html` describes export (ready 03), session delete and undo (ready 06), and account delete (ready 05) as built, and links the Privacy Policy for everything else.
+**Done when:** `files-and-memory.html`, `limits.html`, `your-data.html`, `responsible-use.html`, `faq.html` (10–15 Q&As) and `troubleshooting.html` cover their §7.11 rows; `limits.html` marks each number `data-config="<dotted.key>"`; `your-data.html` describes export (ready 03) and session delete, undo, project delete and account delete (ready 02) as built, and links the Privacy Policy for everything else.
 **Touch point:** `frontend/help/{files-and-memory,limits,your-data,responsible-use,faq,troubleshooting}.html`.
-**Priority:** Medium | **Effort:** 1 day | **Blockers:** Task 1; ready 03, 05, 06 merged
+**Priority:** Medium | **Effort:** 1 day | **Blockers:** Task 1; ready 02 (Parts A–C) and ready 03 merged
 **Out of scope:** the Privacy Policy itself.
 **Acceptance test:** `test_limits_page_matches_config`.
 

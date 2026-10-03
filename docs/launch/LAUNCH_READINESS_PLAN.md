@@ -4,8 +4,8 @@ Status: DRAFT v2 · Branch: `docs/launch-legal-spec` · Written against `main` @
 
 > **Where the work is tracked now (v2, updated 2026-10-02).** This plan is the background:
 > findings, risks, data inventory, content outlines, verified facts. **Execution**
-> is in [`specs/README.md`](specs/README.md): twelve `ready/` specs any agent can build
-> now, two `drafting/` specs written with placeholders, and one `deferred/` spec for after launch.
+> is in [`specs/README.md`](specs/README.md): nine `ready/` specs any agent can build
+> now (deletion is one spec, `ready/02-deletion.md`) and two `drafting/` specs written with placeholders.
 > **Decisions that block launch** live only in [`DECISIONS.md`](DECISIONS.md); the rest ship with defaults. §2 and §6 below are
 > kept for context and point there.
 
@@ -701,7 +701,7 @@ Tests: archive contains each section for a seeded user; no token-like fields in
   - purge `deleted_files` / `deleted_links` older than
     `retention.deleted_files_days` (30);
   - sweep unreferenced blobs (same refcount rule as PR 8), batched;
-  - (inactive-account sweep: deferred past launch, see `specs/deferred/`).
+  - (inactive-account sweep: after launch, `specs/ready/02-deletion.md` Part D).
 - `config_module/config.yaml` `retention:` block.
 
 Tests: purge removes only rows past the window; blob sweep keeps referenced

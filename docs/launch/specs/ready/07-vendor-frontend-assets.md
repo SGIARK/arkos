@@ -1,11 +1,11 @@
 # // Feature Spec: Vendor Frontend Assets (NMORGAN)
 
-*Ready 12 · Wave 2 · needs ready 02 and 04. Serve React, Babel, supabase-js and the font from our own origin instead of unpkg and Google Fonts.*
+*Ready 07 · Wave 2 · needs ready 01 and 04. Serve React, Babel, supabase-js and the font from our own origin instead of unpkg and Google Fonts.*
 
 ---
 
 **Sources**
-- `frontend/index.html` (four `<script>` tags pinned with `integrity`; Google Fonts `<link>`s), `frontend/styles.css`, `frontend/legal/legal.css` (ready 02)
+- `frontend/index.html` (four `<script>` tags pinned with `integrity`; Google Fonts `<link>`s), `frontend/styles.css`, `frontend/legal/legal.css` (ready 01)
 - `harness_module/headers.py` (`content_security_policy`, from ready 04)
 
 **Status:** Ready | **Author:** Vin Baker | **Last updated:** 2026-10-02
@@ -35,7 +35,7 @@ Put the exact files in `frontend/vendor/`, verified by hash; point `index.html` 
 **Problem:** the app depends on two CDNs at runtime.
 **Done when:** `frontend/vendor/` holds the four scripts, each with a SHA-384 equal to its current `integrity` value, plus the JetBrains Mono woff2 weights used by `index.html` and `OFL.txt`; `index.html` and `legal.css` load only same-origin assets; `styles.css` has the `@font-face` rules; `?v=` is bumped.
 **Touch point:** new `frontend/vendor/`; `frontend/index.html`; `frontend/styles.css`; `frontend/legal/legal.css`.
-**Priority:** Medium | **Effort:** <4h | **Blockers:** ready 02 (`legal.css`)
+**Priority:** Medium | **Effort:** <4h | **Blockers:** ready 01 (`legal.css`)
 **Out of scope:** the CSP.
 **Acceptance test:** `test_vendored_assets_match_pinned_integrity`; in the browser pane, the network log shows no request leaving the origin except Supabase.
 

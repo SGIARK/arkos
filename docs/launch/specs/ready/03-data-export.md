@@ -28,7 +28,7 @@ Everything is already addressable per user. `store.read_tree(user_id)` lists the
 ---
 
 # Proposed Approach
-`account.export_archive(user_id)` builds the ZIP into a `tempfile.SpooledTemporaryFile` (spills to disk past 64 MB): blob fetches run on the loop, `zipfile` writes run in `asyncio.to_thread`. Stdlib `zipfile` can't write to a socket; a spooled file bounds memory with no new dependency. `harness_module/account.py` is created here if ready 05 hasn't created it yet; whichever lands first creates it.
+`account.export_archive(user_id)` builds the ZIP into a `tempfile.SpooledTemporaryFile` (spills to disk past 64 MB): blob fetches run on the loop, `zipfile` writes run in `asyncio.to_thread`. Stdlib `zipfile` can't write to a socket; a spooled file bounds memory with no new dependency. `harness_module/account.py` is created here if ready 02 hasn't created it yet; whichever lands first creates it.
 
 ```
 account.json          id, email, display_name, created_at, consent records if the table exists
@@ -65,7 +65,7 @@ class ExportTooLarge(RuntimeError): ...
 async def export_archive(user_id: str) -> IO[bytes]:
     """A rewound spooled file holding the ZIP; the caller streams and closes it."""
 ```
-Consent records: include them if `legal_acceptances` exists (`to_regclass`), so this spec doesn't depend on ready 07.
+Consent records: include them if `legal_acceptances` exists (`to_regclass`), so this spec doesn't depend on ready 05.
 
 ---
 

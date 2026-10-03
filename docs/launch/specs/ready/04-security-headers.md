@@ -1,6 +1,6 @@
 # // Feature Spec: Security Headers & security.txt (NMORGAN)
 
-*Ready 04 · Wave 1 · no blockers. The cheap "reasonable security" basics. Self-hosting fonts and scripts is a separate spec (ready 12).*
+*Ready 04 · Wave 1 · no blockers. The cheap "reasonable security" basics. Self-hosting fonts and scripts is a separate spec (ready 07).*
 
 ---
 
@@ -20,7 +20,7 @@ The app sends no security headers. Any site can frame the approvals page and cli
 ---
 
 # Technical Background
-`app` has one middleware, a `CORSMiddleware` restricted to `app.public_url`. Three things in the tree run script the CSP would otherwise block: `@babel/standalone` compiles and runs the `text/babel` scripts in the page; the `/connections/done` handler returns `_CLOSE_POPUP`, an HTML page whose inline `<script>` posts back to the opener and closes the popup; and ready 02's legal pages set the theme from a short inline script. So `script-src` needs `'unsafe-inline'` and `'unsafe-eval'` until the frontend is prebuilt. That's a known gap, written down rather than hidden: the CSP's real protection at launch is `frame-ancestors 'none'` (clickjacking) plus the origin limits on connect, font and style. Scripts come from `unpkg.com` and fonts from Google Fonts today, so the CSP allows them until ready 12 lands. supabase-js talks to the project URL from `/auth/config`, so `connect-src` includes that origin.
+`app` has one middleware, a `CORSMiddleware` restricted to `app.public_url`. Three things in the tree run script the CSP would otherwise block: `@babel/standalone` compiles and runs the `text/babel` scripts in the page; the `/connections/done` handler returns `_CLOSE_POPUP`, an HTML page whose inline `<script>` posts back to the opener and closes the popup; and ready 01's legal pages set the theme from a short inline script. So `script-src` needs `'unsafe-inline'` and `'unsafe-eval'` until the frontend is prebuilt. That's a known gap, written down rather than hidden: the CSP's real protection at launch is `frame-ancestors 'none'` (clickjacking) plus the origin limits on connect, font and style. Scripts come from `unpkg.com` and fonts from Google Fonts today, so the CSP allows them until ready 07 lands. supabase-js talks to the project URL from `/auth/config`, so `connect-src` includes that origin.
 
 `auth.cookie_secure` is false only for plain-HTTP local dev. HSTS follows it, or a local run pins localhost to HTTPS for a year.
 
@@ -30,9 +30,9 @@ The app sends no security headers. Any site can frame the approvals page and cli
 1. One small ASGI middleware in `harness_module/headers.py` sets the headers on every response, API and static. CSP ships report-only (`security.csp_enforce: false`), then flips to enforced after a clean browser pass.
 2. `GET /.well-known/security.txt` from config.
 
-**Decisions applied (defaults from `DECISIONS.md`):** D16 → `security.contact: "mailto:{{SECURITY_EMAIL}}"` until the inbox exists; ready 10 fails launch while it's a placeholder.
+**Decisions applied (defaults from `DECISIONS.md`):** D16 → `security.contact: "mailto:{{SECURITY_EMAIL}}"` until the inbox exists; ready 09 fails launch while it's a placeholder.
 
-**Not in scope:** vendoring assets (ready 12), removing Babel-in-browser, MFA, proxy-level rate limiting.
+**Not in scope:** vendoring assets (ready 07), removing Babel-in-browser, MFA, proxy-level rate limiting.
 
 ---
 
@@ -66,7 +66,7 @@ security:
 **Problem:** no published vulnerability contact.
 **Done when:** `GET /.well-known/security.txt` returns `text/plain` with `Contact` (from `security.contact`), `Expires` (from `security.txt_expires`), `Policy: <app.public_url>/app/legal/security.html`, and `Preferred-Languages: en`.
 **Touch point:** `harness_module/api.py` (new handler registered above the `/app` mount).
-**Priority:** Medium | **Effort:** <1h | **Blockers:** none (the policy page exists as a stub from ready 02, or 404s until then, which doesn't break the file)
+**Priority:** Medium | **Effort:** <1h | **Blockers:** none (the policy page exists as a stub from ready 01, or 404s until then, which doesn't break the file)
 **Out of scope:** PGP signing.
 **Acceptance test:** `test_security_txt_is_served`.
 
