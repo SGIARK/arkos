@@ -20,7 +20,7 @@ The app sends no security headers. Any site can frame the approvals page and cli
 ---
 
 # Technical Background
-`app` has one middleware, a `CORSMiddleware` restricted to `app.public_url`. The frontend compiles JSX in the browser with `@babel/standalone`, which evaluates code, so the CSP needs `'unsafe-eval'` until the frontend is prebuilt. That's a known gap, written down rather than hidden. Scripts come from `unpkg.com` and fonts from Google Fonts today, so the CSP allows them until ready 12 lands. supabase-js talks to the project URL from `/auth/config`, so `connect-src` includes that origin.
+`app` has one middleware, a `CORSMiddleware` restricted to `app.public_url`. Three things in the tree run script the CSP would otherwise block: `@babel/standalone` compiles and runs the `text/babel` scripts in the page; the `/connections/done` handler returns `_CLOSE_POPUP`, an HTML page whose inline `<script>` posts back to the opener and closes the popup; and ready 02's legal pages set the theme from a short inline script. So `script-src` needs `'unsafe-inline'` and `'unsafe-eval'` until the frontend is prebuilt. That's a known gap, written down rather than hidden: the CSP's real protection at launch is `frame-ancestors 'none'` (clickjacking) plus the origin limits on connect, font and style. Scripts come from `unpkg.com` and fonts from Google Fonts today, so the CSP allows them until ready 12 lands. supabase-js talks to the project URL from `/auth/config`, so `connect-src` includes that origin.
 
 `auth.cookie_secure` is false only for plain-HTTP local dev. HSTS follows it, or a local run pins localhost to HTTPS for a year.
 
@@ -44,11 +44,11 @@ The app sends no security headers. Any site can frame the approvals page and cli
 **Touch point:** new `harness_module/headers.py`; `harness_module/api.py` (`app.add_middleware` beside CORS); `config_module/config.yaml` (new `security:` block).
 **Priority:** High | **Effort:** <4h | **Blockers:** none
 **Out of scope:** a CSP violation-report endpoint.
-**Acceptance test:** `test_security_headers_on_api_and_static`, `test_hsts_follows_cookie_secure`; in the browser pane, sign in and run a session with no report-only violations in the console.
+**Acceptance test:** `test_security_headers_on_api_and_static`, `test_hsts_follows_cookie_secure`; in the browser pane, sign in, run a session, and complete a connector popup (it must close itself), with no report-only violations in the console.
 
 ```python
 def content_security_policy(supabase_origin: str) -> str:
-    """default-src 'self'; script-src 'self' 'unsafe-eval' https://unpkg.com;
+    """default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com;
     style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com;
     connect-src 'self' <supabase_origin>; img-src 'self' data:; frame-ancestors 'none';
     base-uri 'self'; form-action 'self'"""

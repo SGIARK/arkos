@@ -55,7 +55,7 @@ Plain HTML in `frontend/help/`, sharing `legal/legal.css`, each page ending "Sti
 
 ## Task 3: Link from where people get stuck
 **Problem:** a guide nobody finds doesn't help.
-**Done when:** `DeskView`'s "no projects yet" and `LookingGlassView`'s empty list add "new here? start with the guide"; `ApprovalsView`'s empty state links `approvals-and-autopilot.html`; `MailSent` links the troubleshooting anchor for missing email; a benching `status` line in `StreamEvent` links `connecting-accounts.html#tool-limit`.
+**Done when:** `DeskView`'s "no projects yet" adds "new here? start with the guide"; `LookingGlassView` gains an empty state for `projects.length === 0` with the same line (today it renders an empty grid and nothing else); `ApprovalsView`'s empty state links `approvals-and-autopilot.html`; `MailSent` links the troubleshooting anchor for missing email; a benching `status` line in `StreamEvent` links `connecting-accounts.html#tool-limit`.
 **Touch point:** `frontend/views.jsx` (`DeskView`, `ApprovalsView`, `MailSent`), `frontend/lookingglass.jsx` (`LookingGlassView`), `frontend/components.jsx` (`StreamEvent`), `frontend/index.html` (`?v=`).
 **Priority:** Medium | **Effort:** <2h | **Blockers:** Tasks 1–2
 **Out of scope:** changing the benching event payload.

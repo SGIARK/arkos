@@ -8,7 +8,7 @@
 - `docs/launch/LAUNCH_READINESS_PLAN.md` §4.3, §7.12, §8, §9
 - `docs/launch/DECISIONS.md` (D1, D2, D7, D9, D19)
 - `harness_module/api.py` (`lifespan`, `_keys_and_sweep`), `harness_module/system_log.py` (`prune`)
-- `.env.example` (the secret names to rotate), `config_module/config.yaml`
+- Secret names, from the code that reads them: `ARKOS_SESSION_SECRET` (`CLAUDE.md`), `SUPABASE_SECRET_KEY` / `SUPABASE_SERVICE_KEY` (`harness_module/blobs.py`), `E2B_API_KEY`, `COMPOSIO_API_KEY`, `OPENAI_API_KEY`, `SERPAPI_API_KEY`, `BROWSERLESS_URL` (`config_module/config.yaml`)
 
 **Status:** Drafting | **Author:** Vin Baker | **Last updated:** 2026-09-25
 
@@ -24,7 +24,7 @@ The containment levers already exist, and the runbook names them:
 - Rotating `ARKOS_SESSION_SECRET` invalidates every cookie (every cookie carries `iss=arkos`, signed with that secret).
 - `DELETE FROM auth_sessions` revokes sessions immediately, because `current_user` checks the row on every request.
 - `POST /sessions/{id}/cancel` stops runs.
-- Composio, e2b, SerpAPI, OpenAI and Supabase keys come from the environment (see `.env.example`), so rotation is an env change plus a restart.
+- Composio, e2b, SerpAPI, OpenAI and Supabase keys come from the environment (names in Sources), so rotation is an env change plus a restart.
 
 Retention enforcement lives in code: `system_log.prune` (30 days, at boot), the auth-session sweep in `_keys_and_sweep`, and, once built, ready 06's `purge_deleted_files` and ready 05's `delete_account`.
 
@@ -45,7 +45,7 @@ Markdown in the repo, beside the plan, not public pages. Each document is short 
 **Touch point:** new `docs/launch/internal/WISP.md`, `docs/launch/internal/INCIDENT_RESPONSE.md`.
 **Priority:** High | **Effort:** 1 day | **Blockers:** none (D2 appears as a marker)
 **Out of scope:** tabletop exercises.
-**Acceptance test:** a reviewer can map each §7.12 bullet to a heading, and every command in the containment checklist exists in the repo or `.env.example`.
+**Acceptance test:** a reviewer can map each §7.12 bullet to a heading, and every command and variable in the containment checklist exists in the repo.
 
 ---
 

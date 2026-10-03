@@ -23,7 +23,7 @@ There's no way to delete an account, and the database would refuse if we tried. 
 # Technical Background
 `0024` made `users.id` a foreign key to `auth.users(id) ON DELETE CASCADE` and fixed `projects` and `user_connections`. Its header says the chain "had two breaks"; it had four. Everything below `sessions` (`session_events`, `result_blobs`, `approvals`, `resource_leases`, `session_tools`, `session_sandboxes`, `session_claims`) already cascades. `sessions.project_id` is NO ACTION, which is checked at end of statement, so deleting a user removes projects and sessions together without tripping it. `users.home_session_id` is `ON DELETE SET NULL`.
 
-`DELETE /connections/{server}` calls `hands.connectors().disconnect(user_id, server)`, which revokes at Composio first. `connections.load(user_id)` returns the user's rows keyed by server. `runner.cancel(session_id)` ends a live or parked run.
+`DELETE /connections/{server}` calls `hands.connectors().disconnect(user_id, server)`. That method is wrong for deletion: `Composio.disconnect` catches a `ComposioError` from `client.delete_connected_account`, logs a warning, and forgets our row anyway, so a failed revoke leaves a live grant with no row pointing at it. It reads Composio's live accounts (`_accounts(user_id)`), not our `user_connections` rows, which is the right source: a grant can exist at Composio without a row here. `connections.load(user_id)` returns the user's rows keyed by server. `runner.cancel(session_id)` ends a live or parked run.
 
 ---
 
@@ -67,7 +67,7 @@ The header comment corrects `0024`'s "two breaks". Migrations are append-only, s
 ## Task 2: The deletion orchestrator
 **Problem:** deletion spans Postgres, the blob store, Composio, e2b and Supabase Auth, and a half-done run must be finishable.
 **Done when:** `delete_account(user_id)` performs the steps below in order; a `ComposioError` stops it before any row is deleted and raises `DeletionBlocked`; a second call on the same user is a no-op.
-**Touch point:** `harness_module/account.py` (new or extended: ready 03 may have created it).
+**Touch point:** `harness_module/account.py` (new or extended: ready 03 may have created it); `tool_module/composio_mcp.py` (new `Composio.revoke_all`, which raises instead of swallowing; `disconnect` is unchanged).
 **Priority:** High | **Effort:** 1 day | **Blockers:** Task 1, ready 01
 **Out of scope:** HTTP (Task 3).
 **Acceptance test:** `test_delete_account_removes_everything`, `test_delete_account_stops_when_composio_refuses`, `test_delete_account_twice_is_harmless`.
@@ -78,8 +78,8 @@ class DeletionBlocked(RuntimeError): ...
 async def delete_account(user_id: str) -> None:
     # 1. DELETE FROM auth_sessions WHERE user_id = $1          -- every cookie dies now
     # 2. runner.cancel(s) for each session whose status is not in lifecycle.TERMINAL
-    # 3. for server in connections.load(user_id): hands.connectors().disconnect(user_id, server)
-    #    ComposioError -> raise DeletionBlocked (rows untouched, grant not orphaned)
+    # 3. client = hands.connectors(); if client: await client.revoke_all(user_id)
+    #    ComposioError (listing or deleting) -> raise DeletionBlocked (rows untouched, grant not orphaned)
     # 4. hashes = content_hash FROM files, deleted_files, memory_files WHERE user_id = $1
     # 5. Supabase Admin API DELETE {project_url()}/auth/v1/admin/users/{id} with secret_key();
     #    404 counts as done; no project_url -> DELETE FROM users WHERE id = $1
@@ -87,6 +87,13 @@ async def delete_account(user_id: str) -> None:
     # system_log.record(...) at each step
 ```
 Step 5 runs before step 6 on purpose: once the rows are gone, the reference check is honest.
+
+```python
+# tool_module/composio_mcp.py
+async def revoke_all(self, user_id: str) -> list[str]:
+    """Delete every live Composio account for this user, raising ComposioError on the first failure."""
+    # for server, found in (await self._accounts(user_id)).items(): delete_connected_account(found.account_id)
+```
 
 ---
 
@@ -112,7 +119,7 @@ Mock `hands.connectors`, the Supabase Admin call and `runner.cancel`; use `Files
 **Why this matters:** it's the bug `0024` claimed to have fixed.
 
 ## Test 3: `test_delete_account_stops_when_composio_refuses`
-**What it verifies:** a `ComposioError` from `disconnect` raises `DeletionBlocked`, and the `users` and `user_connections` rows are intact.
+**What it verifies:** a `ComposioError` from `revoke_all` raises `DeletionBlocked`, and the `users` and `user_connections` rows are intact. A second case: a live Composio account with no `user_connections` row is still revoked.
 **Why this matters:** a deleted row with a live grant is an OAuth token we can no longer revoke.
 
 ## Test 4: `test_delete_account_twice_is_harmless`
