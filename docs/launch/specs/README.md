@@ -37,7 +37,7 @@ Specs in the same wave don't depend on each other and can run in parallel.
 | 2 | [02 Deletion](ready/02-deletion.md), Tasks 5–9 | its Part A; Tasks 8–9 also need 01 |
 | 2 | [05 Consent Capture](ready/05-consent-capture.md) | 01 |
 | 2 | [06 In-Product Disclosures](ready/06-in-product-disclosures.md) | 01 |
-| 2 | [07 Vendor Frontend Assets](ready/07-vendor-frontend-assets.md) | 01, 04 |
+| 2 | [07 Host Our Own Scripts and Fonts](ready/07-vendor-frontend-assets.md) | 01, 04 |
 | 3 | [08 Help Center](ready/08-help-center.md) | 01; describes 02 and 03 |
 | 3 | [09 Launch Gate Script](ready/09-launch-gate-script.md) | 01 |
 | after launch | [02 Deletion](ready/02-deletion.md), Part D (Tasks 10–11) | its Task 6; D16 |
@@ -54,13 +54,14 @@ merges first creates it.
 
 ## Sharing the deletion design
 
-[ready/02-deletion.md](ready/02-deletion.md) is self-contained. It opens with the
-deletion model (what can be deleted, how each delete is represented, what happens
-to bytes and third-party grants, and what has undo) and six invariants, then the
-tasks. Share that file on its own when someone needs to review how deletion works.
+[ready/02-deletion.md](ready/02-deletion.md) is self-contained and written for
+non-engineers. It opens with a table of what can be deleted, what happens, and
+whether there's undo, then five rules every delete follows, then the tasks. Share
+that file on its own when someone needs to review how deletion works.
 
 ## History
 
+- **2026-10-03, plain-language rewrite:** every spec rewritten to the nmorgan rules P-004 to P-006: plain words with a short glossary where needed, file lists instead of function-by-function touch points, no code stubs except short SQL or config, and tests as one table. Same tasks, tests and decisions.
 - **2026-10-02, consolidation:** File Data Cleanup, Account Deletion, Session
   Delete & Retention, Project Delete and the Inactive Account Sweep merged into
   ready 02 Deletion. The other ready specs were renumbered: Legal Surface 02→01,

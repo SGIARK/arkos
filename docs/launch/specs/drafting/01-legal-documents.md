@@ -1,119 +1,105 @@
 # // Feature Spec: Legal Documents (NMORGAN)
 
-*Drafting 01 · can start once ready 01's shell exists. Write every legal page now, with placeholders where a decision is open. Publishing waits on the decisions queue and counsel, and ready 09 enforces that.*
+*Drafting 01 · start once ready 01's page shell exists. Write every legal page now, with placeholders where a decision is open. Publishing waits for the decisions and a lawyer's review, and ready 09 enforces that.*
 
 ---
 
 **Sources**
-- `docs/launch/LAUNCH_READINESS_PLAN.md` §0.2 (placeholders), §4 (data inventory), §7.1–7.10 (outlines), §10 (verified facts)
-- `docs/launch/DECISIONS.md` (D1, D2, D3, D6, D7, D8, D9, D10, D16, D17; D5 resolved: 18+)
-- `config_module/config.yaml` (`llm`, `store`, `mcp`, `mcp_servers`, `tools.destructive`, `tools.serpapi_key`, `budgets`, `system_log`)
-- `frontend/index.html` (third-party scripts and fonts), `LICENSE`, `NOTICE`
-- Depends on: ready 01 (shell, `legal:` config)
+- Plan: `docs/launch/LAUNCH_READINESS_PLAN.md` §0.2 (placeholders), §4 (what we store and who gets it), §7.1–7.10 (outlines), §10 (checked facts)
+- Decisions: `docs/launch/DECISIONS.md` (D1, D2, D3, D6, D7, D8, D9, D10, D16, D17)
+- Facts to disclose: `config_module/config.yaml`, `frontend/index.html`, `LICENSE`, `NOTICE`
 
-**Status:** Drafting | **Author:** Vin Baker | **Last updated:** 2026-09-25
+**Status:** Drafting | **Author:** Vin Baker | **Last updated:** 2026-10-03
 
 ---
 
 # Problem
-arkos collects account data, conversations, files, agent memory and connected-account content, and sends them to six outside services. No document says so. No contract limits liability for an agent that can send email and merge PRs as the user. Without these pages, consent (ready 05) records agreement to nothing. Success: every page in plan §7.1–7.10 exists as a counsel-ready draft whose facts trace to plan §4/§10, and every undecided point is a placeholder or a comment tied to a `DECISIONS.md` ID.
+arkos stores accounts, conversations, files, the agent's memory and content from connected accounts, and shares them with six outside services. No document says so. No contract limits liability for an agent that can send email and merge code as the user. Without these pages, the agreement screen (ready 05) records agreement to nothing. Success: every page in plan §7.1–7.10 exists as a draft ready for a lawyer, every fact in it is checked, and every open decision is marked.
 
 ---
 
 # Technical Background
-The facts these pages disclose live in config:
-- `llm.base_url` defaults to `api.openai.com` with `gpt-4.1-mini`.
-- `store.backend: supabase` puts bytes in the `arkos` bucket.
-- `mcp.kind: composio` routes seven connectors through Composio's managed OAuth apps.
-- `tools.serpapi_key` is an app-level key.
-- `system_log.retain_days: 30`.
-- `tools.destructive` is the always-ask list.
-
-`frontend/index.html` loads React, ReactDOM, Babel and supabase-js from `unpkg.com`, and fonts from Google Fonts, so visitor IPs reach both until ready 07 lands. Once it does, the cookies and subprocessor pages drop the CDN rows; write them for the vendored state if ready 07 has merged first.
+What the pages must disclose, as configured today:
+- The AI model is OpenAI's gpt-4.1-mini, unless D3 moves to a self-hosted model.
+- Files and accounts live in Supabase; connected accounts (Gmail, Outlook, GitHub, Linear, Notion, Google Calendar, Google Drive) go through Composio; web search goes through SerpAPI; the agent's sandbox runs on e2b; its browser runs on Browserless.
+- Server logs are kept 30 days. The list of actions that always need approval is in config.
+- Until ready 07 lands, every page load also contacts unpkg and Google Fonts.
 
 ---
 
 # Proposed Approach
-Four content tasks, each a separate PR. Every page uses ready 01's shell, carries `arkos-doc-version`, and opens with a non-binding "short version" box.
+Four pull requests, one per group of pages. Each page uses ready 01's shell, carries its version number, and opens with a plain "short version" box that says it isn't the binding text.
 
-**How decisions appear in the text:**
-- A decision that fills a value → the §0.2 placeholder (`{{MIN_AGE}}`, `{{LLM_PROVIDER}}`, `{{OPERATOR_LEGAL_NAME}}`, …).
-- A decision that picks between paragraphs → both paragraphs in the file, the default rendered, the other inside `<!-- D<n> alternative: … -->`.
-- Every such spot carries `data-decision="D<n>"`, so `grep` finds every place a resolution has to touch.
+**Open decisions in the text:**
+- A missing value (a name, an age, an email) is a placeholder from plan §0.2, like `{{OPERATOR_LEGAL_NAME}}`.
+- A choice between two paragraphs is written both ways: the default shows, the other sits in a hidden comment.
+- Every such spot is tagged with its decision number (`data-decision="D3"`), so resolving a decision means searching for its tag.
 
-A sentence of fact must trace to plan §4 or §10. If it doesn't, verify it in code, add it to §10 in the same PR, then write it.
+Every factual sentence must trace to plan §4 or §10. A new fact gets checked in the code and added to §10 first.
 
-**What "done" means here:** a complete draft. Final text happens after the decisions are resolved and counsel signs off (D17). Ready 09 refuses launch while a placeholder or a "Draft" banner remains.
+**Done means drafted, not published.** Final text needs the decisions answered and a lawyer's review (D17).
 
-**Not in scope:** help copy (ready 08), in-product strings (ready 06), the legal review itself.
+**Not in scope:** help pages (ready 08), in-app warnings (ready 06), the legal review itself.
 
 ---
 
 # Implementation Plan
 
-## Task 1: Privacy Policy and annexes
-**Problem:** no disclosure of what's collected, who gets it, or for how long.
-**Done when:** `privacy.html` has every §7.2 heading; `subprocessors.html` has one row per §4.2 provider; `cookies.html` lists `arkos_session`, Supabase's `localStorage` tokens, `arkos-theme`, `arkos-beta-ack`, and the CDN requests (unless ready 07 has merged); the Google Limited Use statement is present; the retention table says consent records are kept after account deletion, and says inactive accounts are kept until their owners delete them; D3, D7, D8 and D9 spots carry `data-decision`.
-**Touch point:** `frontend/legal/privacy.html`, `frontend/legal/subprocessors.html`, `frontend/legal/cookies.html`.
+## Task 1: Privacy Policy, subprocessors, cookies
+**Problem:** nothing says what's collected, who gets it, or for how long.
+**Done when:** the Privacy Policy covers every heading in plan §7.2; the subprocessors page lists each provider in §4.2; the cookies page lists the login cookie, Supabase's sign-in storage, the theme and banner settings, and the font and script services (unless ready 07 has merged); Google's required "Limited Use" statement is included; the retention section says consent records and inactive accounts are kept; D3, D7, D8 and D9 are tagged.
+**Touch point:** `frontend/legal/privacy.html`, `subprocessors.html`, `cookies.html`.
 **Priority:** High | **Effort:** 1 day | **Blockers:** ready 01 Task 1
-**Out of scope:** resolving any decision.
-**Acceptance test:** Tests 1 and 2; a reviewer can trace every §4.1 row to a sentence.
+**Out of scope:** answering any decision.
+**Acceptance test:** Tests 1–2.
 
 ---
 
-## Task 2: Terms of Service and Acceptable Use Policy
-**Problem:** no agreement allocates responsibility for approved actions or disclaims AI output.
-**Done when:** `terms.html` has §7.1 sections 1–22 in order, with warranty and liability sections in bold caps; eligibility says `{{MIN_AGE}}`+, a confirmed email, one account per person, open to anyone (D4 resolved); `acceptable-use.html` has every §7.3 prohibition, including the prohibited-data list and MIT academic integrity; D1, D2, D6, D8 and D10 spots carry `data-decision`.
-**Touch point:** `frontend/legal/terms.html`, `frontend/legal/acceptable-use.html`.
+## Task 2: Terms of Service and Acceptable Use
+**Problem:** no agreement says who's responsible for approved actions, or disclaims mistakes by the AI.
+**Done when:** the Terms have every §7.1 section in order, with the warranty and liability sections in bold capitals; eligibility says 18 or older, a confirmed email and one account per person, open to anyone; the Acceptable Use Policy lists every §7.3 item, including what not to upload and MIT's academic integrity rules; D1, D2, D6, D8 and D10 are tagged.
+**Touch point:** `frontend/legal/terms.html`, `acceptable-use.html`.
 **Priority:** High | **Effort:** 1 day | **Blockers:** ready 01 Task 1
-**Out of scope:** choosing arbitration or courts (D10).
-**Acceptance test:** Tests 1 and 2, plus an anchor for every §7.1 heading.
+**Out of scope:** choosing courts or arbitration (D10).
+**Acceptance test:** Tests 1–2.
 
 ---
 
 ## Task 3: How arkos acts on your behalf
-**Problem:** the approval model and its limits are explained nowhere, and they're the core of the liability allocation.
-**Done when:** `ai-and-agents.html` covers §7.4; every `tools.destructive` entry appears as a readable name with `data-tool="<NAME>"`; budgets match `budgets.attended` (6 hops, 300 s) and `budgets.unattended` (15 hops, 1800 s).
+**Problem:** the approval system and its limits aren't explained anywhere, and they're central to who is responsible for what.
+**Done when:** the page covers plan §7.4; every always-ask action is listed by a readable name; the session limits match config (6 steps / 5 minutes normally, 15 steps / 30 minutes on autopilot).
 **Touch point:** `frontend/legal/ai-and-agents.html`.
 **Priority:** High | **Effort:** <4h | **Blockers:** ready 01 Task 1
-**Out of scope:** generating the page from config at runtime. The test catches drift instead.
+**Out of scope:** generating the page from config.
 **Acceptance test:** Test 3.
 
 ---
 
-## Task 4: Annex pages
-**Problem:** no DMCA path, vulnerability policy, accessibility statement, or AGPL source offer.
-**Done when:** `copyright.html` has the six §512(c)(3) elements, a repeat-infringer policy, and `{{LEGAL_EMAIL}}` and `{{OPERATOR_LEGAL_NAME}}` as the notice contact (registering a designated agent with the Copyright Office is a launch-checklist task, not a placeholder here); `security.html` and a new repo-root `SECURITY.md` share one reporting section with `{{SECURITY_EMAIL}}` (D16); `accessibility.html` lists known gaps; `licenses.html` has the AGPL notice, the `NOTICE` text, a row for each asset in `frontend/index.html`, and a `pip-licenses` table for `requirements.txt`; `changelog.html` has its first entry.
-**Touch point:** `frontend/legal/{copyright,security,accessibility,licenses,changelog}.html`, new `SECURITY.md`.
+## Task 4: Supporting pages
+**Problem:** there's no copyright takedown process, vulnerability policy, accessibility statement or open-source notice.
+**Done when:** the copyright page has the six parts a takedown notice needs, a repeat-infringer policy, and `{{LEGAL_EMAIL}}` and `{{OPERATOR_LEGAL_NAME}}` as the contact; the security page and a new `SECURITY.md` share one "how to report" section with `{{SECURITY_EMAIL}}`; the accessibility page lists known gaps; the licenses page has the AGPL notice, the `NOTICE` text, every outside script and font, and a table of Python package licenses; the changelog has its first entry.
+**Touch point:** `frontend/legal/copyright.html`, `security.html`, `accessibility.html`, `licenses.html`, `changelog.html`; new `SECURITY.md`.
 **Priority:** Medium | **Effort:** 1 day | **Blockers:** ready 01 Task 1
-**Out of scope:** registering the DMCA agent (drafting 02's checklist carries it).
+**Out of scope:** registering a copyright agent (it's on the launch checklist in drafting 02).
 **Acceptance test:** Test 4.
 
 ---
 
 # Tests
-New `tests/test_legal_pages.py`, using stdlib `html.parser`.
+In `tests/test_legal_pages.py`, reading the pages with Python's built-in HTML parser.
 
-## Test 1: `test_legal_page_versions_match_config`
-**What it verifies:** `arkos-doc-version` on `terms.html` and `privacy.html` equals `legal.terms_version` and `legal.privacy_version`.
-**Why this matters:** the version a user accepts must be the text they read.
-
-## Test 2: `test_placeholders_and_decisions_are_known`
-**What it verifies:** every `{{…}}` token is in the §0.2 set, and every `data-decision` value is an ID heading in `DECISIONS.md`.
-**Why this matters:** an invented token or an untracked decision is a question nobody will answer.
-
-## Test 3: `test_destructive_list_matches_disclosure`
-**What it verifies:** every name in `tools.destructive` appears as a `data-tool` on `ai-and-agents.html`.
-**Why this matters:** adding an always-ask tool without disclosing it makes the page quietly wrong.
-
-## Test 4: `test_licenses_page_names_every_frontend_asset`
-**What it verifies:** each `<script src>` and font host in `frontend/index.html` has a row in `licenses.html`.
-**Why this matters:** AGPL and OFL notices are obligations.
+| # | Test | Proves |
+|---|---|---|
+| 1 | `test_legal_page_versions_match_config` | The version users accept is the text they read |
+| 2 | `test_placeholders_and_decisions_are_known` | Every placeholder and decision tag exists in the plan and `DECISIONS.md` |
+| 3 | `test_destructive_list_matches_disclosure` | Every always-ask action in config is disclosed |
+| 4 | `test_licenses_page_names_every_frontend_asset` | Every outside script and font has its license listed |
 
 ---
 
 # Open Questions
-1. *Verify in Task 1, not a decision:* the Supabase project region and backup window. Read them from the dashboard and fill §4.2/§4.3 before Task 1 merges.
+Checks for whoever builds this. None needs a decision.
+1. Task 1: read the Supabase project's region and backup period from its dashboard, and add both to plan §4 before Task 1 merges.
 
 ---
 

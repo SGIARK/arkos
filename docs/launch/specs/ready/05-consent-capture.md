@@ -1,55 +1,57 @@
 # // Feature Spec: Consent Capture (NMORGAN)
 
-*Ready 05 · Wave 2 · blocked by ready 01. Record that each user accepted the current Terms and Privacy Policy, and refuse new work until they have. It works the same whatever the documents end up saying.*
+*Ready 05 · Wave 2 · needs ready 01. Record that each user accepted the current Terms and Privacy Policy, and hold back new work until they have.*
 
 ---
 
 **Sources**
-- `docs/launch/LAUNCH_READINESS_PLAN.md` §5.3; `docs/launch/DECISIONS.md` (D5, resolved)
-- `harness_module/api.py` (`current_user`, `CurrentUser`, `auth_me`, `ApiError`, and the handlers in Task 3)
-- `frontend/app.jsx` (`App`, `onError`), `frontend/views.jsx` (`Login`, `AuthAside`), `frontend/api.jsx` (`api.me`, `request`)
-- `tests/test_api.py` (`_signed_in`, `_sign_in_as`, `_supabase_token`)
+- Plan: `docs/launch/LAUNCH_READINESS_PLAN.md` §5.3; `docs/launch/DECISIONS.md` (D4, D5)
+- Server: `harness_module/api.py`; database: `db/migrations/`
+- Screens: `frontend/app.jsx`, `frontend/views.jsx`, `frontend/api.jsx`
+- Tests: `tests/test_api.py` (its sign-in helpers)
 
-**Status:** Ready | **Author:** Vin Baker | **Last updated:** 2026-09-25
+**Status:** Ready | **Author:** Vin Baker | **Last updated:** 2026-10-03
 
 ---
 
 # Problem
-Nobody agrees to anything. The Terms can't limit liability without a record that the user accepted them, and Google sign-in skips the sign-up form, so a checkbox there isn't a record. A document change has no way to reach existing users either. Success: every user who creates work has a stored acceptance of the current versions, and a version bump sends everyone back through the gate.
+Nobody agrees to anything today. The Terms can't limit arkos's liability unless there's a record that the user accepted them. Google sign-in skips the sign-up form entirely, so a checkbox there isn't enough. And when a document changes, there's no way to ask existing users again. Success: everyone who creates work has accepted the current versions, and a new version sends everyone back through the agreement screen.
 
 ---
 
 # Technical Background
-Both sign-in paths end in `POST /auth/session`, then the app calls `GET /auth/me` once per load for every user, which makes it the right place to report consent state. `current_user` resolves the cookie with one `auth_sessions` lookup, and handlers take `user_id: str = CurrentUser`. A second dependency wrapping it is the smallest enforcement point. `ApiError(403, code, message)` renders `{code, message, retryable}`, and `App.onError` already special-cases `unauthenticated`. The test sign-in helpers `_signed_in` and `_sign_in_as` live in `tests/test_api.py`.
+- Every sign-in, email or Google, ends with the app asking "who am I" (`GET /auth/me`) once per page load. That's the right moment to report whether consent is needed.
+- Every signed-in request goes through one shared check (`current_user`). Wrapping it in a second check is the smallest way to hold back work.
+- Tests sign in through two helpers in `tests/test_api.py`. They must accept consent, or every existing test would start failing.
 
 ---
 
 # Proposed Approach
-1. One append-only table, `legal_acceptances`, one row per (user, document, version), with no IP or user agent.
-2. `harness_module/consent.py`: current versions come from `legal:` config (ready 01); a user needs consent if either current version has no row.
-3. `/auth/me` reports it, `POST /auth/consent` records it, and `ConsentedUser` refuses work-creating endpoints with `403 consent_required`.
-4. A blocking `ConsentGate` after sign-in. Reads, sign-out, export and account delete stay open, so someone who refuses new terms can still leave with their data.
+1. A new table records each acceptance: user, document, version, time, and "confirmed 18 or older". No IP address or browser details.
+2. "Who am I" reports whether consent is needed; a new endpoint records it.
+3. Anything that creates work is refused until the user accepts. Reading, signing out, downloading data and deleting the account stay available, so someone who declines new terms can still leave with their data.
+4. A full-screen agreement step after sign-in.
 
-**Decided:** D5 → the age checkbox reads `legal.min_age` (18). D4 → no domain restriction; age self-attestation is the only eligibility check. **Default:** no foreign key on `legal_acceptances`, so records survive account deletion; deleting them too would be one migration.
+**Decided:** minimum age 18 (D5); sign-up is open to anyone, so age is the only eligibility check (D4). **Default:** consent records stay after account deletion as proof of agreement.
 
-**Not in scope:** age *verification*; emailing users about changes; a diff view of changes.
+**Not in scope:** verifying age; emailing users about changes.
 
 ---
 
 # Implementation Plan
 
-## Task 1: Schema
-**Problem:** nowhere to store an acceptance.
-**Done when:** the migration applies on a fresh DB and one already migrated; a duplicate (user, document, version) insert is a no-op under `ON CONFLICT DO NOTHING`.
-**Touch point:** new `db/migrations/NNNN_legal_acceptances.sql` (next free number at merge).
+## Task 1: The acceptances table
+**Problem:** there's nowhere to store an acceptance.
+**Done when:** the migration applies on new and existing databases, and accepting the same version twice keeps one record.
+**Touch point:** one new migration in `db/migrations/` (next free number).
 **Priority:** High | **Effort:** <1h | **Blockers:** none
-**Out of scope:** backfill. Existing users go through the gate.
-**Acceptance test:** `test_acceptance_is_recorded_once_per_version`.
+**Out of scope:** backfilling existing users; they see the agreement screen.
+**Acceptance test:** Test 1.
 
 ```sql
 CREATE TABLE legal_acceptances (
     id            BIGSERIAL   PRIMARY KEY,
-    user_id       UUID        NOT NULL,   -- no FK: evidence outlives the account
+    user_id       UUID        NOT NULL,   -- no link to users: the record outlives the account
     document      TEXT        NOT NULL CHECK (document IN ('terms', 'privacy')),
     version       TEXT        NOT NULL,
     age_confirmed BOOLEAN     NOT NULL,
@@ -60,75 +62,52 @@ CREATE TABLE legal_acceptances (
 
 ---
 
-## Task 2: Consent module and endpoints
-**Problem:** nothing decides whether a user is current, and nothing records acceptance.
-**Done when:** `GET /auth/me` includes `consent: {required, terms_version, privacy_version}`; `POST /auth/consent` with current versions and `age_confirmed: true` writes two rows and returns 204; stale versions return `409 stale_version`; `age_confirmed: false` returns 422.
-**Touch point:** new `harness_module/consent.py`; `harness_module/api.py` (`auth_me`, new `record_consent`).
-**Priority:** High | **Effort:** <4h | **Blockers:** Task 1, ready 01
-**Out of scope:** enforcement.
-**Acceptance test:** `test_new_user_needs_consent`, `test_stale_version_is_refused`.
-
-```python
-def current_versions() -> dict[str, str]: ...
-async def needs_consent(user_id: str) -> bool: ...
-async def record(user_id: str, versions: dict[str, str], age_confirmed: bool) -> None: ...
-```
+## Task 2: Record and report consent
+**Problem:** nothing knows whether a user is up to date, and nothing records acceptance.
+**Done when:** "who am I" says whether consent is needed and for which versions; `POST /auth/consent` with the current versions and age confirmed records it; outdated versions or an unconfirmed age are refused.
+**Touch point:** new `harness_module/consent.py`; `harness_module/api.py`.
+**Priority:** High | **Effort:** <4h | **Blockers:** Task 1; ready 01 (document versions)
+**Out of scope:** holding back work.
+**Acceptance test:** Tests 2–3.
 
 ---
 
-## Task 3: Server-side enforcement
-**Problem:** a client that skips the gate can still create work.
-**Done when:** without current consent, `create_session`, `post_message`, `upload_file`, `create_project`, `create_folder`, `connect_server`, `respond_to_approval`, `approve_session` and `resume_session` return `403 consent_required`; every GET, `delete_auth_session`, and (when they exist) `export_me` and `delete_me` still work.
-**Touch point:** `harness_module/api.py` (new `consented_user` plus `ConsentedUser`, swapped into those handlers); `tests/test_api.py` (`_sign_in_as` records consent, so existing tests keep their meaning).
+## Task 3: Hold back work until accepted
+**Problem:** a client that skips the screen could still create work.
+**Done when:** without consent, starting or messaging a conversation, uploading, creating a project or folder, connecting an account, answering an approval and resuming a run are all refused with `consent_required`. Reading, signing out, export and account delete still work.
+**Touch point:** `harness_module/api.py` (one shared check on `create_session`, `post_message`, `upload_file`, `create_project`, `create_folder`, `connect_server`, `respond_to_approval`, `approve_session`, `resume_session`); `tests/test_api.py` (sign-in helpers accept consent).
 **Priority:** High | **Effort:** <4h | **Blockers:** Task 2
-**Out of scope:** caching. It's one indexed query, the same cost as `current_user`'s own lookup.
-**Acceptance test:** `test_work_is_refused_without_consent`.
-
-```python
-async def consented_user(user_id: str = CurrentUser) -> str:
-    if await consent.needs_consent(user_id):
-        raise ApiError(403, "consent_required", "Accept the current Terms and Privacy Policy to continue.")
-    return user_id
-```
+**Out of scope:** caching the check; it's one quick lookup.
+**Acceptance test:** Test 4.
 
 ---
 
-## Task 4: Consent gate UI
+## Task 4: The agreement screen
 **Problem:** users have no way to accept.
-**Done when:** a signed-in user with `consent.required` sees `ConsentGate` instead of the app; Continue stays disabled until the age, Terms and Privacy boxes are all ticked; after accepting, the app loads without a reload; a 403 `consent_required` anywhere re-reads `me()` and shows the gate; the sign-up form states "By creating an account you agree to the Terms and Privacy Policy" with links. When a user who accepted before sees a new version, the heading reads "We've updated our Terms / Privacy Policy" and links `changelog.html`.
-**Touch point:** `frontend/views.jsx` (new `ConsentGate`, one line in `Login`); `frontend/app.jsx` (render branch, `onError`); `frontend/api.jsx` (new `api.consent`); `frontend/index.html` (`?v=`).
+**Done when:** a signed-in user who hasn't accepted sees the agreement screen instead of the app; Continue stays off until all three boxes are ticked (18 or older, Terms, Privacy); accepting opens the app; after a version change the screen returns, headed "We've updated our Terms / Privacy Policy", with a link to what changed; the sign-up form says "By creating an account you agree to the Terms and Privacy Policy".
+**Touch point:** `frontend/views.jsx` (new `ConsentGate`, one line on sign-up); `frontend/app.jsx`; `frontend/api.jsx`; `frontend/index.html` (bump `?v=`).
 **Priority:** High | **Effort:** <4h | **Blockers:** Task 2
-**Out of scope:** reviewing the copy with counsel (D17 covers that with the documents).
-**Acceptance test:** in the browser pane: fresh user → gate → accept → app; bump `legal.terms_version` → reload → gate again.
+**Out of scope:** a side-by-side diff of changes.
+**Acceptance test:** in the browser: a new user sees the screen and gets in after accepting; change the Terms version in config and the screen returns.
 
 ---
 
 # Tests
+No outside services involved.
 
-## Test 1: `test_acceptance_is_recorded_once_per_version`
-**What it verifies:** recording the same versions twice leaves one row per document.
-**Why this matters:** evidence mustn't depend on click count.
-
-## Test 2: `test_new_user_needs_consent`
-**What it verifies:** `/auth/me` reports `required: true` for a fresh user and `false` after `POST /auth/consent`.
-**Why this matters:** the whole UI hangs on this switch.
-
-## Test 3: `test_stale_version_is_refused`
-**What it verifies:** posting last version's strings returns 409 and writes nothing.
-**Why this matters:** a stale tab mustn't record acceptance of text the user never saw.
-
-## Test 4: `test_work_is_refused_without_consent`
-**What it verifies:** `POST /sessions` returns 403 `consent_required` before consent and 201 after; `GET /sessions` works either way.
-**Why this matters:** the server, not the client, holds the record.
-
-## Test 5: `test_version_bump_requires_consent_again`
-**What it verifies:** with `legal.terms_version` monkeypatched forward, `needs_consent` is true again.
-**Why this matters:** material changes have to reach existing users.
+| # | Test | Proves |
+|---|---|---|
+| 1 | `test_acceptance_is_recorded_once_per_version` | Clicking twice doesn't create two records |
+| 2 | `test_new_user_needs_consent` | A new user is asked; after accepting, they aren't |
+| 3 | `test_stale_version_is_refused` | An old browser tab can't accept text the user never saw |
+| 4 | `test_work_is_refused_without_consent` | The server, not the screen, holds back work |
+| 5 | `test_version_bump_requires_consent_again` | A new version reaches existing users |
 
 ---
 
 # Open Questions
-1. *Verify in Task 3, not a decision:* does refusing `resume_session` strand an unattended run parked before a version bump? Check that the run stays `idle` and resumes cleanly after consent; record it in Implementation Notes.
+Checks for whoever builds this. None needs a decision.
+1. Task 3: an autopilot run that was paused before a Terms change should resume normally once the user accepts. Confirm it does.
 
 ---
 

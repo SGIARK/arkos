@@ -1,95 +1,104 @@
 # // Feature Spec: In-Product Disclosures (NMORGAN)
 
-*Ready 06 · Wave 2 · blocked by ready 01. The warnings a user sees at the moment they matter, not buried in a policy.*
+*Ready 06 · Wave 2 · needs ready 01. Short warnings shown at the moment they matter, not buried in a policy.*
 
 ---
 
 **Sources**
-- `docs/launch/LAUNCH_READINESS_PLAN.md` §3 (R4, R5, R7), PR 11 copy table
-- `frontend/app.jsx` (`App`, the `main` banner slot)
-- `frontend/lookingglass.jsx` (`Composer`, `SessionDetail` and its autopilot button)
-- `frontend/components.jsx` (`ApprovalCard`), `frontend/views.jsx` (`SettingsModal.connect`, `ComputerView`, `Login`)
-- `harness_module/api.py` (`attention`), `harness_module/runner.py` (`_destructive`)
+- Plan: `docs/launch/LAUNCH_READINESS_PLAN.md` §3 (risks R4, R5, R7)
+- Screens: `frontend/app.jsx`, `frontend/lookingglass.jsx`, `frontend/components.jsx`, `frontend/views.jsx`
+- Server: `harness_module/api.py`, `harness_module/runner.py`
 
-**Status:** Ready | **Author:** Vin Baker | **Last updated:** 2026-09-25
+**Status:** Ready | **Author:** Vin Baker | **Last updated:** 2026-10-03
 
 ---
 
 # Problem
-The Terms will say the user is responsible for what they approve, but the approve button doesn't say so. Nothing near the composer says the agent can be wrong. Connecting Gmail is one click with no explanation that an assistant will act in the inbox. The upload zone doesn't warn off SSNs or export-controlled data. Success: each of the moments below carries one clear line, and the approval card knows when an action can't be undone.
+The Terms will say users are responsible for what they approve, but the approve button doesn't say so. Nothing near the chat box says the agent can be wrong. Connecting Gmail is one click, with no word that an assistant will now act in the inbox. The upload area doesn't warn against ID numbers or export-controlled research data. Success: each risky moment shows one clear line, and approval cards warn when an action can't be undone.
 
 ---
 
 # Technical Background
-`GET /attention` builds each approval item from `approvals` joined to `sessions`, returning `tool_name` and `tool_args` for `call` rows. `ApprovalCard` renders `item.kind` as `call`, `plan` or `ask`. `runner._destructive(name)` already answers "is this on the always-ask list", stripping the registry's `mcp_` prefix. It's private, so it gets a public name rather than a second copy of the logic.
-
-`SettingsModal.connect(row)` opens the Composio popup synchronously inside the click, and a comment there warns that any `await` first loses the user gesture. So the interstitial is a separate confirm click that then calls the existing `connect`.
-
-The autopilot button is in `SessionDetail` (`{cancelled ? "resume" : "autopilot"}`). The unattended wall clock comes from `limits.unattended_wall_clock_s` in `/auth/config` (ready 01).
+- Approval cards get each pending action's tool name from the server's "what's waiting" list (`/attention`).
+- The server already knows which tools always need a human ("always ask", such as sending email) through a private check in `runner.py`. It gets a public name instead of a second copy of the list.
+- The "connect" button must open its popup within the click itself, or the browser blocks it. So the explainer is a separate click that then runs the existing connect.
+- The autopilot time limit comes from public config (ready 01).
 
 ---
 
 # Proposed Approach
-Copy changes plus one backend field. The strings below are used verbatim; editing copy later is a text change, not a decision this spec waits on. Acknowledgments (beta banner, per-toolkit connect) live in `localStorage`, wrapped in try/catch, so a blocked store just shows the notice again. The beta banner doesn't come back on a Terms change, because the consent gate (ready 05) already handles that.
+These exact lines, used as written unless the owner edits them:
 
-**Not in scope:** legal text (drafting 01); help pages (ready 08); a full accessibility audit (only controls touched here are fixed).
+| Where | Text |
+|---|---|
+| Banner, until dismissed | "arkos is in beta. It can make mistakes and the service may change. Keep copies of anything important. Learn more" |
+| Under every chat box | "arkos can be wrong. It acts on your connected accounts only with your approval — check before you approve." |
+| Every approval card | "Approving lets arkos do this as you, using your connected account. It may not be reversible." |
+| Irreversible approvals, added | "This action can't be undone from arkos." |
+| First connect of an account | "Connecting {name} lets arkos read and act in your {name} account through Composio, our integration provider, whenever a session you start has {name} turned on. Actions that send, share, delete or merge always ask you first. You can disconnect anytime here." |
+| Files view | "Don't upload passwords, government ID numbers, health records, other students' records, or export-controlled research data." |
+| Autopilot button | "Autopilot keeps working without you for up to N minutes, and still asks before anything on the always-ask list." |
+
+Dismissals are remembered in the browser, and the notice simply shows again if browser storage is blocked. The banner doesn't come back when the Terms change, because the agreement screen (ready 05) already handles that.
+
+**Not in scope:** legal text (drafting 01); help pages (ready 08); a full accessibility review.
 
 ---
 
 # Implementation Plan
 
-## Task 1: Beta banner and composer line
-**Problem:** no standing statement that this is a beta and that the agent can be wrong.
-**Done when:** a dismissible banner, "arkos is in beta. It can make mistakes and the service may change. Keep copies of anything important. Learn more", shows until acknowledged (`arkos-beta-ack`) and then stays gone across reloads; every `Composer` shows "arkos can be wrong. It acts on your connected accounts only with your approval — check before you approve." muted, under the input.
-**Touch point:** `frontend/app.jsx` (above the error banner in `main`); `frontend/lookingglass.jsx` (`Composer`); `frontend/styles.css`; `frontend/index.html` (`?v=`).
+## Task 1: Beta banner and chat-box line
+**Problem:** nothing says this is a beta or that the agent can be wrong.
+**Done when:** the banner shows until dismissed and stays gone after reloads; every chat box shows the line under it.
+**Touch point:** `frontend/app.jsx` (banner); `frontend/lookingglass.jsx` (chat box); `frontend/styles.css`; `frontend/index.html` (bump `?v=`).
 **Priority:** High | **Effort:** <2h | **Blockers:** none
-**Out of scope:** server-side acknowledgment.
-**Acceptance test:** in the browser pane: dismiss → reload → gone; clear storage → back.
+**Out of scope:** remembering dismissals on the server.
+**Acceptance test:** in the browser: dismiss, reload, still gone; clear storage, back.
 
 ---
 
-## Task 2: Approval card says who's acting
-**Problem:** approving reads like confirming a suggestion, not authorizing an action as yourself.
-**Done when:** every `call` card shows "Approving lets arkos do this as you, using your connected account. It may not be reversible.", and cards with `destructive: true` add "This action can't be undone from arkos." `/attention` items carry `destructive`.
-**Touch point:** `harness_module/runner.py` (rename `_destructive` to `is_destructive`, updating callers); `harness_module/api.py` (`attention` adds `"destructive": runner.is_destructive(r["tool_name"]) if r["tool_name"] else False`); `frontend/components.jsx` (`ApprovalCard`).
+## Task 2: Approval cards say who's acting
+**Problem:** approving reads like confirming a suggestion, not acting as yourself.
+**Done when:** every action card shows the "as you" line, irreversible ones add the second line, and the "what's waiting" list marks each item irreversible or not.
+**Touch point:** `harness_module/runner.py` (make the always-ask check public); `harness_module/api.py` (`/attention`); `frontend/components.jsx` (approval card).
 **Priority:** High | **Effort:** <2h | **Blockers:** none
-**Out of scope:** changing what's gated.
-**Acceptance test:** `test_attention_marks_destructive_calls`.
+**Out of scope:** changing what needs approval.
+**Acceptance test:** Test 1.
 
 ---
 
-## Task 3: Connect interstitial
+## Task 3: Explain before connecting
 **Problem:** a user can hand the agent their inbox without being told what that means.
-**Done when:** the first `connect` press for a toolkit shows, inline in its row: "Connecting {name} lets arkos read and act in your {name} account through Composio, our integration provider, whenever a session you start has {name} turned on. Actions that send, share, delete or merge always ask you first. You can disconnect anytime here." with a help link and Continue/Cancel. Continue calls `connect(row)` synchronously, so the popup isn't blocked. The acknowledgment is remembered per `row.server`.
-**Touch point:** `frontend/views.jsx` (`SettingsModal`).
+**Done when:** the first "connect" for each account shows the explainer inline; Continue opens the popup (not blocked); the explainer doesn't reappear for that account.
+**Touch point:** `frontend/views.jsx` (Settings).
 **Priority:** High | **Effort:** <4h | **Blockers:** none
-**Out of scope:** per-scope text. Managed configs fix scopes, and `list_connections` returns none.
-**Acceptance test:** in the browser pane: first press → interstitial; Continue → popup opens; a later press → straight to the popup.
+**Out of scope:** explaining individual permissions.
+**Acceptance test:** in the browser: first connect shows it; Continue opens the popup; the next connect skips it.
 
 ---
 
 ## Task 4: Upload warning, autopilot note, keyboard access
-**Problem:** risky moments in Files and autopilot carry no guidance, and auth links aren't keyboard-reachable.
-**Done when:** `ComputerView` shows "Don't upload passwords, government ID numbers, health records, other students' records, or export-controlled research data." linking `responsible-use.html`; the autopilot button has "Autopilot keeps working without you for up to N minutes, and still asks before anything on the always-ask list." (N from `limits.unattended_wall_clock_s`); `Login`'s `<span onClick>` controls (`auth-forgot`, `auth-link`) become `<button type="button">` with the same look.
-**Touch point:** `frontend/views.jsx` (`ComputerView`, `Login`); `frontend/lookingglass.jsx` (`SessionDetail`); `frontend/styles.css`; `frontend/index.html` (`?v=`).
-**Priority:** Medium | **Effort:** <4h | **Blockers:** ready 01 (`limits`)
+**Problem:** the risky moments in Files and autopilot carry no guidance, and two sign-in links can't be reached by keyboard.
+**Done when:** the Files view shows the upload warning, linking to the responsible-use page; the autopilot button shows its note with the configured minutes; "forgot" and "make one" on the sign-in screen are real buttons the keyboard can reach.
+**Touch point:** `frontend/views.jsx` (Files view, sign-in); `frontend/lookingglass.jsx` (autopilot button); `frontend/styles.css`.
+**Priority:** Medium | **Effort:** <4h | **Blockers:** ready 01 (time limit)
 **Out of scope:** blocking uploads by content.
-**Acceptance test:** keyboard only: Tab reaches "forgot" and "make one", and Enter activates them; copy is visible at 375px.
+**Acceptance test:** keyboard-only check of sign-in; all text visible at phone width.
 
 ---
 
 # Tests
+Copy and layout are checked in the browser per task; one server test covers the new flag.
 
-## Test 1: `test_attention_marks_destructive_calls`
-**What it verifies:** a parked `call` for `GMAIL_SEND_EMAIL` (and its `mcp_`-prefixed form) is `destructive: true`; `GMAIL_FETCH_EMAILS` is `false`; `ask` rows are `false`.
-**Why this matters:** the warning must follow the list the gate uses, not a copy of it.
-
-Everything else is copy and UI, verified in the browser per each task's acceptance test.
+| # | Test | Proves |
+|---|---|---|
+| 1 | `test_attention_marks_destructive_calls` | Sending email is marked irreversible; reading email isn't |
 
 ---
 
 # Open Questions
-1. *Verify in Task 2, not a decision:* "as you" assumes each Composio grant is the user's own OAuth account. Confirm from Composio's managed-auth docs and record it in Implementation Notes; if it's wrong, the copy changes.
+Checks for whoever builds this. None needs a decision.
+1. Task 2: confirm from Composio's documentation that each connection acts as the user's own account. If it doesn't, the "as you" line changes.
 
 ---
 

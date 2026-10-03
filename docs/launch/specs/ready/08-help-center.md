@@ -1,33 +1,48 @@
 # // Feature Spec: Help Center (NMORGAN)
 
-*Ready 08 · Wave 3 · built after ready 02 (Deletion) and ready 03 (Data Export), because it describes their flows. Eleven static guide pages, written only from verified facts.*
+*Ready 08 · Wave 3 · after ready 02 and 03, because it describes deletion and export. Eleven short guide pages, written only from facts checked against the code.*
 
 ---
 
 **Sources**
-- `docs/launch/LAUNCH_READINESS_PLAN.md` §7.11 (page list), §10 (verified facts)
-- `frontend/app.jsx` (`NAV`), `frontend/views.jsx` (`DeskView`, `ApprovalsView`, `MailSent`), `frontend/lookingglass.jsx` (`LookingGlassView`, `SessionTools`), `frontend/components.jsx` (`Empty`, `StreamEvent`)
-- `config_module/config.yaml` (`quotas`, `budgets`, `sandbox`, `memory`, `llm.max_tools`, `mcp_servers`)
-- Depends on: ready 01 (page shell)
+- Plan: `docs/launch/LAUNCH_READINESS_PLAN.md` §7.11 (page list), §10 (checked facts)
+- Settings the pages quote: `config_module/config.yaml`
+- Screens to link from: `frontend/views.jsx`, `frontend/lookingglass.jsx`, `frontend/components.jsx`
 
-**Status:** Ready | **Author:** Vin Baker | **Last updated:** 2026-09-25
+**Status:** Ready | **Author:** Vin Baker | **Last updated:** 2026-10-03
 
 ---
 
 # Problem
-The only guidance in the product is the three-line pitch in `AuthAside` and empty states like "no projects yet". New users have to find projects, sessions, autopilot, approvals, per-session tool toggles, folder claims and the 128-tool cap by trial and error. Some of that, like a connector silently benched or a session parked on an approval, looks like a bug. Success: each §7.11 page exists, every factual sentence traces to §10 or to code the author opened, and the product links to it where people get stuck.
+The only guidance in arkos is the sign-in pitch and a few empty-screen lines like "no projects yet". New users have to discover projects, conversations, autopilot, approvals, per-conversation tool switches and the tool limit by trial and error. Some of it looks like a bug, such as a connected account switched off automatically, or a conversation waiting on an approval. Success: each guide page exists, every fact on it is checked, and the app links to it where people get stuck.
 
 ---
 
 # Technical Background
-`NAV = ["desk", "approvals", "files", "projects"]`, with settings as a modal. A project links folders (`project_folders`); a session claims folders (`session_claims`), and inside the sandbox they appear at `~/store/<folder>/`, the only durable path. Tool toggles are per session (`SessionTools`). Past `llm.max_tools` (128), whole servers are benched most-recently-enabled first, and a `status` event says so. Resend and reset emails wait 60 s (`RESEND_WAIT`). §10 lists the rest with their sources.
+Things the pages must explain, all checked in the code:
+- Projects link folders of files; conversations work inside them. Inside the agent's sandbox, folders appear at `~/store/<folder>/`, and only that path is kept.
+- Tools for connected accounts are switched on per conversation. Past 128 tools in total, arkos switches whole accounts off (most recently enabled first) and says so in the conversation.
+- Sign-up and reset emails can only be resent once every 60 seconds.
+- Plan §10 lists the rest, with where each fact comes from.
 
 ---
 
 # Proposed Approach
-Plain HTML in `frontend/help/`, sharing `legal/legal.css`, each page ending "Still stuck? {{SUPPORT_EMAIL}}". If a fact isn't in §10, verify it in code and add it to §10 in the same PR. Two PRs by audience: first-hour pages, then reference. Questions that touch policy (for example "does arkos train on my data?") get one sentence that links the matching Privacy Policy section rather than answering, so this spec never waits on D8 or any other decision.
+Plain HTML pages in `frontend/help/`, using the legal pages' stylesheet. Each ends with "Still stuck? {{SUPPORT_EMAIL}}". A fact not in plan §10 gets checked in the code and added there first. Policy questions (for example, "does arkos train on my data?") link to the matching Privacy Policy section instead of answering, so this spec never waits on a decision.
 
-**Not in scope:** screenshots (they rot with every UI change), tours, search.
+| Page | Covers |
+|---|---|
+| Start here, Getting started | What arkos is; sign up, first chat, first project, first approval |
+| Projects and conversations | Projects, conversations, autopilot, stopping, deleting |
+| Approvals and autopilot | What waits for you, what always asks, declining |
+| Connecting accounts | The seven services, per-conversation switches, the tool limit |
+| Files and memory | Folders, uploads (25 MB), undo, what the agent remembers |
+| Limits | Every number, read from config |
+| Your data | Export, deleting things, how long things are kept |
+| Responsible use | Academic integrity, what not to upload, checking the agent's work |
+| FAQ, Troubleshooting | 10–15 common questions; missing emails, expired links, blocked popups |
+
+**Not in scope:** screenshots (they go stale with every UI change), in-app tours, search.
 
 ---
 
@@ -35,49 +50,46 @@ Plain HTML in `frontend/help/`, sharing `legal/legal.css`, each page ending "Sti
 
 ## Task 1: First-hour pages
 **Problem:** new users have no walkthrough.
-**Done when:** `index.html`, `getting-started.html`, `projects-and-sessions.html`, `approvals-and-autopilot.html` and `connecting-accounts.html` cover their §7.11 rows; the seven connectors are named exactly as `mcp_servers.*.name`; the benching behaviour and the 128 cap are explained on the connections page under `#tool-limit`.
-**Touch point:** `frontend/help/{index,getting-started,projects-and-sessions,approvals-and-autopilot,connecting-accounts}.html`.
+**Done when:** Start here, Getting started, Projects and conversations, Approvals and autopilot, and Connecting accounts cover their rows; the seven services are named as in config; the tool limit is explained under a `#tool-limit` heading.
+**Touch point:** five new pages in `frontend/help/`.
 **Priority:** High | **Effort:** 1 day | **Blockers:** ready 01
-**Out of scope:** reference pages.
-**Acceptance test:** `test_help_pages_exist_and_link_up`.
+**Out of scope:** the reference pages.
+**Acceptance test:** Test 1.
 
 ---
 
 ## Task 2: Reference and troubleshooting pages
-**Problem:** limits, data handling and failure modes are undocumented.
-**Done when:** `files-and-memory.html`, `limits.html`, `your-data.html`, `responsible-use.html`, `faq.html` (10–15 Q&As) and `troubleshooting.html` cover their §7.11 rows; `limits.html` marks each number `data-config="<dotted.key>"`; `your-data.html` describes export (ready 03) and session delete, undo, project delete and account delete (ready 02) as built, and links the Privacy Policy for everything else.
-**Touch point:** `frontend/help/{files-and-memory,limits,your-data,responsible-use,faq,troubleshooting}.html`.
+**Problem:** limits, data handling and common failures aren't written down.
+**Done when:** the remaining six pages cover their rows; each number on the Limits page is tagged with the config setting it comes from; Your data describes export and deletion as built.
+**Touch point:** six new pages in `frontend/help/`.
 **Priority:** Medium | **Effort:** 1 day | **Blockers:** Task 1; ready 02 (Parts A–C) and ready 03 merged
 **Out of scope:** the Privacy Policy itself.
-**Acceptance test:** `test_limits_page_matches_config`.
+**Acceptance test:** Test 2.
 
 ---
 
 ## Task 3: Link from where people get stuck
 **Problem:** a guide nobody finds doesn't help.
-**Done when:** `DeskView`'s "no projects yet" adds "new here? start with the guide"; `LookingGlassView` gains an empty state for `projects.length === 0` with the same line (today it renders an empty grid and nothing else); `ApprovalsView`'s empty state links `approvals-and-autopilot.html`; `MailSent` links the troubleshooting anchor for missing email; a benching `status` line in `StreamEvent` links `connecting-accounts.html#tool-limit`.
-**Touch point:** `frontend/views.jsx` (`DeskView`, `ApprovalsView`, `MailSent`), `frontend/lookingglass.jsx` (`LookingGlassView`), `frontend/components.jsx` (`StreamEvent`), `frontend/index.html` (`?v=`).
+**Done when:** the desk's "no projects yet" and a new empty state on the projects view (it has none today) say "new here? start with the guide"; the empty approvals view links the approvals page; the check-your-email screen links troubleshooting; the "tools switched off" notice in a conversation links the tool-limit section.
+**Touch point:** `frontend/views.jsx` (desk, approvals, email screen); `frontend/lookingglass.jsx` (projects view); `frontend/components.jsx` (conversation notices); `frontend/index.html` (bump `?v=`).
 **Priority:** Medium | **Effort:** <2h | **Blockers:** Tasks 1–2
-**Out of scope:** changing the benching event payload.
-**Acceptance test:** in the browser pane, each link opens its page at the right anchor.
+**Out of scope:** changing the notices themselves.
+**Acceptance test:** in the browser, each link opens the right page and section.
 
 ---
 
 # Tests
-In `tests/test_legal_pages.py`, shared with drafting 01.
+These live in `tests/test_legal_pages.py`, shared with drafting 01.
 
-## Test 1: `test_help_pages_exist_and_link_up`
-**What it verifies:** every §7.11 page exists and links `help/index.html`, and every relative link under `frontend/help/` resolves to a file.
-**Why this matters:** a broken help link is the worst kind.
-
-## Test 2: `test_limits_page_matches_config`
-**What it verifies:** each `data-config` element's text equals that config value.
-**Why this matters:** limits change in config, and the page must fail CI rather than drift.
+| # | Test | Proves |
+|---|---|---|
+| 1 | `test_help_pages_exist_and_link_up` | Every page exists and every link between pages works |
+| 2 | `test_limits_page_matches_config` | The Limits page can't drift from the real settings |
 
 ---
 
 # Open Questions
-None. `{{SUPPORT_EMAIL}}` is D16, and policy questions link out to the Privacy Policy.
+None. The support address is D16; policy questions link to the Privacy Policy.
 
 ---
 

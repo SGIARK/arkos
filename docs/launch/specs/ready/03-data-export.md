@@ -5,94 +5,77 @@
 ---
 
 **Sources**
-- `docs/launch/LAUNCH_READINESS_PLAN.md` §4.1
-- `harness_module/api.py` (`CurrentUser`, `_check_auth_rate` as the limiter pattern, `ApiError`)
-- `harness_module/store.py` (`read_tree`), `harness_module/blobs.py` (`get_blob`), `harness_module/memory.py` (`read_memory`)
-- `db/migrations/0000_migration_0.sql` (`sessions`, `session_events`, `approvals`), `0005_memory.sql` (`memory_files`), `0015_user_store.sql` (`project_folders`)
-- `tool_module/connections.py` (`load`), `frontend/views.jsx` (`SettingsModal`)
+- Plan: `docs/launch/LAUNCH_READINESS_PLAN.md` §4.1 (what we store)
+- Storage: `harness_module/store.py`, `harness_module/blobs.py`, `harness_module/memory.py`
+- Connections: `tool_module/connections.py`
+- Server and screen: `harness_module/api.py`, `frontend/views.jsx`
 
-**Status:** Ready | **Author:** Vin Baker | **Last updated:** 2026-09-25
+**Status:** Ready | **Author:** Vin Baker | **Last updated:** 2026-10-03
 
 ---
 
 # Problem
-Users can't get their data out. The Privacy Policy draft promises access and portability, the Terms tell users to keep backups, and account deletion says "export first". None of that is true until this exists. Success: `GET /auth/me/export` returns a ZIP of every category in plan §4.1 that we hold for the user, with no credential in it.
+Users can't get their data out. The Privacy Policy promises they can, the Terms tell them to keep backups, and account deletion tells them to download first. None of that is true until this exists. Success: one download contains everything arkos keeps about the user, and no credentials.
 
 ---
 
 # Technical Background
-Everything is already addressable per user. `store.read_tree(user_id)` lists the file tree and `blobs.get_blob(hash)` returns bytes. `memory.read_memory(user_id)` returns the curated core; notes are `memory_files` rows. Sessions are `sessions WHERE user_id`, with `session_events` in `seq` order and their `approvals`. `connections.load(user_id)` returns `server`, `status`, `refreshed_at` and `connected_account_id`, and the last of those is a Composio handle that must not leave.
-
-`_check_auth_rate` is the in-process sliding-window limiter already in `api.py`. Export copies its shape, keyed on `user_id`.
+- Everything is already stored per user: files, conversations and their messages, approvals, projects, the agent's memory, and connected accounts.
+- One stored field is off limits: the Composio account id kept with each connection is effectively a key to that account.
+- The server already limits sign-in attempts per address with a small in-memory counter. The export rate limit copies that pattern, per user.
 
 ---
 
 # Proposed Approach
-`account.export_archive(user_id)` builds the ZIP into a `tempfile.SpooledTemporaryFile` (spills to disk past 64 MB): blob fetches run on the loop, `zipfile` writes run in `asyncio.to_thread`. Stdlib `zipfile` can't write to a socket; a spooled file bounds memory with no new dependency. `harness_module/account.py` is created here if ready 02 hasn't created it yet; whichever lands first creates it.
+Build the ZIP into a temporary file that spills to disk past 64 MB, then send it. That keeps memory use flat without a new library. The account module is shared with ready 02; whichever lands first creates it.
 
-```
-account.json          id, email, display_name, created_at, consent records if the table exists
-projects.json         projects and linked folders
-sessions.json         session rows
-sessions/<id>.jsonl   events, oldest first
-approvals.json
-memory/MEMORY.md      core
-memory/notes.jsonl
-files/<path>          current tree bytes
-connections.json      server, status, refreshed_at. Never connected_account_id
-README.txt            what each file is, and that operational logs are excluded
-```
+| In the ZIP | What it is |
+|---|---|
+| `account.json` | email, name, sign-up date, consent records (if that table exists yet) |
+| `projects.json` | projects and their linked folders |
+| `sessions.json`, `sessions/<id>.jsonl` | every conversation and its messages, oldest first |
+| `approvals.json` | every approval asked and answered |
+| `memory/` | the agent's memory and notes |
+| `files/` | every current file |
+| `connections.json` | which accounts are connected and when; never the account ids |
+| `README.txt` | what each file is, and that server logs aren't included |
 
-**Defaults:** `system_events` (30-day operational logs) are excluded, and the README says so; `quotas.export_max_mb: 2048`. Both are one-line changes.
+**Defaults:** server logs (kept 30 days) are left out; exports are capped at 2 GB (`quotas.export_max_mb`).
 
-**Not in scope:** emailed async exports; files sitting in undo (`deleted_files`).
+**Not in scope:** emailed exports; files sitting in undo.
 
 ---
 
 # Implementation Plan
 
-## Task 1: Archive builder
-**Problem:** nothing assembles one user's data in one place.
-**Done when:** for a seeded user with 2 projects, 3 sessions, a memory core and 2 notes, 3 files and 1 connection, the archive holds every path above with matching counts; `connections.json` has no `connected_account_id`; exceeding `quotas.export_max_mb` raises `ExportTooLarge`.
-**Touch point:** `harness_module/account.py` (new or extended: `export_archive`, `ExportTooLarge`); `config_module/config.yaml` (`quotas.export_max_mb: 2048`).
+## Task 1: Build the archive
+**Problem:** nothing gathers one user's data in one place.
+**Done when:** for a test user with projects, conversations, memory, files and a connection, the archive has every section above with the right counts, contains no account ids, and an export over the cap fails with a clear error.
+**Touch point:** `harness_module/account.py` (new, or shared with ready 02); `config_module/config.yaml` (export cap).
 **Priority:** High | **Effort:** 1 day | **Blockers:** none
-**Out of scope:** HTTP.
-**Acceptance test:** `test_export_contains_every_section`, `test_export_carries_no_credentials`.
-
-```python
-class ExportTooLarge(RuntimeError): ...
-
-async def export_archive(user_id: str) -> IO[bytes]:
-    """A rewound spooled file holding the ZIP; the caller streams and closes it."""
-```
-Consent records: include them if `legal_acceptances` exists (`to_regclass`), so this spec doesn't depend on ready 05.
+**Out of scope:** the download itself.
+**Acceptance test:** Tests 1–2.
 
 ---
 
-## Task 2: Endpoint and button
+## Task 2: The download button
 **Problem:** users can't ask for it.
-**Done when:** `GET /auth/me/export` returns `application/zip` with `Content-Disposition: attachment; filename="arkos-export-YYYY-MM-DD.zip"`; a second call within 10 minutes returns `429 quota_exceeded`; `ExportTooLarge` returns 413; Settings has "download my data".
-**Touch point:** `harness_module/api.py` (new `export_me` on `CurrentUser`; `_export_hits` limiter); `frontend/views.jsx` (`SettingsModal`: a plain `<a href="/auth/me/export" download>`, so the cookie rides along); `frontend/index.html` (`?v=`).
+**Done when:** `GET /auth/me/export` downloads `arkos-export-<date>.zip`; asking again within 10 minutes is refused; an oversize export says to contact support; Settings has "download my data".
+**Touch point:** `harness_module/api.py` (new endpoint and limit); `frontend/views.jsx` (Settings); `frontend/index.html` (bump `?v=`).
 **Priority:** High | **Effort:** <4h | **Blockers:** Task 1
-**Out of scope:** a progress indicator.
-**Acceptance test:** `test_export_is_rate_limited`; the ZIP downloads and opens in the browser pane.
+**Out of scope:** a progress bar.
+**Acceptance test:** Test 3; download and open the ZIP in the browser.
 
 ---
 
 # Tests
-In new `tests/test_account.py` (Task 1) and `tests/test_api.py` (Task 2), with `FilesystemBlobs` via `use_blobs`.
+Storage uses the local-disk backend.
 
-## Test 1: `test_export_contains_every_section`
-**What it verifies:** each layout path exists, and each session's JSONL line count equals its seeded event count.
-**Why this matters:** a silently missing section is a broken access right.
-
-## Test 2: `test_export_carries_no_credentials`
-**What it verifies:** no file in the archive contains `connected_account_id` or the session cookie name.
-**Why this matters:** exports get forwarded around, and one mustn't work as a key.
-
-## Test 3: `test_export_is_rate_limited`
-**What it verifies:** 200, then 429 within the window for the same user; a different user still gets 200.
-**Why this matters:** export is the most expensive read we have.
+| # | Test | Proves |
+|---|---|---|
+| 1 | `test_export_contains_every_section` | Every section is present with the right counts |
+| 2 | `test_export_carries_no_credentials` | No account id or session cookie ends up in the ZIP |
+| 3 | `test_export_is_rate_limited` | A second export within 10 minutes is refused; another user isn't affected |
 
 ---
 

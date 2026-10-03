@@ -1,97 +1,93 @@
 # // Feature Spec: Security Headers & security.txt (NMORGAN)
 
-*Ready 04 · Wave 1 · no blockers. The cheap "reasonable security" basics. Self-hosting fonts and scripts is a separate spec (ready 07).*
+*Ready 04 · Wave 1 · no blockers. The cheap, standard browser protections, and a published contact for security reports.*
 
 ---
 
 **Sources**
-- `docs/launch/LAUNCH_READINESS_PLAN.md` §3 (R12, R17); `docs/launch/DECISIONS.md` (D16)
-- `harness_module/api.py` (`app`, the `CORSMiddleware` setup, the `/app` mount)
-- `frontend/index.html` (unpkg scripts, Google Fonts), `frontend/api.jsx` (`supabaseClient`)
-- `config_module/config.yaml` (`auth.cookie_secure`, `app.public_url`)
+- Plan: `docs/launch/LAUNCH_READINESS_PLAN.md` §3 (risks R12, R17); `docs/launch/DECISIONS.md` (D16)
+- Server: `harness_module/api.py`; settings: `config_module/config.yaml`
+- Pages: `frontend/index.html`
 
-**Status:** Ready | **Author:** Vin Baker | **Last updated:** 2026-09-25
+**Status:** Ready | **Author:** Vin Baker | **Last updated:** 2026-10-03
 
 ---
 
 # Problem
-The app sends no security headers. Any site can frame the approvals page and clickjack its approve buttons, browsers get no sniffing or referrer rules, and a researcher has no published contact. Massachusetts 201 CMR 17.00 expects reasonable technical safeguards, and these are the cheapest. Success: every response carries the header set below, and `/.well-known/security.txt` answers.
+arkos sends no security headers. Another site could show the approvals page inside a hidden frame and trick a user into clicking "approve" (clickjacking). Security researchers have no published way to report a problem. Massachusetts law expects reasonable safeguards, and these are the cheapest ones. Success: every response carries the headers below, and `/.well-known/security.txt` answers.
 
 ---
 
 # Technical Background
-`app` has one middleware, a `CORSMiddleware` restricted to `app.public_url`. Three things in the tree run script the CSP would otherwise block: `@babel/standalone` compiles and runs the `text/babel` scripts in the page; the `/connections/done` handler returns `_CLOSE_POPUP`, an HTML page whose inline `<script>` posts back to the opener and closes the popup; and ready 01's legal pages set the theme from a short inline script. So `script-src` needs `'unsafe-inline'` and `'unsafe-eval'` until the frontend is prebuilt. That's a known gap, written down rather than hidden: the CSP's real protection at launch is `frame-ancestors 'none'` (clickjacking) plus the origin limits on connect, font and style. Scripts come from `unpkg.com` and fonts from Google Fonts today, so the CSP allows them until ready 07 lands. supabase-js talks to the project URL from `/auth/config`, so `connect-src` includes that origin.
+Two terms used below:
+- **Security headers:** instructions the server sends with every response, telling the browser what not to allow.
+- **CSP (content security policy):** the header listing where scripts, styles and data may come from.
 
-`auth.cookie_secure` is false only for plain-HTTP local dev. HSTS follows it, or a local run pins localhost to HTTPS for a year.
+What's true today:
+- The server adds no headers of its own beyond the standard cross-origin (CORS) one.
+- Scripts load from unpkg and fonts from Google until ready 07 moves them in-house, so the CSP must allow both for now.
+- Three things run script the CSP would normally block: the in-browser JSX compiler (Babel), the small page that closes the "connect account" popup, and the theme switch on the legal pages. Until the frontend is prebuilt, the CSP has to allow them, so its real value at launch is blocking framing.
+- Local development runs on plain http, so the "always use https" header must only be sent in production.
 
 ---
 
 # Proposed Approach
-1. One small ASGI middleware in `harness_module/headers.py` sets the headers on every response, API and static. CSP ships report-only (`security.csp_enforce: false`), then flips to enforced after a clean browser pass.
-2. `GET /.well-known/security.txt` from config.
+One small piece of server code (middleware) adds these headers to every response, pages and API alike:
 
-**Decisions applied (defaults from `DECISIONS.md`):** D16 → `security.contact: "mailto:{{SECURITY_EMAIL}}"` until the inbox exists; ready 09 fails launch while it's a placeholder.
+| Header | What it does |
+|---|---|
+| `X-Frame-Options: DENY` and CSP `frame-ancestors 'none'` | No site can frame arkos |
+| `X-Content-Type-Options: nosniff` | Browsers don't guess file types |
+| `Referrer-Policy: strict-origin-when-cross-origin` | Other sites see only arkos's domain, not full addresses |
+| `Permissions-Policy` | Camera, microphone and location are off |
+| `Strict-Transport-Security` | Browsers always use https (production only) |
+| CSP | Limits where scripts, styles, fonts and data come from |
 
-**Not in scope:** vendoring assets (ready 07), removing Babel-in-browser, MFA, proxy-level rate limiting.
+The CSP starts in "report only" mode: the browser logs what it would have blocked but blocks nothing. It switches to enforced after a clean check in the browser.
+
+**Default:** the security contact is a placeholder until the inbox exists (D16); ready 09 refuses launch while it is.
+
+**Not in scope:** hosting scripts and fonts ourselves (ready 07); prebuilding the frontend; two-factor sign-in.
 
 ---
 
 # Implementation Plan
 
 ## Task 1: Header middleware
-**Problem:** no clickjacking, sniffing, referrer or transport protections.
-**Done when:** `GET /app/` and `GET /auth/config` both carry `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy: camera=(), microphone=(), geolocation=()`, and a CSP with `frame-ancestors 'none'`, sent as `Content-Security-Policy-Report-Only` while `security.csp_enforce` is false. HSTS is present only when `auth.cookie_secure` is true.
-**Touch point:** new `harness_module/headers.py`; `harness_module/api.py` (`app.add_middleware` beside CORS); `config_module/config.yaml` (new `security:` block).
+**Problem:** no browser protections are sent.
+**Done when:** a page and an API response both carry every header in the table; the CSP is report-only while `security.csp_enforce` is false; the https header appears only when `auth.cookie_secure` is true; in the browser, signing in, running a conversation and connecting an account (the popup must close itself) produce no CSP warnings.
+**Touch point:** new `harness_module/headers.py`; `harness_module/api.py` (register it); `config_module/config.yaml` (new `security` section).
 **Priority:** High | **Effort:** <4h | **Blockers:** none
-**Out of scope:** a CSP violation-report endpoint.
-**Acceptance test:** `test_security_headers_on_api_and_static`, `test_hsts_follows_cookie_secure`; in the browser pane, sign in, run a session, and complete a connector popup (it must close itself), with no report-only violations in the console.
-
-```python
-def content_security_policy(supabase_origin: str) -> str:
-    """default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com;
-    style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com;
-    connect-src 'self' <supabase_origin>; img-src 'self' data:; frame-ancestors 'none';
-    base-uri 'self'; form-action 'self'"""
-```
-```yaml
-security:
-  csp_enforce: false
-  contact: "mailto:{{SECURITY_EMAIL}}"   # D16
-  txt_expires: "2027-10-01T00:00:00Z"
-```
+**Out of scope:** collecting CSP reports.
+**Acceptance test:** Tests 1–2, plus the browser check.
 
 ---
 
 ## Task 2: security.txt
-**Problem:** no published vulnerability contact.
-**Done when:** `GET /.well-known/security.txt` returns `text/plain` with `Contact` (from `security.contact`), `Expires` (from `security.txt_expires`), `Policy: <app.public_url>/app/legal/security.html`, and `Preferred-Languages: en`.
-**Touch point:** `harness_module/api.py` (new handler registered above the `/app` mount).
-**Priority:** Medium | **Effort:** <1h | **Blockers:** none (the policy page exists as a stub from ready 01, or 404s until then, which doesn't break the file)
-**Out of scope:** PGP signing.
-**Acceptance test:** `test_security_txt_is_served`.
+**Problem:** there's no published security contact.
+**Done when:** `/.well-known/security.txt` returns the contact, an expiry date, a link to `/app/legal/security.html` and the preferred language, all from config.
+**Touch point:** `harness_module/api.py`.
+**Priority:** Medium | **Effort:** <1h | **Blockers:** none
+**Out of scope:** signing the file.
+**Acceptance test:** Test 3.
 
 ---
 
 # Tests
-New `tests/test_headers.py` for the middleware; `tests/test_api.py` for the route.
+No mocks needed.
 
-## Test 1: `test_security_headers_on_api_and_static`
-**What it verifies:** the four headers plus the CSP header are on both an API route and a static page.
-**Why this matters:** static files bypass route code, so the middleware has to cover both.
-
-## Test 2: `test_hsts_follows_cookie_secure`
-**What it verifies:** HSTS is present with `cookie_secure: true` and absent with `false`.
-**Why this matters:** a stray HSTS breaks every developer's localhost.
-
-## Test 3: `test_security_txt_is_served`
-**What it verifies:** 200, `text/plain`, and all four fields.
-**Why this matters:** RFC 9116 is what researchers actually check.
+| # | Test | Proves |
+|---|---|---|
+| 1 | `test_security_headers_on_api_and_static` | Pages and API responses both get the headers |
+| 2 | `test_hsts_follows_cookie_secure` | The https header is off in local development |
+| 3 | `test_security_txt_is_served` | The file is served with all four fields |
 
 ---
 
 # Open Questions
-1. *Verify in Task 1, not a decision:* does the production Caddy already set any of these headers? If so, remove them there. Two CSPs intersect and break pages.
-2. *Verify in Task 1:* does `BrowserCanvas` load frames from another origin or as `blob:`? Adjust `img-src` from the report-only console output.
+Checks for whoever builds this. None needs a decision.
+1. Task 1: whether the production web server (Caddy) already sets any of these headers. If it does, set them in one place only; two CSPs combine and break pages.
+2. Task 1: whether the live browser view loads images from another address. Adjust the CSP from the report-only warnings.
 
 ---
 
