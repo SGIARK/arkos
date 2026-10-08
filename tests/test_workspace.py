@@ -250,7 +250,7 @@ async def test_an_empty_folder_materializes_nothing_and_does_not_fail():
     assert result.manifest == {}
 
 
-async def test_a_tree_row_whose_blob_is_gone_skips_that_file_rather_than_guessing():
+async def test_a_missing_blob_refuses_materialization_without_sealing_a_partial_tree():
     session_id, user_id = await _workspace()
     await store.commit_tree(user_id, [_file("taxes/a.txt", "1"), _file("taxes/b.txt", "2")])
     await pool.execute(
@@ -260,11 +260,11 @@ async def test_a_tree_row_whose_blob_is_gone_skips_that_file_rather_than_guessin
     )
     sandbox = _sweeping(FakeSandbox())
 
-    result = await workspace.materialize(sandbox, session_id, [_claim(user_id)])
+    with pytest.raises(store.StoreError, match="blob .* is missing"):
+        await workspace.materialize(sandbox, session_id, [_claim(user_id)])
 
-    assert result.transferred == 1
-    assert f"{workspace.MOUNT_ROOT}/taxes/a.txt" in sandbox.files
-    assert f"{workspace.MOUNT_ROOT}/taxes/b.txt" not in sandbox.files
+    assert sandbox.files == {}
+    assert len(await store.read_tree(user_id, "taxes")) == 2
 
 
 async def test_a_failed_extract_is_raised():
@@ -274,7 +274,9 @@ async def test_a_failed_extract_is_raised():
 
     async def failing_exec(session_id, command, timeout=120):
         sandbox.commands.append(command)
-        return {"stdout": "", "stderr": "tar: disk full", "exit_code": 2}
+        if "tar xf" in command:
+            return {"stdout": "", "stderr": "tar: disk full", "exit_code": 2}
+        return {"stdout": "", "stderr": "", "exit_code": 0}
 
     sandbox.exec = failing_exec
 
@@ -330,7 +332,7 @@ def _sweeping(sandbox: FakeSandbox) -> FakeSandbox:
 
     async def exec_(session_id, command, timeout=120):
         sandbox.commands.append(command)
-        if command.startswith("find "):
+        if "find " in command:
             # shlex.quote leaves an ordinary path unquoted, so accept both forms.
             mounts = [t.strip("'") for t in command.split() if t.strip("'").startswith("/home/")]
             lines = [
@@ -614,3 +616,35 @@ async def test_the_sentinel_is_not_committed_as_a_store_file():
 
     assert workspace.SENTINEL in sandbox.files, "the box was never sealed"
     assert [e.path for e in await store.read_tree(user_id, "taxes")] == ["taxes/a.txt"]
+
+
+async def test_a_failed_sandbox_scan_cannot_delete_persisted_files():
+    session_id, user_id = await _workspace()
+    await store.commit_tree(user_id, [_file("taxes/a.txt", "saved")])
+    sandbox = _sweeping(FakeSandbox())
+    claims = [_claim(user_id)]
+    await workspace.materialize(sandbox, session_id, claims)
+    original_exec = sandbox.exec
+
+    async def disconnected(session_id, command, timeout=120):
+        if "find " in command:
+            return {"stdout": "", "stderr": "sandbox proxy unavailable", "exit_code": 1}
+        return await original_exec(session_id, command, timeout)
+
+    sandbox.exec = disconnected
+    with pytest.raises(store.StoreError, match="sandbox proxy unavailable"):
+        await workspace.flush(sandbox, session_id, claims)
+
+    tree = await store.read_tree(user_id, "taxes")
+    assert len(tree) == 1
+    assert await store.get_blob(tree[0].content_hash) == b"saved"
+
+
+async def test_the_configured_base_template_reaches_the_e2b_sdk(monkeypatch):
+    from e2b_code_interpreter import Sandbox
+
+    calls = []
+    monkeypatch.setattr(sandbox_manager.config, "get", lambda key: "base" if key == "sandbox.template" else None)
+    monkeypatch.setattr(Sandbox, "create", lambda **kwargs: calls.append(kwargs))
+    sandbox_manager.SandboxManager()._create("local-template-test")
+    assert calls[0]["template"] == "base"

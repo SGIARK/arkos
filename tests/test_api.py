@@ -11,6 +11,7 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import jwt
 import pytest
 import pytest_asyncio
@@ -1065,6 +1066,70 @@ async def test_auth_config_is_readable_signed_out(client):
 
     assert set(body) == {"supabase_url", "anon_key"}
     assert isinstance(body["anon_key"], str)
+
+
+class _FakeGoTrue:
+    """Stands in for the shared HTTP client; records the one forwarded request."""
+
+    def __init__(self):
+        self.sent: dict = {}
+
+    async def request(self, method, url, params=None, content=None, headers=None):
+        self.sent = {"method": method, "url": url, "params": dict(params or {}), "body": content, "headers": headers}
+        return httpx.Response(400, json={"error": "invalid_grant"}, headers={"x-internal": "no"})
+
+
+def _proxy_flag(monkeypatch, on: bool) -> None:
+    real = api._cfg
+    monkeypatch.setattr(
+        api, "_cfg", lambda key, default=None: on if key == "auth.proxy_supabase" else real(key, default)
+    )
+
+
+@pytest.fixture
+def proxied(monkeypatch):
+    _proxy_flag(monkeypatch, True)
+    monkeypatch.setattr(api, "_origin", "https://testserver")
+    monkeypatch.setenv("SUPABASE_URL", "http://supabase.internal:8000")
+    fake = _FakeGoTrue()
+    monkeypatch.setattr(api.blobs, "http_client", lambda: fake)
+    return fake
+
+
+async def test_a_proxied_auth_config_names_this_origin(client, proxied):
+    """With the proxy on, the browser is pointed at us, not at a Supabase it may not reach."""
+    assert (await client.get("/auth/config")).json()["supabase_url"] == "https://testserver"
+
+
+async def test_the_auth_proxy_forwards_only_gotrue_headers(client, proxied):
+    response = await client.post(
+        "/auth/v1/token?grant_type=password",
+        content=b'{"email":"a@example.com","password":"x"}',
+        headers={"apikey": "anon", "content-type": "application/json", "cookie": "arkos_session=secret"},
+    )
+
+    assert response.status_code == 400, "GoTrue's own status comes back unchanged"
+    assert response.json() == {"error": "invalid_grant"}
+    assert "x-internal" not in response.headers
+    assert proxied.sent["url"] == "http://supabase.internal:8000/auth/v1/token"
+    assert proxied.sent["params"] == {"grant_type": "password"}
+    assert proxied.sent["body"] == b'{"email":"a@example.com","password":"x"}'
+    assert "cookie" not in proxied.sent["headers"], "our session cookie never reaches Supabase"
+    assert set(proxied.sent["headers"]) <= set(api._GOTRUE_REQUEST_HEADERS)
+    assert proxied.sent["headers"]["apikey"] == "anon"
+
+
+async def test_the_auth_proxy_refuses_a_cross_site_post(client, proxied):
+    response = await client.post("/auth/v1/token", headers={"origin": "https://evil.example"})
+
+    assert response.status_code == 403
+    assert proxied.sent == {}
+
+
+async def test_the_auth_proxy_is_off_by_default(client, monkeypatch):
+    _proxy_flag(monkeypatch, False)
+
+    assert (await client.post("/auth/v1/token")).status_code == 404
 
 
 @pytest.mark.parametrize("path", ["/app/", "/app/index.html"])

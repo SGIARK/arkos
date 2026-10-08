@@ -295,6 +295,11 @@ def _client_for_loop() -> Any:
     return client
 
 
+def http_client() -> Any:
+    """The shared async HTTP client for the running loop, for callers outside this module."""
+    return _client_for_loop()
+
+
 async def close_clients() -> None:
     """Close the client for the running loop. Called from the app's lifespan."""
     loop = asyncio.get_running_loop()

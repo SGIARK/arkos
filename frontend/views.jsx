@@ -565,6 +565,11 @@ function scopeNames(scopes) {
 
 /* ---------- SIGN IN ---------- */
 
+/* Google sign-in is OFF for now: the button is hidden and only the Supabase
+   email/password flows are offered. Flip to true once the Google provider is
+   configured in Supabase. */
+const GOOGLE_SIGN_IN = false;
+
 /* Sign-up, sign-in and Google are three ways to get a Supabase token and one
    way to be signed in: `api` trades any of them for our cookie via
    `POST /auth/session`, the only endpoint that reads a bearer. */
@@ -738,7 +743,7 @@ function Login({ gone, onSignedIn, problem: arrived, notice, startMode }) {
             </button>
             {/* Google is a way IN, not a way to reset a password it does not
                 hold — hidden here rather than offered and refused. */}
-            {!forgot && (
+            {!forgot && GOOGLE_SIGN_IN && (
               <React.Fragment>
                 <div className="auth-or">
                   <span className="rule" />

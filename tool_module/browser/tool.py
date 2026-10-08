@@ -216,6 +216,8 @@ def _build_browser_use_agent(run: _Run) -> Any:
         ),
         "browser": browser,
         "register_new_step_callback": run.on_step,
+        # Screenshots ride every step as image parts; a text-only model refuses them.
+        "use_vision": bool(_cfg("browser.use_vision", True)),
     }
     return Agent(**_accepted(Agent, wanted, keep={"task", "llm", "browser"}))
 
