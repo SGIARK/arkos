@@ -125,6 +125,15 @@ class TestKeyCachePersistence:
         token = jwt.encode({"sub": "u"}, "x" * 32, algorithm="HS256", headers={"kid": "k1"})
         assert jwt_utils._signing_key(token) is not None
 
+    def test_an_empty_set_means_no_keys_are_published(self, monkeypatch, tmp_path):
+        client, _ = self._client(monkeypatch, tmp_path, [])
+        monkeypatch.setattr(client, "fetch_data", lambda: {"keys": []})
+        (tmp_path / "jwks.json").write_text('{"keys": []}')
+
+        with pytest.raises(jwt_utils.NoKeysPublished):
+            jwt_utils.refresh_jwks()
+        assert not (tmp_path / "jwks.json").exists()
+
     def test_a_corrupt_cache_file_is_not_fatal(self, monkeypatch, tmp_path):
         self._client(monkeypatch, tmp_path, [])
         (tmp_path / "jwks.json").write_text("{not json")

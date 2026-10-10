@@ -179,9 +179,20 @@ async def _keys_and_sweep() -> None:
     if not warm:
         logger.info("no key cache on disk; the first fetch has to land before anyone can sign in")
     backoff = 1.0
+    fetching = True
     while True:
         try:
-            got = await asyncio.to_thread(jwt_utils.refresh_jwks)
+            got = False
+            if fetching:
+                try:
+                    got = await asyncio.to_thread(jwt_utils.refresh_jwks)
+                except jwt_utils.NoKeysPublished as e:
+                    if os.environ.get("SUPABASE_JWT_SECRET"):
+                        # HS256 tokens verify against the secret and never read
+                        # the cache, so there is nothing to wait for. A project
+                        # that later publishes keys is picked up on restart.
+                        logger.info("the project publishes no signing keys (%s); verifying with SUPABASE_JWT_SECRET", e)
+                        fetching = False
             warm = warm or got
             pruned = await pool.execute("DELETE FROM auth_sessions WHERE expires_at < now()")
             if pruned and pruned != "DELETE 0":
@@ -191,7 +202,7 @@ async def _keys_and_sweep() -> None:
         except Exception:  # noqa: BLE001 - a tick that dies must not take the app
             logger.warning("the key/sweep tick failed; retrying", exc_info=True)
             got = False
-        if warm:
+        if warm or not fetching:
             backoff = 1.0
             await asyncio.sleep(every)
         else:
