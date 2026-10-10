@@ -159,9 +159,32 @@ services:
       GOTRUE_EXTERNAL_EMAIL_ENABLED: ${ENABLE_EMAIL_SIGNUP:-true}
       GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: ${ENABLE_ANONYMOUS_USERS:-false}
       GOTRUE_MAILER_AUTOCONFIRM: ${ENABLE_EMAIL_AUTOCONFIRM:-true}
+      # Self-hosted GoTrue sends NO mail without an SMTP host: it swaps in a
+      # no-op mailer, so sign-up and reset report "sent" and nothing arrives.
+      # Point these at a real provider, or at the `mailpit` service below
+      # (SMTP_HOST=mailpit, SMTP_PORT=1025) to catch every email locally.
+      GOTRUE_SMTP_HOST: ${SMTP_HOST:-}
+      GOTRUE_SMTP_PORT: ${SMTP_PORT:-587}
+      GOTRUE_SMTP_USER: ${SMTP_USER:-}
+      GOTRUE_SMTP_PASS: ${SMTP_PASS:-}
+      GOTRUE_SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL:-noreply@arkos.local}
+      GOTRUE_SMTP_SENDER_NAME: ${SMTP_SENDER_NAME:-ArkOS}
     depends_on:
       supabase-db:
         condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - arkos-network
+
+  # Local mail catcher for dev: every auth email lands in a web inbox at
+  # http://localhost:8025 instead of a real one. Opt in with
+  # `docker compose --profile mail up -d mailpit` and SMTP_HOST=mailpit,
+  # SMTP_PORT=1025 in .env. Bound to loopback: the inbox holds live sign-in links.
+  mailpit:
+    image: axllent/mailpit:v1.20.0
+    profiles: ["mail"]
+    ports:
+      - "127.0.0.1:8025:8025"
     restart: unless-stopped
     networks:
       - arkos-network
