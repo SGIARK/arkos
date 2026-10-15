@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>arkos · a digital intern still on the job next week</title>
+<meta name="description" content="arkos works in its own sandbox and browser, keeps your files between runs, and asks before acting in your connected accounts unless you turn on autopilot.">
+<link rel="stylesheet" href="/app/legal/legal.css?v=2">
+<link rel="stylesheet" href="/app/landing/landing.css?v=1">
+<script src="/app/legal/cookie-notice.js?v=1" defer></script>
+</head>
+<body>
+<header class="site-header">
+  <a class="mark" href="/"><span class="glyph">b</span>arkos</a>
+  <a href="/app/">sign in</a>
+</header>
+
+<main class="landing">
+  <section class="hero" id="hero">
+    <h1>a digital intern<br>still on the job<br>next week.</h1>
+    <p>arkos works in its own sandbox and browser and keeps your files between runs. Actions in your connected accounts wait for your approval unless you turn on autopilot, and sending email, deleting and merging always wait for you.</p>
+    <div class="ctas">
+      <a class="btn primary" href="/app/">get started</a>
+      <a class="btn" href="/app/">sign in</a>
+    </div>
+  </section>
+
+  <section class="blocks" id="what-it-does" aria-label="What arkos does">
+    <div class="block">
+      <h2>approvals first</h2>
+      <p>Before arkos acts in Gmail, Calendar, GitHub or your other connected accounts, it shows you the exact action and waits for a yes, unless you've turned on autopilot.</p>
+    </div>
+    <div class="block">
+      <h2>a fresh sandbox</h2>
+      <p>Each conversation gets its own machine with a shell and your folders. When the work is done, the machine goes away.</p>
+    </div>
+    <div class="block">
+      <h2>files that persist</h2>
+      <p>Your files live in arkos's storage, not the sandbox, so they're there next time, in every project that uses them.</p>
+    </div>
+  </section>
+
+  <section class="info" id="your-data">
+    <h2>your data</h2>
+    <ul>
+      <li>arkos stores your account, your conversations, your files and the notes the agent keeps about you.</li>
+      <li data-decision="D3">The AI model is {{LLM_PROVIDER}}. It answers using what you send and what the agent reads for you.</li>
+      <li>We don't sell your data, and there are no ads.</li>
+      <li data-decision="D16">To delete or export your data, email <a href="mailto:{{PRIVACY_EMAIL}}">{{PRIVACY_EMAIL}}</a>.</li>
+    </ul>
+    <p><a href="/privacy">Read the privacy policy</a></p>
+  </section>
+
+  <section class="info" id="contact">
+    <h2>contact</h2>
+    <ul data-decision="D16">
+      <li>Help: <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a></li>
+      <li>Privacy: <a href="mailto:{{PRIVACY_EMAIL}}">{{PRIVACY_EMAIL}}</a></li>
+      <li>Security reports: <a href="mailto:{{SECURITY_EMAIL}}">{{SECURITY_EMAIL}}</a></li>
+    </ul>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <nav aria-label="Legal">
+    <a href="/terms">Terms</a>
+    <a href="/privacy">Privacy</a>
+    <a href="/app/legal/cookies.html">Cookies</a>
+    <a href="/acceptable-use">Acceptable use</a>
+    <a href="/help">Help</a>
+    <a href="https://github.com/SGIARK/arkos">Source (AGPL-3.0)</a>
+  </nav>
+  <p data-decision="D2">{{MIT_RELATIONSHIP_STATEMENT}}</p>
+  <p data-decision="D1">&copy; {{OPERATOR_LEGAL_NAME}}</p>
+</footer>
+</body>
+</html>

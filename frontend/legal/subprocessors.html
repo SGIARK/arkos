@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Subprocessors · arkos</title>
+<link rel="stylesheet" href="/app/legal/legal.css?v=2">
+<script src="/app/legal/cookie-notice.js?v=2" defer></script>
+</head>
+<body>
+<header class="site-header">
+  <a class="mark" href="/"><span class="glyph">b</span>arkos</a>
+  <a href="/app/">sign in</a>
+</header>
+<main>
+<h1>Subprocessors</h1>
+<p class="meta">The outside services that run parts of arkos.</p>
+<div class="table-wrap"><table>
+<tr><th>Provider</th><th>What it does</th><th>Data it handles</th><th>Where</th></tr>
+<tr><td>Supabase</td><td>Sign-in, database, file storage</td><td>Everything listed in the Privacy Policy</td><td class="draft">Draft — region not yet recorded</td></tr>
+<tr><td data-decision="D3">{{LLM_PROVIDER}}</td><td>The AI model</td><td>Messages, and what the agent reads from files, web pages and connected accounts</td><td class="draft">Draft — region not yet recorded</td></tr>
+<tr><td>e2b</td><td>The agent's sandbox (a shell and your folders)</td><td>Files in the folders a conversation uses, commands and their output</td><td class="draft">Draft — region not yet recorded</td></tr>
+<tr><td>Composio</td><td>Connects your accounts and runs their tools</td><td>Your account permissions, and the requests and replies of connected-account tools</td><td class="draft">Draft — region not yet recorded</td></tr>
+<tr><td>SerpAPI</td><td>Web search</td><td>Search queries</td><td class="draft">Draft — region not yet recorded</td></tr>
+<tr><td>{{HOSTING_PROVIDER}}</td><td>Runs the arkos server</td><td>All traffic</td><td class="draft">Draft — region not yet recorded</td></tr>
+<tr><td data-decision="D16">Sign-up email sender</td><td>Confirmation and password-reset emails</td><td>Your email address</td><td class="draft">Draft — region not yet recorded</td></tr>
+<tr><td>Browserless</td><td>The agent's browser</td><td>Pages visited and their content</td><td class="draft">Draft — confirm whether production self-hosts it; remove this row if so</td></tr>
+<tr><td>unpkg, Google Fonts</td><td>Scripts and fonts the app loads</td><td>Your IP address and browser type</td><td class="draft">Draft — remove once the app hosts its own scripts and fonts</td></tr>
+</table></div>
+</main>
+<footer class="site-footer">
+  <nav aria-label="Legal">
+    <a href="/terms">Terms</a>
+    <a href="/privacy">Privacy</a>
+    <a href="/app/legal/cookies.html">Cookies</a>
+    <a href="/acceptable-use">Acceptable use</a>
+    <a href="/help">Help</a>
+    <a href="/legal">All legal pages</a>
+    <a href="https://github.com/SGIARK/arkos">Source (AGPL-3.0)</a>
+  </nav>
+  <p data-decision="D2">{{MIT_RELATIONSHIP_STATEMENT}}</p>
+  <p data-decision="D1">&copy; {{OPERATOR_LEGAL_NAME}}</p>
+</footer>
+</body>
+</html>

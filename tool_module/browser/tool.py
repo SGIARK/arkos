@@ -22,6 +22,13 @@ from tool_module.envelope import ResultEnvelope, ToolContext, ToolSpec, ToolUnav
 
 logger = logging.getLogger(__name__)
 
+# browser-use reports each task's text, visited URLs and result to PostHog, and
+# checks PyPI on every run, unless told not to. The public pages promise "no
+# analytics", so this is forced rather than defaulted: an env value cannot undo it.
+# browser-use reads both on use, and every browser task runs after this import.
+os.environ["ANONYMIZED_TELEMETRY"] = "false"
+os.environ["BROWSER_USE_VERSION_CHECK"] = "false"
+
 
 def _frames_url(session_id: str) -> str:
     """Where the UI mounts the pane. Relative: the app and the API share an origin."""

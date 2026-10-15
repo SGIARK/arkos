@@ -24,7 +24,7 @@ from typing import Any
 import jwt
 from fastapi import Body, Depends, FastAPI, File, Form, Header, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from agent_module import prompts
@@ -422,7 +422,18 @@ async def auth_config() -> dict[str, Any]:
     The anon key identifies the project and authorizes nothing on its own; it is
     served rather than baked in because it differs per deployment.
     """
-    return {"supabase_url": blobs.project_url() or "", "anon_key": _anon_key()}
+    return {
+        "supabase_url": blobs.project_url() or "",
+        "anon_key": _anon_key(),
+        # Public policy, so the signed-out screens and later specs read one place.
+        "terms_version": str(_cfg("legal.terms_version", "")),
+        "privacy_version": str(_cfg("legal.privacy_version", "")),
+        "min_age": int(_cfg("legal.min_age", 18)),
+        "source_url": str(_cfg("legal.source_url", "")),
+        "undo_days": int(_cfg("retention.deleted_files_days", 30)),
+        "autopilot_minutes": int(_cfg("budgets.unattended.wall_clock_s", 1800)) // 60,
+        "build": os.environ.get("ARKOS_BUILD_SHA") or "dev",
+    }
 
 
 @app.delete("/auth/session", status_code=204)
@@ -2162,6 +2173,38 @@ class _Frontend(StaticFiles):
         if path in ("", ".", "index.html") or path.endswith(".html"):
             response.headers["Cache-Control"] = "no-store, must-revalidate"
         return response
+
+
+# Short, stable public addresses for the legal and help pages: the Google OAuth
+# consent screen and emails link these, so the files behind them can move.
+_SHORT_URLS = {
+    "/terms": "/app/legal/terms.html",
+    "/privacy": "/app/legal/privacy.html",
+    "/acceptable-use": "/app/legal/acceptable-use.html",
+    "/legal": "/app/legal/",
+    "/help": "/app/help/",
+}
+
+
+def _short_url(target: str) -> Any:
+    async def redirect() -> Response:
+        return RedirectResponse(target, status_code=302)
+
+    return redirect
+
+
+for _path, _target in _SHORT_URLS.items():
+    app.add_api_route(_path, _short_url(_target), methods=["GET"], include_in_schema=False)
+
+
+# HEAD too: uptime checks and proxies probe `/` with it.
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
+async def landing_page() -> Response:
+    """The static page a visitor sees before signing in. It lives under /app with the
+    other public pages, but is served here so the address stays `/`."""
+    response = FileResponse(_FRONTEND / "landing" / "index.html", media_type="text/html")
+    response.headers["Cache-Control"] = "no-store, must-revalidate"
+    return response
 
 
 if _FRONTEND.is_dir():

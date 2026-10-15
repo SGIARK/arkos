@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="arkos-doc-version" content="2026-10-01">
+<title>Privacy Policy · arkos</title>
+<link rel="stylesheet" href="/app/legal/legal.css?v=2">
+<script src="/app/legal/cookie-notice.js?v=2" defer></script>
+</head>
+<body>
+<header class="site-header">
+  <a class="mark" href="/"><span class="glyph">b</span>arkos</a>
+  <a href="/app/">sign in</a>
+</header>
+<main>
+<h1>Privacy Policy</h1>
+<p class="meta">Version 2026-10-01 · effective {{EFFECTIVE_DATE}}</p>
+<p>arkos is an AI agent that works for you: it reads and writes your files, browses the web and, when you connect them, uses your email, calendar and other accounts. This page says what that means for your data. We don't sell it, and we don't show ads.</p>
+
+<h2 id="collect">What we collect</h2>
+<ul>
+<li><strong>Your account:</strong> your email address and name, and your Google profile name if you sign in with Google. Your password is held by our sign-in provider, Supabase; we never see it.</li>
+<li><strong>What you and the agent create:</strong> projects, conversations (your messages, the agent's replies, its plans and the results of what it does), the approvals you give or refuse, files you upload and files the agent writes, and notes the agent keeps about you so it can remember context between conversations.</li>
+<li><strong>From accounts you connect:</strong> which services you've connected, and the content the agent reads while doing a task for you, such as emails, calendar events, Drive files or GitHub, Linear and Notion items. That content is kept where it lands in your conversation.</li>
+<li><strong>The agent's browser and searches:</strong> the pages the agent visits and what's on them, and the web searches it runs.</li>
+<li><strong>Technical records:</strong> your sign-in session, error and timing logs, the date and version of each document you accepted, and your IP address and browser type, which our hosting provider and Supabase record with each request.</li>
+</ul>
+
+<h2 id="use">How we use it</h2>
+<p>To run arkos for you: carry out your conversations, store your files and remember what you asked it to. We also use it to keep the service secure, prevent abuse, answer support requests, fix problems, and tell you about changes to the service.</p>
+<p data-decision="D8">We don't use your data for advertising, sell it, use it to train AI models, or use it for research. If that ever changes, it will be opt-in only, under a new version of this policy.</p>
+
+<h2 id="ai">AI features</h2>
+<p data-decision="D3">To answer you, arkos sends your messages, and anything the agent reads from your files, web pages and connected accounts, to its AI model provider, {{LLM_PROVIDER}}. The provider processes it under its API terms: it does not train on it, and it may keep it for up to 30 days to monitor abuse unless zero retention has been arranged.</p>
+<!-- D3 alternative (self-hosted model): "To answer you, arkos sends your messages, and anything the agent reads, to an AI model that runs on our own servers. No outside AI company receives it." -->
+<p>A connected account is only available in a conversation where you've switched it on. arkos's use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements. We don't pass that information to others except to provide the service, for security, to comply with the law, or with your consent, and no person reads it except with your consent, for security, or as the law requires.</p>
+
+<h2 id="who-sees">Who sees your data</h2>
+<p>You do. Other users can't see your conversations, files or connected accounts.</p>
+<p data-decision="D9">Only named operators of arkos can access user data, and only to deal with a security problem, abuse, or a problem you reported. Every such access is logged.</p>
+
+<h2 id="sharing">Sharing</h2>
+<ul>
+<li>With the service providers that run parts of arkos, listed on the <a href="/app/legal/subprocessors.html">subprocessors page</a>.</li>
+<li>Where the agent sends something because you asked it to, such as an email you approved.</li>
+<li>When the law requires it.</li>
+<li>If arkos is transferred to a new operator, under this policy.</li>
+</ul>
+<p>We don't sell your data or share it for advertising.</p>
+
+<h2 id="retention">Keeping and deleting data</h2>
+<div class="table-wrap"><table data-decision="D7">
+<tr><th>Data</th><th>How long</th></tr>
+<tr><td>Your account, conversations, projects, files and the agent's notes</td><td>Until you delete them or delete your account</td></tr>
+<tr><td>Deleted files</td><td>Can be undone for 30 days, then removed the next time the server starts</td></tr>
+<tr><td>arkos's error and timing logs</td><td>30 days, removed the next time the server starts</td></tr>
+<tr><td>Logs kept by our hosting provider and Supabase</td><td>Under their own terms, listed on the subprocessors page</td></tr>
+<tr><td>Records of the documents you accepted</td><td>Kept after your account is deleted, as proof of what you agreed to</td></tr>
+<tr><td>Accounts that stop being used</td><td>Kept until you delete them</td></tr>
+<tr><td>Everything, if arkos shuts down</td><td>Deleted within 90 days, after 30 days' notice to export</td></tr>
+</table></div>
+<p>When you disconnect an account, arkos asks the provider to revoke its access. You can also revoke it yourself in that provider's settings.</p>
+
+<h2 id="rights">Your rights</h2>
+<ul>
+<li>See and export your data.</li>
+<li>Correct your account details.</li>
+<li>Delete conversations, projects, files or your whole account.</li>
+<li>Disconnect any connected account.</li>
+<li>Withdraw your consent by deleting your account.</li>
+</ul>
+<p>You can do most of this in arkos. For anything else, email us from your account's address and we'll answer within 30 days.</p>
+
+<h2 id="contact">Contact</h2>
+<p><span data-decision="D1">{{OPERATOR_LEGAL_NAME}}, {{OPERATOR_POSTAL_ADDRESS}}</span><br>
+Privacy requests: <a href="mailto:{{PRIVACY_EMAIL}}" data-decision="D16">{{PRIVACY_EMAIL}}</a></p>
+
+<h2>Notes</h2>
+<ul>
+<li><strong>Age:</strong> arkos is for people 18 or older. If we learn an account belongs to someone younger, we delete it.</li>
+<li><strong>Where data is processed:</strong> in the regions listed for each provider on the <a href="/app/legal/subprocessors.html">subprocessors page</a>.</li>
+<li><strong>Security:</strong> traffic is encrypted, sign-in cookies can't be read by scripts, risky actions wait for approval, the agent works in an isolated sandbox, and access is logged. No system is perfectly secure; if a breach affects you, we'll tell you as the law requires.</li>
+<li><strong>EEA and UK:</strong> we process your data to provide the service you signed up for and for our legitimate interest in keeping it secure. You can complain to your data protection authority.</li>
+<li><strong>California:</strong> we don't sell or share personal information.</li>
+<li data-decision="D2"><strong>Students:</strong> arkos isn't an MIT education-records system. Don't upload other students' education records.</li>
+<li><strong>Cookies:</strong> see the <a href="/app/legal/cookies.html">cookie policy</a>.</li>
+<li><strong>Changes:</strong> each version of this policy is dated. After a material change, arkos asks you to accept the new version before you continue.</li>
+</ul>
+</main>
+<footer class="site-footer">
+  <nav aria-label="Legal">
+    <a href="/terms">Terms</a>
+    <a href="/privacy">Privacy</a>
+    <a href="/app/legal/cookies.html">Cookies</a>
+    <a href="/acceptable-use">Acceptable use</a>
+    <a href="/help">Help</a>
+    <a href="/legal">All legal pages</a>
+    <a href="https://github.com/SGIARK/arkos">Source (AGPL-3.0)</a>
+  </nav>
+  <p data-decision="D2">{{MIT_RELATIONSHIP_STATEMENT}}</p>
+  <p data-decision="D1">&copy; {{OPERATOR_LEGAL_NAME}}</p>
+</footer>
+</body>
+</html>

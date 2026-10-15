@@ -1063,8 +1063,49 @@ async def test_auth_config_is_readable_signed_out(client):
     """It is how a signed-out browser signs in, so it cannot require a session."""
     body = (await client.get("/auth/config")).json()
 
-    assert set(body) == {"supabase_url", "anon_key"}
+    assert {"supabase_url", "anon_key"} <= set(body)
     assert isinstance(body["anon_key"], str)
+
+
+async def test_auth_config_carries_public_policy(client):
+    """The signed-out screens read versions, limits and the build from one place."""
+    body = (await client.get("/auth/config")).json()
+
+    assert body["terms_version"] == _real_cfg("legal.terms_version")
+    assert body["privacy_version"] == _real_cfg("legal.privacy_version")
+    assert body["min_age"] == 18
+    assert body["source_url"] == _real_cfg("legal.source_url")
+    assert body["undo_days"] == _real_cfg("retention.deleted_files_days")
+    assert body["autopilot_minutes"] == _real_cfg("budgets.unattended.wall_clock_s") // 60
+    assert isinstance(body["build"], str) and body["build"]
+
+
+@pytest.mark.parametrize(
+    "short",
+    ["/terms", "/privacy", "/acceptable-use", "/legal", "/help"],
+)
+async def test_short_legal_urls_redirect_to_real_files(client, short):
+    """Each short address lands on a page that exists, signed out."""
+    response = await client.get(short)
+
+    assert response.status_code == 302
+    landed = await client.get(response.headers["location"])
+    assert landed.status_code == 200
+    assert "text/html" in landed.headers["content-type"]
+
+
+async def test_root_serves_landing_page(client):
+    """`/` is the landing page and is never cached; `/app/` is still the app."""
+    root = await client.get("/")
+    head = await client.head("/")
+    app_page = await client.get("/app/")
+
+    assert root.status_code == 200
+    assert head.status_code == 200
+    assert "no-store" in root.headers.get("cache-control", "")
+    assert 'href="/app/"' in root.text
+    assert app_page.status_code == 200
+    assert "landing.css" not in app_page.text
 
 
 @pytest.mark.parametrize("path", ["/app/", "/app/index.html"])

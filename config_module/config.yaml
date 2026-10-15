@@ -36,6 +36,17 @@ auth:
   cookie_samesite: "lax"
   session_ttl_s: 604800           # cookie lifetime in seconds (7 days)
 
+# Public policy values. Each lives here once; /auth/config serves them to the
+# signed-out screens and the legal pages carry the matching version.
+legal:
+  terms_version: "2026-10-01"
+  privacy_version: "2026-10-01"
+  min_age: 18
+  source_url: "https://github.com/SGIARK/arkos"
+
+retention:
+  deleted_files_days: 30          # how long a deleted file can be undone (D7)
+
 harness:
   snapshot_events: 200            # what GET /sessions/{id} returns as recent_events
   sse_keepalive_s: 15             # seconds between SSE keepalives; proxies drop an idle stream at ~30s

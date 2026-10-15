@@ -969,8 +969,9 @@ function AuthAside() {
           <span className="caret" />
         </h1>
         <p>
-          arkos works on a real computer and browser, with a persistent filesystem that survives between
-          runs. workflows can span days, and it asks before anything leaves your account.
+          arkos works in its own sandbox and browser and keeps your files between runs. Actions in your
+          connected accounts wait for your approval unless you turn on autopilot, and sending email,
+          deleting and merging always wait for you.
         </p>
       </div>
       <div className="auth-tags">
