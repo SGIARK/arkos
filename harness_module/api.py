@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import httpx
 import jwt
 from fastapi import Body, Depends, FastAPI, File, Form, Header, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -178,9 +179,20 @@ async def _keys_and_sweep() -> None:
     if not warm:
         logger.info("no key cache on disk; the first fetch has to land before anyone can sign in")
     backoff = 1.0
+    fetching = True
     while True:
         try:
-            got = await asyncio.to_thread(jwt_utils.refresh_jwks)
+            got = False
+            if fetching:
+                try:
+                    got = await asyncio.to_thread(jwt_utils.refresh_jwks)
+                except jwt_utils.NoKeysPublished as e:
+                    if os.environ.get("SUPABASE_JWT_SECRET"):
+                        # HS256 tokens verify against the secret and never read
+                        # the cache, so there is nothing to wait for. A project
+                        # that later publishes keys is picked up on restart.
+                        logger.info("the project publishes no signing keys (%s); verifying with SUPABASE_JWT_SECRET", e)
+                        fetching = False
             warm = warm or got
             pruned = await pool.execute("DELETE FROM auth_sessions WHERE expires_at < now()")
             if pruned and pruned != "DELETE 0":
@@ -190,7 +202,7 @@ async def _keys_and_sweep() -> None:
         except Exception:  # noqa: BLE001 - a tick that dies must not take the app
             logger.warning("the key/sweep tick failed; retrying", exc_info=True)
             got = False
-        if warm:
+        if warm or not fetching:
             backoff = 1.0
             await asyncio.sleep(every)
         else:
@@ -422,8 +434,10 @@ async def auth_config() -> dict[str, Any]:
     The anon key identifies the project and authorizes nothing on its own; it is
     served rather than baked in because it differs per deployment.
     """
+    # The browser talks to Supabase through `/auth/v1` on this origin when proxied.
+    supabase_url = _origin if _proxy_supabase() and _origin else blobs.project_url() or ""
     return {
-        "supabase_url": blobs.project_url() or "",
+        "supabase_url": supabase_url,
         "anon_key": _anon_key(),
         # Public policy, so the signed-out screens and later specs read one place.
         "terms_version": str(_cfg("legal.terms_version", "")),
@@ -434,6 +448,53 @@ async def auth_config() -> dict[str, Any]:
         "autopilot_minutes": int(_cfg("budgets.unattended.wall_clock_s", 1800)) // 60,
         "build": os.environ.get("ARKOS_BUILD_SHA") or "dev",
     }
+
+
+def _proxy_supabase() -> bool:
+    """Whether `/auth/v1/*` on this origin forwards to Supabase Auth.
+
+    For a Supabase the BROWSER cannot reach — a self-hosted one bound to the
+    server's loopback, behind a tunnel that carries only this app's port. Off by
+    default: proxied, every sign-in reaches GoTrue from this server's address, so
+    its per-IP rate limits would be shared by every user.
+    """
+    return bool(_cfg("auth.proxy_supabase", False))
+
+
+# What supabase-js sends that GoTrue reads. Nothing else crosses, so our own
+# session cookie never reaches Supabase.
+_GOTRUE_REQUEST_HEADERS = (
+    "apikey",
+    "authorization",
+    "content-type",
+    "accept",
+    "x-client-info",
+    "x-supabase-api-version",
+)
+
+
+@app.api_route("/auth/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE"], include_in_schema=False)
+async def gotrue_proxy(path: str, request: Request) -> Response:
+    """Forward a supabase-js auth call to Supabase Auth, when `auth.proxy_supabase` is on."""
+    upstream = blobs.project_url()
+    if not _proxy_supabase() or not upstream:
+        raise ApiError(404, "not_found", "Supabase Auth is not proxied by this server.")
+    if request.method != "GET":
+        _check_origin(request)
+    headers = {name: request.headers[name] for name in _GOTRUE_REQUEST_HEADERS if name in request.headers}
+    try:
+        answer = await blobs.http_client().request(
+            request.method,
+            f"{upstream}/auth/v1/{path}",
+            params=request.query_params,
+            content=await request.body(),
+            headers=headers,
+        )
+    except httpx.HTTPError as e:
+        logger.warning("Supabase Auth unreachable at %s: %s", upstream, e)
+        raise ApiError(502, "auth_unreachable", "Sign-in is unavailable: Supabase Auth did not answer.") from e
+    kept = {"content-type": answer.headers.get("content-type", "application/json")}
+    return Response(content=answer.content, status_code=answer.status_code, headers=kept)
 
 
 @app.delete("/auth/session", status_code=204)

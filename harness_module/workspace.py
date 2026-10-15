@@ -165,10 +165,7 @@ async def materialize(sandbox: SandboxIO, session_id: str, claims: list[Claim]) 
         content_hash = wanted[path]
         blob = await store.get_blob(content_hash)
         if blob is None:
-            # The tree names a blob the store does not hold; skip it rather than
-            # write a file whose contents are a guess.
-            logger.error("blob %s for %s is missing from the store", content_hash[:12], path)
-            continue
+            raise store.StoreError(f"cannot materialize {path}: blob {content_hash[:12]} is missing")
         payload.append((path.lstrip("/"), blob))
 
     if removed:
@@ -362,8 +359,10 @@ async def _sweep(sandbox: SandboxIO, session_id: str, claims: list[Claim]) -> di
         return {}
     result = await sandbox.exec(
         session_id,
-        f"find {mounts} -type f -exec sha256sum {{}} + 2>/dev/null || true",
+        f"mkdir -p {mounts} && find {mounts} -type f -exec sha256sum {{}} +",
     )
+    if result["exit_code"] != 0:
+        raise store.StoreError(f"cannot scan sandbox files: {result['stderr'][:200]}")
     found: dict[str, str] = {}
     for line in (result.get("stdout") or "").splitlines():
         digest, _, path = line.partition("  ")

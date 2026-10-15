@@ -50,7 +50,7 @@ def slot_ttl() -> float:
 def _template() -> str | None:
     """The e2b template name, or None for the SDK default."""
     name = config.get("sandbox.template")
-    return name if name and name != "base" else None
+    return name if name else None
 
 
 async def claim_slot(session_id: str) -> bool:

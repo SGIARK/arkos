@@ -335,6 +335,29 @@ async def test_nothing_is_dropped_when_the_vendor_still_accepts_it():
     assert set(kept) == {"task", "llm", "register_new_step_callback"}
 
 
+@pytest.mark.parametrize("configured", [True, False])
+async def test_vision_follows_browser_use_vision(monkeypatch, configured):
+    """A text-only model refuses screenshot parts, so vision is a config knob, not a given."""
+    import sys
+    import types
+
+    seen = {}
+
+    class Agent:
+        def __init__(self, task=None, llm=None, browser=None, register_new_step_callback=None, use_vision=True):
+            seen["use_vision"] = use_vision
+
+    vendor = types.ModuleType("browser_use")
+    vendor.Agent, vendor.Browser, vendor.ChatOpenAI = Agent, lambda **kw: object(), lambda **kw: object()
+    monkeypatch.setitem(sys.modules, "browser_use", vendor)
+    values = {"browser.use_vision": configured}
+    monkeypatch.setattr(browser_tool, "_cfg", lambda key, default=None: values.get(key, default))
+
+    browser_tool._build_browser_use_agent(browser_tool._Run("t", None, _ctx(), 1.0, "ws://browserless:3000"))
+
+    assert seen["use_vision"] is configured
+
+
 # --- frames -------------------------------------------------------------------------
 
 

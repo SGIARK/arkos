@@ -129,6 +129,10 @@ def prime_jwks_from_disk() -> bool:
         return False
 
 
+class NoKeysPublished(Exception):
+    """The JWKS endpoint answered with an empty set: the project signs HS256 only."""
+
+
 def refresh_jwks() -> bool:
     """Pull the JWK set into the cache and onto disk. BLOCKING — run off-loop.
 
@@ -136,6 +140,9 @@ def refresh_jwks() -> bool:
     a request, which is what makes `_signing_key` a pure cache read: the JWKS
     host is normally 200ms and occasionally 30s, and a request must never be the
     thing that discovers which.
+
+    Raises `NoKeysPublished` when the endpoint serves an empty set, which is a
+    project signing HS256 only and no reason to keep asking.
     """
     client = _jwks()
     if client is None:
@@ -145,6 +152,14 @@ def refresh_jwks() -> bool:
         # `fetch_data` already caches it; put again so the path is explicit and
         # does not depend on that staying true.
         client.jwk_set_cache.put(data)
+        if not data.get("keys"):
+            raise jwt.PyJWKSetError("The JWK Set did not contain any keys")
+    except jwt.PyJWKSetError as e:
+        # Not an outage: the endpoint answered, with nothing in it. Newer PyJWT
+        # raises this from `fetch_data`, older takes the empty set silently; both
+        # land here. A cache file from before says the same, so it goes too.
+        _jwks_file().unlink(missing_ok=True)
+        raise NoKeysPublished(str(e)) from e
     except Exception as e:  # noqa: BLE001 - a stale cache beats a blocked request
         logger.warning("JWKS refresh failed; serving whatever is cached: %s", e)
         return False
