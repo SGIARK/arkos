@@ -758,6 +758,17 @@ function Login({ gone, onSignedIn, problem: arrived, notice, startMode }) {
             )}
           </div>
 
+          {/* Google can create an account too, so this shows for both ways in. */}
+          {!forgot && (
+            <p className="auth-note quiet auth-consent">
+              By continuing you confirm you're 18 or older and agree to the{" "}
+              <a href="/privacy" target="_blank" rel="noopener">
+                Privacy Policy
+              </a>
+              .
+            </p>
+          )}
+
           {notice && !problem && <p className="auth-note quiet">{notice}</p>}
           {shown && <p className="auth-problem">{shown}</p>}
 

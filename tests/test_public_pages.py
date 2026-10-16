@@ -86,3 +86,10 @@ def test_cookie_notice_on_public_pages():
     for page in _public_pages():
         loads = [u.split("?", 1)[0] for u in _refs(page).loads]
         assert "/app/legal/cookie-notice.js" in loads, f"{page.relative_to(FRONTEND)} has no cookie notice"
+
+
+def test_sign_up_states_age_and_privacy():
+    """Both ways in (email and Google) say what continuing agrees to, and link the policy."""
+    views = (FRONTEND / "views.jsx").read_text()
+    assert "By continuing you confirm you're 18 or older and agree to the" in views
+    assert 'href="/privacy"' in views
