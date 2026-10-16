@@ -2239,11 +2239,8 @@ class _Frontend(StaticFiles):
 # Short, stable public addresses for the legal and help pages: the Google OAuth
 # consent screen and emails link these, so the files behind them can move.
 _SHORT_URLS = {
-    "/terms": "/app/legal/terms.html",
     "/privacy": "/app/legal/privacy.html",
-    "/acceptable-use": "/app/legal/acceptable-use.html",
     "/legal": "/app/legal/",
-    "/help": "/app/help/",
 }
 
 

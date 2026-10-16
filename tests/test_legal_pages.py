@@ -34,21 +34,8 @@ PLACEHOLDERS = {
 }
 DECISIONS = {f"D{n}" for n in range(1, 20)}
 
-# Plan §5.1: the pages the footer and the legal index link to.
-PAGES = [
-    "index",
-    "terms",
-    "privacy",
-    "acceptable-use",
-    "ai-and-agents",
-    "subprocessors",
-    "cookies",
-    "copyright",
-    "security",
-    "accessibility",
-    "licenses",
-    "changelog",
-]
+# The pages that ship now; the other legal documents come with their text.
+PAGES = ["index", "privacy", "subprocessors", "cookies"]
 
 PRIVACY_SECTIONS = ["collect", "use", "ai", "who-sees", "sharing", "retention", "rights", "contact"]
 
@@ -88,20 +75,14 @@ def _parse(name: str) -> _Page:
 
 
 def test_every_legal_page_exists():
-    """Every planned page is there, so no footer or index link is dead."""
+    """Every shipped page is there, so no footer or index link is dead."""
     missing = [p for p in PAGES if not (LEGAL / f"{p}.html").is_file()]
     assert missing == []
-    assert (ROOT / "frontend" / "help" / "index.html").is_file()
 
 
 def test_legal_page_versions_match_config():
-    """A written page's version is the one users accept. Placeholders carry none yet."""
-    expected = {"privacy": cfg("legal.privacy_version"), "terms": cfg("legal.terms_version")}
-    for name, version in expected.items():
-        found = _parse(name).version
-        if found is None and "Draft — content pending" in (LEGAL / f"{name}.html").read_text():
-            continue  # not written yet (drafting 01 Task 2)
-        assert found == version, f"{name}.html says {found}, config says {version}"
+    """The Privacy Policy's version is the one users accept."""
+    assert _parse("privacy").version == cfg("legal.privacy_version")
 
 
 def test_placeholders_and_decisions_are_known():

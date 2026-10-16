@@ -46,7 +46,7 @@ def _offsite(url: str) -> bool:
 
 
 def _public_pages() -> list[Path]:
-    return [LANDING, *sorted((FRONTEND / "legal").glob("*.html")), *sorted((FRONTEND / "help").glob("*.html"))]
+    return [LANDING, *sorted((FRONTEND / "legal").glob("*.html"))]
 
 
 def test_landing_loads_nothing_offsite():
@@ -62,23 +62,27 @@ def test_landing_loads_nothing_offsite():
 
 
 def test_landing_paths_exist():
-    """Every /app/ path the landing page loads or links maps to a file, and Source is the configured repo."""
-    refs = _refs(LANDING)
-    for url in refs.loads + refs.links:
-        if not url.startswith("/app/"):
-            continue
-        rel = url.split("?", 1)[0].removeprefix("/app/")
-        target = FRONTEND / rel
-        if rel == "" or rel.endswith("/"):
-            target = target / "index.html"
-        assert target.is_file(), f"{url} has no file behind it"
+    """Every same-site path a public page loads or links resolves, and Source is the configured repo."""
+    from harness_module.api import _SHORT_URLS
 
-    sources = [u for u in refs.links if "github.com" in u]
-    assert sources == [str(cfg("legal.source_url"))]
+    for page in _public_pages():
+        refs = _refs(page)
+        for url in refs.loads + refs.links:
+            path = url.split("?", 1)[0].split("#", 1)[0]
+            if not path.startswith("/") or path.startswith("//") or path in ("/", "/app/"):
+                continue
+            path = _SHORT_URLS.get(path, path)
+            assert path.startswith("/app/"), f"{page.name}: {url} has no route"
+            rel = path.removeprefix("/app/")
+            target = FRONTEND / rel / "index.html" if rel == "" or rel.endswith("/") else FRONTEND / rel
+            assert target.is_file(), f"{page.name}: {url} has no file behind it"
+
+        sources = [u for u in refs.links if "github.com" in u]
+        assert sources == [str(cfg("legal.source_url"))]
 
 
 def test_cookie_notice_on_public_pages():
-    """The landing, legal and help pages all load the notice, so any first visit sees it."""
+    """The landing and legal pages all load the notice, so any first visit sees it."""
     for page in _public_pages():
         loads = [u.split("?", 1)[0] for u in _refs(page).loads]
         assert "/app/legal/cookie-notice.js" in loads, f"{page.relative_to(FRONTEND)} has no cookie notice"

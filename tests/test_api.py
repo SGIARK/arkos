@@ -1081,10 +1081,7 @@ async def test_auth_config_carries_public_policy(client):
     assert isinstance(body["build"], str) and body["build"]
 
 
-@pytest.mark.parametrize(
-    "short",
-    ["/terms", "/privacy", "/acceptable-use", "/legal", "/help"],
-)
+@pytest.mark.parametrize("short", ["/privacy", "/legal"])
 async def test_short_legal_urls_redirect_to_real_files(client, short):
     """Each short address lands on a page that exists, signed out."""
     response = await client.get(short)
