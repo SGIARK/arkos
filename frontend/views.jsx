@@ -582,6 +582,8 @@ function Login({ gone, onSignedIn, problem: arrived, notice, startMode }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  // The age and privacy box on the new-account screen; nothing is created until it's ticked.
+  const [agreed, setAgreed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState(null);
   /* "signup" | "reset" — a flow that ends in the mail rather than in the app.
@@ -602,7 +604,7 @@ function Login({ gone, onSignedIn, problem: arrived, notice, startMode }) {
   const ready = forgot
     ? email.trim()
     : up
-      ? name.trim() && email.trim() && password.length >= MIN_PASSWORD
+      ? name.trim() && email.trim() && password.length >= MIN_PASSWORD && agreed
       : email.trim() && password;
 
   async function submit() {
@@ -634,7 +636,7 @@ function Login({ gone, onSignedIn, problem: arrived, notice, startMode }) {
   }
 
   async function google() {
-    if (busy) return;
+    if (busy || (up && !agreed)) return;
     setBusy(true);
     setProblem(null);
     try {
@@ -737,6 +739,21 @@ function Login({ gone, onSignedIn, problem: arrived, notice, startMode }) {
             )}
           </div>
 
+          {/* A new account needs this ticked, by email or by Google. Above the buttons,
+              so a disabled button has its reason in view. */}
+          {up && (
+            <label className="auth-note quiet auth-consent">
+              <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />
+              <span>
+                I'm 18 or older and agree to the{" "}
+                <a href="/privacy" target="_blank" rel="noopener">
+                  Privacy Policy
+                </a>
+                .
+              </span>
+            </label>
+          )}
+
           <div className="auth-actions">
             <button className="auth-cta" onClick={submit} disabled={busy || !ready}>
               {busy ? "…" : forgot ? "email me a link" : up ? "create account" : "sign in"}
@@ -750,7 +767,7 @@ function Login({ gone, onSignedIn, problem: arrived, notice, startMode }) {
                   or
                   <span className="rule" />
                 </div>
-                <button className="auth-google" onClick={google} disabled={busy}>
+                <button className="auth-google" onClick={google} disabled={busy || (up && !agreed)}>
                   <span className="g">G</span>
                   continue with google
                 </button>
@@ -758,8 +775,8 @@ function Login({ gone, onSignedIn, problem: arrived, notice, startMode }) {
             )}
           </div>
 
-          {/* Google can create an account too, so this shows for both ways in. */}
-          {!forgot && (
+          {/* Signing in shows the terms as a line: Google can still create an account from there. */}
+          {!up && !forgot && (
             <p className="auth-note quiet auth-consent">
               By continuing you confirm you're 18 or older and agree to the{" "}
               <a href="/privacy" target="_blank" rel="noopener">

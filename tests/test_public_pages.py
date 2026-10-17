@@ -89,7 +89,11 @@ def test_cookie_notice_on_public_pages():
 
 
 def test_sign_up_states_age_and_privacy():
-    """Both ways in (email and Google) say what continuing agrees to, and link the policy."""
+    """A new account needs the age and privacy box ticked, for email and Google alike;
+    signing in shows the same terms as a line. The policy is linked either way."""
     views = (FRONTEND / "views.jsx").read_text()
+    assert "I'm 18 or older and agree to the" in views
     assert "By continuing you confirm you're 18 or older and agree to the" in views
-    assert 'href="/privacy"' in views
+    assert "password.length >= MIN_PASSWORD && agreed" in views, "create account must wait for the box"
+    assert "if (busy || (up && !agreed)) return;" in views, "Google sign-up must wait for the box"
+    assert views.count('href="/privacy"') >= 2
