@@ -109,3 +109,15 @@ def test_public_pages_use_the_app_theme():
         loads = [u.split("?", 1)[0] for u in _refs(page).loads]
         assert "/app/legal/theme.js" in loads, f"{page.name} doesn't load the theme"
         assert loads.index("/app/legal/theme.js") < loads.index("/app/legal/legal.css"), page.name
+
+
+def test_public_pages_use_the_sign_in_mark():
+    """The top-left mark is the sign-in screen's: glyph, pip, word, and the same styles."""
+    views = (FRONTEND / "views.jsx").read_text()
+    for part in ('<span className="glyph">b</span>', '<span className="pip" />', '<span className="word">arkos</span>'):
+        assert part in views, "the sign-in mark changed; update the public pages to match"
+    css = (FRONTEND / "legal" / "legal.css").read_text()
+    assert "translate: -6px -8px; animation: ping 2.4s var(--ease) infinite;" in css
+    for page in _public_pages():
+        text = page.read_text()
+        assert '<span class="glyph">b</span><span class="pip"></span><span class="word">arkos</span>' in text, page.name

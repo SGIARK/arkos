@@ -13,6 +13,7 @@
   --accent-soft: oklch(0.55 0.075 150 / 0.12);
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --r: 7px;
+  --ease: cubic-bezier(.4,0,.2,1);
   color-scheme: light;
 }
 
@@ -54,11 +55,18 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
   padding: 20px 16px;
 }
 
-.mark { display: inline-flex; align-items: center; gap: 8px; color: var(--ink); text-decoration: none; font-weight: 600; }
-.mark .glyph {
-  display: inline-grid; place-items: center;
-  width: 22px; height: 22px; border-radius: 6px;
-  background: var(--ink); color: var(--paper); font-size: 12px;
+/* The sign-in screen's mark (.auth-mark in ../styles.css), copied exactly. */
+.mark { display: flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none; }
+.mark .glyph { font-weight: 700; font-size: 18px; letter-spacing: -0.04em; }
+.mark .pip {
+  width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
+  translate: -6px -8px; animation: ping 2.4s var(--ease) infinite;
+}
+.mark .word { font-size: 11px; letter-spacing: .22em; text-transform: uppercase; color: var(--ink-mute); margin-left: -4px; }
+@keyframes ping {
+  0%   { box-shadow: 0 0 0 0 var(--accent-soft); }
+  70%  { box-shadow: 0 0 0 7px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
 }
 
 main {
