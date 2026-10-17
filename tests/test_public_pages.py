@@ -97,3 +97,15 @@ def test_sign_up_states_age_and_privacy():
     assert "password.length >= MIN_PASSWORD && agreed" in views, "create account must wait for the box"
     assert "if (busy || (up && !agreed)) return;" in views, "Google sign-up must wait for the box"
     assert views.count('href="/privacy"') >= 2
+
+
+def test_public_pages_use_the_app_theme():
+    """Light unless the visitor chose dark in the app, never the system setting, so going
+    from the landing page to sign-in doesn't flip the theme. theme.js runs before the stylesheet."""
+    css = (FRONTEND / "legal" / "legal.css").read_text()
+    assert "prefers-color-scheme" not in css
+    assert '[data-theme="dark"]' in css
+    for page in _public_pages():
+        loads = [u.split("?", 1)[0] for u in _refs(page).loads]
+        assert "/app/legal/theme.js" in loads, f"{page.name} doesn't load the theme"
+        assert loads.index("/app/legal/theme.js") < loads.index("/app/legal/legal.css"), page.name

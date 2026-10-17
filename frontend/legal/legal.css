@@ -1,5 +1,5 @@
 /* Public pages: legal, help and the landing page. Plain HTML, no JavaScript needed.
-   Tokens mirror ../styles.css; the theme follows the visitor's system setting. */
+   Tokens and theme mirror ../styles.css: light unless the visitor chose dark (theme.js). */
 
 :root {
   --ink:        #1c1b18;
@@ -13,21 +13,20 @@
   --accent-soft: oklch(0.55 0.075 150 / 0.12);
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --r: 7px;
-  color-scheme: light dark;
+  color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ink:        #ecebe6;
-    --ink-soft:   #b6b3aa;
-    --ink-mute:   #797668;
-    --paper:      #121210;
-    --surface:    #1a1815;
-    --surface-2:  #201f1b;
-    --line:       #2a2823;
-    --accent:     oklch(0.74 0.105 150);
-    --accent-soft: oklch(0.74 0.105 150 / 0.16);
-  }
+[data-theme="dark"] {
+  --ink:        #ecebe6;
+  --ink-soft:   #b6b3aa;
+  --ink-mute:   #797668;
+  --paper:      #121210;
+  --surface:    #1a1815;
+  --surface-2:  #201f1b;
+  --line:       #2a2823;
+  --accent:     oklch(0.74 0.105 150);
+  --accent-soft: oklch(0.74 0.105 150 / 0.16);
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
