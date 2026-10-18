@@ -2237,7 +2237,9 @@ class _Frontend(StaticFiles):
 
 
 # Short, stable public addresses for the legal and help pages: the Google OAuth
-# consent screen and emails link these, so the files behind them can move.
+# consent screen and emails link these, so the files behind them can move. A
+# page is served in place, so the address bar keeps the short form with no
+# `.html`; a folder redirects, because its pages link onward from under /app.
 _SHORT_URLS = {
     "/privacy": "/app/legal/privacy.html",
     "/legal": "/app/legal/",
@@ -2245,6 +2247,16 @@ _SHORT_URLS = {
 
 
 def _short_url(target: str) -> Any:
+    if target.endswith(".html"):
+        page = _FRONTEND / target.removeprefix("/app/")
+
+        async def serve() -> Response:
+            response = FileResponse(page, media_type="text/html")
+            response.headers["Cache-Control"] = "no-store, must-revalidate"
+            return response
+
+        return serve
+
     async def redirect() -> Response:
         return RedirectResponse(target, status_code=302)
 

@@ -1081,10 +1081,20 @@ async def test_auth_config_carries_public_policy(client):
     assert isinstance(body["build"], str) and body["build"]
 
 
-@pytest.mark.parametrize("short", ["/privacy", "/legal"])
-async def test_short_legal_urls_redirect_to_real_files(client, short):
-    """Each short address lands on a page that exists, signed out."""
-    response = await client.get(short)
+async def test_privacy_is_served_at_its_short_url(client):
+    """`/privacy` is the page itself, signed out and never cached, so the address
+    bar never shows `.html`."""
+    response = await client.get("/privacy")
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "no-store" in response.headers.get("cache-control", "")
+    assert "<h1>Privacy Policy</h1>" in response.text
+
+
+async def test_short_legal_folder_redirects_to_real_files(client):
+    """`/legal` lands on a page that exists, signed out."""
+    response = await client.get("/legal")
 
     assert response.status_code == 302
     landed = await client.get(response.headers["location"])
