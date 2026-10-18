@@ -1083,7 +1083,12 @@ async def test_auth_config_carries_public_policy(client):
 
 @pytest.mark.parametrize(
     ("short", "heading"),
-    [("/privacy", "Privacy Policy"), ("/cookies", "Cookies"), ("/subprocessors", "Subprocessors")],
+    [
+        ("/privacy", "Privacy Policy"),
+        ("/cookies", "Cookies"),
+        ("/subprocessors", "Subprocessors"),
+        ("/legal", "Legal"),
+    ],
 )
 async def test_legal_pages_are_served_at_their_short_urls(client, short, heading):
     """Each page is served in place, signed out and never cached, so the address
@@ -1096,23 +1101,22 @@ async def test_legal_pages_are_served_at_their_short_urls(client, short, heading
     assert f"<h1>{heading}" in response.text
 
 
-@pytest.mark.parametrize("short", ["/privacy", "/cookies", "/subprocessors"])
-async def test_legal_file_addresses_redirect_to_short_urls(client, short):
-    """A page's `.html` address sends you to its short one, so only one circulates."""
-    response = await client.get(f"/app/legal{short}.html")
+@pytest.mark.parametrize(
+    ("old", "short"),
+    [
+        ("/app/legal/privacy.html", "/privacy"),
+        ("/app/legal/cookies.html", "/cookies"),
+        ("/app/legal/subprocessors.html", "/subprocessors"),
+        ("/app/legal/index.html", "/legal"),
+        ("/app/legal/", "/legal"),
+    ],
+)
+async def test_legal_file_addresses_redirect_to_short_urls(client, old, short):
+    """A page's file address sends you to its short one, so only one circulates."""
+    response = await client.get(old)
 
     assert response.status_code == 302
     assert response.headers["location"] == short
-
-
-async def test_short_legal_folder_redirects_to_real_files(client):
-    """`/legal` lands on a page that exists, signed out."""
-    response = await client.get("/legal")
-
-    assert response.status_code == 302
-    landed = await client.get(response.headers["location"])
-    assert landed.status_code == 200
-    assert "text/html" in landed.headers["content-type"]
 
 
 async def test_root_serves_landing_page(client):

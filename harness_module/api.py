@@ -2239,13 +2239,12 @@ class _Frontend(StaticFiles):
 # Short, stable public addresses for the legal and help pages: the Google OAuth
 # consent screen and emails link these, so the files behind them can move. A
 # page is served in place, so the address bar keeps the short form with no
-# `.html`, and its file's own address redirects to it, so only one circulates;
-# a folder redirects, because its pages link onward from under /app.
+# `.html`, and its file's own address redirects to it, so only one circulates.
 _SHORT_URLS = {
     "/privacy": "/app/legal/privacy.html",
     "/cookies": "/app/legal/cookies.html",
     "/subprocessors": "/app/legal/subprocessors.html",
-    "/legal": "/app/legal/",
+    "/legal": "/app/legal/index.html",
 }
 
 
@@ -2271,6 +2270,10 @@ for _path, _target in _SHORT_URLS.items():
     if _target.endswith(".html"):
         # Registered before the /app mount below, so it wins over the static file.
         app.add_api_route(_target, _short_url(_path), methods=["GET"], include_in_schema=False)
+    if _target.endswith("/index.html"):
+        # The folder's own address too, which the mount would answer with the same file.
+        _folder = _target.removesuffix("index.html")
+        app.add_api_route(_folder, _short_url(_path), methods=["GET"], include_in_schema=False)
 
 
 # HEAD too: uptime checks and proxies probe `/` with it.
