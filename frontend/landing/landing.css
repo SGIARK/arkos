@@ -13,20 +13,6 @@ main.landing { max-width: 880px; }
 .hero p { max-width: 620px; font-size: 15px; color: var(--ink-soft); margin: 0 0 28px; }
 
 .ctas { display: flex; flex-wrap: wrap; gap: 12px; }
-.btn {
-  display: inline-block;
-  padding: 9px 18px;
-  border-radius: var(--r);
-  border: 1px solid var(--line);
-  background: var(--surface);
-  color: var(--ink);
-  text-decoration: none;
-}
-.btn.primary { background: var(--ink); border-color: var(--ink); color: var(--paper); }
-.btn:hover { background: var(--surface-2); }
-.btn.primary:hover { background: var(--ink); opacity: .88; }
-/* The header's sign-in: the same button, sized to sit beside the mark. */
-.btn.sm { padding: 5px 14px; font-size: 13px; }
 
 .blocks {
   display: grid;

@@ -55,6 +55,21 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
   padding: 20px 16px;
 }
 
+/* Buttons on the public pages. Every page's header has a small one for sign in. */
+.btn {
+  display: inline-block;
+  padding: 9px 18px;
+  border-radius: var(--r);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  text-decoration: none;
+}
+.btn.primary { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+.btn:hover { background: var(--surface-2); }
+.btn.primary:hover { background: var(--ink); opacity: .88; }
+.btn.sm { padding: 5px 14px; font-size: 13px; }
+
 /* The sign-in screen's mark (.auth-mark in ../styles.css), copied exactly. */
 .mark { display: flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none; }
 .mark .glyph { font-weight: 700; font-size: 18px; letter-spacing: -0.04em; }
