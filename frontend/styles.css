@@ -1436,3 +1436,8 @@ kbd {
     scroll-behavior: auto !important;
   }
 }
+
+/* The sign-up agreement line: its link reads as a link, not as body text. */
+.auth-consent a { color: var(--accent); text-underline-offset: 3px; }
+label.auth-consent { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
+label.auth-consent input { margin: 3px 0 0; accent-color: var(--accent); }

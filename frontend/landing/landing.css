@@ -1,0 +1,33 @@
+/* The landing page at `/`. Builds on ../legal/legal.css; loads nothing from other sites. */
+
+main.landing { max-width: 880px; }
+
+.hero { padding: 48px 0 32px; }
+.hero h1 {
+  font-size: clamp(30px, 7vw, 48px);
+  line-height: 1.12;
+  letter-spacing: -0.02em;
+  margin: 0 0 20px;
+  color: var(--ink);
+}
+.hero p { max-width: 620px; font-size: 15px; color: var(--ink-soft); margin: 0 0 28px; }
+
+.ctas { display: flex; flex-wrap: wrap; gap: 12px; }
+
+.blocks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  padding: 24px 0 8px;
+}
+.block {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+  padding: 16px;
+}
+.block h2 { font-size: 14px; margin: 0 0 6px; color: var(--ink); }
+.block p { margin: 0; font-size: 13px; }
+
+.info { border-top: 1px solid var(--line); margin-top: 40px; padding-top: 8px; }
+.info h2 { font-size: 16px; }

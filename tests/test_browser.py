@@ -516,3 +516,30 @@ async def test_a_frame_for_another_target_is_ignored():
         with_broker.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await with_broker
+
+
+@pytest.mark.parametrize("preset", [None, "true"])
+async def test_browser_analytics_forced_off(preset):
+    """The public pages promise no analytics, so importing the tool switches
+    browser-use's reporting off even when the environment asks for it on.
+
+    A fresh interpreter, because this module already imported the tool.
+    """
+    import os
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if k not in ("ANONYMIZED_TELEMETRY", "BROWSER_USE_VERSION_CHECK")}
+    if preset is not None:
+        env["ANONYMIZED_TELEMETRY"] = preset
+        env["BROWSER_USE_VERSION_CHECK"] = preset
+    code = (
+        "import os, tool_module.browser.tool; "
+        "print(os.environ['ANONYMIZED_TELEMETRY'], os.environ['BROWSER_USE_VERSION_CHECK'])"
+    )
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", code, env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    out, err = await proc.communicate()
+
+    assert proc.returncode == 0, err.decode()
+    assert out.decode().split() == ["false", "false"]
