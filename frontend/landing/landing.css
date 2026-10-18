@@ -23,6 +23,10 @@ main.landing { max-width: 880px; }
   text-decoration: none;
 }
 .btn.primary { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+.btn:hover { background: var(--surface-2); }
+.btn.primary:hover { background: var(--ink); opacity: .88; }
+/* The header's sign-in: the same button, sized to sit beside the mark. */
+.btn.sm { padding: 5px 14px; font-size: 13px; }
 
 .blocks {
   display: grid;
