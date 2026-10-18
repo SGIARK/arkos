@@ -53,7 +53,7 @@
     acts.className = "acts";
 
     var link = document.createElement("a");
-    link.href = "/app/legal/cookies.html";
+    link.href = "/cookies";
     link.textContent = "Cookie policy";
 
     var ok = document.createElement("button");
