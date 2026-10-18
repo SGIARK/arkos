@@ -42,16 +42,16 @@ date in `Resolution`, then do what `On resolve` says. `scripts/check_launch_read
 - **Who:** owner + world · **Blocks launch:** yes
 - **Options:** which domain; which provider sends mail
 - **Default / recommendation:** support@, privacy@, security@ and legal@ on a domain you control, with at least two people on each; Supabase Auth on custom SMTP for sign-up mail.
-- **Where it lands:** `{{SUPPORT_EMAIL}}`, `{{PRIVACY_EMAIL}}`, `{{SECURITY_EMAIL}}`, `{{LEGAL_EMAIL}}` (drafting 01, ready 08); `security.contact` (ready 04)
+- **Where it lands:** `{{SUPPORT_EMAIL}}`, `{{PRIVACY_EMAIL}}`, `{{SECURITY_EMAIL}}`, `{{LEGAL_EMAIL}}` (drafting 01, ready 08); `security.contact` (ready 04); landing page (ready 10)
 - **On resolve:** create the inboxes; replace the placeholders; set `security.contact`.
-- **Resolution:** —
+- **Resolution:** partly, 2026-10-16. Every contact address is `sipb-ark@mit.edu` (help, privacy, security, legal), already filled in on the landing page and Privacy Policy. Still open: which provider sends sign-up email.
 
 ### D3 — AI model provider at launch
 - **Status:** open
 - **Who:** owner · **Blocks launch:** yes
 - **Options:** OpenAI API (current config) · self-hosted "MIT profile" on SGLang
 - **Default / recommendation:** OpenAI, with zero data retention requested. It's the bigger privacy disclosure, but it works today.
-- **Where it lands:** `{{LLM_PROVIDER}}`, the AI-processing section of the Privacy Policy, and the subprocessor list (drafting 01)
+- **Where it lands:** `{{LLM_PROVIDER}}`, the AI-processing section of the Privacy Policy, and the subprocessor list (drafting 01); landing page (ready 10)
 - **On resolve:** fill the placeholder; delete the unused branch comment in `privacy.html`.
 - **Resolution:** —
 
@@ -82,7 +82,7 @@ date in `Resolution`, then do what `On resolve` says. `scripts/check_launch_read
 - **Who:** owner + counsel + world · **Blocks launch:** yes
 - **Options:** individual(s) · LLC · MIT unit (see D2)
 - **Default / recommendation:** form an LLC before launch, so the Terms bind an entity and not a person.
-- **Where it lands:** `{{OPERATOR_LEGAL_NAME}}`, `{{OPERATOR_POSTAL_ADDRESS}}` in every legal page (drafting 01)
+- **Where it lands:** `{{OPERATOR_LEGAL_NAME}}`, `{{OPERATOR_POSTAL_ADDRESS}}` in every legal page (drafting 01); landing page (ready 10)
 - **On resolve:** fill both placeholders; sign vendor terms (OpenAI, e2b, Composio, SerpAPI, Supabase) as that entity.
 - **Resolution:** —
 
@@ -91,9 +91,9 @@ date in `Resolution`, then do what `On resolve` says. `scripts/check_launch_read
 - **Who:** owner + counsel · **Blocks launch:** yes
 - **Options:** independent project · MIT-lab research project · official MIT service
 - **Default / recommendation:** independent. Say plainly "not operated, sponsored or endorsed by MIT", and use no MIT marks.
-- **Where it lands:** `{{MIT_RELATIONSHIP_STATEMENT}}` (ready 01 footer, drafting 01); whether the WISP applies (drafting 02)
+- **Where it lands:** `{{MIT_RELATIONSHIP_STATEMENT}}` (ready 01 footer, drafting 01); whether the WISP applies (drafting 02); landing page (ready 10)
 - **On resolve:** fill the statement; if MIT-operated, hand the legal documents to MIT OGC.
-- **Resolution:** —
+- **Resolution:** 2026-10-16, a student project: the footer reads "Run by students at SIPB.", as opengrades.mit.edu does. Who legally operates arkos is still D1, and the contributor agreement names Buddy; check that SIPB is happy to be named before launch.
 
 ### D10 — Disputes
 - **Status:** open

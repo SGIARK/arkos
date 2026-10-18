@@ -22,13 +22,10 @@ Today users can only delete files, and even those stay in storage forever. Conve
 ---
 
 # Technical Background
-Two terms used below:
-- **Cascade:** a database rule that deletes child records automatically when their parent is deleted.
-- **Blob:** the stored contents of a file. Identical files share one blob, even between users, so a blob can only be removed once nothing points at it.
-
 What's true today:
 - Three database links block deletion: conversation → user, sandbox → user, conversation → project.
 - Blobs can be written but never deleted. Files, the undo list and the agent's memory all point at them.
+- Identical files share one blob, even between users, so a blob can only be removed once nothing points at it.
 - The "disconnect" button ignores a failed revoke at Composio and forgets the connection anyway.
 
 ---
@@ -45,7 +42,7 @@ What's true today:
 | Account | Connected accounts are revoked first, then the account and everything in it is removed | No |
 | Inactive account (after launch) | Warned by email, then deleted like an account | No |
 
-Kept on purpose: consent records (proof the user agreed to the Terms) and 30 days of server logs.
+Kept on purpose: consent records and 30 days of server logs.
 
 ## Rules every delete follows
 1. Delete one parent record and let cascades remove the rest.

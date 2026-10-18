@@ -19,10 +19,8 @@ A visitor who isn't signed in sees only the sign-in pitch. There's no Terms or P
 ---
 
 # Technical Background
-One term used below:
-- **Public config:** `GET /auth/config`, the one settings request the sign-in screen makes before anyone logs in. Today it returns the Supabase address and public key.
-
 What's true today:
+- The sign-in screen makes one settings request before anyone logs in, `GET /auth/config` ("public config"). Today it returns the Supabase address and public key.
 - Anything in `frontend/` is already served at `/app/…`, so new HTML pages need no server code. Only short addresses like `/terms` do.
 - Every script and stylesheet link in `index.html` ends in `?v=49`. Any change to frontend files must bump that number, or browsers keep old copies.
 
@@ -100,3 +98,4 @@ None. Unknowns are placeholders or config defaults tracked in `DECISIONS.md`.
 ---
 
 # Implementation Notes
+- 2026-10-14: Tasks 1–2 built for ready 10. Public config adds `terms_version`, `privacy_version`, `min_age`, `source_url`, `undo_days`, `autopilot_minutes` and `build`. Short addresses redirect with 302. `frontend/legal/_template.html` is the page to copy. Task 3 (links inside the app) is not done yet.

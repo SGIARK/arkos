@@ -39,7 +39,7 @@ These exact lines, used as written unless the owner edits them:
 | Files view | "Don't upload passwords, government ID numbers, health records, other students' records, or export-controlled research data." |
 | Autopilot button | "Autopilot keeps working without you for up to N minutes, and still asks before anything on the always-ask list." |
 
-Dismissals are remembered in the browser, and the notice simply shows again if browser storage is blocked. The banner doesn't come back when the Terms change, because the agreement screen (ready 05) already handles that.
+Dismissals are remembered in the browser under fixed `arkos-…` keys, each listed on the cookies page once drafting 01 Task 1 has merged, and the notice simply shows again if browser storage is blocked. The banner doesn't come back when the Terms change, because the agreement screen (ready 05) already handles that.
 
 **Not in scope:** legal text (drafting 01); help pages (ready 08); a full accessibility review.
 

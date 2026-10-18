@@ -273,8 +273,8 @@ change in the same PR.
 | Connection metadata | which toolkits are connected, tool lists | `user_connections`, `session_tools` | User |
 | Browser activity | URLs visited, page content, screencast frames | Browserless container (transient); results in session log | Agent |
 | Web searches | queries | SerpAPI; session log | Agent |
-| Operational logs | errors, timings, benching events, request metadata | `system_events` (30 days) | System |
-| Client-side storage | theme (`arkos-theme`), Supabase auth tokens in `localStorage` | Browser | Frontend |
+| Operational logs | errors, timings, benching events, request metadata | `system_events` (rows over 30 days dropped at each server start) | System |
+| Client-side storage | settings in `localStorage`: theme (`arkos-theme`), files/browser tab (`arkos-canvas`); no Supabase token is stored (`persistSession: false`) | Browser | Frontend |
 | Network metadata | IP address, user agent | Hosting logs / reverse proxy (Caddy), Supabase, CDNs | Every request |
 
 ### 4.2 Subprocessors (verify each before publishing)
@@ -290,6 +290,7 @@ change in the same PR.
 | Hosting provider (`{{HOSTING_PROVIDER}}`) | Runs the API and reverse proxy | All traffic | Add token to 0.2 table when known |
 | Email sender (Supabase Auth SMTP or custom) | Confirmation and reset emails | Email address | Configure custom SMTP with branded sender (8.5) |
 | unpkg.com, Google Fonts | Static assets | Visitor IP, user agent | Remove after PR 14 |
+| PostHog (EU), via browser-use's built-in analytics | Library usage statistics | Browser task text, visited URLs, final result | Switched off by ready 10 Task 1 (`ANONYMIZED_TELEMETRY`, `BROWSER_USE_CLOUD_SYNC` = false); not a subprocessor once merged |
 
 ### 4.3 Retention schedule (proposed — decision D7)
 
@@ -950,9 +951,9 @@ Table from 4.2 (name, purpose, data, location, link to their privacy policy),
 
 ### 7.6 Cookies & local storage (`cookies.html`)
 
-`arkos_session` (strictly necessary, HttpOnly, 7 days); Supabase auth tokens in
-`localStorage` (strictly necessary); `arkos-theme`, `arkos-beta-ack`, connect
-acknowledgments (preferences); no analytics or advertising cookies; third-party
+`arkos_session` (strictly necessary, HttpOnly, 7 days; the only sign-in state, since
+Supabase runs with `persistSession: false`); `arkos-theme`, `arkos-canvas`,
+`arkos-cookie-ack`, `arkos-beta-ack`, connect acknowledgments (preferences); no analytics or advertising cookies; third-party
 CDN requests until PR 14. No consent banner is needed while only strictly
 necessary/preference storage is used — state that, and require a banner if
 analytics are ever added.
@@ -1176,6 +1177,6 @@ listed must be verified in code and added here first. Source in brackets.
   characters each), carried between sessions. [`config.yaml` `memory`]
 - Deleted files can be restored with undo. [`api.py` `POST /files/undo`]
   (Retention window: set by PR 10.)
-- Operational logs are kept 30 days. [`config.yaml` `system_log.retain_days`]
+- Operational logs (`system_events`) older than 30 days are deleted each time the server starts, not on a timer. [`config.yaml` `system_log.retain_days`; `harness_module/system_log.py` `start()`]
 - Model at default config: OpenAI `gpt-4.1-mini`. [`config.yaml` `llm`]
 - License: AGPL-3.0. [`LICENSE`]

@@ -19,20 +19,16 @@ arkos sends no security headers. Another site could show the approvals page insi
 ---
 
 # Technical Background
-Two terms used below:
-- **Security headers:** instructions the server sends with every response, telling the browser what not to allow.
-- **CSP (content security policy):** the header listing where scripts, styles and data may come from.
-
 What's true today:
-- The server adds no headers of its own beyond the standard cross-origin (CORS) one.
+- The server adds no headers of its own beyond CORS.
 - Scripts load from unpkg and fonts from Google until ready 07 moves them in-house, so the CSP must allow both for now.
-- Three things run script the CSP would normally block: the in-browser JSX compiler (Babel), the small page that closes the "connect account" popup, and the theme switch on the legal pages. Until the frontend is prebuilt, the CSP has to allow them, so its real value at launch is blocking framing.
+- Three things run script the CSP would normally block: in-browser Babel, the small page that closes the "connect account" popup, and the theme switch on the legal pages. Until the frontend is prebuilt, the CSP has to allow them, so its real value at launch is blocking framing.
 - Local development runs on plain http, so the "always use https" header must only be sent in production.
 
 ---
 
 # Proposed Approach
-One small piece of server code (middleware) adds these headers to every response, pages and API alike:
+A middleware adds these headers to every response, pages and API alike:
 
 | Header | What it does |
 |---|---|
@@ -43,7 +39,7 @@ One small piece of server code (middleware) adds these headers to every response
 | `Strict-Transport-Security` | Browsers always use https (production only) |
 | CSP | Limits where scripts, styles, fonts and data come from |
 
-The CSP starts in "report only" mode: the browser logs what it would have blocked but blocks nothing. It switches to enforced after a clean check in the browser.
+The CSP starts report-only and switches to enforced after a clean check in the browser.
 
 **Default:** the security contact is a placeholder until the inbox exists (D16); ready 09 refuses launch while it is.
 

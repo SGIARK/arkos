@@ -19,13 +19,13 @@ Every page load sends the visitor's IP address to unpkg and Google Fonts, and ar
 ---
 
 # Technical Background
-- `index.html` already pins exact versions with integrity hashes (fingerprints of the expected file): react 18.3.1, react-dom 18.3.1, @babel/standalone 7.29.0 and supabase-js 2.112.4. A downloaded copy can be checked against the fingerprint already in the repo.
+- `index.html` already pins exact versions with integrity hashes: react 18.3.1, react-dom 18.3.1, @babel/standalone 7.29.0 and supabase-js 2.112.4. A downloaded copy can be checked against the hash already in the repo.
 - The font, JetBrains Mono, has a free license (SIL OFL) that allows copying it, as long as the license file goes with it.
 
 ---
 
 # Proposed Approach
-Copy the four scripts and the font files into `frontend/vendor/`, check each against its fingerprint, and point the pages at the local copies. Then remove the two services from the security policy and from the privacy pages.
+Copy the four scripts and the font files into `frontend/vendor/`, check each against its integrity hash, and point the pages at the local copies. Then remove the two services from the security policy and from the privacy pages.
 
 **Not in scope:** switching React to its production build (a separate change worth its own test).
 
@@ -35,7 +35,7 @@ Copy the four scripts and the font files into `frontend/vendor/`, check each aga
 
 ## Task 1: Copy and check the files
 **Problem:** the app depends on two outside services every time it loads.
-**Done when:** `frontend/vendor/` holds the four scripts, each matching its fingerprint, plus the font files and license; pages load nothing from unpkg or Google; `?v=` is bumped.
+**Done when:** `frontend/vendor/` holds the four scripts, each matching its integrity hash, plus the font files and license; pages load nothing from unpkg or Google; `?v=` is bumped.
 **Touch point:** new `frontend/vendor/`; `frontend/index.html`; `frontend/styles.css` (font rules); `frontend/legal/legal.css`.
 **Priority:** Medium | **Effort:** <4h | **Blockers:** ready 01
 **Out of scope:** the security policy.

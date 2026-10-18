@@ -34,6 +34,7 @@ Specs in the same wave don't depend on each other and can run in parallel.
 | 1 | [02 Deletion](ready/02-deletion.md), Tasks 1–2 and conversation delete in Task 3 | — |
 | 1 | [03 Data Export](ready/03-data-export.md) | — |
 | 1 | [04 Security Headers & security.txt](ready/04-security-headers.md) | — |
+| 1 (this week) | [10 Landing Page and Cookie Notice](ready/10-landing-page.md) | 01 Tasks 1–2 |
 | 2 | [02 Deletion](ready/02-deletion.md), rest of Task 3, Tasks 4–5 | its Tasks 1–2; Task 5 also needs 01 |
 | 2 | [05 Consent Capture](ready/05-consent-capture.md) | 01 |
 | 2 | [06 In-Product Disclosures](ready/06-in-product-disclosures.md) | 01 |
@@ -49,7 +50,7 @@ merges first creates it.
 
 | Spec | Start after | Final after |
 |---|---|---|
-| [01 Legal Documents](drafting/01-legal-documents.md) | ready 01 Task 1 | D1, D2, D3, D6, D7, D8, D9, D10, D16, D17 (counsel) |
+| [01 Legal Documents](drafting/01-legal-documents.md) (Task 1, the short Privacy Policy, drafted this week for the product as it will be at launch) | ready 01 Tasks 1–2 for Task 1; Task 1 for the rest | D1, D2, D3, D6, D7, D8, D9, D10, D16, D17 (counsel) |
 | [02 Operator Documents](drafting/02-operator-documents.md) | now | D2, D7, D9, D19 |
 
 ## Sharing the deletion design
@@ -61,6 +62,7 @@ that file on its own when someone needs to review how deletion works.
 
 ## History
 
+- **2026-10-14, landing page and privacy first:** reviewer feedback put the cookie notice and Privacy Policy first. New ready 10 adds a static landing page at `/` with a one-time cookie notice; drafting 01 Task 1 now writes a short, plain Privacy Policy (in the style of opengrades.mit.edu/privacy) instead of plan §7.2's seventeen headings. This week: ready 01 Tasks 1–2, then ready 10, then drafting 01 Task 1. 12 specs.
 - **2026-10-03, deletion condensed:** ready 02's 11 tasks merged into 6, with a task summary table; the Notion copy uses fold-out task cards.
 - **2026-10-03, plain-language rewrite:** every spec rewritten to the nmorgan rules P-004 to P-006: plain words with a short glossary where needed, file lists instead of function-by-function touch points, no code stubs except short SQL or config, and tests as one table. Same tasks, tests and decisions.
 - **2026-10-02, consolidation:** File Data Cleanup, Account Deletion, Session

@@ -30,7 +30,7 @@ The script runs these checks and prints one line each. Any failing "blocks" chec
 
 | Check | Blocks launch? |
 |---|---|
-| No `{{placeholder}}` left in the legal pages, help pages or `SECURITY.md` (names the file) | Yes |
+| No `{{placeholder}}` left in the legal pages, help pages, landing page (ready 10) or `SECURITY.md` (names the file) | Yes |
 | No legal page still marked "Draft" | Yes |
 | The document versions in config match the versions on the pages | Yes |
 | Login cookies are https-only (`auth.cookie_secure`) | Yes |
