@@ -13,7 +13,7 @@ date in `Resolution`, then do what `On resolve` says. `scripts/check_launch_read
 **Legend.** *Who:* **owner** = you can answer it now; **counsel** = needs a lawyer;
 **world** = needs a real-world action (register, sign, create).
 
-**Open: 11** — owner: D3, D6, D7, D8, D9, D16 · counsel / world: D1, D2, D10, D17, D19
+**Open: 10** — owner: D6, D7, D8, D9, D16 · counsel / world: D1, D2, D10, D17, D19
 
 ---
 
@@ -45,15 +45,6 @@ date in `Resolution`, then do what `On resolve` says. `scripts/check_launch_read
 - **Where it lands:** `{{SUPPORT_EMAIL}}`, `{{PRIVACY_EMAIL}}`, `{{SECURITY_EMAIL}}`, `{{LEGAL_EMAIL}}` (drafting 01, ready 08); `security.contact` (ready 04); landing page (ready 10)
 - **On resolve:** create the inboxes; replace the placeholders; set `security.contact`.
 - **Resolution:** partly, 2026-10-16. Every contact address is `sipb-ark@mit.edu` (help, privacy, security, legal), already filled in on the landing page and Privacy Policy. Still open: which provider sends sign-up email.
-
-### D3 — AI model provider at launch
-- **Status:** open
-- **Who:** owner · **Blocks launch:** yes
-- **Options:** OpenAI API (current config) · self-hosted "MIT profile" on SGLang
-- **Default / recommendation:** OpenAI, with zero data retention requested. It's the bigger privacy disclosure, but it works today.
-- **Where it lands:** `{{LLM_PROVIDER}}`, the AI-processing section of the Privacy Policy, and the subprocessor list (drafting 01); landing page (ready 10)
-- **On resolve:** fill the placeholder; delete the unused branch comment in `privacy.html`.
-- **Resolution:** —
 
 ### D8 — Research or training use of user data
 - **Status:** open
@@ -125,6 +116,10 @@ date in `Resolution`, then do what `On resolve` says. `scripts/check_launch_read
 ---
 
 ## Resolved
+
+### D3 — AI model provider at launch
+- **Status:** resolved
+- **Resolution:** 2026-10-17, owner: **self-hosted**, following what the code does. `main`'s config already points `llm.base_url` at our own SGLang server (`Qwen/Qwen3-8B`), and the deploy doesn't change it; the OpenAI setting this entry called "current" was only ever a local edit. The Privacy Policy and landing page say the model runs on our own servers and no outside AI company receives the data, the subprocessor list has no AI row, and the unused branch comment is gone (PR #252). If launch moves to OpenAI, reopen this: name it in those three places, add it to the subprocessors with its region, request zero data retention, and change the config.
 
 ### D5 — Minimum age
 - **Status:** resolved

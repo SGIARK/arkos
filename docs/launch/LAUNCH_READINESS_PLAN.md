@@ -93,7 +93,7 @@ Legal and help text will reference facts the owner has not decided yet (section 
 | `{{LEGAL_EMAIL}}` | Legal notices, DMCA | — |
 | `{{GOVERNING_LAW}}` | Governing law & venue | Commonwealth of Massachusetts; courts of Suffolk or Middlesex County |
 | `{{MIN_AGE}}` | Minimum age | 18 |
-| `{{LLM_PROVIDER}}` | Model provider at launch | OpenAI, L.L.C. |
+| `{{LLM_PROVIDER}}` | Model provider at launch | None: D3 resolved 2026-10-17 to the self-hosted model, so the pages say "our own servers" and carry no placeholder |
 | `{{PUBLIC_URL}}` | Production origin | — |
 | `{{SOURCE_URL}}` | AGPL source repository | `https://github.com/SGIARK/arkos` |
 | `{{MIT_RELATIONSHIP_STATEMENT}}` | See decision D2 | see D2 |
@@ -205,7 +205,7 @@ Audited on `main` @ `a522ff4` (2026-09-24).
 |---|---|---|---|
 | D1 | Who is the operator (person, student group, LLC, MIT lab)? | The Terms are a contract with this party; an individual operator carries personal liability | Form an LLC (or operate under an MIT unit if D2 = official) **before** launch; see 8.1 |
 | D2 | Relationship to MIT: official MIT service, MIT-lab research project, or independent student project? | Changes which policies govern (MIT IS&T/OGC vs. own), whether "MIT" may appear in branding, and whether FERPA applies | Independent project: state "arkos is not operated, sponsored or endorsed by MIT" and follow MIT's name-use policy |
-| D3 | LLM provider at launch: OpenAI (hosted) or the self-hosted "MIT profile" (SGLang)? | Determines whether prompts/files leave to a third-party model provider — the largest privacy disclosure | Launch on OpenAI API with zero-data-retention requested (8.4); disclose clearly; update policy if switched |
+| D3 | LLM provider at launch: OpenAI (hosted) or the self-hosted "MIT profile" (SGLang)? | Determines whether prompts/files leave to a third-party model provider — the largest privacy disclosure | **Resolved 2026-10-17: self-hosted**, as `main`'s config already runs it; see `DECISIONS.md`. If launch moves to OpenAI, request zero data retention (8.4) and update the policy |
 | ~~D4~~ | ~~Eligibility: restrict sign-up to `@mit.edu`?~~ | ~~Scope of user base, cost control, audience-specific policy~~ | **Resolved 2026-09-25 (owner): no.** Sign-up stays open to any confirmed email or Google account. The launch is *aimed* at the MIT community, but not restricted to it. The eligibility-gate PR (6) is withdrawn; cost and abuse exposure moves to R11 and §8.9 |
 | D5 | Minimum age | COPPA (<13) and contract capacity (<18); some MIT first-years are 17 | 18+, with a self-attestation checkbox |
 | D6 | Pricing | Consumer-protection and refund terms if paid | Free beta; Terms reserve the right to introduce pricing with notice |
@@ -282,7 +282,7 @@ change in the same PR.
 | Provider | Purpose | Data | Notes for the agent / owner |
 |---|---|---|---|
 | Supabase | Authentication, Postgres database, file storage | All categories above | Record region of the project |
-| `{{LLM_PROVIDER}}` (OpenAI by default) | Language model inference | Conversation content, file excerpts, connected-account data in context, memory | OpenAI API: not used for training by default; abuse-monitoring retention up to 30 days unless zero-retention is approved (8.4). Omit if D3 = self-hosted |
+| ~~`{{LLM_PROVIDER}}`~~ (removed: D3 = self-hosted) | Language model inference | Conversation content, file excerpts, connected-account data in context, memory | OpenAI API: not used for training by default; abuse-monitoring retention up to 30 days unless zero-retention is approved (8.4). Omit if D3 = self-hosted |
 | e2b | Per-session sandbox VM (shell, files) | Files in claimed folders, commands, outputs | Boxes time out after 300 s idle |
 | Browserless | Headless browser the agent drives | Sites visited, page content, screenshots | Self-hosted container or cloud — record which |
 | Composio | OAuth gateway and tool execution for Gmail, Outlook, GitHub, Linear, Notion, Google Calendar, Google Drive | OAuth grants; the requests and responses of connected-account tools | Users grant access to Composio's managed OAuth apps |

@@ -21,7 +21,7 @@ arkos stores accounts, conversations, files, the agent's memory and content from
 
 # Technical Background
 What the pages must disclose, as configured today:
-- The AI model is OpenAI's gpt-4.1-mini, unless D3 moves to a self-hosted model.
+- The AI model is self-hosted: `Qwen/Qwen3-8B` on our own SGLang server, as `main`'s config runs it (D3, resolved 2026-10-17).
 - Files and accounts live in Supabase; connected accounts (Gmail, Outlook, GitHub, Linear, Notion, Google Calendar, Google Drive) go through Composio; web search goes through SerpAPI; the agent's sandbox runs on e2b; its browser runs on Browserless. Which of these are self-hosted in production isn't recorded yet (Open Question 2).
 - arkos's own log (`system_events`) drops rows older than 30 days each time the server starts (`system_log.retain_days`), not on a timer. Logs kept by the hosting provider and Supabase aren't pruned by arkos. The list of actions that always need approval is in config.
 - Until ready 07 lands, every page load also contacts unpkg and Google Fonts.
@@ -128,3 +128,4 @@ Checks for whoever builds this. None needs a decision.
 
 # Implementation Notes
 - 2026-10-14: Task 1 drafted: `privacy.html` (917 words), `subprocessors.html`, `cookies.html`. Provider regions and Browserless hosting show as "Draft —" cells until Open Questions 1–2 are answered; ready 09 flags them. The D3 self-hosted wording sits in an HTML comment beside the AI paragraph.
+- 2026-10-17: D3 resolved to self-hosted. The AI paragraph uses the self-hosted wording, its comment is gone, and `subprocessors.html` drops the AI row. `/privacy`, `/cookies`, `/subprocessors` and `/legal` are served in place and their `/app/legal/` addresses redirect to them. The privacy page is effective 2026-10-17, and it and the legal index no longer carry the `{{OPERATOR_LEGAL_NAME}}` copyright line (PR #252).
