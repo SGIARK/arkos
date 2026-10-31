@@ -6,6 +6,7 @@ Requires a real Postgres with migration 0 applied.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 
 import pytest
@@ -199,3 +200,62 @@ async def test_prune_removes_what_has_aged_out():
     await system_log.prune()
 
     assert len(await _rows(session_id)) == 1, "prune took the recent record too"
+
+
+async def test_a_logged_error_from_any_module_reaches_the_table():
+    """Tool and library errors used to go only to stdout; now the table hears them."""
+    await system_log.start()
+    try:
+        logging.getLogger("tool_module.envelope").error("grep failed", exc_info=RuntimeError("refused"))
+    finally:
+        await system_log.stop()
+
+    rows = await pool.fetch(
+        "SELECT level, event, fields FROM system_events WHERE event = $1 AND fields->>'logger' = $2",
+        system_log.LOGGING_EVENT,
+        "tool_module.envelope",
+    )
+    await pool.execute("DELETE FROM system_events WHERE event = $1 AND session_id IS NULL", system_log.LOGGING_EVENT)
+    assert len(rows) == 1
+    assert rows[0]["level"] == "error"
+    assert rows[0]["fields"]["message"] == "grep failed"
+    assert "RuntimeError: refused" in rows[0]["fields"]["traceback"]
+
+
+async def test_a_warning_is_forwarded_and_info_is_not():
+    await system_log.start()
+    try:
+        logging.getLogger("tool_module.browser").warning("lease took %dms", 90_000)
+        logging.getLogger("tool_module.browser").info("hundreds of these per task")
+    finally:
+        levels = [(level, fields["message"]) for level, _, _, _, fields in system_log._queue]
+        await system_log.stop()
+    await pool.execute("DELETE FROM system_events WHERE event = $1 AND session_id IS NULL", system_log.LOGGING_EVENT)
+
+    assert levels == [("warn", "lease took 90000ms")]
+
+
+async def test_nothing_is_forwarded_once_stopped():
+    await system_log.start()
+    await system_log.stop()
+
+    logging.getLogger("tool_module.envelope").error("after shutdown")
+
+    assert not system_log._queue
+
+
+async def test_a_failed_write_does_not_feed_itself(monkeypatch):
+    """The module's own 'dropped' warning must not become a row whose write fails again."""
+    await system_log.start()
+    try:
+        system_log.record("fold")
+
+        async def boom(*a, **kw):
+            raise RuntimeError("the database went away")
+
+        monkeypatch.setattr(pool, "execute", boom)
+        assert await system_log.flush() == 0
+        assert not system_log._queue
+    finally:
+        monkeypatch.undo()
+        await system_log.stop()

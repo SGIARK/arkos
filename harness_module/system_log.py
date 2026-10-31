@@ -3,6 +3,10 @@ The operational log: retries, lease churn, timing internals.
 
 Separate from `session_events` by audience: that table is the transcript and a failed
 append halts the run; this one is diagnostics, batched, and a failed write loses a line.
+
+Two things feed it: explicit `record` calls from the runner, and every logging record
+at WARNING or above from any module, forwarded by `_LoggingForwarder` while the log
+is started. Without the forwarder, a tool or library error went only to stdout.
 """
 
 from __future__ import annotations
@@ -31,6 +35,31 @@ _stopping: asyncio.Event | None = None
 
 # Seconds a shutdown waits for an in-flight write before giving up on it.
 _SHUTDOWN_GRACE_S = 10.0
+
+# The event name every forwarded logging record lands under.
+LOGGING_EVENT = "log"
+# Below this, the browser agent alone emits hundreds of lines per task.
+_FORWARD_FROM = logging.WARNING
+
+
+class _LoggingForwarder(logging.Handler):
+    """Forwards warnings and errors from the standard logger into this log."""
+
+    def __init__(self) -> None:
+        super().__init__(level=_FORWARD_FROM)
+
+    def emit(self, rec: logging.LogRecord) -> None:
+        # This module warns when a write fails; forwarding that would queue a row
+        # whose write fails, which warns again, forever.
+        if rec.name == __name__:
+            return
+        fields: dict[str, Any] = {"logger": rec.name, "message": rec.getMessage()}
+        if rec.exc_info and rec.exc_info[0] is not None:
+            fields["traceback"] = logging.Formatter().formatException(rec.exc_info)
+        record(LOGGING_EVENT, level="error" if rec.levelno >= logging.ERROR else "warn", **fields)
+
+
+_forwarder: _LoggingForwarder | None = None
 
 
 def record(
@@ -86,6 +115,7 @@ async def start() -> None:
         logger.warning("could not prune system_events", exc_info=True)
     _stopping = asyncio.Event()
     _flusher = asyncio.create_task(_flush_loop(_stopping), name="system_log")
+    _attach_forwarder()
 
 
 async def stop() -> None:
@@ -95,6 +125,7 @@ async def stop() -> None:
     in-flight write loses that batch, which `flush` has already taken off the queue.
     """
     global _flusher, _stopping
+    _detach_forwarder()
     if _stopping is not None:
         _stopping.set()
     if _flusher is not None:
@@ -108,6 +139,20 @@ async def stop() -> None:
         _flusher = None
     _stopping = None
     await flush()
+
+
+def _attach_forwarder() -> None:
+    global _forwarder
+    if _forwarder is None:
+        _forwarder = _LoggingForwarder()
+        logging.getLogger().addHandler(_forwarder)
+
+
+def _detach_forwarder() -> None:
+    global _forwarder
+    if _forwarder is not None:
+        logging.getLogger().removeHandler(_forwarder)
+        _forwarder = None
 
 
 async def _flush_loop(stopping: asyncio.Event) -> None:
