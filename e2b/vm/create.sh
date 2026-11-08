@@ -39,3 +39,16 @@ make_key() {
     fi
     ssh-keygen -q -t ed25519 -N "" -C arkos-e2b-vm -f "$VM_DIR/ssh_key"
 }
+
+# Fill in the cloud-init template with the operator's key and Embed's two
+# files from e2b/, so the guest runs exactly the version this repo pins.
+render_seed() {
+    local seed
+    seed="$(<"$VM_DIR/user-data.template")"
+    seed="${seed//@SSH_PUBLIC_KEY@/$(<"$VM_DIR/ssh_key.pub")}"
+    seed="${seed//@COMPOSE_B64@/$(base64 -w0 "$E2B_DIR/compose.yaml")}"
+    seed="${seed//@ENV_B64@/$(base64 -w0 "$E2B_DIR/.env.example")}"
+    mkdir -p "$DATA/seed"
+    printf '%s\n' "$seed" >"$DATA/seed/user-data"
+    printf 'instance-id: arkos-e2b-001\nlocal-hostname: arkos-e2b\n' >"$DATA/seed/meta-data"
+}
