@@ -52,3 +52,10 @@ render_seed() {
     printf '%s\n' "$seed" >"$DATA/seed/user-data"
     printf 'instance-id: arkos-e2b-001\nlocal-hostname: arkos-e2b\n' >"$DATA/seed/meta-data"
 }
+
+# Run one command in the runner image with no network, no capabilities and
+# nothing mounted but the data directory.
+in_runner() {
+    docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges:true \
+        --user "$(id -u):$(id -g)" -v "$DATA:/data" "$RUNNER_IMAGE" "$@"
+}
