@@ -78,3 +78,9 @@ make_disk() {
     fi
     in_runner qemu-img create -q -f qcow2 -F qcow2 -b /data/base.img /data/root.qcow2 "$DISK_SIZE"
 }
+
+# compose.yaml runs QEMU as this user, in the group that owns /dev/kvm.
+write_env() {
+    printf 'E2B_VM_UID=%s\nE2B_VM_GID=%s\nKVM_GID=%s\n' \
+        "$(id -u)" "$(id -g)" "$(stat -c %g /dev/kvm)" >"$VM_DIR/.env"
+}
