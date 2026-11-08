@@ -127,3 +127,19 @@ Embed needs Linux with KVM and cgroup v2, kernel 6.8 or newer, Docker 27 or newe
 Embed reserves memory for sandboxes in 2 MiB pages. The `HUGEPAGES` setting controls how many, and its default of 2048 pages comes to 4 GiB. A standard sandbox uses up to 512 MiB of that while busy and about 180 MiB while idle, so the default pool holds about 8 busy sandboxes or 20 idle ones. Beyond that, new sandboxes fail with `500: Failed to place sandbox`.
 
 ## Implementation notes
+
+Tested on ark on 2026-11-08 from commit `b5cb9b5`, copied to `/home/service/dev/arkos-local/e2b`. `create.sh` and Embed's first start took about three minutes together, most of it downloads.
+
+| # | Result |
+|---|---|
+| 1 | Passed. The container isn't privileged, drops every capability and can't gain any, gets only `/dev/kvm`, has its own process namespace and network, has a read-only filesystem, and runs as `service`. |
+| 2 | Passed. ark's hugepage count stayed at 0, `nbd` stayed unloaded and `/etc` gained no E2B files. The firewall wasn't checked, because that needs root on ark. |
+| 3 | Passed. Only 12222, 13000, 13001 and 13002 were listening, all on `127.0.0.1`, and nothing on 5008. |
+| 4 | Not run. The VM wasn't rebooted. |
+| 5 | Passed after one rerun. On the first run 8 of 9 passed. The credentials test failed because ark's `OPENAI_API_KEY` is the placeholder `-`, which matches any hyphen in the sandbox's environment; the variable itself wasn't there. With a realistic stand-in key the test passed, so none of the five credentials it checks reaches a sandbox. |
+| 6 | Not run. arkos's `.env` and the running arkos were left alone. |
+| 7 | Not run as an agent task, but Test 5's pause and resume tests passed. |
+
+E2B's own smoke test also passed inside the VM: a sandbox started, and its port 8080 was reached through the sandbox proxy.
+
+While up and idle, the VM's container used 12.1 GiB of its 13 GiB memory limit and about a sixth of one CPU core, and the VM's disk held 8.1 GiB. E2B was then shut down: the VM powered off cleanly, its container is stopped with automatic restart turned off, and the four ports are closed.
