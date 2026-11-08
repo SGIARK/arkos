@@ -84,3 +84,18 @@ write_env() {
     printf 'E2B_VM_UID=%s\nE2B_VM_GID=%s\nKVM_GID=%s\n' \
         "$(id -u)" "$(id -g)" "$(stat -c %g /dev/kvm)" >"$VM_DIR/.env"
 }
+
+main() {
+    [[ -e /dev/kvm ]] || die "/dev/kvm is missing, so this host can't run the VM"
+    command -v docker >/dev/null || die "docker is not installed"
+    mkdir -p "$DATA"
+    write_env
+    docker compose -f "$VM_DIR/compose.yaml" build
+    fetch_image
+    make_key
+    make_seed_iso
+    make_disk
+    docker compose -f "$VM_DIR/compose.yaml" up -d
+}
+
+main "$@"
