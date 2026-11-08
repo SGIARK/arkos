@@ -69,3 +69,12 @@ make_seed_iso() {
     in_runner genisoimage -quiet -output /data/seed.iso -volid cidata -joliet -rock \
         /data/seed/user-data /data/seed/meta-data
 }
+
+# The guest's disk: a sparse layer over the base image that only grows as the
+# guest writes to it.
+make_disk() {
+    if [[ -f "$DATA/root.qcow2" ]]; then
+        return
+    fi
+    in_runner qemu-img create -q -f qcow2 -F qcow2 -b /data/base.img /data/root.qcow2 "$DISK_SIZE"
+}
