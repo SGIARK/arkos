@@ -59,3 +59,13 @@ in_runner() {
     docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges:true \
         --user "$(id -u):$(id -g)" -v "$DATA:/data" "$RUNNER_IMAGE" "$@"
 }
+
+# The small read-only disk that cloud-init reads on the guest's first boot.
+make_seed_iso() {
+    if [[ -f "$DATA/seed.iso" ]]; then
+        return
+    fi
+    render_seed
+    in_runner genisoimage -quiet -output /data/seed.iso -volid cidata -joliet -rock \
+        /data/seed/user-data /data/seed/meta-data
+}
