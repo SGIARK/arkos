@@ -31,3 +31,11 @@ fetch_image() {
         die "$IMAGE_NAME does not match its published checksum"
     mv "$DATA/base.img.partial" "$DATA/base.img"
 }
+
+# The key the operator logs into the VM with. It stays in this directory.
+make_key() {
+    if [[ -f "$VM_DIR/ssh_key" ]]; then
+        return
+    fi
+    ssh-keygen -q -t ed25519 -N "" -C arkos-e2b-vm -f "$VM_DIR/ssh_key"
+}
