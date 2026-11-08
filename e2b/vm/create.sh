@@ -15,3 +15,19 @@ die() {
     echo "create.sh: $*" >&2
     exit 1
 }
+
+# Ubuntu's minimal cloud image, accepted only if it matches the checksum
+# Ubuntu publishes beside it.
+fetch_image() {
+    local expected
+    if [[ -f "$DATA/base.img" ]]; then
+        return
+    fi
+    expected="$(curl -fsSL "$IMAGE_URL/SHA256SUMS" |
+        awk -v name="$IMAGE_NAME" '{ file = $2; sub(/^\*/, "", file) } file == name { print $1 }')"
+    [[ -n "$expected" ]] || die "Ubuntu publishes no checksum for $IMAGE_NAME"
+    curl -fL --progress-bar -o "$DATA/base.img.partial" "$IMAGE_URL/$IMAGE_NAME"
+    echo "$expected  $DATA/base.img.partial" | sha256sum -c --quiet - ||
+        die "$IMAGE_NAME does not match its published checksum"
+    mv "$DATA/base.img.partial" "$DATA/base.img"
+}
