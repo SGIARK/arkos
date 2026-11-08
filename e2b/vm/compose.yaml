@@ -2,7 +2,7 @@
 # guest; this container gets /dev/kvm and nothing else from the host, and the
 # guest's SSH, API, dashboard and sandbox proxy reach the host's loopback only.
 # create.sh writes the .env beside this file.
-name: arkos-e2b-vm
+name: arkos-e2b
 services:
   vm:
     build: .
