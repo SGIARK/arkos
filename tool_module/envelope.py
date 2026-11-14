@@ -101,6 +101,8 @@ class ToolContext:
     # Claims the session's lease on a shared, stateful resource by name
     # ("sandbox", "browser"). Raises ToolUnavailable if the wait times out.
     lease: Callable[[str], Awaitable[None]] | None = None
+    # Gives back a lease taken with `lease` before the session ends. Never raises.
+    unlease: Callable[[str], Awaitable[None]] | None = None
     # Per-turn state shared between calls, keyed by the tool that owns it.
     scratch: dict[str, Any] = field(default_factory=dict)
 

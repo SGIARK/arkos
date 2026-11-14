@@ -6,6 +6,7 @@ Runs against a real Postgres with migration 0 applied.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import uuid
 
 import pytest
@@ -18,6 +19,7 @@ from harness_module import session_log as slog
 from model_module import client as mc
 from tests.dbgate import require_db
 from tests.runner_tasks import cancel_and_forget
+from tool_module.envelope import ToolUnavailable
 from tool_module.sandbox import manager as sandbox_manager
 from tool_module.sandbox import tools as sandbox_tools
 
@@ -251,3 +253,75 @@ async def test_a_park_gives_the_leases_back(sandbox, model, impatient):
     assert held == 0
     slot = await pool.fetchval("SELECT count(*) FROM session_sandboxes WHERE session_id = $1", uuid.UUID(session_id))
     assert slot == 1, "the box is hibernated on a park, not given up"
+
+
+# --- giving a lease back before the session ends ----------------------------------
+
+
+async def _sink(session_id: str) -> runner._Sink:
+    return runner._Sink(await runner.load(session_id))
+
+
+async def _stop(sink: runner._Sink) -> None:
+    sink._writer.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await sink._writer
+
+
+async def test_an_early_release_frees_the_resource_for_another_session(impatient):
+    """A lease given back mid-session goes to the next session at once, not at session end."""
+    first = await _sink(await _session())
+    second = await _sink(await _session(mode="attended"))
+    # One user's two sessions: the lease key is per user.
+    await pool.execute(
+        "UPDATE sessions SET user_id = $1 WHERE id = $2",
+        uuid.UUID(first.session.user_id),
+        uuid.UUID(second.session.id),
+    )
+    second.session.user_id = first.session.user_id
+    try:
+        await first._lease("printer")
+        with pytest.raises(ToolUnavailable):
+            await second._lease("printer")
+
+        await first._unlease("printer")
+
+        await second._lease("printer")
+        assert await leases.holder(leases.key("printer", first.session.user_id)) == second.session.id
+        assert first._leases == set()
+    finally:
+        await _stop(first)
+        await _stop(second)
+
+
+async def test_a_failed_release_leaves_the_session_end_release_armed(impatient, monkeypatch):
+    """The key stays tracked, so `_release_leases` still runs `release_all`."""
+    sink = await _sink(await _session())
+
+    async def broken(resource_key, session_id):
+        raise ConnectionError("db went away")
+
+    try:
+        await sink._lease("printer")
+        monkeypatch.setattr(runner.leases, "release", broken)
+
+        await sink._unlease("printer")  # does not raise
+
+        assert sink._leases == {leases.key("printer", sink.session.user_id)}
+        await sink._release_leases()
+        held = await pool.fetchval(
+            "SELECT count(*) FROM resource_leases WHERE session_id = $1", uuid.UUID(sink.session.id)
+        )
+        assert held == 0
+    finally:
+        await _stop(sink)
+
+
+async def test_giving_back_what_was_never_taken_is_a_no_op(impatient):
+    sink = await _sink(await _session())
+    try:
+        await sink._unlease("printer")
+        await sink._unlease("sandbox")
+        assert sink._leases == set()
+    finally:
+        await _stop(sink)

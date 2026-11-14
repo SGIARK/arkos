@@ -902,6 +902,7 @@ class _Sink:
             read_blob=lambda ref, offset, limit: slog.read_blob(ref, offset, limit, user_id=self.session.user_id),
             approve=self._approve,
             lease=self._lease,
+            unlease=self._unlease,
         )
 
     async def _approve(self, name: str, args: dict[str, Any]) -> bool:
@@ -995,6 +996,25 @@ class _Sink:
             len(materialized.manifest),
             len(claims),
         )
+
+    async def _unlease(self, resource: str) -> None:
+        """Give back a lease this session took with `_lease`, before the session ends.
+
+        The sandbox is not a lease and is left alone. A failed release is a log line: the
+        lease expires on its own, and the session-end release tries again.
+        """
+        if resource == "sandbox":
+            return
+        resource_key = leases.key(resource, self.session.user_id)
+        if resource_key not in self._leases:
+            return
+        try:
+            await leases.release(resource_key, self.session.id)
+        except Exception:  # noqa: BLE001 - the expiry and the session-end release still free it
+            # Kept in `_leases`, so `_release_leases` still runs its `release_all`.
+            logger.exception("session %s could not give back %s", self.session.id, resource_key)
+            return
+        self._leases.discard(resource_key)
 
     async def _claim_sandbox(self) -> None:
         """Take a slot in the user's sandbox pool, waiting and saying so while it is full."""
