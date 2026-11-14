@@ -90,6 +90,7 @@ Branch: `fix/browser-multi-session`. Planning commits: Step 1 `085c097`, Step 2 
 
 ## Enhancement requests
 
+- **Request (user, after Stage 5):** set `browser.max_concurrent_per_user` to 1. **Disposition:** in-scope refinement, explicitly requested. It changes Step 2's default of 3 but no behavior or file boundary. Effect: a user's sessions take turns at the browser one call at a time, instead of waiting for a whole session to end. Raising the setting restores parallel runs. **Approval status:** requested directly by the user. **Outcome:** done. `config.yaml` is 1, and the code fallback in `runner.py` is 1 to match. Loading the config gives 1. `ruff check .`, `ruff format --check .`, scoped `mypy` and `pytest -m "not integration"` passed, with 901 passed and 0 failed. Committed on this branch after `2f6aeb5`.
 - **Request:** check the Browserless SSPL licence for a hosted arkos, and pin the image version. **Disposition:** separate work. **Approval status:** not started. **Outcome:** pending.
 - **Finding (Stage 5):** `tools.call_timeout_s` (120s) cuts off every tool call before the browser's own `browser.wall_clock_s` (240s) and `browser.hard_timeout_s` (300s). A slow run is cancelled from outside and loses its partial result. A call that first waits for a slot (up to `leases.wait_timeout_s`, 90s) has even less time. **Disposition:** separate work. It was there before this cycle and changes timeout policy for every tool, so it is outside the approved scope. **Approval status:** not started. **Outcome:** pending.
 

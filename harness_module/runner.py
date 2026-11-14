@@ -1030,7 +1030,7 @@ class _Sink:
         """
         if "browser" in self._slots:
             return
-        cap = int(_cfg("browser.max_concurrent_per_user", 3))
+        cap = int(_cfg("browser.max_concurrent_per_user", 1))
         if cap < 1:
             logger.warning("browser.max_concurrent_per_user is %d; using 1", cap)
             cap = 1
