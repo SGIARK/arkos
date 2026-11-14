@@ -1064,8 +1064,73 @@ async def test_auth_config_is_readable_signed_out(client):
     """It is how a signed-out browser signs in, so it cannot require a session."""
     body = (await client.get("/auth/config")).json()
 
-    assert set(body) == {"supabase_url", "anon_key"}
+    assert {"supabase_url", "anon_key"} <= set(body)
     assert isinstance(body["anon_key"], str)
+
+
+async def test_auth_config_carries_public_policy(client):
+    """The signed-out screens read versions, limits and the build from one place."""
+    body = (await client.get("/auth/config")).json()
+
+    assert body["terms_version"] == _real_cfg("legal.terms_version")
+    assert body["privacy_version"] == _real_cfg("legal.privacy_version")
+    assert body["min_age"] == 18
+    assert body["source_url"] == _real_cfg("legal.source_url")
+    assert body["undo_days"] == _real_cfg("retention.deleted_files_days")
+    assert body["autopilot_minutes"] == _real_cfg("budgets.unattended.wall_clock_s") // 60
+    assert isinstance(body["build"], str) and body["build"]
+
+
+@pytest.mark.parametrize(
+    ("short", "heading"),
+    [
+        ("/privacy", "Privacy Policy"),
+        ("/cookies", "Cookies"),
+        ("/subprocessors", "Subprocessors"),
+        ("/legal", "Legal"),
+    ],
+)
+async def test_legal_pages_are_served_at_their_short_urls(client, short, heading):
+    """Each page is served in place, signed out and never cached, so the address
+    bar never shows `.html`."""
+    response = await client.get(short)
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "no-store" in response.headers.get("cache-control", "")
+    assert f"<h1>{heading}" in response.text
+
+
+@pytest.mark.parametrize(
+    ("old", "short"),
+    [
+        ("/app/legal/privacy.html", "/privacy"),
+        ("/app/legal/cookies.html", "/cookies"),
+        ("/app/legal/subprocessors.html", "/subprocessors"),
+        ("/app/legal/index.html", "/legal"),
+        ("/app/legal/", "/legal"),
+    ],
+)
+async def test_legal_file_addresses_redirect_to_short_urls(client, old, short):
+    """A page's file address sends you to its short one, so only one circulates."""
+    response = await client.get(old)
+
+    assert response.status_code == 302
+    assert response.headers["location"] == short
+
+
+async def test_root_serves_landing_page(client):
+    """`/` is the landing page and is never cached; `/app/` is still the app."""
+    root = await client.get("/")
+    head = await client.head("/")
+    app_page = await client.get("/app/")
+
+    assert root.status_code == 200
+    assert head.status_code == 200
+    assert "no-store" in root.headers.get("cache-control", "")
+    assert 'href="/app/"' in root.text
+    assert app_page.status_code == 200
+    assert "landing.css" not in app_page.text
 
 
 class _FakeGoTrue:
