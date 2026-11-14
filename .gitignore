@@ -34,3 +34,7 @@
 
 # The 11.10.1 Composio spike: throwaway, its own venv and its own .env.
 /spike-composio/
+
+# e2b/vm/create.sh makes these: the VM's disks and seed, and its login key.
+/e2b/vm/data/
+/e2b/vm/ssh_key*

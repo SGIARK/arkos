@@ -1,0 +1,58 @@
+# The VM that runs E2B Embed. Everything Embed does as root happens inside the
+# guest; this container gets /dev/kvm and nothing else from the host, and the
+# guest's SSH, API, dashboard and sandbox proxy reach the host's loopback only.
+# create.sh writes the .env beside this file.
+name: arkos-e2b
+services:
+  vm:
+    build: .
+    image: arkos-e2b-vm:ubuntu24.04
+    restart: unless-stopped
+    user: "${E2B_VM_UID:?run create.sh first}:${E2B_VM_GID:?run create.sh first}"
+    group_add:
+      - "${KVM_GID:?run create.sh first}"
+    devices:
+      - /dev/kvm:/dev/kvm
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=64m
+    cpus: 8.5
+    mem_limit: 13g
+    pids_limit: 256
+    ports:
+      - 127.0.0.1:12222:2222
+      - 127.0.0.1:13000:3000
+      - 127.0.0.1:13001:3001
+      - 127.0.0.1:13002:3002
+    volumes:
+      - ./data:/data
+    stop_grace_period: 90s
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+    command:
+      - qemu-system-x86_64
+      - -machine
+      - q35,accel=kvm
+      - -cpu
+      - host
+      - -smp
+      - "8"
+      - -m
+      - "12288"
+      - -nographic
+      - -nodefaults
+      - -serial
+      - mon:stdio
+      - -drive
+      - file=/data/root.qcow2,if=virtio,format=qcow2,discard=unmap
+      - -drive
+      - file=/data/seed.iso,if=virtio,format=raw,readonly=on
+      - -nic
+      - user,model=virtio-net-pci,hostfwd=tcp:0.0.0.0:2222-:22,hostfwd=tcp:0.0.0.0:3000-:3000,hostfwd=tcp:0.0.0.0:3001-:3001,hostfwd=tcp:0.0.0.0:3002-:3002

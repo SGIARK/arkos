@@ -1,0 +1,60 @@
+#cloud-config
+# create.sh fills in the three @...@ placeholders and writes the result to
+# data/seed/user-data. Everything here happens inside the guest.
+hostname: arkos-e2b
+manage_etc_hosts: true
+users:
+  - name: arkos
+    groups: [adm, sudo]
+    shell: /bin/bash
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    lock_passwd: true
+    ssh_authorized_keys:
+      - "@SSH_PUBLIC_KEY@"
+ssh_pwauth: false
+disable_root: true
+package_update: true
+package_upgrade: false
+packages:
+  - docker.io
+  - docker-compose-v2
+  - iptables
+  - rsync
+  - e2fsprogs
+  - iproute2
+  - ca-certificates
+  - curl
+write_files:
+  - path: /opt/e2b/compose.yaml
+    permissions: "0644"
+    encoding: b64
+    content: "@COMPOSE_B64@"
+  - path: /opt/e2b/.env
+    permissions: "0600"
+    encoding: b64
+    content: "@ENV_B64@"
+  # Embed has to start on every boot: a reboot drops its firewall rule and
+  # network namespace directory, and only Embed's own start puts them back.
+  - path: /etc/systemd/system/e2b.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=E2B Embed
+      Wants=network-online.target
+      Requires=docker.service
+      After=network-online.target docker.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      WorkingDirectory=/opt/e2b
+      ExecStart=/usr/bin/docker compose up -d --wait --wait-timeout 900
+      TimeoutStartSec=0
+
+      [Install]
+      WantedBy=multi-user.target
+runcmd:
+  - [systemctl, daemon-reload]
+  - [systemctl, enable, --now, docker]
+  - [systemctl, enable, --now, e2b.service]
+final_message: "The E2B VM is set up. Embed starts from e2b.service."
