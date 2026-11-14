@@ -25,7 +25,7 @@ import httpx
 import jwt
 from fastapi import Body, Depends, FastAPI, File, Form, Header, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from agent_module import prompts
@@ -434,10 +434,20 @@ async def auth_config() -> dict[str, Any]:
     The anon key identifies the project and authorizes nothing on its own; it is
     served rather than baked in because it differs per deployment.
     """
-    if _proxy_supabase() and _origin:
-        # The browser talks to Supabase through `/auth/v1` on this origin.
-        return {"supabase_url": _origin, "anon_key": _anon_key()}
-    return {"supabase_url": blobs.project_url() or "", "anon_key": _anon_key()}
+    # The browser talks to Supabase through `/auth/v1` on this origin when proxied.
+    supabase_url = _origin if _proxy_supabase() and _origin else blobs.project_url() or ""
+    return {
+        "supabase_url": supabase_url,
+        "anon_key": _anon_key(),
+        # Public policy, so the signed-out screens and later specs read one place.
+        "terms_version": str(_cfg("legal.terms_version", "")),
+        "privacy_version": str(_cfg("legal.privacy_version", "")),
+        "min_age": int(_cfg("legal.min_age", 18)),
+        "source_url": str(_cfg("legal.source_url", "")),
+        "undo_days": int(_cfg("retention.deleted_files_days", 30)),
+        "autopilot_minutes": int(_cfg("budgets.unattended.wall_clock_s", 1800)) // 60,
+        "build": os.environ.get("ARKOS_BUILD_SHA") or "dev",
+    }
 
 
 def _proxy_supabase() -> bool:
@@ -2224,6 +2234,56 @@ class _Frontend(StaticFiles):
         if path in ("", ".", "index.html") or path.endswith(".html"):
             response.headers["Cache-Control"] = "no-store, must-revalidate"
         return response
+
+
+# Short, stable public addresses for the legal and help pages: the Google OAuth
+# consent screen and emails link these, so the files behind them can move. A
+# page is served in place, so the address bar keeps the short form with no
+# `.html`, and its file's own address redirects to it, so only one circulates.
+_SHORT_URLS = {
+    "/privacy": "/app/legal/privacy.html",
+    "/cookies": "/app/legal/cookies.html",
+    "/subprocessors": "/app/legal/subprocessors.html",
+    "/legal": "/app/legal/index.html",
+}
+
+
+def _short_url(target: str) -> Any:
+    if target.endswith(".html"):
+        page = _FRONTEND / target.removeprefix("/app/")
+
+        async def serve() -> Response:
+            response = FileResponse(page, media_type="text/html")
+            response.headers["Cache-Control"] = "no-store, must-revalidate"
+            return response
+
+        return serve
+
+    async def redirect() -> Response:
+        return RedirectResponse(target, status_code=302)
+
+    return redirect
+
+
+for _path, _target in _SHORT_URLS.items():
+    app.add_api_route(_path, _short_url(_target), methods=["GET"], include_in_schema=False)
+    if _target.endswith(".html"):
+        # Registered before the /app mount below, so it wins over the static file.
+        app.add_api_route(_target, _short_url(_path), methods=["GET"], include_in_schema=False)
+    if _target.endswith("/index.html"):
+        # The folder's own address too, which the mount would answer with the same file.
+        _folder = _target.removesuffix("index.html")
+        app.add_api_route(_folder, _short_url(_path), methods=["GET"], include_in_schema=False)
+
+
+# HEAD too: uptime checks and proxies probe `/` with it.
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
+async def landing_page() -> Response:
+    """The static page a visitor sees before signing in. It lives under /app with the
+    other public pages, but is served here so the address stays `/`."""
+    response = FileResponse(_FRONTEND / "landing" / "index.html", media_type="text/html")
+    response.headers["Cache-Control"] = "no-store, must-revalidate"
+    return response
 
 
 if _FRONTEND.is_dir():

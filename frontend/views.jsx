@@ -582,6 +582,8 @@ function Login({ gone, onSignedIn, problem: arrived, notice, startMode }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  // The age and privacy box on the new-account screen; nothing is created until it's ticked.
+  const [agreed, setAgreed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState(null);
   /* "signup" | "reset" — a flow that ends in the mail rather than in the app.
@@ -602,7 +604,7 @@ function Login({ gone, onSignedIn, problem: arrived, notice, startMode }) {
   const ready = forgot
     ? email.trim()
     : up
-      ? name.trim() && email.trim() && password.length >= MIN_PASSWORD
+      ? name.trim() && email.trim() && password.length >= MIN_PASSWORD && agreed
       : email.trim() && password;
 
   async function submit() {
@@ -634,7 +636,7 @@ function Login({ gone, onSignedIn, problem: arrived, notice, startMode }) {
   }
 
   async function google() {
-    if (busy) return;
+    if (busy || (up && !agreed)) return;
     setBusy(true);
     setProblem(null);
     try {
@@ -737,6 +739,21 @@ function Login({ gone, onSignedIn, problem: arrived, notice, startMode }) {
             )}
           </div>
 
+          {/* A new account needs this ticked, by email or by Google. Above the buttons,
+              so a disabled button has its reason in view. */}
+          {up && (
+            <label className="auth-note quiet auth-consent">
+              <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />
+              <span>
+                I'm 18 or older and agree to the{" "}
+                <a href="/privacy" target="_blank" rel="noopener">
+                  Privacy Policy
+                </a>
+                .
+              </span>
+            </label>
+          )}
+
           <div className="auth-actions">
             <button className="auth-cta" onClick={submit} disabled={busy || !ready}>
               {busy ? "…" : forgot ? "email me a link" : up ? "create account" : "sign in"}
@@ -750,13 +767,24 @@ function Login({ gone, onSignedIn, problem: arrived, notice, startMode }) {
                   or
                   <span className="rule" />
                 </div>
-                <button className="auth-google" onClick={google} disabled={busy}>
+                <button className="auth-google" onClick={google} disabled={busy || (up && !agreed)}>
                   <span className="g">G</span>
                   continue with google
                 </button>
               </React.Fragment>
             )}
           </div>
+
+          {/* Signing in shows the terms as a line: Google can still create an account from there. */}
+          {!up && !forgot && (
+            <p className="auth-note quiet auth-consent">
+              By continuing you confirm you're 18 or older and agree to the{" "}
+              <a href="/privacy" target="_blank" rel="noopener">
+                Privacy Policy
+              </a>
+              .
+            </p>
+          )}
 
           {notice && !problem && <p className="auth-note quiet">{notice}</p>}
           {shown && <p className="auth-problem">{shown}</p>}
@@ -974,8 +1002,9 @@ function AuthAside() {
           <span className="caret" />
         </h1>
         <p>
-          arkos works on a real computer and browser, with a persistent filesystem that survives between
-          runs. workflows can span days, and it asks before anything leaves your account.
+          arkos works in its own sandbox and browser and keeps your files between runs. Actions in your
+          connected accounts wait for your approval unless you turn on autopilot, and sending email,
+          deleting and merging always wait for you.
         </p>
       </div>
       <div className="auth-tags">
