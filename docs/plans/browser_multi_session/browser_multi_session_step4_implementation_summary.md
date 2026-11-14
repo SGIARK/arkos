@@ -43,4 +43,18 @@ Branch: `fix/browser-multi-session`. Planning commits: Step 1 `085c097`, Step 2 
   - A resumed session with an empty `_slots` map might take a second slot while an old row of its own survives. `release_all` at session end clears both, so the cost is one slot for the rest of that session, at most.
   - The browser tool still holds its slot until session end. Stage 3 releases it per call.
 
+## Stage 3 - Free the browser slot on every exit
+
+- Changes:
+  - `tool_module/browser/tool.py`: `BrowserTask.call` claims the slot, then runs a new `_drive` method inside `try`/`finally`. The `finally` calls `ctx.unlease("browser")` after the run's own cleanup has closed the browser. `_drive` takes the checked `session_id` as a `str` instead of using an `assert`. The comment that said the browser "keeps its profile between calls" is gone.
+  - `tests/test_browser.py`: the old "leased before it is driven" test became eight tests. They cover success, an unsuccessful run, a vendor exception, a missing `browser_use`, the time-budget stop, the hard backstop and cancellation, each claiming and freeing the slot once. One more checks that a refused call claims nothing. The unused `_done` helper is removed.
+- Verification:
+  - Mutation check: with the previous `tool.py`, 7 of the new tests failed. With the change, all 31 browser tests passed.
+  - `ruff check .`: passed.
+  - `ruff format --check .`: passed.
+  - Scoped `mypy`: passed.
+  - `pytest tests/ -q --timeout=120 -m "not integration"`: passed, 901 passed and 0 failed.
+- Notes:
+  - The result is built after the slot is freed. Building it only stores a blob and does not need the browser.
+
 *— Claude Code · 2026-11-14 UTC · Model: claude-opus-5-5*

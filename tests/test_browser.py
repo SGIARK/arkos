@@ -281,21 +281,121 @@ async def test_the_whole_run_is_stored_behind_a_ref(monkeypatch):
 # --- the lease ----------------------------------------------------------------------
 
 
-async def test_the_browser_is_leased_before_it_is_driven(monkeypatch):
-    """Shared per user and stateful across calls, so it is leased (contracts)."""
-    taken = []
-    _with_agent(monkeypatch)
+class _Slot:
+    """Records the browser slot being claimed and given back."""
 
-    await registry.dispatch("browser_task", {"task": "go"}, _ctx(lease=lambda name: taken.append(name) or _done()))
+    def __init__(self):
+        self.log: list[str] = []
 
-    assert taken == ["browser"]
+    async def lease(self, name):
+        self.log.append(f"lease:{name}")
+
+    async def unlease(self, name):
+        self.log.append(f"unlease:{name}")
+
+    def ctx(self, **kw):
+        return _ctx(lease=self.lease, unlease=self.unlease, **kw)
 
 
-def _done():
-    async def nothing():
-        return None
+async def test_the_slot_is_claimed_before_the_run_and_freed_after_it(monkeypatch):
+    slot = _Slot()
+    made = _with_agent(monkeypatch)
 
-    return nothing()
+    result = await registry.dispatch("browser_task", {"task": "go"}, slot.ctx())
+
+    assert result.ok
+    assert made["agent"] is not None
+    assert slot.log == ["lease:browser", "unlease:browser"]
+
+
+async def test_the_slot_is_freed_when_the_run_fails(monkeypatch):
+    slot = _Slot()
+    _with_agent(monkeypatch, history=FakeHistory(errors=["boom"], successful=False))
+
+    result = await registry.dispatch("browser_task", {"task": "go"}, slot.ctx())
+
+    assert not result.ok
+    assert slot.log == ["lease:browser", "unlease:browser"]
+
+
+async def test_the_slot_is_freed_when_the_vendor_raises(monkeypatch):
+    slot = _Slot()
+    monkeypatch.setattr(browser_tool, "cdp_url", lambda: "ws://browserless:3000", raising=False)
+
+    class Exploding:
+        def __init__(self, run):
+            self.history = None
+
+        async def run(self, max_steps=25):
+            raise RuntimeError("cdp went away")
+
+    monkeypatch.setattr(browser_tool, "_agent_factory", lambda: Exploding)
+
+    result = await registry.dispatch("browser_task", {"task": "go"}, slot.ctx())
+
+    assert not result.ok
+    assert slot.log == ["lease:browser", "unlease:browser"]
+
+
+async def test_the_slot_is_freed_when_browser_use_is_missing(monkeypatch):
+    slot = _Slot()
+    monkeypatch.setattr(browser_tool, "cdp_url", lambda: "ws://browserless:3000", raising=False)
+
+    def missing(run):
+        raise ImportError("No module named 'browser_use'")
+
+    monkeypatch.setattr(browser_tool, "_agent_factory", lambda: missing)
+
+    result = await registry.dispatch("browser_task", {"task": "go"}, slot.ctx())
+
+    assert not result.ok
+    assert slot.log == ["lease:browser", "unlease:browser"]
+
+
+async def test_the_slot_is_freed_at_the_time_budget(monkeypatch):
+    slot = _Slot()
+    _with_agent(monkeypatch, steps=50, step_delay=0.01)
+    values = {"browser.wall_clock_s": 0.02, "browser.hard_timeout_s": 5}
+    monkeypatch.setattr(browser_tool, "_cfg", lambda key, default=None: values.get(key, default))
+
+    await registry.dispatch("browser_task", {"task": "go"}, slot.ctx())
+
+    assert slot.log == ["lease:browser", "unlease:browser"]
+
+
+async def test_the_slot_is_freed_at_the_hard_backstop(monkeypatch):
+    slot = _Slot()
+    _with_agent(monkeypatch, steps=1000, step_delay=0.01, obeys_stop=False)
+    values = {"browser.wall_clock_s": 0.02, "browser.hard_timeout_s": 0.15}
+    monkeypatch.setattr(browser_tool, "_cfg", lambda key, default=None: values.get(key, default))
+
+    await registry.dispatch("browser_task", {"task": "go"}, slot.ctx())
+
+    assert slot.log == ["lease:browser", "unlease:browser"]
+
+
+async def test_the_slot_is_freed_when_the_call_is_cancelled(monkeypatch):
+    slot = _Slot()
+    _with_agent(monkeypatch, steps=1000, step_delay=0.01, obeys_stop=False)
+
+    call = asyncio.create_task(browser_tool.BrowserTask().call({"task": "go"}, slot.ctx()))
+    await asyncio.sleep(0.05)
+    call.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await call
+
+    assert slot.log == ["lease:browser", "unlease:browser"]
+
+
+async def test_a_refused_call_claims_no_slot(monkeypatch):
+    slot = _Slot()
+    monkeypatch.setattr(browser_tool, "cdp_url", lambda: "", raising=False)
+
+    no_task = await registry.dispatch("browser_task", {"task": " "}, slot.ctx())
+    no_browser = await registry.dispatch("browser_task", {"task": "go"}, slot.ctx())
+
+    assert not no_task.ok and not no_browser.ok
+    assert slot.log == []
 
 
 async def test_a_task_with_no_goal_is_refused_before_anything_boots(monkeypatch):

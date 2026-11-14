@@ -73,13 +73,24 @@ class BrowserTask:
                 retryable=False,
             )
 
-        # Leased, not capped: the browser is shared per user and keeps its profile between calls.
+        # One of the user's browser slots, held for this call only. Each run gets its own
+        # throwaway browser, so the slot caps how many run at once; it shares nothing.
         if ctx.lease is not None:
             await ctx.lease("browser")
+        try:
+            return await self._drive(task, args, ctx, where, ctx.session_id)
+        finally:
+            # Every exit, cancellation included, so another session gets the slot now.
+            if ctx.unlease is not None:
+                await ctx.unlease("browser")
 
+    async def _drive(
+        self, task: str, args: dict[str, Any], ctx: ToolContext, where: str, session_id: str
+    ) -> ResultEnvelope:
+        """Run the browser and build the result; the caller holds the slot around this."""
         # Announced before the first step, so the pane is mountable while the run lasts.
         if ctx.emit_status is not None:
-            ctx.emit_status("using the browser…", _frames_url(ctx.session_id))
+            ctx.emit_status("using the browser…", _frames_url(session_id))
 
         budget = float(_cfg("browser.wall_clock_s", 300))
         backstop = float(_cfg("browser.hard_timeout_s", budget + 30))
