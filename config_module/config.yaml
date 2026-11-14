@@ -131,8 +131,9 @@ system_log:
   retain_days: 30         # pruned at startup
 
 leases:
-  # The browser is shared per user and keeps state between calls, so one session
-  # holds it for its whole run; a write claim holds its project the same way.
+  # A write claim holds its project for the session's whole run. The browser is
+  # a pool, not one lease: a browser_task call holds one of the user's
+  # browser.max_concurrent_per_user slots for that call only.
   ttl_s: 900              # a lease expires if the process holding it dies
   wait_timeout_s: 90      # how long a contended call waits before giving up; must leave room
                           # inside tools.call_timeout_s for the tool to report that it never ran

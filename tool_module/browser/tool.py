@@ -39,12 +39,13 @@ class BrowserTask:
     spec = ToolSpec(
         name="browser_task",
         description=(
-            "Do something on the web in a real browser that keeps the user's logins: "
-            "research across pages, fill a form, work inside a web app. Give it one clear "
-            "goal in a sentence or two, including what 'done' looks like and any specific "
-            "site to start from — it plans its own steps. Prefer it over guessing a URL. "
-            "It is slow (tens of seconds to minutes) and it acts as the signed-in user, so "
-            "request_approval first for anything that sends, buys, publishes or deletes."
+            "Do something on the web in a real browser: research across pages, fill a form, "
+            "work inside a web app. Each call starts a fresh browser that is signed in to "
+            "nothing, so nothing carries over from an earlier call. Give it one clear goal in "
+            "a sentence or two, including what 'done' looks like and any specific site to "
+            "start from — it plans its own steps. Prefer it over guessing a URL. It is slow "
+            "(tens of seconds to minutes) and it can act on real sites, so request_approval "
+            "first for anything that sends, buys, publishes or deletes."
         ),
         input_schema={
             "type": "object",

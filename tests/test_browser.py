@@ -117,7 +117,7 @@ async def test_browser_task_is_in_the_manifest():
     specs = {s.name: s for s in (await registry.manifest(USER)).specs}
 
     assert "browser_task" in specs
-    assert specs["browser_task"].readonly is False, "it acts on the web as the signed-in user"
+    assert specs["browser_task"].readonly is False, "it acts on real sites"
 
 
 # --- where the browser is -----------------------------------------------------------

@@ -58,11 +58,14 @@ that exact call once through normal dispatch, latched by `consumed_at`. Never
 re-run a consumed-but-unclosed call: repair it as interrupted.
 
 **The browser is `browser_task`, and it runs in a Browserless container** over
-CDP. `tool_module/browser/endpoint.py` resolves `cdp_url()` from
+CDP. `cdp_url()` in `tool_module/browser/tool.py` resolves it from
 `browser.cdp_url` or `BROWSERLESS_URL`; an unset url is a refusal, not a
 fallback, because the fallback would be a Chromium running model-chosen pages
-beside the user's cookies and the store's secret key. The browser is leased per
-user, so one session holds it for a whole run.
+beside the user's cookies and the store's secret key. Each call gets a fresh,
+signed-out browser that is thrown away afterwards: nothing persists between
+calls. A call holds one of the user's `browser.max_concurrent_per_user` slots
+(leases `browser:<user>:<n>`) for that call only, so a user's sessions browse
+in parallel up to the cap.
 
 **Five identifiers carry side effects if you change them.** `_ISSUER` is `arkos`
 (every cookie carries `iss=arkos`, and changing it signs everyone out),

@@ -57,4 +57,21 @@ Branch: `fix/browser-multi-session`. Planning commits: Step 1 `085c097`, Step 2 
 - Notes:
   - The result is built after the slot is freed. Building it only stores a blob and does not need the browser.
 
+## Stage 4 - Tell the truth in the docs
+
+- Changes:
+  - `tool_module/browser/tool.py`: the `browser_task` description no longer says "keeps the user's logins" or "acts as the signed-in user". It says each call starts a fresh, signed-out browser and that it can act on real sites. The approval advice is kept.
+  - `config_module/config.yaml`: the `leases:` comment describes the browser pool and per-call slots.
+  - `CLAUDE.md`: the browser paragraph names `cdp_url()` in `tool.py`, not the missing `endpoint.py`. It describes fresh browsers per call and the per-user slot cap.
+  - `tests/test_browser.py`: one assertion message no longer says "signed-in user".
+  - `docs/concepts/README.md` (new): entries for **Browser task** and **Resource lease**.
+- Verification:
+  - `git diff --check`: passed.
+  - Every path, function and setting named in the changed docs and the concept entries exists: passed.
+  - The tool description printed from `BrowserTask.spec` reads as intended: passed.
+  - `ruff check .`, `ruff format --check .` and scoped `mypy`: passed.
+  - `pytest tests/ -q --timeout=120 -m "not integration"`: passed, 901 passed and 0 failed.
+- Notes:
+  - Out of repo and not changed: `/home/service/arkos-project-map.md` still says the browser is "leased per user for the whole run".
+
 *— Claude Code · 2026-11-14 UTC · Model: claude-opus-5-5*
