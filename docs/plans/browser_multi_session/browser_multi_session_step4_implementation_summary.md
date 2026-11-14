@@ -74,4 +74,23 @@ Branch: `fix/browser-multi-session`. Planning commits: Step 1 `085c097`, Step 2 
 - Notes:
   - Out of repo and not changed: `/home/service/arkos-project-map.md` still says the browser is "leased per user for the whole run".
 
+## Stage 5 - End-to-end check and final review
+
+- Changes: none to the product. A check script lives outside the repo.
+- Verification:
+  - **Parallel runs, real stack: passed.** A script ran two sessions of one user through the real runner (`_Sink.tool_context()`), the real `browser_task`, browser-use 0.12.9, the local Qwen3-8B model and the local Browserless. It used the throwaway test database.
+    - Run 1, with the default 120s call limit: both calls started at 0.0s, and neither showed "waiting for the browser". Both were cut off at 120.1s by the registry (see the finding below). 0 browser lease rows were left, so the cancellation exit freed both slots for real.
+    - Run 2, with the call limit raised to 330s for the check only: both calls started at 0.0s and overlapped for 53.8s. Neither waited, and both returned (53.8s and 77.0s). 0 browser lease rows were left.
+    - Answer quality was weak, and that is the model, not this change. One run quoted body text as the heading, and the other judged itself unsuccessful.
+  - **Through the HTTP API: not run.** The API server on port 1121 is the user's own process and still runs the pre-change code. Restarting it needs the user's go-ahead. Only the HTTP layer and the model's choice of tool are left unexercised.
+  - **CI checks: passed.** `ruff check .`, `ruff format --check .`, scoped `mypy`, and `pytest -m "not integration"` (901 passed, 0 failed).
+  - **Final diff review against `main`: passed.** Code changes stay within the five planned files. The new slot claim reuses `leases.acquire` and `_wait_for`. No unrelated files changed, and the untracked `.env.bak`, `.env.before-e2b` and `api.log` were left alone.
+- Notes:
+  - Before Stage 1, the local suite failed 181 tests because `tests/conftest.py` loads the real `.env` and its JWT secret. CI has no `.env`. With test secrets set, the baseline was fully green.
+
+## Enhancement requests
+
+- **Request:** check the Browserless SSPL licence for a hosted arkos, and pin the image version. **Disposition:** separate work. **Approval status:** not started. **Outcome:** pending.
+- **Finding (Stage 5):** `tools.call_timeout_s` (120s) cuts off every tool call before the browser's own `browser.wall_clock_s` (240s) and `browser.hard_timeout_s` (300s). A slow run is cancelled from outside and loses its partial result. A call that first waits for a slot (up to `leases.wait_timeout_s`, 90s) has even less time. **Disposition:** separate work. It was there before this cycle and changes timeout policy for every tool, so it is outside the approved scope. **Approval status:** not started. **Outcome:** pending.
+
 *— Claude Code · 2026-11-14 UTC · Model: claude-opus-5-5*
