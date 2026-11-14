@@ -15,8 +15,16 @@ logger = logging.getLogger(__name__)
 
 
 def key(resource: str, user_id: str) -> str:
-    """Build the key a per-user resource is leased under. One browser per user."""
+    """Build the key a per-user resource is leased under."""
     return f"{resource}:{user_id}"
+
+
+def slot_keys(resource: str, user_id: str, count: int) -> list[str]:
+    """Build the keys of a per-user pool: one lease per slot, so the pool needs no table of its own.
+
+    A count below 1 is treated as 1, so a bad setting still lets one call through.
+    """
+    return [f"{key(resource, user_id)}:{n}" for n in range(max(1, count))]
 
 
 async def acquire(resource_key: str, session_id: str, ttl_s: float) -> bool:

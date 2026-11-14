@@ -25,4 +25,22 @@ Branch: `fix/browser-multi-session`. Planning commits: Step 1 `085c097`, Step 2 
 - Notes:
   - Found while writing it: `_release_leases` skips `release_all` when `_leases` is empty. Dropping the key before a failed release would have disarmed the backup, so the key is dropped only on success. A test pins this.
 
+## Stage 2 - Claim one of N browser slots per user
+
+- Changes:
+  - `harness_module/leases.py`: new `slot_keys(resource, user_id, count)`, which returns `browser:<user>:0` to `:N-1`. A count below 1 becomes 1. The `key` docstring no longer says "one browser per user".
+  - `harness_module/runner.py`: new `_claim_browser`. It tries each slot key through the existing atomic `leases.acquire`, inside the existing `_wait_for`. It remembers the key in a new `_slots` map, so `_unlease("browser")` frees exactly that key. `_release_leases` clears `_slots`. A full pool fails with "No browser was free: this account already runs N at once… safe to retry".
+  - `config_module/config.yaml`: new `browser.max_concurrent_per_user: 3`.
+  - `tests/test_leases.py`: six tests. Two sessions share the browser and a third is refused. A freed slot goes to the waiter. Five parallel claims at a cap of 2 grant exactly 2. Other users do not count. A cap of 0 acts as 1. The session-end release frees the slot.
+  - `tests/test_browser.py`: one test pins that `browser_task` is not `readonly`, so the loop never runs two of them in one batch.
+- Verification:
+  - `ruff check .`: passed.
+  - `ruff format --check .`: passed.
+  - Scoped `mypy`: passed.
+  - `pytest tests/ -q --timeout=120 -m "not integration"`: passed, 894 passed and 0 failed.
+- Notes:
+  - Correction to a Step 3 risk: the plan said the runner starts no parallel tool tasks. In fact `agent_module/loop.py` runs readonly calls in parallel. `browser_task` is not readonly, so it always runs alone, and the new test pins that.
+  - A resumed session with an empty `_slots` map might take a second slot while an old row of its own survives. `release_all` at session end clears both, so the cost is one slot for the rest of that session, at most.
+  - The browser tool still holds its slot until session end. Stage 3 releases it per call.
+
 *— Claude Code · 2026-11-14 UTC · Model: claude-opus-5-5*

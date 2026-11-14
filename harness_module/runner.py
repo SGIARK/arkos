@@ -876,6 +876,8 @@ class _Sink:
         self._gated_call: str | None = None
         # Resource keys this session holds, so a second call skips the database.
         self._leases: set[str] = set()
+        # The pool slot this session holds, by resource ("browser" -> "browser:<user>:<n>").
+        self._slots: dict[str, str] = {}
         # Set once this turn holds a slot in the user's sandbox pool; the row, not this
         # flag, is what releasing consults.
         self._sandbox_slot = False
@@ -975,6 +977,9 @@ class _Sink:
             ToolUnavailable: a box or a lease did not free up. The model routes
                 around it.
         """
+        if resource == "browser":
+            await self._claim_browser()
+            return
         if resource != "sandbox":
             await self._acquire(leases.key(resource, self.session.user_id), f"the {resource}")
             return
@@ -1005,7 +1010,7 @@ class _Sink:
         """
         if resource == "sandbox":
             return
-        resource_key = leases.key(resource, self.session.user_id)
+        resource_key = self._slots.get(resource) or leases.key(resource, self.session.user_id)
         if resource_key not in self._leases:
             return
         try:
@@ -1015,6 +1020,42 @@ class _Sink:
             logger.exception("session %s could not give back %s", self.session.id, resource_key)
             return
         self._leases.discard(resource_key)
+        self._slots.pop(resource, None)
+
+    async def _claim_browser(self) -> None:
+        """Take one of the user's browser slots, waiting and saying so while all are held.
+
+        Each run gets its own throwaway browser, so sessions do not share one. The slots only
+        cap how many one user runs at once (`browser.max_concurrent_per_user`).
+        """
+        if "browser" in self._slots:
+            return
+        cap = int(_cfg("browser.max_concurrent_per_user", 3))
+        if cap < 1:
+            logger.warning("browser.max_concurrent_per_user is %d; using 1", cap)
+            cap = 1
+        keys = leases.slot_keys("browser", self.session.user_id, cap)
+        ttl = float(_cfg("leases.ttl_s", 900))
+        taken: list[str] = []
+
+        async def take() -> bool:
+            for slot in keys:
+                if await leases.acquire(slot, self.session.id, ttl):
+                    taken.append(slot)
+                    return True
+            return False
+
+        await self._wait_for(
+            take,
+            resource=leases.key("browser", self.session.user_id),
+            label="the browser",
+            busy=(
+                f"No browser was free: this account already runs {cap} at once. The call never ran, "
+                "so it is safe to retry later, or do something else first."
+            ),
+        )
+        self._slots["browser"] = taken[-1]
+        self._leases.add(taken[-1])
 
     async def _claim_sandbox(self) -> None:
         """Take a slot in the user's sandbox pool, waiting and saying so while it is full."""
@@ -1109,6 +1150,7 @@ class _Sink:
         with contextlib.suppress(Exception):
             await leases.release_all(self.session.id)
         self._leases.clear()
+        self._slots.clear()
 
     async def _pause_sandbox(self) -> None:
         """Hibernate the session's box, keeping its slot for the turn that resumes it."""

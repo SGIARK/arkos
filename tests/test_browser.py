@@ -516,3 +516,23 @@ async def test_a_frame_for_another_target_is_ignored():
         with_broker.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await with_broker
+
+
+# --- one browser slot per session ----------------------------------------------------
+
+
+def test_a_turn_never_runs_two_browser_tasks_at_once():
+    """A session holds one browser slot, which is only enough while browser calls run one at a time.
+
+    The loop runs only `readonly` calls in parallel. If `browser_task` ever becomes readonly, two
+    calls in one turn would share a single slot, and the first to finish would free it under the other.
+    """
+    from agent_module import loop  # noqa: PLC0415 - only this test needs the loop
+
+    spec = browser_tool.BrowserTask.spec
+    assert spec.readonly is False
+
+    calls = [loop._PartialCall(), loop._PartialCall()]
+    for n, call in enumerate(calls):
+        call.id, call.name = f"c{n}", "browser_task"
+    assert loop._batch_by_readonly(calls, {"browser_task": spec}) == [[calls[0]], [calls[1]]]

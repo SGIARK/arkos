@@ -325,3 +325,125 @@ async def test_giving_back_what_was_never_taken_is_a_no_op(impatient):
         assert sink._leases == set()
     finally:
         await _stop(sink)
+
+
+# --- browser slots ----------------------------------------------------------------
+
+
+@pytest.fixture
+def capped(monkeypatch):
+    """A small browser cap and a short wait, so a full pool gives up inside a test."""
+    values = {
+        "leases.wait_timeout_s": 0.3,
+        "leases.poll_s": 0.05,
+        "leases.ttl_s": 60,
+        "browser.max_concurrent_per_user": 2,
+    }
+    monkeypatch.setattr(runner, "_cfg", lambda key, default: values.get(key, default))
+    return values
+
+
+async def _sinks_of_one_user(count: int) -> list[runner._Sink]:
+    """`count` sessions that all belong to one user."""
+    first = await _session()
+    user_id = (await runner.load(first)).user_id
+    ids = [first]
+    for _ in range(count - 1):
+        ids.append(
+            str(
+                await pool.fetchval(
+                    "INSERT INTO sessions (user_id, mode, status) VALUES ($1, 'unattended', 'running') RETURNING id",
+                    uuid.UUID(user_id),
+                )
+            )
+        )
+    return [await _sink(i) for i in ids]
+
+
+async def test_one_users_sessions_share_the_browser_up_to_the_cap(capped):
+    first, second, third = await _sinks_of_one_user(3)
+    try:
+        await first._lease("browser")
+        await second._lease("browser")  # does not wait for the first
+
+        assert first._slots["browser"] != second._slots["browser"]
+        with pytest.raises(ToolUnavailable, match="already runs 2 at once"):
+            await third._lease("browser")
+    finally:
+        for sink in (first, second, third):
+            await _stop(sink)
+
+
+async def test_a_freed_slot_goes_to_the_waiting_session(capped):
+    first, second, third = await _sinks_of_one_user(3)
+    capped["leases.wait_timeout_s"] = 5
+    try:
+        await first._lease("browser")
+        await second._lease("browser")
+        waiting = asyncio.create_task(third._lease("browser"))
+        await asyncio.sleep(0.2)
+        assert not waiting.done(), "the third session should wait while the pool is full"
+
+        await first._unlease("browser")
+
+        await asyncio.wait_for(waiting, timeout=2)
+        assert third._slots["browser"] == leases.slot_keys("browser", third.session.user_id, 2)[0]
+    finally:
+        for sink in (first, second, third):
+            await _stop(sink)
+
+
+async def test_parallel_claims_at_the_cap_grant_exactly_the_cap(capped):
+    sinks = await _sinks_of_one_user(5)
+    try:
+        results = await asyncio.gather(*(s._lease("browser") for s in sinks), return_exceptions=True)
+
+        granted = [r for r in results if r is None]
+        refused = [r for r in results if isinstance(r, ToolUnavailable)]
+        assert (len(granted), len(refused)) == (2, 3)
+        rows = await pool.fetchval(
+            "SELECT count(*) FROM resource_leases WHERE resource_key LIKE $1",
+            f"browser:{sinks[0].session.user_id}:%",
+        )
+        assert rows == 2
+    finally:
+        for sink in sinks:
+            await _stop(sink)
+
+
+async def test_other_users_are_not_counted_against_the_cap(capped):
+    mine = await _sinks_of_one_user(2)
+    theirs = await _sink(await _session())
+    try:
+        for sink in mine:
+            await sink._lease("browser")
+        await theirs._lease("browser")  # a different user's pool
+    finally:
+        for sink in (*mine, theirs):
+            await _stop(sink)
+
+
+async def test_a_cap_below_one_still_lets_one_call_through(capped):
+    capped["browser.max_concurrent_per_user"] = 0
+    first, second = await _sinks_of_one_user(2)
+    try:
+        await first._lease("browser")
+        with pytest.raises(ToolUnavailable, match="already runs 1 at once"):
+            await second._lease("browser")
+    finally:
+        for sink in (first, second):
+            await _stop(sink)
+
+
+async def test_the_session_end_release_frees_the_browser_slot(capped):
+    (sink,) = await _sinks_of_one_user(1)
+    try:
+        await sink._lease("browser")
+        await sink._release_leases()
+        held = await pool.fetchval(
+            "SELECT count(*) FROM resource_leases WHERE session_id = $1", uuid.UUID(sink.session.id)
+        )
+        assert held == 0
+        assert sink._slots == {}
+    finally:
+        await _stop(sink)
