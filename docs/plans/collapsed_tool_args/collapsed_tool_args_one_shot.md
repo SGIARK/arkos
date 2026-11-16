@@ -100,7 +100,7 @@ Planning commit: `2f77412`, confirmed with Git before any implementation edit
 ## Commit, merge and publication status
 
 - Planning commit: `2f77412`.
-- Completion commit: pending at the time of writing. The final response reports its hash.
+- Completion commit: `09c3245`, confirmed with Git. A record-only commit after it adds this line.
 - Not pushed, no pull request, not merged.
 
 *— Claude · 2026-11-16 UTC · Model: claude-opus-5-5*
