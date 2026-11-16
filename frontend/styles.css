@@ -772,7 +772,7 @@ kbd {
 .ev-tool .name { color: var(--ink); }
 .ev-tool .kicker { margin-left: 2px; }
 .ev-tool .args { margin-left: 20px; border-left: 2px solid var(--line); padding: 8px 12px; font-size: 11px; color: var(--ink-mute); white-space: pre-wrap; cursor: pointer; line-height: 1.65; }
-.ev-tool .args.collapsed { max-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ev-tool .args.collapsed { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ev-result { border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 13px 15px; }
 .ev-result.error { border-left: 3px solid var(--stop); background: var(--stop-soft, var(--surface-2)); }
 .ev-result .rhead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }

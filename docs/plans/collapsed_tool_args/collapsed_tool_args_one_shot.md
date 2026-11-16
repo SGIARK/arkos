@@ -2,7 +2,7 @@
 
 Cycle: collapsed_tool_args; Mode: one-shot; Record/index: [this record](./collapsed_tool_args_one_shot.md) · [plans index](../README.md)
 Debug mode: disabled
-Status: planning; next permitted action: commit this plan, then implement
+Status: implemented and verified on the branch; next permitted action: push or open a pull request when the user asks
 
 ## Original request
 
@@ -61,26 +61,46 @@ None. The project has no concept inventory, and this fix does not call for one.
 - Not checked: other browsers. The rule uses only standard CSS.
 
 Starting revision and branch: `bcd327c` (`origin/main`) on `fix/collapsed-tool-args-clipping`
-Planning commit: pending
+Planning commit: `2f77412`, confirmed with Git before any implementation edit
 
 ## Dated execution history
 
 - 2026-11-16: Diagnosed the clipping from the screenshot and from `frontend/styles.css` lines 66, 774 and 775. The cap dates from the first commit, `bc75e81`.
+- 2026-11-16: Addition to the plan before the planning commit. `CLAUDE.md` asks for every CI check before a change counts as green, so the plan now runs them instead of marking them inapplicable.
+- 2026-11-16: Committed the plan as `2f77412`.
+- 2026-11-16: Discovery. The local Playwright Chromium cannot start, because the host lacks `libatk-1.0.so.0`. The render ran instead in the local Browserless container on port 3000, which is a headless Chromium.
+- 2026-11-16: Reproduced the bug before the change. Each collapsed row was 20px tall, while its content needed 34px. The screenshot matched the reported one.
+- 2026-11-16: Deleted `max-height: 20px` from `.ev-tool .args.collapsed`. Raised all six `?v=52` versions in `frontend/index.html` to `?v=53`.
+- 2026-11-16: The user asked a separate question about the `fix/browser-multi-session` branch during this cycle. It needed no change here, so the answer stayed in the conversation.
 
 ## Outcome
 
-Pending.
+- Delivered: the collapsed row shows its whole line, with 8px of padding above and below. A long argument stays on one line and ends with "…". The expanded row still wraps.
+- Users get the new stylesheet on their next page load, because the asset version changed.
+- Limitation: the check ran in one browser engine, Chromium. The fix uses only standard CSS.
+- No work remains in scope.
 
 ## Verification
 
-Pending.
+- Passed: before the change, the render measured each collapsed row at 20px with 34px of content, so the bug reproduced. After it, each row measured 34px with 34px of content. Screenshots before and after matched these numbers.
+- Passed: after the change, the long argument stayed on one line and was cut with an ellipsis. The expanded row kept its four wrapped lines at 89px, the same as before.
+- Passed: `ruff check .` and `ruff format --check .`. The local ruff is 0.16.8, while CI pins 0.16.4.
+- Not run: the scoped `mypy` command. The project `.venv` has no `mypy`, and no other copy exists on this host. The change touches no Python, so CI will run it on a push.
+- Failed, baseline: `pytest tests/ -q --timeout=120 -m "not integration"` gave 333 passed, 3 failed, 549 skipped and 12 deselected. The three failures are in `tests/test_jwt_utils.py`. The same three fail on a clean `origin/main` checkout, so this change did not cause them.
+- Blocked: the 549 skipped tests need a database. The local test database reports a missing data file, `base/16384/2601`. CI runs these against its own Postgres.
+- Inapplicable: a full app run, for the reason given in the plan above.
 
 ## Final review
 
-Pending.
+- The diff touches only `frontend/styles.css`, `frontend/index.html` and this plan folder, as authorized.
+- The diff adds no markup, class or rule, so it duplicates nothing.
+- `components.jsx` and `.ev-gated .args` needed no change, as planned.
+- No documentation describes this row, so none needed an update.
 
 ## Commit, merge and publication status
 
-Planning commit pending. Nothing pushed.
+- Planning commit: `2f77412`.
+- Completion commit: pending at the time of writing. The final response reports its hash.
+- Not pushed, no pull request, not merged.
 
 *— Claude · 2026-11-16 UTC · Model: claude-opus-5-5*
