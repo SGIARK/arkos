@@ -15,4 +15,6 @@ While arkos is working, the pane says "arkos is using the browser" and won't tak
 
 On 2026-11-20 the same steps passed as an automated test (`tests/test_browser_integration.py`) against a local Browserless container. The page kept the agent's text between turns, the agent's next snapshot showed the person's change, and the browser was the same one throughout.
 
-The full run in the app on ark is still to be recorded here before the demo.
+On 2026-11-20 the same plumbing passed on ark itself, driving the tools directly without the model.
+
+On 2026-11-21 the first two steps ran in the app on ark, with Qwen3-8B. On the first turn arkos called `browser_open` and `browser_type`, and its snapshot showed the field holding "hello". On the second turn it answered "The field contains hello" without taking a new snapshot, so that answer came from its memory of the first turn rather than from looking at the page. Steps 3 and 4, where a person changes the page, have not been run in the app yet. For the demo, ask it to take a browser_snapshot before answering, so the second turn shows the page really stayed open.
