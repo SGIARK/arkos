@@ -1,78 +1,53 @@
-"""The browser against the real library, not a fake of it.
+"""The browser tools against a real Browserless: the ticket's acceptance test, in code.
 
-Deselected by default (`-m "not integration"`) and skipped unless browser_use and
-a model key are both present: it costs a real browser, a real model call and a minute.
+Deselected by default (`-m "not integration"`) and skipped unless BROWSERLESS_URL is set.
 """
 
 from __future__ import annotations
 
 import os
+import uuid
 
 import pytest
 
 from tool_module import registry
+from tool_module.browser.manager import manager
 from tool_module.envelope import ToolContext
-
-browser_use = pytest.importorskip("browser_use", reason="the browser is not installed on this host")
 
 pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.integration,
-    pytest.mark.skipif(
-        not os.environ.get("OPENAI_API_KEY"),
-        reason="a browser run needs a model key",
-    ),
+    pytest.mark.skipif(not os.environ.get("BROWSERLESS_URL"), reason="BROWSERLESS_URL is not set"),
 ]
 
-USER = "8f1d4a02-0000-4000-8000-000000000001"
+PAGE = "data:text/html,<title>notes</title><input aria-label='note'><button>save</button>"
 
 
-async def test_the_signature_we_build_the_agent_with_is_one_this_version_has():
-    """The cheap half: no browser, no model call, just the constructor's shape."""
-    from tool_module.browser.tool import _accepted
+async def test_the_page_survives_turns_and_the_agent_sees_a_persons_change():
+    user = str(uuid.uuid4())
+    ctx = ToolContext(user_id=user, session_id=str(uuid.uuid4()))
+    try:
+        # Turn one: open a page and set visible state.
+        await registry.dispatch("browser_open", {"url": PAGE}, ctx)
+        typed = await registry.dispatch("browser_type", {"ref": 1, "text": "from the agent"}, ctx)
+        assert typed.ok, typed.content
+        first_browser = manager().get(user).browser
 
-    wanted = {"task": "t", "llm": object(), "register_new_step_callback": print}
-    kept = _accepted(browser_use.Agent, wanted)
+        # Turn two: the state is still there.
+        seen = await registry.dispatch("browser_snapshot", {}, ctx)
+        assert '= "from the agent"' in seen.content
 
-    assert "task" in kept, "browser_use.Agent no longer takes a task"
-    assert "llm" in kept, "browser_use.Agent no longer takes an llm"
-    assert "register_new_step_callback" in kept, (
-        "browser_use renamed the step callback: progress events would silently stop"
-    )
+        # A person changes the page between turns, through the same path the app uses.
+        box = await manager().get(user).page.locator("input").bounding_box()
+        center = {"x": box["x"] + box["width"] / 2, "y": box["y"] + box["height"] / 2}
+        assert await manager().act_for_person(user, {"kind": "click", **center}) is True
+        assert await manager().act_for_person(user, {"kind": "key", "key": "Control+A"}) is False
+        await manager().act_for_person(user, {"kind": "type", "text": "from the person"})
 
-
-async def test_a_real_run_reports_progress_and_returns_an_envelope():
-    """The expensive half: one small real task, end to end."""
-    statuses: list[tuple[str, str | None]] = []
-    ctx = ToolContext(
-        user_id=USER,
-        session_id="3f1d4a02-0000-4000-8000-0000000000ff",
-        emit_status=lambda label, url=None: statuses.append((label, url)),
-    )
-
-    result = await registry.dispatch(
-        "browser_task",
-        {"task": "Open example.com and report the exact text of its heading.", "start_url": "https://example.com"},
-        ctx,
-    )
-
-    assert result.ok, result.content
-    assert "example" in result.content.lower()
-    assert any(label.startswith("browsing · step") for label, _ in statuses), (
-        "the step callback never fired, so a real run would be silent"
-    )
-    assert any(url for _, url in statuses), "the frame stream was never announced"
-
-
-async def test_the_history_answers_the_questions_the_envelope_asks_it():
-    """`ok` comes from the run's own verdict, so those accessors must exist."""
-    from tool_module.browser.tool import _call
-
-    agent = browser_use.Agent(task="say hello", llm=None)
-    history = getattr(agent, "history", None)
-    if history is None:
-        pytest.skip("this version builds history only once a run starts")
-
-    for accessor in ("final_result", "errors", "is_successful", "has_errors", "urls", "model_actions"):
-        assert hasattr(history, accessor), f"browser_use history has no {accessor}"
-        _call(history, accessor)  # must not raise
+        # The agent's next look sees the person's change, in the same browser.
+        seen = await registry.dispatch("browser_snapshot", {}, ctx)
+        assert '= "from the person"' in seen.content
+        assert manager().get(user).browser is first_browser
+        assert manager().get(user).changed_by_human is False
+    finally:
+        await manager().close_all()
