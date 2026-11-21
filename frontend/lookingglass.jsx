@@ -477,8 +477,6 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
     pending,
     questions,
     todo,
-    browserUrl,
-    browserLabel,
     send,
     refreshQuestions,
     refreshSession,
@@ -869,9 +867,7 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
               <span className="tab-label">working files</span>
             </button>
             <button className={tab === "browser" ? "active" : ""} onClick={() => setTab("browser")}>
-              <span className="tab-label">
-                browser{browserUrl ? " ●" : ""}
-              </span>
+              <span className="tab-label">browser</span>
             </button>
           </div>
 
@@ -883,7 +879,7 @@ function SessionDetail({ sessionId, project, onBack, onError, onPulse, onOpenFil
               onOpenFile={onOpenFile}
             />
           ) : (
-            <BrowserCanvas url={browserUrl} label={browserLabel} />
+            <BrowserCanvas sessionId={sessionId} busy={session.status === "running"} onError={onError} />
           )}
         </div>
       </div>
@@ -1145,14 +1141,19 @@ function FilesCanvas({ projectId, folders, onError, onOpenFile }) {
 
 /* The browser's frames while it is browsing: live only, never events and never
    replayed. */
-function BrowserCanvas({ url, label }) {
+/* The user's own browser, which stays open between turns. While arkos is not
+   using it, a person can click, scroll and type on it directly. */
+const VIEWPORT = { width: 1280, height: 800 };
+
+function BrowserCanvas({ sessionId, busy, onError }) {
   const [frame, setFrame] = useState(null);
   const [big, setBig] = useState(false);
+  const [text, setText] = useState("");
 
   useEffect(() => {
-    if (!url) return undefined;
+    if (!sessionId) return undefined;
     setFrame(null);
-    const source = new EventSource(url, { withCredentials: true });
+    const source = new EventSource(`/sessions/${sessionId}/browser/frames`, { withCredentials: true });
     source.addEventListener("frame", (e) => {
       try {
         setFrame(JSON.parse(e.data).jpeg);
@@ -1161,61 +1162,88 @@ function BrowserCanvas({ url, label }) {
       }
     });
     return () => source.close();
-  }, [url]);
+  }, [sessionId]);
 
   useEscape(big, () => setBig(false));
 
-  useEffect(() => {
-    if (!url) setBig(false);
-  }, [url]);
+  if (!frame) {
+    return (
+      <div className="ctx-content">
+        <div className="waiting">no browser yet: it opens the first time arkos uses it</div>
+      </div>
+    );
+  }
 
-  if (!url) return <div className="ctx-content"><div className="waiting">no browser run in this session</div></div>;
+  const act = (action) => api.browserInput(sessionId, action).catch(onError);
 
-  const picture = frame ? (
-    <img className="frame" alt="what the browser is looking at" src={"data:image/jpeg;base64," + frame} />
-  ) : (
-    <div className="bw-hatch">
-      <span className="pill-flat">waiting for the first frame</span>
-    </div>
+  // The picture is scaled to fit the pane, so a click is mapped back to the page's own size.
+  const click = (e) => {
+    const box = e.currentTarget.getBoundingClientRect();
+    act({
+      kind: "click",
+      x: ((e.clientX - box.left) / box.width) * VIEWPORT.width,
+      y: ((e.clientY - box.top) / box.height) * VIEWPORT.height,
+    });
+  };
+
+  const picture = (
+    <img
+      className="frame"
+      alt="what the browser is showing"
+      src={"data:image/jpeg;base64," + frame}
+      onClick={busy ? undefined : click}
+      onWheel={busy ? undefined : (e) => act({ kind: "scroll", dy: e.deltaY })}
+    />
+  );
+
+  const typing = (
+    <form
+      className="bw-foot"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (text) act({ kind: "type", text }).then(() => setText(""));
+      }}
+    >
+      {busy ? (
+        <span>arkos is using the browser</span>
+      ) : (
+        <React.Fragment>
+          <input value={text} onChange={(e) => setText(e.target.value)} placeholder="type into the page" />
+          <button type="submit" className="bw-link">
+            type
+          </button>
+          <button type="button" className="bw-link" onClick={() => act({ kind: "key", key: "Enter" })}>
+            enter
+          </button>
+        </React.Fragment>
+      )}
+      <button type="button" className="bw-link" onClick={() => setBig(true)}>
+        expand
+      </button>
+    </form>
   );
 
   return (
     <div className="ctx-content">
       <div className="bw-card">
-        <div className="bw-chrome">
-          <span className="dot live" />
-          <span className="bw-where">{label || "using the browser…"}</span>
-          <button type="button" className="bw-expand" title="open larger" onClick={() => setBig(true)}>
-            ⤢
-          </button>
-        </div>
-        <div className="bw-shot" onClick={() => setBig(true)}>
-          {picture}
-        </div>
+        <div className="bw-shot">{picture}</div>
       </div>
-      <div className="bw-foot">
-        <span>streaming</span>
-        <button type="button" className="bw-link" onClick={() => setBig(true)}>
-          expand
-        </button>
-      </div>
+      {typing}
 
       {big && (
         <div className="bw-over" onClick={() => setBig(false)}>
           <div className="bw-big" onClick={(e) => e.stopPropagation()}>
             <div className="bw-chrome">
-              <span className="dot live" />
-              <span className="bw-where">{label || "using the browser…"}</span>
-              <span className="bw-fps">streaming</span>
+              <span className="bw-where">your browser</span>
               <button type="button" className="bw-close" onClick={() => setBig(false)}>
                 ✕
               </button>
             </div>
             <div className="bw-shot big">{picture}</div>
+            {typing}
           </div>
         </div>
       )}
     </div>
   );
 }
-

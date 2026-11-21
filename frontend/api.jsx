@@ -465,6 +465,8 @@ const api = {
   /* Nothing here boots a box: a parked or finished session 404s. */
   sandboxDir: (sessionId, path) =>
     request("GET", `/sessions/${sessionId}/fs${path ? `?path=${encodeURIComponent(path)}` : ""}`),
+  /* A person's click, scroll, typing or key press on the user's browser. */
+  browserInput: (sessionId, action) => request("POST", `/sessions/${sessionId}/browser/input`, action),
   sandboxFile: (sessionId, path) =>
     request("GET", `/sessions/${sessionId}/fs/file?path=${encodeURIComponent(path)}`),
 
