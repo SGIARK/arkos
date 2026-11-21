@@ -102,7 +102,7 @@ services (see "Running at MIT" below).
 
 Then set `BROWSERLESS_URL=ws://localhost:3000` in `.env`. Compose hands the
 containerised `app` service `ws://browserless:3000`, which resolves to nothing
-from your host, and an unset url makes `browser_task` refuse: deliberately,
+from your host, and an unset url makes the browser tools refuse: deliberately,
 because the fallback would be a Chromium running model-chosen pages beside your
 cookies and the store's secret key.
 
