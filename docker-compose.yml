@@ -100,7 +100,8 @@ services:
   browserless:
     image: ghcr.io/browserless/chromium:latest
     ports:
-      - "3000:3000"
+      # Localhost only: anyone who can reach this port can drive a browser.
+      - "127.0.0.1:3000:3000"
     environment:
       - CONCURRENT=${BROWSERLESS_CONCURRENT:-10}
       # TIMEOUT (ms) is how long one browser may stay open. arkos keeps a user's
