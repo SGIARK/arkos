@@ -40,6 +40,7 @@ from harness_module.stream import CLOSED, LAGGED, shutdown_streams, stream
 from harness_module.stream import attention as attention_channel
 from model_module import client as model_client
 from tool_module import registry, session_tools
+from tool_module.browser.manager import manager as browser_manager
 from tool_module.browser.stream import broker as frames
 from tool_module.composio_mcp import ComposioError
 from tool_module.sandbox import manager as sandbox_manager
@@ -103,6 +104,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await keeper
         await system_log.stop()
         await hands.stop()
+        await browser_manager().close_all()
         # The store's HTTP client is scoped to this loop, so it closes here.
         await blobs.close_clients()
         model_client.reset_client()
@@ -197,6 +199,7 @@ async def _keys_and_sweep() -> None:
             pruned = await pool.execute("DELETE FROM auth_sessions WHERE expires_at < now()")
             if pruned and pruned != "DELETE 0":
                 logger.info("swept expired sessions: %s", pruned)
+            await browser_manager().close_idle()
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - a tick that dies must not take the app
@@ -1628,23 +1631,44 @@ def _wire(stored: slog.StoredEvent) -> dict[str, Any]:
 
 @app.get("/sessions/{session_id}/browser/frames")
 async def browser_frames(session_id: str, user_id: str = CurrentUser) -> StreamingResponse:
-    """Watch what the browser is looking at, while it looks.
+    """Watch the user's browser, starting from its latest picture.
 
-    A side-channel, not the event stream: frames are never appended, never
-    replayed and carry no seq. Keyed by (user, session), ownership-checked.
+    A side-channel, not the event stream: frames are never appended and carry no
+    seq. The browser is the user's, shared by all their sessions.
     """
     await _owned_session(session_id, user_id)
     return StreamingResponse(
-        _frame_stream(user_id, session_id),
+        _frame_stream(user_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
-async def _frame_stream(user_id: str, session_id: str) -> AsyncIterator[str]:
+@app.post("/sessions/{session_id}/browser/input", status_code=204)
+async def browser_input(session_id: str, body: dict[str, Any] = JsonBody, user_id: str = CurrentUser) -> Response:
+    """Replay a person's click, typing, key press or scroll on the user's browser.
+
+    Refused while an agent turn holds the browser, so a person acts only while the
+    agent is paused. Their first change tells the agent to look before it acts again.
+    """
+    await _owned_session(session_id, user_id)
+    if await leases.holder(leases.key("browser", user_id)) is not None:
+        raise ApiError(409, "browser_busy", "arkos is using the browser. Stop it, or wait for its turn to end.")
+    try:
+        first_change = await browser_manager().act_for_person(user_id, body)
+    except LookupError as e:
+        raise ApiError(404, "not_found", "No browser is open yet. It opens the first time arkos uses it.") from e
+    except (ValueError, KeyError, TypeError) as e:
+        raise ApiError(400, "invalid_request", f"That is not a browser action: {e}") from e
+    if first_change:
+        await _append(session_id, UserEvent(text=prompts.BROWSER_CHANGED, source="system"))
+    return Response(status_code=204)
+
+
+async def _frame_stream(user_id: str) -> AsyncIterator[str]:
     """Yield frames until the viewer goes away, with keepalives between pictures."""
     keepalive = float(_cfg("harness.sse_keepalive_s", 15))
-    async with frames.subscribe(user_id, session_id) as queue:
+    async with frames.subscribe(user_id) as queue:
         while True:
             try:
                 frame = await asyncio.wait_for(queue.get(), timeout=keepalive)

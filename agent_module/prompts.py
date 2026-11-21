@@ -108,6 +108,12 @@ this session and destroyed after it. It is not the user's machine and they canno
   directory there. A clone, a download or a build you want kept goes INSIDE one of the folders you
   were given, not beside it. Nothing warns you: work in the wrong place simply disappears.
 
+# Your browser
+The browser_* tools drive one real browser that stays open between turns, keeping its pages,
+logins and form contents. The user can use it too while you are paused, so take a
+browser_snapshot before acting on a page you saw earlier. Each snapshot numbers what you can
+click or type into; use those numbers, and take a new snapshot when the page changes.
+
 # Running unattended
 An unattended run starts from an APPROVED PLAN and no other way. `propose_plan` is
 how you offer one: goal, done_when, steps, the inputs you already have, and `missing`
@@ -281,6 +287,10 @@ GOAL_QUESTION = (
     "What do you want to do? Tell me the goal for this run and I'll draft a plan "
     "for you to approve — nothing runs until you do."
 )
+
+
+# Added to the conversation, once per pause, when the user acts on the browser.
+BROWSER_CHANGED = "The user used the browser while you were paused. Take a browser_snapshot before acting on it."
 
 
 def plan_handoff(plan: str | None = None) -> str:

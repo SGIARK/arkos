@@ -57,12 +57,14 @@ never to prose about it. Answering is `approve`/`decline`, and approving runs
 that exact call once through normal dispatch, latched by `consumed_at`. Never
 re-run a consumed-but-unclosed call: repair it as interrupted.
 
-**The browser is `browser_task`, and it runs in a Browserless container** over
-CDP. `tool_module/browser/endpoint.py` resolves `cdp_url()` from
-`browser.cdp_url` or `BROWSERLESS_URL`; an unset url is a refusal, not a
-fallback, because the fallback would be a Chromium running model-chosen pages
-beside the user's cookies and the store's secret key. The browser is leased per
-user, so one session holds it for a whole run.
+**The browser is one per user, it runs in a Browserless container** over CDP,
+and the agent drives it with the `browser_*` tools. `tool_module/browser/manager.py`
+keeps it open between turns and closes it after `browser.idle_s`;
+`tool_module/browser/tool.py` resolves `cdp_url()` from `browser.cdp_url` or
+`BROWSERLESS_URL`, and an unset url is a refusal, not a fallback, because the
+fallback would be a Chromium running model-chosen pages beside the user's cookies
+and the store's secret key. The browser is leased per user, so one session holds
+it for a whole run; a person can act on it through the app only while no run does.
 
 **Five identifiers carry side effects if you change them.** `_ISSUER` is `arkos`
 (every cookie carries `iss=arkos`, and changing it signs everyone out),

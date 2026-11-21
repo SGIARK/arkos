@@ -146,14 +146,6 @@ class ConfigLoader:
                 "service could ever be reached and the meter would read out of a budget of nothing"
             )
 
-        asked = self._coherence_number("browser.wall_clock_s", missing)
-        forced = self._coherence_number("browser.hard_timeout_s", missing)
-        if asked and forced <= asked:
-            problems.append(
-                f"browser.hard_timeout_s ({forced}) is not above browser.wall_clock_s ({asked}): "
-                "the backstop would fire before the graceful stop could return partial results"
-            )
-
         if missing:
             problems.append(
                 f"a coherence rule reads {sorted(set(missing))}, which config.yaml does not define: "
