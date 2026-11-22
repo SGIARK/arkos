@@ -100,16 +100,14 @@ services:
   browserless:
     image: ghcr.io/browserless/chromium:latest
     ports:
-      - "3000:3000"
+      # Localhost only: anyone who can reach this port can drive a browser.
+      - "127.0.0.1:3000:3000"
     environment:
       - CONCURRENT=${BROWSERLESS_CONCURRENT:-10}
-      # TIMEOUT (ms) must be strictly greater than browser_task's own backstop,
-      # `browser.hard_timeout_s` (300s; `browser.wall_clock_s` at 240s is only
-      # where the agent is ASKED to stop and can still return a partial answer).
-      # Equal is not greater: if Browserless wins the race the app reports its
-      # own timeout when the real cause was the container killing the session —
-      # wrong diagnosis to ship. There is no BROWSER_USE_MAX_SECONDS any more.
-      - TIMEOUT=${BROWSERLESS_TIMEOUT:-330000}
+      # TIMEOUT (ms) is how long one browser may stay open. arkos keeps a user's
+      # browser open between turns and closes it after `browser.idle_s`, so this
+      # must be longer. A day; -1 does not mean "no limit", it times out at once.
+      - TIMEOUT=${BROWSERLESS_TIMEOUT:-86400000}
     restart: unless-stopped
     networks:
       - arkos-network

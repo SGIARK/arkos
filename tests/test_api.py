@@ -10,6 +10,7 @@ import asyncio
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import jwt
@@ -20,10 +21,12 @@ from httpx import ASGITransport, AsyncClient
 from agent_module import prompts
 from agent_module.events import ContentEvent, DoneEvent, ToolCallEvent, UserEvent
 from db import pool
-from harness_module import api, approvals, jwt_utils, lifecycle, runner, store
+from harness_module import api, approvals, jwt_utils, leases, lifecycle, runner, store
 from harness_module import session_log as slog
 from harness_module.stream import SessionStream, stream
 from tests.dbgate import require_db
+from tool_module.browser.manager import UserBrowser
+from tool_module.browser.manager import manager as browser_manager
 from tool_module.composio_mcp import ComposioError
 
 pytestmark = pytest.mark.asyncio
@@ -1424,21 +1427,20 @@ async def test_the_frame_stream_requires_owning_the_session(client):
     assert (await client.get(f"/sessions/{their_session}/browser/frames")).status_code == 404
 
 
-async def test_a_frame_reaches_the_watcher_of_that_session(client):
+async def test_a_frame_reaches_the_watcher_of_that_users_browser(client):
     user_id = await _signed_in(client)
-    session_id = await _session_for(user_id)
 
-    frames = [frame async for frame in _read_frames(api._frame_stream(user_id, session_id), user_id, session_id)]
+    frames = [frame async for frame in _read_frames(api._frame_stream(user_id), user_id)]
 
     assert frames and "jpeg" in frames[0]
 
 
-async def _read_frames(stream, user_id, session_id):
+async def _read_frames(stream, user_id):
     """Publish one frame once the stream is subscribed, then read it back."""
     gen = stream.__aiter__()
     task = asyncio.create_task(gen.__anext__())
     await asyncio.sleep(0)
-    api.frames.publish(user_id, session_id, "ZmFrZS1qcGVn")
+    api.frames.publish(user_id, "ZmFrZS1qcGVn")
     yield await asyncio.wait_for(task, timeout=5)
     await gen.aclose()
 
@@ -2261,3 +2263,59 @@ async def test_a_new_channel_gets_shutdown_by_being_a_fanout():
 
     assert issubclass(SessionStream, _Fanout)
     assert issubclass(UserStream, _Fanout)
+
+
+# --- a person using the browser -------------------------------------------------
+
+
+def _open_fake_browser(user_id: str) -> MagicMock:
+    """Register an open browser for the user whose page records what it was asked to do."""
+    page = MagicMock()
+    page.mouse.click = AsyncMock()
+    browser_manager()._browsers[user_id] = UserBrowser(browser=MagicMock(), page=page)
+    return page
+
+
+async def _browser_notes(session_id: str) -> int:
+    events = await slog.get_events(session_id)
+    return sum(isinstance(e.event, UserEvent) and e.event.text == prompts.BROWSER_CHANGED for e in events)
+
+
+async def test_a_person_can_use_the_browser_and_arkos_is_told_once(client):
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id)
+    page = _open_fake_browser(user_id)
+    try:
+        for _ in range(2):
+            click = {"kind": "click", "x": 10, "y": 20}
+            response = await client.post(f"/sessions/{session_id}/browser/input", json=click)
+            assert response.status_code == 204
+        page.mouse.click.assert_awaited_with(10.0, 20.0)
+        assert await _browser_notes(session_id) == 1
+    finally:
+        browser_manager()._browsers.pop(user_id, None)
+
+
+async def test_a_person_cannot_use_the_browser_while_arkos_holds_it(client):
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id)
+    _open_fake_browser(user_id)
+    await leases.acquire(leases.key("browser", user_id), session_id, 60)
+    try:
+        response = await client.post(f"/sessions/{session_id}/browser/input", json={"kind": "click", "x": 1, "y": 1})
+        assert response.status_code == 409
+    finally:
+        await leases.release_all(session_id)
+        browser_manager()._browsers.pop(user_id, None)
+
+
+async def test_browser_input_needs_an_open_browser_and_a_known_action(client):
+    user_id = await _signed_in(client)
+    session_id = await _session_for(user_id)
+    url = f"/sessions/{session_id}/browser/input"
+    assert (await client.post(url, json={"kind": "click", "x": 1, "y": 1})).status_code == 404
+    _open_fake_browser(user_id)
+    try:
+        assert (await client.post(url, json={"kind": "dance"})).status_code == 400
+    finally:
+        browser_manager()._browsers.pop(user_id, None)

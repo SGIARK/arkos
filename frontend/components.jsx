@@ -194,10 +194,6 @@ function useStream(sessionId, onError, onPulse) {
   const [pending, setPending] = useState([]);
   const [questions, setQuestions] = useState([]);
   const [todo, setTodo] = useState(null);
-  const [browserUrl, setBrowserUrl] = useState(null);
-  // Null until a browser run announces itself, so a lease-waiting status is
-  // never read as a page.
-  const [browserLabel, setBrowserLabel] = useState(null);
   const seen = useRef(new Set());
 
   const refreshQuestions = useCallback(async () => {
@@ -239,19 +235,6 @@ function useStream(sessionId, onError, onPulse) {
         const plans = recent.filter((e) => e.kind === "todo");
         if (plans.length) setTodo(plans[plans.length - 1].items);
 
-        /* Frames are a side-channel and are never replayed: re-attach to a run
-           announced before this window opened, only while the session is still
-           running and nothing has finished since. */
-        const announced = recent.filter((e) => e.kind === "status" && e.url);
-        const ended = recent.filter((e) => e.kind === "done");
-        const live = announced.length ? announced[announced.length - 1] : null;
-        const over = ended.length ? ended[ended.length - 1].seq : -1;
-        if (live && live.seq > over && snapshot.status === "running") {
-          setBrowserUrl(live.url);
-          const since = recent.filter((e) => e.kind === "status" && e.seq >= live.seq);
-          setBrowserLabel(since[since.length - 1].label || "");
-        }
-
         await refreshQuestions();
 
         const last = recent.length ? recent[recent.length - 1].seq : 0;
@@ -271,16 +254,6 @@ function useStream(sessionId, onError, onPulse) {
               });
             }
             if (event.kind === "todo") setTodo(event.items);
-            if (event.kind === "status") {
-              if (event.url) {
-                setBrowserUrl(event.url);
-                setBrowserLabel(event.label || "");
-              } else {
-                // Before a run announces itself, a status is somebody else's
-                // (a lease wait, a discarded edit).
-                setBrowserLabel((current) => (current === null ? null : event.label || current));
-              }
-            }
             if (event.kind === "budget") {
               setSession((s) => (s ? { ...s, hops_used: event.hops_used, hops_max: event.hops_max } : s));
             }
@@ -306,8 +279,6 @@ function useStream(sessionId, onError, onPulse) {
               if (onPulse) onPulse();
             }
             if (event.kind === "done") {
-              setBrowserUrl(null);
-              setBrowserLabel(null);
               refreshQuestions();
               refreshSession();
               if (onPulse) onPulse();
@@ -347,8 +318,6 @@ function useStream(sessionId, onError, onPulse) {
     pending,
     questions,
     todo,
-    browserUrl,
-    browserLabel,
     send,
     refreshQuestions,
     refreshSession,

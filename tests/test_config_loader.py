@@ -176,7 +176,6 @@ class TestCoherence:
             "sandbox": {"max_concurrent_per_user": 5},
             "quotas": {"max_unattended_sessions": 5},
             "llm": {"max_tools": 128},
-            "browser": {"wall_clock_s": 240, "hard_timeout_s": 300},
         }
         for dotted, value in overrides.items():
             section, key = dotted.split("__")
