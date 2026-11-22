@@ -8,7 +8,7 @@ outside that process.
 ## Project configuration
 
 The Composio project must own the MCP server referenced by `mcp.server_id` and
-the five managed auth configurations in `config_module/config.yaml`:
+the seven managed auth configurations in `config_module/config.yaml`:
 
 | ArkOS connector | Composio toolkit |
 | --- | --- |
@@ -17,6 +17,8 @@ the five managed auth configurations in `config_module/config.yaml`:
 | Notion | `notion` |
 | Google Calendar | `googlecalendar` |
 | Google Drive | `googledrive` |
+| Gmail | `gmail` |
+| Outlook | `outlook` |
 
 The toolkit catalog is not the project's enabled-app list. Check the project's
 auth configurations and MCP server roster, not just catalog visibility.
@@ -27,7 +29,7 @@ Other catalog apps are not exposed by this configuration.
 1. Set `COMPOSIO_API_KEY` in the deployment's private `.env` or environment to a
    key from the same project. Never put its value in YAML, Git, PR text, logs or
    screenshots. An empty key makes `harness_module/hands.py` skip the client.
-2. Verify `mcp.server_id` and all five `auth_config_id` values belong to that
+2. Verify `mcp.server_id` and all seven `auth_config_id` values belong to that
    project before replacing them. Do not mint a new server merely to enable an
    existing one.
 3. Check `mcp.callback_url` against the URL users actually open. The current
@@ -70,3 +72,16 @@ No runtime URL behavior change is needed for this endpoint.
 
 The private deployment key was staged without restarting ArkOS. OAuth popup,
 session enablement and a real read-only account call remain post-deploy checks.
+
+## Mail restoration (2026-11-22)
+
+The tracked configuration now references `arkos-prod-seven-apps`, with 205
+curated tools including the original Gmail and Outlook rosters. The five existing
+managed auth configurations are retained; Gmail and Outlook have new managed
+auth configurations in the same project. The previous five-app server is kept
+for rollback until deployment is verified. No existing server was deleted.
+
+This prepares configuration only, not a production deployment. Gmail/Outlook
+OAuth and read-only account calls remain post-deployment checks. The existing
+session tool budget still applies: seven available connectors does not mean all
+seven can be enabled simultaneously. No new tests were added.
