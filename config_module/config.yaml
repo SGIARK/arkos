@@ -312,7 +312,7 @@ mcp:
   # /api/v3 and /api/v3.1 /mcp/servers/{id} — is a 404. A roster change means
   # MINTING A NEW SERVER and changing this id, and an account caps at ~16
   # servers, so delete the old one in the same pass.
-  server_id: "cb08c9dc-43be-49e2-9978-18b1336ea4b4"
+  server_id: "cb9e6d61-7263-4684-9924-f4674388eda2"
   api_key: "${COMPOSIO_API_KEY}"
   # The per-user url is DERIVED from these two plus the user id, not minted:
   #   {base_url}/v3/mcp/{server_id}/mcp?user_id={uuid}
@@ -326,7 +326,7 @@ mcp:
   callback_url: "http://localhost:1121/connections/done"
 
 mcp_servers:
-  # THE FIVE TOGGLEABLE CONNECTORS, and nothing else.
+  # THE SEVEN TOGGLEABLE CONNECTORS, and nothing else.
   #
   # `server` is the Composio toolkit prefix, UPPER SNAKE — the vendor's own name,
   # which every one of that toolkit's tool names carries — and it is the identity
@@ -369,3 +369,13 @@ mcp_servers:
     server: "GOOGLEDRIVE"
     name: "Google Drive"
     auth_config_id: "ac_2dXgY6MMltpb"
+
+  gmail:
+    server: "GMAIL"
+    name: "Gmail"
+    auth_config_id: "ac_pkHQ3qCw1ebi"
+
+  outlook:
+    server: "OUTLOOK"
+    name: "Outlook"
+    auth_config_id: "ac_D8MEq93U0G24"
