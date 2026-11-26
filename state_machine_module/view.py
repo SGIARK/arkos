@@ -11,11 +11,14 @@ It needs Graphviz's `dot` on the PATH: `sudo apt install graphviz`.
 
 from __future__ import annotations
 
+import functools
+import subprocess
 import textwrap
 
 from state_machine_module.machines import MACHINES, Machine, Move
 
 LABEL_WIDTH = 26  # characters on each line of a move's label
+DOT_TIMEOUT_S = 10
 
 GRAPH_STYLE = (
     'graph [fontname="Helvetica", fontsize=12, bgcolor="transparent", nodesep=0.45, ranksep=0.5, compound=true];',
@@ -146,3 +149,12 @@ def cluster_lines(machine: Machine) -> list[str]:
 def overview_dot() -> str:
     """Every machine side by side, each a framed group that links to its own page."""
     return digraph("arkos", [line for machine in MACHINES for line in cluster_lines(machine)])
+
+
+@functools.cache
+def drawn(source: str) -> str:
+    """`source` laid out by Graphviz, as an SVG element to place in a page."""
+    result = subprocess.run(
+        ["dot", "-Tsvg"], input=source, capture_output=True, text=True, check=True, timeout=DOT_TIMEOUT_S
+    )
+    return result.stdout[result.stdout.index("<svg") :]
