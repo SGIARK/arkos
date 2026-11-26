@@ -31,6 +31,11 @@ def test_doc_link_keeps_web_addresses_and_headings() -> None:
     assert doc_link("README.md", "#tests-and-ci", DOCS) == "#tests-and-ci"
 
 
+def test_doc_link_leaves_unknown_and_unsafe_targets_unlinked() -> None:
+    assert doc_link("README.md", "harness_module/api.py", DOCS) is None
+    assert doc_link("README.md", "javascript:alert(1)", DOCS) is None
+
+
 def test_route_an_unknown_path_is_not_found() -> None:
     assert route("/no-such-machine")[0] == HTTPStatus.NOT_FOUND
 
