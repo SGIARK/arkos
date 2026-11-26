@@ -138,3 +138,18 @@ LEASE = Machine(
         Move("orphaned", "free", "its TTL lapses, or a later turn's ending releases it"),
     ),
 )
+
+QUESTION = Machine(
+    name="question",
+    about=(
+        "One approvals row: a question its session waits on. Its kind is ask, approval, call (a gated"
+        " tool call) or plan. Autopilot's goal question is an ask."
+    ),
+    states=("open", "answered", "superseded"),
+    starts=(Start("open", "a turn parks on it, or Autopilot asks for the goal"),),
+    final=("answered", "superseded"),
+    moves=(
+        Move("open", "answered", "you answer it on its card, or a message answers the oldest row if it is an ask"),
+        Move("open", "superseded", "the session proposes a newer plan"),
+    ),
+)
