@@ -50,6 +50,12 @@ ul { max-width: 46rem; padding-left: 1.1rem; }
 li { margin: 0.35rem 0; }
 """
 
+OVERVIEW_ABOUT = (
+    "A session, drawn as the machines it is made of. They run side by side, and one event can move several"
+    " at once: a restart fails the session, kills its box and orphans its lease. Click a machine to see what"
+    " moves it."
+)
+
 
 def quoted(text: str) -> str:
     """`text` as a DOT string, its line breaks kept."""
@@ -215,3 +221,13 @@ def page(title: str, about: str, body: str) -> str:
 def figure(svg: str, caption: str) -> str:
     """A drawing with a line under it saying how to read it."""
     return f"<figure>{svg}<figcaption>{html.escape(caption)}</figcaption></figure>"
+
+
+def overview_page(svg: str) -> str:
+    """The first page: every machine in one drawing, then a line on what each one tracks."""
+    items = "".join(
+        f'<li><a href="{page_path(machine)}">{html.escape(machine.name)}</a>: {html.escape(machine.about)}</li>'
+        for machine in MACHINES
+    )
+    caption = "Click a box to open its machine. Hover over an arrow to see what triggers it."
+    return page("arkos", OVERVIEW_ABOUT, figure(svg, caption) + f"<ul>{items}</ul>")
