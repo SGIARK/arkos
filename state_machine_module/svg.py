@@ -29,6 +29,8 @@ FINAL_INSET = 4  # the gap between a final state's two borders
 BASELINE = 0.75  # of a line's height: where its text sits on it
 STATE_BASELINE = 0.35  # of the state font, below a box's middle, to centre its name
 FRAME_NAME_DROP = 13  # from a frame's top edge to the baseline of its name
+MACHINE_PAD = 16  # inside a machine's frame on the overview
+MACHINE_TITLE = 30  # room for a machine's name at the top of its frame
 
 MARKER = (
     '<defs><marker id="arrowhead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7"'
@@ -133,3 +135,12 @@ def document(body: str, bounds: Box, title: str) -> str:
 def drawing_svg(drawing: Layout) -> str:
     """One machine's drawing, for its own page."""
     return document(machine_svg(drawing), drawing.bounds, f"The {drawing.machine.name} state machine")
+
+
+def machine_frame_svg(name: str, box: Box, link: str) -> str:
+    """A machine's dashed frame on the overview, its name a link to its page."""
+    return (
+        f'<g class="machine">{rect(box, FRAME_CORNER)}<a href="{html.escape(link)}"><text'
+        f' x="{number(box.x + MACHINE_PAD)}" y="{number(box.y + MACHINE_TITLE - MACHINE_PAD / 2)}">'
+        f"{html.escape(name)}</text></a></g>"
+    )
