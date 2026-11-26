@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from state_machine_module.machines import SESSION, allows
+from state_machine_module.machines import SANDBOX, SESSION, allows
 
 ATTENDED_MAX_HOPS = 2  # budgets.attended.max_hops is 6
 UNATTENDED_MAX_HOPS = 3  # budgets.unattended.max_hops is 15
@@ -175,3 +175,10 @@ def move(world: World, target: str, reason: str, mode: str = "") -> World:
         illegal_move=world.illegal_move or not allows(SESSION, world.status, target),
         unattended_without_plan=world.unattended_without_plan or sneaked,
     )
+
+
+def box_to(world: World, target: str) -> World:
+    """Move the sandbox, noting a move its machine does not declare."""
+    if world.box == target:
+        return world
+    return replace(world, box=target, illegal_move=world.illegal_move or not allows(SANDBOX, world.box, target))
