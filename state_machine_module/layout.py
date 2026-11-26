@@ -446,3 +446,21 @@ def entries_for(
         taken.append(Box(x - DOT_RADIUS, dot[1] - DOT_RADIUS, 2 * DOT_RADIUS, 2 * DOT_RADIUS))
         entries.append(Entry(start.trigger, dot, curve, label))
     return tuple(entries)
+
+
+def arrows_for(
+    legs: list[Leg], pinned: dict[tuple[int, str], Point], labelled: bool, taken: list[Box]
+) -> tuple[Arrow, ...]:
+    """Each leg's curve and, when labelled, its trigger where the label covers least of what is
+    already placed and of the other arrows."""
+    curves = [curve_of(drawn, pinned[(number, "from")], pinned[(number, "to")]) for number, drawn in enumerate(legs)]
+    arrows = []
+    for number, (drawn, curve) in enumerate(zip(legs, curves, strict=True)):
+        label = None
+        if labelled:
+            lines = wrapped(drawn.move.trigger)
+            others = [point for other, line in enumerate(curves) if other != number for point in samples(line)]
+            label = free_spot(lines, label_spots(drawn, curve, lines), taken, others)
+            taken.append(label.box)
+        arrows.append(Arrow(drawn.move, drawn.frame, curve, label))
+    return tuple(arrows)
