@@ -39,6 +39,11 @@ def test_machines_each_begin_somewhere() -> None:
     assert all(machine.starts for machine in MACHINES)
 
 
+def test_machines_have_unique_names() -> None:
+    names = [machine.name for machine in MACHINES]
+    assert len(names) == len(set(names))
+
+
 def test_package_imports_only_the_standard_library() -> None:
     """The checker has to run anywhere, without arkos's database or model dependencies."""
     for path in PACKAGE.glob("*.py"):
