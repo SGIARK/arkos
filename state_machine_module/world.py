@@ -372,3 +372,8 @@ def send_message(world: World) -> World:
     if world.status == WAITING:
         return answer_by_message(world)
     return start(close_dangling(world), "woken")
+
+
+def without(world: World, index: int) -> World:
+    """The world with the row at `index` answered, so no longer open."""
+    return replace(world, questions=world.questions[:index] + world.questions[index + 1 :])
