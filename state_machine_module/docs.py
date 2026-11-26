@@ -10,6 +10,7 @@ never as markup.
 
 from __future__ import annotations
 
+import html
 import re
 import subprocess
 from pathlib import Path
@@ -66,3 +67,14 @@ def starts_block(line: str) -> bool:
 def slug(text: str) -> str:
     """The anchor GitHub gives a heading: lower case, punctuation dropped, spaces turned to hyphens."""
     return re.sub(r"[^\w\- ]", "", text.lower()).strip().replace(" ", "-")
+
+
+def code_block(lines: list[str], index: int, out: list[str]) -> int:
+    """A fenced block, kept exactly as written; a language named after the fence becomes its class."""
+    fence, language = FENCE.match(lines[index]).groups()
+    end = index + 1
+    while end < len(lines) and not lines[end].strip().startswith(fence):
+        end += 1
+    kind = f' class="language-{html.escape(language)}"' if language else ""
+    out.append(f"<pre><code{kind}>{html.escape(chr(10).join(lines[index + 1 : end]))}</code></pre>")
+    return end + 1
