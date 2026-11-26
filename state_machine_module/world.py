@@ -232,6 +232,14 @@ def close_question(world: World, index: int, target: str) -> World:
     return replace(world, questions=questions, illegal_move=world.illegal_move or strayed)
 
 
+def supersede_plans(world: World) -> World:
+    """approvals.supersede_plans: a new proposal closes every open plan row as superseded."""
+    for index in reversed(range(len(world.questions))):
+        if world.questions[index].kind == "plan":
+            world = close_question(world, index, "superseded")
+    return world
+
+
 def release(world: World, keep_box: bool) -> World:
     """_Sink._release_leases: flush what this turn changed, pause or reap the box, drop the lease."""
     turn = world.turn
