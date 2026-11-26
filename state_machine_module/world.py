@@ -235,7 +235,7 @@ def release(world: World, keep_box: bool) -> World:
     elif not keep_box and world.slot:
         lost = world.lost_edits or world.unflushed
         world = replace(box_to(world, "none"), slot=False, unflushed=False, lost_edits=lost)
-    return replace(world, lease=False, lease_orphaned=False)
+    return lease_to(world, "free")
 
 
 def finish(world: World, reason: str) -> World:
