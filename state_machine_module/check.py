@@ -12,8 +12,8 @@ from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from state_machine_module.rules import Rule, broken
-from state_machine_module.world import Event, World, events, step
+from state_machine_module.rules import RULES, Rule, broken
+from state_machine_module.world import ROOT_NAMES, Event, World, describe, events, step
 
 DEFAULT_DEPTH = 6
 
@@ -77,3 +77,18 @@ def explore(roots: Iterable[World], depth: int) -> Report:
                 note(after, parents, findings)
                 frontier.append((after, level + 1))
     return Report(states=len(parents), depth=depth, findings=tuple(findings.values()))
+
+
+def format_report(report: Report, seconds: float) -> str:
+    """The report as text: every rule, and for each broken one, how to break it."""
+    found = {finding.rule.name: finding for finding in report.findings}
+    lines = [f"Explored {report.states:,} states, every sequence of up to {report.depth} events, in {seconds:.1f} s."]
+    for rule in RULES:
+        finding = found.get(rule.name)
+        if finding is None:
+            lines.append(f"holds   {rule.name}: {rule.says}")
+            continue
+        lines.append(f"BROKEN  {rule.name}: {rule.says}")
+        lines.append(f"        from {ROOT_NAMES[finding.root]}:")
+        lines += [f"        {number}. {describe(event)}" for number, event in enumerate(finding.path, 1)]
+    return "\n".join(lines)
