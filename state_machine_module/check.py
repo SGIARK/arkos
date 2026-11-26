@@ -8,12 +8,15 @@ one. Run it with:
 
 from __future__ import annotations
 
+import argparse
+import sys
+import time
 from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass
 
 from state_machine_module.rules import RULES, Rule, broken
-from state_machine_module.world import ROOT_NAMES, Event, World, describe, events, step
+from state_machine_module.world import ROOT_NAMES, ROOTS, Event, World, describe, events, step
 
 DEFAULT_DEPTH = 6
 
@@ -92,3 +95,18 @@ def format_report(report: Report, seconds: float) -> str:
         lines.append(f"        from {ROOT_NAMES[finding.root]}:")
         lines += [f"        {number}. {describe(event)}" for number, event in enumerate(finding.path, 1)]
     return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the search and print the report. Exits 1 when any rule breaks."""
+    parser = argparse.ArgumentParser(description="Check arkos's state machines against their rules.")
+    parser.add_argument("--depth", type=int, default=DEFAULT_DEPTH, help="the longest event sequence to try")
+    depth = parser.parse_args(argv).depth
+    started = time.monotonic()
+    report = explore(ROOTS, depth)
+    print(format_report(report, time.monotonic() - started))
+    return 1 if report.findings else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
