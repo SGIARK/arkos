@@ -6,6 +6,7 @@ from state_machine_module.view import (
     frames,
     legend,
     machine_dot,
+    machine_page,
     overview_dot,
     quoted,
 )
@@ -43,3 +44,8 @@ def test_overview_dot_links_every_state_and_frame_to_its_page() -> None:
 def test_legend_leaves_out_what_a_drawing_does_not_use() -> None:
     assert "frame" in legend(SESSION)
     assert "frame" not in legend(LEASE) and "double border" not in legend(LEASE)
+
+
+def test_machine_page_lists_every_start_and_move() -> None:
+    page = machine_page(SESSION, svg="<svg></svg>")
+    assert page.count("<tr>") == 1 + len(SESSION.starts) + len(SESSION.moves)
