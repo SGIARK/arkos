@@ -20,3 +20,7 @@ def test_drawing_svg_titles_every_arrow_with_its_trigger() -> None:
     root = ElementTree.fromstring(drawing_svg(drawing))
     moves = [group for group in root.iter(f"{SVG}g") if group.get("class") == "move"]
     assert [group.find(f"{SVG}title").text for group in moves] == [arrow.move.trigger for arrow in drawing.arrows]
+
+
+def test_drawing_svg_links_nothing_on_a_machines_own_page() -> None:
+    assert "<a " not in drawing_svg(layout(SESSION, labelled=True))
