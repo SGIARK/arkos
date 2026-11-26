@@ -98,3 +98,13 @@ def state_lines(machine: Machine, prefix: str, link: str) -> list[str]:
         lines.append("}")
     loose = [state for state in machine.states if not any(state in states for states in framed.values())]
     return lines + [state_line(machine, state, prefix, link) for state in loose]
+
+
+def move_lines(machine: Machine, prefix: str, labelled: bool) -> list[str]:
+    """An arrow for each move drawn: labelled with its trigger, or showing it on hover."""
+    lines = []
+    for move, frame in drawn_moves(machine):
+        label = f"label={quoted(wrapped(move.trigger))}" if labelled else f"tooltip={quoted(move.trigger)}"
+        tail = f", ltail={frame_id(prefix, frame)}" if frame else ""
+        lines.append(f"{quoted(prefix + move.source)} -> {quoted(prefix + move.target)} [{label}{tail}];")
+    return lines
