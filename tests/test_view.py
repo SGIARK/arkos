@@ -1,57 +1,13 @@
-"""The pages draw every declared machine, and every box links to the right page."""
+"""The viewer serves the first page and every machine, and nothing else."""
 
-import shutil
 import threading
 import urllib.request
 from http import HTTPStatus
 
-import pytest
+from state_machine_module.machines import LEASE, MACHINES, SESSION
+from state_machine_module.view import legend, machine_page, route, serve
 
-from state_machine_module.machines import LEASE, MACHINES, SESSION, Move
-from state_machine_module.view import (
-    drawn_moves,
-    frames,
-    legend,
-    machine_dot,
-    machine_page,
-    main,
-    overview_dot,
-    quoted,
-    route,
-    serve,
-)
-
-needs_dot = pytest.mark.skipif(shutil.which("dot") is None, reason="Graphviz's dot is not installed")
 TIMEOUT_S = 10
-
-
-def test_quoted_escapes_quotes_and_keeps_line_breaks() -> None:
-    assert quoted('a "b"\nc') == '"a \\"b\\"\\nc"'
-
-
-def test_drawn_moves_draw_a_move_its_whole_frame_shares_once() -> None:
-    cancels = [move for move, _ in drawn_moves(SESSION) if move.trigger == "Cancel"]
-    assert len(cancels) == 1
-
-
-def test_drawn_moves_cover_every_declared_move() -> None:
-    for machine in MACHINES:
-        framed = frames(machine)
-        covered = set()
-        for move, frame in drawn_moves(machine):
-            sources = framed[frame] if frame else (move.source,)
-            covered |= {Move(source, move.target, move.trigger) for source in sources}
-        assert covered == set(machine.moves), machine.name
-
-
-def test_machine_dot_double_borders_only_final_states() -> None:
-    assert machine_dot(SESSION).count("peripheries=2") == len(SESSION.final)
-
-
-def test_overview_dot_links_every_state_and_frame_to_its_page() -> None:
-    source = overview_dot()
-    for machine in MACHINES:
-        assert source.count(f'href="/{machine.name}"') == len(machine.states) + 1, machine.name
 
 
 def test_legend_leaves_out_what_a_drawing_does_not_use() -> None:
@@ -68,22 +24,19 @@ def test_route_an_unknown_path_is_not_found() -> None:
     assert route("/no-such-machine")[0] == HTTPStatus.NOT_FOUND
 
 
-@needs_dot
-def test_route_links_the_overview_to_every_machine() -> None:
+def test_route_links_the_first_page_to_every_machine() -> None:
     status, page = route("/")
     assert status == HTTPStatus.OK
     for machine in MACHINES:
-        assert f'xlink:href="/{machine.name}"' in page, machine.name
+        assert f'href="/{machine.name}"' in page, machine.name
 
 
-@needs_dot
 def test_route_draws_a_page_for_every_machine() -> None:
     for machine in MACHINES:
         status, page = route(f"/{machine.name}?from=a-link")
         assert status == HTTPStatus.OK and "<svg" in page, machine.name
 
 
-@needs_dot
 def test_serve_answers_a_browser() -> None:
     server = serve(0)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -94,9 +47,3 @@ def test_serve_answers_a_browser() -> None:
     finally:
         server.shutdown()
         server.server_close()
-
-
-def test_main_refuses_without_graphviz(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    monkeypatch.setenv("PATH", "")
-    assert main(["--no-open"]) == 1
-    assert "sudo apt install graphviz" in capsys.readouterr().err
