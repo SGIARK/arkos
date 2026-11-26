@@ -46,6 +46,8 @@ FRAME_PORT_INSET = 24  # how near a frame's corner an arrow may leave it
 SPREAD_WEIGHT = 2.0  # cost of each state between two states an arrow joins within a row
 CROSSING_WEIGHT = 3.0  # cost of two arrows crossing between rows
 ORDER_LIMIT = 40_000  # orderings few enough to try them all; a bigger machine keeps its declared order
+LABEL_CLEARANCE = 4
+POINT_COST = 150.0  # how much covering one of those points counts against a spot, in square pixels
 
 
 @dataclass(frozen=True, slots=True)
@@ -384,3 +386,10 @@ def label_box(lines: tuple[str, ...], centre: Point) -> Box:
     width = max(text_width(line, LABEL_FONT) for line in lines) + 2 * LABEL_PAD
     height = len(lines) * LINE_HEIGHT + 2 * LABEL_PAD
     return Box(centre[0] - width / 2, centre[1] - height / 2, width, height)
+
+
+def crowding(box: Box, taken: list[Box], points: list[Point]) -> float:
+    """How much a label in `box` would cover: the area it shares with what is placed, and the
+    points of other arrows' lines under it."""
+    room = box.grown(LABEL_CLEARANCE)
+    return sum(room.overlap(other) for other in taken) + POINT_COST * sum(room.holds(point) for point in points)
