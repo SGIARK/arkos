@@ -4,11 +4,17 @@ import itertools
 
 import pytest
 
-from state_machine_module.layout import drawn_moves, frames, layout, point_on, rows
+from state_machine_module.layout import Box, Point, drawn_moves, frames, layout, point_on, rows
 from state_machine_module.machines import MACHINES, SESSION, Machine, Move
 
 CASES = [(machine, labelled) for machine in MACHINES for labelled in (True, False)]
 IDS = [f"{machine.name}-{'labelled' if labelled else 'bare'}" for machine, labelled in CASES]
+EDGE_SLACK = 0.5  # how far off its box's edge an arrow's end may sit, for rounding
+
+
+def on_edge(point: Point, box: Box) -> bool:
+    """Whether `point` lies on the edge of `box`."""
+    return box.grown(EDGE_SLACK).holds(point) and not box.grown(-EDGE_SLACK).holds(point)
 
 
 def test_rows_put_the_start_states_first_and_the_final_ones_last() -> None:
@@ -53,3 +59,12 @@ def test_layout_frames_hold_their_states(machine: Machine, labelled: bool) -> No
             assert drawing.frames[name].overlap(drawing.states[state]) == drawing.states[state].overlap(
                 drawing.states[state]
             ), (name, state)
+
+
+@pytest.mark.parametrize(("machine", "labelled"), CASES, ids=IDS)
+def test_layout_runs_each_arrow_from_its_source_to_its_target(machine: Machine, labelled: bool) -> None:
+    drawing = layout(machine, labelled)
+    for arrow in drawing.arrows:
+        source = drawing.frames[arrow.frame] if arrow.frame else drawing.states[arrow.move.source]
+        assert on_edge(arrow.curve[0], source), arrow.move
+        assert on_edge(arrow.curve[-1], drawing.states[arrow.move.target]), arrow.move
