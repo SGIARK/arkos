@@ -18,7 +18,7 @@ import itertools
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
-from state_machine_module.machines import SANDBOX, SESSION, allows
+from state_machine_module.machines import MODE, SANDBOX, SESSION, allows, follows
 
 ATTENDED_MAX_HOPS = 2  # budgets.attended.max_hops is 6
 UNATTENDED_MAX_HOPS = 3  # budgets.unattended.max_hops is 15
@@ -170,11 +170,13 @@ def turn_of(world: World) -> Turn:
 def move(world: World, target: str, reason: str, mode: str = "") -> World:
     """lifecycle.transition: move the status, and the mode in the same update."""
     sneaked = mode == "unattended" and reason != "plan_approved"
+    new_mode = mode or world.mode
+    strayed = not allows(SESSION, world.status, target) or not follows(MODE, world.mode, new_mode)
     return replace(
         world,
         status=target,
-        mode=mode or world.mode,
-        illegal_move=world.illegal_move or not allows(SESSION, world.status, target),
+        mode=new_mode,
+        illegal_move=world.illegal_move or strayed,
         unattended_without_plan=world.unattended_without_plan or sneaked,
     )
 
