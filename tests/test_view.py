@@ -14,6 +14,7 @@ from state_machine_module.view import (
     legend,
     machine_dot,
     machine_page,
+    main,
     overview_dot,
     quoted,
     route,
@@ -93,3 +94,9 @@ def test_serve_answers_a_browser() -> None:
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_main_refuses_without_graphviz(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("PATH", "")
+    assert main(["--no-open"]) == 1
+    assert "sudo apt install graphviz" in capsys.readouterr().err
