@@ -120,3 +120,9 @@ def move_lines(machine: Machine, prefix: str, labelled: bool) -> list[str]:
 def digraph(name: str, body: list[str]) -> str:
     """A whole DOT graph, in the view's style."""
     return "\n".join([f"digraph {quoted(name)} {{", *GRAPH_STYLE, *body, "}"])
+
+
+def machine_dot(machine: Machine) -> str:
+    """One machine on its own, every move labelled with what triggers it."""
+    body = start_lines(machine, "", labelled=True) + state_lines(machine, "", link="")
+    return digraph(machine.name, body + move_lines(machine, "", labelled=True))
