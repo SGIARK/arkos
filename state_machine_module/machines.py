@@ -32,3 +32,8 @@ class Machine:
 def allows(machine: Machine, source: str, target: str) -> bool:
     """Whether `machine` declares a move from `source` to `target`."""
     return any(move.source == source and move.target == target for move in machine.moves)
+
+
+def pairs(machine: Machine) -> frozenset[tuple[str, str]]:
+    """Every (source, target) pair a move connects, triggers set aside."""
+    return frozenset((move.source, move.target) for move in machine.moves)
