@@ -1,7 +1,7 @@
 """Each rule flags the world it describes, and passes a world that keeps it."""
 
 from state_machine_module.rules import broken
-from state_machine_module.world import NEW_SESSION, Question, World
+from state_machine_module.world import NEW_SESSION, Question, Turn, World, max_hops
 
 
 def broken_names(world: World) -> set[str]:
@@ -27,3 +27,8 @@ def test_ended_runs_are_attended_flags_a_failed_unattended_session() -> None:
 
 def test_leases_only_while_running_flags_an_idle_lease() -> None:
     assert "leases_only_while_running" in broken_names(World(status="idle", lease=True))
+
+
+def test_hops_within_budget_flags_a_turn_over_budget() -> None:
+    world = World(status="running", turn=Turn(hops=max_hops("attended") + 1))
+    assert "hops_within_budget" in broken_names(world)
