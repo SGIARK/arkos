@@ -16,6 +16,13 @@ import textwrap
 from state_machine_module.machines import Machine, Move
 
 LABEL_WIDTH = 26  # characters on each line of a move's label
+
+GRAPH_STYLE = (
+    'graph [fontname="Helvetica", fontsize=12, bgcolor="transparent", nodesep=0.45, ranksep=0.5, compound=true];',
+    'node [fontname="Helvetica", fontsize=12, shape=box, style="rounded,filled", fillcolor="white",'
+    ' color="#3b3b3b", margin="0.18,0.08"];',
+    'edge [fontname="Helvetica", fontsize=10, color="#5c5c5c", fontcolor="#3b3b3b", arrowsize=0.7];',
+)
 FRAME_STYLE = 'style="rounded"; color="#cfcfcf"; fontname="Helvetica-Oblique"; fontsize=11; fontcolor="#6b6b6b";'
 START_STYLE = 'shape=point, width=0.12, style=filled, fillcolor="#3b3b3b"'
 
@@ -108,3 +115,8 @@ def move_lines(machine: Machine, prefix: str, labelled: bool) -> list[str]:
         tail = f", ltail={frame_id(prefix, frame)}" if frame else ""
         lines.append(f"{quoted(prefix + move.source)} -> {quoted(prefix + move.target)} [{label}{tail}];")
     return lines
+
+
+def digraph(name: str, body: list[str]) -> str:
+    """A whole DOT graph, in the view's style."""
+    return "\n".join([f"digraph {quoted(name)} {{", *GRAPH_STYLE, *body, "}"])
