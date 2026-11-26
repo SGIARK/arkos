@@ -13,6 +13,7 @@ from __future__ import annotations
 import html
 import re
 import subprocess
+import textwrap
 from collections.abc import Callable
 from pathlib import Path
 
@@ -24,6 +25,7 @@ FENCE = re.compile(r"^\s*(`{3,}|~{3,})\s*([\w+.-]*)")
 HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 RULE = re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$")
 ITEM = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+(.*)$")
+DIVIDER = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)*\|?\s*$")
 QUOTE = re.compile(r"^\s*>\s?(.*)$")
 COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 CODE_SPAN = re.compile(r"(`+)(.+?)\1")
@@ -69,6 +71,42 @@ def title_of(text: str, fallback: str) -> str:
     return fallback
 
 
+def render(text: str, link: Linker) -> str:
+    """A markdown doc as HTML. `link` turns a link's target into an href, or None to leave it as text."""
+    lines = COMMENT.sub("", text).splitlines()
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        index = block(lines, index, out, link)
+    return "\n".join(out)
+
+
+def block(lines: list[str], index: int, out: list[str], link: Linker) -> int:
+    """Render the block that starts at line `index` into `out`, and return the line after it."""
+    line = lines[index]
+    if not line.strip():
+        return index + 1
+    if FENCE.match(line):
+        return code_block(lines, index, out)
+    heading = HEADING.match(line)
+    if heading:
+        level, text = len(heading.group(1)), heading.group(2)
+        out.append(f'<h{level} id="{slug(text)}">{inline(text, link)}</h{level}>')
+        return index + 1
+    if RULE.match(line):
+        out.append("<hr>")
+        return index + 1
+    if "|" in line and index + 1 < len(lines) and DIVIDER.match(lines[index + 1]):
+        return table(lines, index, out, link)
+    if QUOTE.match(line):
+        return quote(lines, index, out, link)
+    if ITEM.match(line):
+        items, end = list_items(lines, index)
+        out.append(nested(items, link))
+        return end
+    return paragraph(lines, index, out, link)
+
+
 def starts_block(line: str) -> bool:
     """Whether `line` opens a block of its own, and so ends a paragraph above it."""
     return any(pattern.match(line) for pattern in (FENCE, HEADING, RULE, QUOTE, ITEM))
@@ -107,6 +145,16 @@ def table(lines: list[str], index: int, out: list[str], link: Linker) -> int:
         for row in lines[index + 2 : end]
     )
     out.append(f"<table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table>")
+    return end
+
+
+def quote(lines: list[str], index: int, out: list[str], link: Linker) -> int:
+    """A block quote: its lines with their > taken off, rendered as markdown of their own."""
+    end = index
+    while end < len(lines) and QUOTE.match(lines[end]):
+        end += 1
+    inner = "\n".join(QUOTE.match(line).group(1) for line in lines[index:end])
+    out.append(f"<blockquote>{render(inner, link)}</blockquote>")
     return end
 
 
@@ -162,6 +210,33 @@ def list_items(lines: list[str], index: int) -> tuple[list[tuple[int, str, list[
             break
         end += 1
     return items, end
+
+
+def item_html(body: list[str], link: Linker) -> str:
+    """An item's text, inline when it is one paragraph, otherwise as blocks of its own."""
+    rest = textwrap.dedent("\n".join(body[1:])).splitlines()
+    if all(line.strip() and not starts_block(line) for line in rest):
+        return inline(" ".join([body[0], *(line.strip() for line in rest)]), link)
+    return render("\n".join([body[0], *rest]), link)
+
+
+def nested(items: list[tuple[int, str, list[str]]], link: Linker) -> str:
+    """Items as lists: an item indented past the one above it opens a list inside that one."""
+    parts: list[str] = []
+    open_lists: list[tuple[int, str]] = []
+    for indent, marker, body in items:
+        tag = "ol" if marker[0].isdigit() else "ul"
+        while open_lists and indent < open_lists[-1][0]:
+            parts.append(f"</li></{open_lists.pop()[1]}>")
+        if open_lists and indent == open_lists[-1][0]:
+            parts.append("</li>")
+        else:
+            first = int(marker[:-1]) if tag == "ol" else 1
+            parts.append(f'<{tag} start="{first}">' if first != 1 else f"<{tag}>")
+            open_lists.append((indent, tag))
+        parts.append(f"<li>{item_html(body, link)}")
+    parts += [f"</li></{tag}>" for _, tag in reversed(open_lists)]
+    return "".join(parts)
 
 
 def anchor(text: str, target: str, link: Linker) -> str:
