@@ -13,6 +13,7 @@ measured. Nothing here draws: `svg.py` turns a Layout into markup.
 from __future__ import annotations
 
 import itertools
+import math
 import textwrap
 from collections import deque
 from collections.abc import Iterable
@@ -26,6 +27,7 @@ CHAR_WIDTH = 0.6  # of the font size: a generous average for a sans-serif face
 LABEL_CHARS = 26  # characters on each line of a label
 SPREAD_WEIGHT = 2.0  # cost of each state between two states an arrow joins within a row
 CROSSING_WEIGHT = 3.0  # cost of two arrows crossing between rows
+ORDER_LIMIT = 40_000  # orderings few enough to try them all; a bigger machine keeps its declared order
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,3 +219,13 @@ def tangle(order: list[tuple[str, ...]], pairs: list[tuple[str, str]]) -> float:
         if row == other_row and (upper - other_upper) * (lower - other_lower) < 0:
             cost += CROSSING_WEIGHT
     return cost
+
+
+def ordered(machine: Machine, grouped: list[list[str]]) -> list[tuple[str, ...]]:
+    """Each row in the order that tangles the arrows least. The declared order wins a tie, and a
+    machine with too many orderings to try keeps it."""
+    pairs = sorted({tuple(sorted((move.source, move.target))) for move in machine.moves if move.source != move.target})
+    options = [list(itertools.permutations(row)) for row in grouped]
+    if math.prod(len(choices) for choices in options) > ORDER_LIMIT:
+        return [tuple(row) for row in grouped]
+    return list(min(itertools.product(*options), key=lambda order: tangle(list(order), pairs)))
