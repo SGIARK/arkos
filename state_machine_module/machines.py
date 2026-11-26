@@ -153,3 +153,5 @@ QUESTION = Machine(
         Move("open", "superseded", "the session proposes a newer plan"),
     ),
 )
+
+MACHINES = (SESSION, MODE, SANDBOX, LEASE, QUESTION)
