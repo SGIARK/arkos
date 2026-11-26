@@ -156,3 +156,10 @@ def status_for(reason: str) -> str:
     if reason in ("completed", "cancelled"):
         return reason
     return "failed"
+
+
+def turn_of(world: World) -> Turn:
+    """The turn in flight. Only a running world has one."""
+    if world.turn is None:
+        raise ValueError(f"no turn is in flight while the session is {world.status}")
+    return world.turn
