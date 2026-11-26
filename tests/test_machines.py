@@ -5,7 +5,7 @@ import pathlib
 import sys
 
 from harness_module import lifecycle
-from state_machine_module.machines import MACHINES, SESSION, allows, pairs
+from state_machine_module.machines import MACHINES, MODE, SESSION, allows, follows, pairs
 
 PACKAGE = pathlib.Path(__file__).resolve().parent.parent / "state_machine_module"
 
@@ -21,6 +21,11 @@ def test_session_final_matches_lifecycle_terminal() -> None:
 def test_allows_refuses_an_undeclared_move() -> None:
     assert allows(SESSION, "idle", "running")
     assert not allows(SESSION, "completed", "idle")
+
+
+def test_follows_allows_staying_put_but_not_an_undeclared_move() -> None:
+    assert follows(MODE, "attended", "attended")
+    assert not follows(SESSION, "completed", "idle")
 
 
 def test_machines_use_only_their_own_states() -> None:
