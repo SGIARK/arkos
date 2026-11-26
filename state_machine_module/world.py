@@ -437,3 +437,8 @@ def restart(world: World) -> World:
         lost = world.lost_edits or world.unflushed
         world = replace(box_to(world, "none"), slot=False, unflushed=False, lost_edits=lost)
     return world
+
+
+def leases_expire(world: World) -> World:
+    """leases.ttl_s passes with no live turn renewing the lease."""
+    return replace(world, lease=False, lease_orphaned=False)
