@@ -78,3 +78,9 @@ def code_block(lines: list[str], index: int, out: list[str]) -> int:
     kind = f' class="language-{html.escape(language)}"' if language else ""
     out.append(f"<pre><code{kind}>{html.escape(chr(10).join(lines[index + 1 : end]))}</code></pre>")
     return end + 1
+
+
+def cells(line: str) -> list[str]:
+    """A table row split into cells, its outer pipes dropped; an escaped pipe stays in its cell."""
+    row = line.strip().removeprefix("|").removesuffix("|")
+    return [cell.strip().replace("\\|", "|") for cell in re.split(r"(?<!\\)\|", row)]
