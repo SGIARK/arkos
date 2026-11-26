@@ -461,3 +461,15 @@ def person_events(world: World) -> list[Event]:
     if status == "running":
         found.append(Event("you", "stop"))
     return found
+
+
+VERBS = {"call": ("approve", "decline"), "plan": ("approve", "decline", "reply"), "goal": ("give the goal", "dismiss")}
+
+
+def question_events(world: World) -> list[Event]:
+    """Every answer you can give to every open row, stale ones included."""
+    found = []
+    for index, question in enumerate(world.questions):
+        kind = "goal" if question.is_goal else question.kind
+        found += [Event("you", "answer", row=index, verb=verb) for verb in VERBS.get(kind, ("reply",))]
+    return found
