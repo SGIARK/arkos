@@ -52,6 +52,10 @@ def test_route_links_the_first_page_to_every_machine() -> None:
         assert f'href="/{machine.name}"' in page, machine.name
 
 
+def test_route_lists_the_docs_on_the_first_page() -> None:
+    assert 'href="/docs/README.md"' in route("/")[1]
+
+
 def test_route_draws_a_page_for_every_machine() -> None:
     for machine in MACHINES:
         status, page = route(f"/{machine.name}?from=a-link")
