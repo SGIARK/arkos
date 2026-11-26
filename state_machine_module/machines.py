@@ -119,3 +119,22 @@ MODE = Machine(
         Move("unattended", "attended", "a turn ends the run as completed or failed, or Cancel"),
     ),
 )
+
+LEASE = Machine(
+    name="lease",
+    about=(
+        "The lease on the session's folder, so that one session at a time changes it. It lapses"
+        " leases.ttl_s after it is taken, 15 minutes by default. Orphaned means a session that is no"
+        " longer running still holds it."
+    ),
+    states=("free", "held", "orphaned"),
+    starts=(Start("free", "no turn has taken it yet"),),
+    final=(),
+    moves=(
+        Move("free", "held", "the turn's first sandbox call takes it"),
+        Move("held", "free", "the turn parks or ends, and releases it"),
+        Move("held", "orphaned", "a restart kills the turn that held it"),
+        Move("orphaned", "held", "a later turn's first sandbox call takes it back"),
+        Move("orphaned", "free", "its TTL lapses, or a later turn's ending releases it"),
+    ),
+)
