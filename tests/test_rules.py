@@ -23,3 +23,7 @@ def test_one_question_while_waiting_flags_a_wait_with_no_question() -> None:
 
 def test_ended_runs_are_attended_flags_a_failed_unattended_session() -> None:
     assert "ended_runs_are_attended" in broken_names(World(status="failed", mode="unattended"))
+
+
+def test_leases_only_while_running_flags_an_idle_lease() -> None:
+    assert "leases_only_while_running" in broken_names(World(status="idle", lease=True))
