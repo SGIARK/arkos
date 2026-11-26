@@ -37,6 +37,7 @@ ROW_GAP = 44
 LABELLED_ROW_GAP = 160
 FRAME_PAD = 14
 FRAME_TITLE = 16  # room for a frame's name above its states
+SIDE_GAP = 36  # how far an arrow bending round other rows clears them
 SPREAD_WEIGHT = 2.0  # cost of each state between two states an arrow joins within a row
 CROSSING_WEIGHT = 3.0  # cost of two arrows crossing between rows
 ORDER_LIMIT = 40_000  # orderings few enough to try them all; a bigger machine keeps its declared order
@@ -286,3 +287,15 @@ def across(move: Move, boxes: dict[str, Box], row: tuple[str, ...]) -> Leg:
         return Leg(move, "", move.source, side, move.target, side)
     leaves, enters = ("right", "left") if rightward else ("left", "right")
     return Leg(move, "", move.source, leaves, move.target, enters)
+
+
+def around(move: Move, boxes: dict[str, Box], row_of: dict[str, int], order: list[tuple[str, ...]]) -> Leg:
+    """An arrow that would cross other rows, bent round them on whichever side is nearer."""
+    low, high = sorted((row_of[move.source], row_of[move.target]))
+    passed = [boxes[state] for row in order[low : high + 1] for state in row]
+    right = max(box.right for box in passed) + SIDE_GAP
+    left = min(box.x for box in passed) - SIDE_GAP
+    ends = (boxes[move.source], boxes[move.target])
+    if sum(right - box.right for box in ends) <= sum(box.x - left for box in ends):
+        return Leg(move, "", move.source, "right", move.target, "right", right)
+    return Leg(move, "", move.source, "left", move.target, "left", left)
