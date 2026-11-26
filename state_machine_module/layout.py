@@ -12,6 +12,7 @@ measured. Nothing here draws: `svg.py` turns a Layout into markup.
 
 from __future__ import annotations
 
+import textwrap
 from dataclasses import dataclass
 
 from state_machine_module.machines import Machine, Move
@@ -19,6 +20,7 @@ from state_machine_module.machines import Machine, Move
 Point = tuple[float, float]
 Curve = tuple[Point, Point, Point, Point]
 CHAR_WIDTH = 0.6  # of the font size: a generous average for a sans-serif face
+LABEL_CHARS = 26  # characters on each line of a label
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,3 +120,8 @@ class Layout:
 def text_width(text: str, font: float) -> float:
     """About how wide `text` sets in a sans-serif face `font` pixels high."""
     return len(text) * font * CHAR_WIDTH
+
+
+def wrapped(text: str) -> tuple[str, ...]:
+    """A trigger broken into lines short enough for a label."""
+    return tuple(textwrap.wrap(text, LABEL_CHARS)) or ("",)
