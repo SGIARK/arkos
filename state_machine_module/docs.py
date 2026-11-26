@@ -10,9 +10,29 @@ never as markup.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent.parent
+GIT_TIMEOUT_S = 10
 SKIPPED_DIRS = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__"})
+
+
+def tracked_docs(root: Path = ROOT) -> list[str]:
+    """The markdown files git tracks under `root`, as sorted relative paths; when git cannot say,
+    every markdown file under it."""
+    try:
+        listed = subprocess.run(
+            ["git", "ls-files", "-z", "--", "*.md"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=GIT_TIMEOUT_S,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return walked_docs(root)
+    return sorted(path for path in listed.split("\0") if path and (root / path).is_file())
 
 
 def walked_docs(root: Path) -> list[str]:
