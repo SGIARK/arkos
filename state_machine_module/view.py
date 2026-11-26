@@ -1,12 +1,14 @@
-"""Serve arkos's state machines to a browser, drawn in plain Python.
+"""Serve arkos's docs and state machines to a browser, drawn in plain Python.
 
-The first page shows every state machine at once, and clicking a machine opens it
-with what triggers each move. From a clone, with nothing installed, run:
+The first page shows every state machine at once and lists the docs. Clicking a
+machine opens it with what triggers each move, and each doc opens as a page.
+From a clone, with nothing installed, run:
 
     python3 -m state_machine_module.view [--port N] [--no-open]
 
-`layout.py` places each machine and `svg.py` draws it, so the pages need no
-JavaScript and the server only the standard library.
+`layout.py` places each machine, `svg.py` draws it, and `docs.py` renders the
+markdown, so the pages need no JavaScript and the server only the standard
+library.
 """
 
 from __future__ import annotations
@@ -14,17 +16,21 @@ from __future__ import annotations
 import argparse
 import contextlib
 import html
+import posixpath
 import sys
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
 
+from state_machine_module.docs import ROOT, render, title_of, tracked_docs
 from state_machine_module.layout import drawn_moves, layout
 from state_machine_module.machines import MACHINES, Machine
 from state_machine_module.svg import drawing_svg, overview_svg
 
 HOST = "127.0.0.1"
+DOCS = "/docs"
+WEB_LINKS = ("http://", "https://", "mailto:")
 
 BY_NAME = {machine.name: machine for machine in MACHINES}
 
@@ -34,7 +40,9 @@ main { max-width: 80rem; margin: 0 auto; padding: 1.25rem 2rem 3rem; }
 a { color: #1a5fb4; }
 nav { font-size: 0.9rem; color: #6b6b6b; }
 h1 { font-size: 1.5rem; margin: 0.6rem 0 0.3rem; }
+h2 { font-size: 1.2rem; margin: 2rem 0 0.5rem; }
 .about { max-width: 46rem; margin: 0 0 1.25rem; color: #3b3b3b; }
+.path { font: 0.85rem ui-monospace, monospace; color: #6b6b6b; }
 figure { margin: 0 0 2rem; padding: 1rem; background: #fff; border: 1px solid #e2e2e2; border-radius: 10px;
   overflow-x: auto; }
 figure svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
@@ -60,6 +68,13 @@ th, td { text-align: left; vertical-align: top; padding: 0.4rem 1.5rem 0.4rem 0;
 .moves td:nth-child(-n+2) { white-space: nowrap; font-family: ui-monospace, monospace; font-size: 0.87rem; }
 ul, ol { max-width: 46rem; padding-left: 1.4rem; }
 li { margin: 0.35rem 0; }
+.doc { max-width: 50rem; }
+.doc h1 { font-size: 1.6rem; } .doc h2 { font-size: 1.25rem; } .doc h3 { font-size: 1.05rem; }
+.doc pre { background: #fff; border: 1px solid #e2e2e2; border-radius: 8px; padding: 0.75rem 1rem; overflow-x: auto; }
+.doc code { font: 0.88em ui-monospace, monospace; }
+.doc :not(pre) > code { background: #ececec; padding: 0.1em 0.3em; border-radius: 4px; }
+.doc blockquote { margin: 0 0 1rem; padding: 0 1rem; border-left: 3px solid #d0d0d0; color: #4a4a4a; }
+.doc hr { border: 0; border-top: 1px solid #e2e2e2; margin: 1.5rem 0; }
 """
 
 OVERVIEW_ABOUT = (
@@ -67,6 +82,7 @@ OVERVIEW_ABOUT = (
     " at once: a restart fails the session, kills its box and orphans its lease. Click a machine to see what"
     " moves it."
 )
+DOCS_ABOUT = "The markdown files this repo keeps, rendered here much as they read on GitHub."
 
 
 def page_path(machine: Machine) -> str:
@@ -74,9 +90,14 @@ def page_path(machine: Machine) -> str:
     return f"/{machine.name}"
 
 
+def doc_path(doc: str) -> str:
+    """Where the page for the doc at `doc`, a path in the repo, is served."""
+    return f"{DOCS}/{doc}"
+
+
 def menu(current: str) -> str:
-    """Links to the first page and to every machine, the page you are on in bold."""
-    entries = [("arkos", "/"), *((machine.name, page_path(machine)) for machine in MACHINES)]
+    """Links to the first page, the docs and every machine, the page you are on in bold."""
+    entries = [("arkos", "/"), ("docs", DOCS), *((machine.name, page_path(machine)) for machine in MACHINES)]
     links = [
         f"<b>{html.escape(name)}</b>" if name == current else f'<a href="{path}">{html.escape(name)}</a>'
         for name, path in entries
@@ -114,15 +135,55 @@ def figure(svg: str, caption: str) -> str:
     return f"<figure>{svg}<figcaption>{html.escape(caption)}</figcaption></figure>"
 
 
-def overview_page(svg: str) -> str:
-    """The first page: every machine in one drawing, then a line on what each one tracks."""
+def titled_docs() -> list[tuple[str, str]]:
+    """Every doc the repo tracks, as (path, title)."""
+    return [(doc, title_of((ROOT / doc).read_text(encoding="utf-8"), doc)) for doc in tracked_docs()]
+
+
+def docs_list(docs: list[tuple[str, str]]) -> str:
+    """Each doc's title, linked to its page, beside where it lives in the repo."""
+    items = "".join(
+        f'<li><a href="{html.escape(doc_path(doc))}">{html.escape(title)}</a>'
+        f' <span class="path">{html.escape(doc)}</span></li>'
+        for doc, title in docs
+    )
+    return f"<ul>{items}</ul>"
+
+
+def overview_page(svg: str, docs: list[tuple[str, str]]) -> str:
+    """The first page: every machine in one drawing, a line on what each one tracks, then the docs."""
     machines = "".join(
         f'<li><a href="{page_path(machine)}">{html.escape(machine.name)}</a>: {html.escape(machine.about)}</li>'
         for machine in MACHINES
     )
     caption = "Click a state or a machine's name to open it. Hover over an arrow to see what triggers it."
     body = heading("arkos", OVERVIEW_ABOUT) + figure(svg, caption) + f"<ul>{machines}</ul>"
-    return page("arkos", "arkos", body)
+    return page("arkos", "arkos", body + f'<h2 id="docs">Docs</h2>{docs_list(docs)}')
+
+
+def docs_page(docs: list[tuple[str, str]]) -> str:
+    """Every doc, listed."""
+    return page("docs", "docs", heading("docs", DOCS_ABOUT) + docs_list(docs))
+
+
+def doc_link(doc: str, target: str, docs: set[str]) -> str | None:
+    """Where a link in `doc` should lead: another doc's page, a heading, or a web address. Anything
+    else stays plain text, so nothing a doc links to can run in the page."""
+    if target.startswith("#") or target.startswith(WEB_LINKS):
+        return target
+    path, _, heading_id = target.partition("#")
+    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(doc), path)) if path else ""
+    if resolved not in docs:
+        return None
+    return doc_path(resolved) + (f"#{heading_id}" if heading_id else "")
+
+
+def doc_page(doc: str, text: str, docs: set[str]) -> str:
+    """One doc as a page: where it lives in the repo, then its markdown rendered."""
+    body = render(text, lambda target: doc_link(doc, target, docs))
+    return page(
+        title_of(text, doc), "docs", f'<p class="path">{html.escape(doc)}</p><article class="doc">{body}</article>'
+    )
 
 
 def moves_table(machine: Machine) -> str:
@@ -159,7 +220,15 @@ def route(path: str) -> tuple[HTTPStatus, str]:
     path = unquote(urlsplit(path).path)
     if path == "/":
         drawings = [layout(machine, labelled=False) for machine in MACHINES]
-        return HTTPStatus.OK, overview_page(overview_svg(drawings, [page_path(machine) for machine in MACHINES]))
+        svg = overview_svg(drawings, [page_path(machine) for machine in MACHINES])
+        return HTTPStatus.OK, overview_page(svg, titled_docs())
+    if path in (DOCS, f"{DOCS}/"):
+        return HTTPStatus.OK, docs_page(titled_docs())
+    if path.startswith(f"{DOCS}/"):
+        doc, docs = path.removeprefix(f"{DOCS}/"), set(tracked_docs())
+        if doc not in docs:
+            return not_found(path)
+        return HTTPStatus.OK, doc_page(doc, (ROOT / doc).read_text(encoding="utf-8"), docs)
     machine = BY_NAME.get(path.removeprefix("/"))
     if machine is None:
         return not_found(path)

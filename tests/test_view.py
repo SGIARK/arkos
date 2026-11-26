@@ -1,13 +1,14 @@
-"""The viewer serves the first page and every machine, and nothing else."""
+"""The viewer serves the first page, every machine and every tracked doc, and nothing else."""
 
 import threading
 import urllib.request
 from http import HTTPStatus
 
 from state_machine_module.machines import LEASE, MACHINES, SESSION
-from state_machine_module.view import legend, machine_page, route, serve
+from state_machine_module.view import doc_link, legend, machine_page, route, serve
 
 TIMEOUT_S = 10
+DOCS = {"README.md", ".github/CLAUDE.md", "docs/specs/self-hosted-e2b.md"}
 
 
 def test_legend_leaves_out_what_a_drawing_does_not_use() -> None:
@@ -20,8 +21,28 @@ def test_machine_page_lists_every_start_and_move() -> None:
     assert page.count("<tr>") == 1 + len(SESSION.starts) + len(SESSION.moves)
 
 
+def test_doc_link_leads_a_relative_link_to_the_doc_it_names() -> None:
+    link = doc_link("docs/specs/self-hosted-e2b.md", "../../README.md#running-it", DOCS)
+    assert link == "/docs/README.md#running-it"
+
+
+def test_doc_link_keeps_web_addresses_and_headings() -> None:
+    assert doc_link("README.md", "https://example.com/a", DOCS) == "https://example.com/a"
+    assert doc_link("README.md", "#tests-and-ci", DOCS) == "#tests-and-ci"
+
+
+def test_doc_link_leaves_unknown_and_unsafe_targets_unlinked() -> None:
+    assert doc_link("README.md", "harness_module/api.py", DOCS) is None
+    assert doc_link("README.md", "javascript:alert(1)", DOCS) is None
+
+
 def test_route_an_unknown_path_is_not_found() -> None:
     assert route("/no-such-machine")[0] == HTTPStatus.NOT_FOUND
+
+
+def test_route_serves_no_file_but_a_tracked_doc() -> None:
+    assert route("/docs/../harness_module/api.py")[0] == HTTPStatus.NOT_FOUND
+    assert route("/docs/state_machine_module/view.py")[0] == HTTPStatus.NOT_FOUND
 
 
 def test_route_links_the_first_page_to_every_machine() -> None:
@@ -31,10 +52,20 @@ def test_route_links_the_first_page_to_every_machine() -> None:
         assert f'href="/{machine.name}"' in page, machine.name
 
 
+def test_route_lists_the_docs_on_the_first_page() -> None:
+    assert 'href="/docs/README.md"' in route("/")[1]
+
+
 def test_route_draws_a_page_for_every_machine() -> None:
     for machine in MACHINES:
         status, page = route(f"/{machine.name}?from=a-link")
         assert status == HTTPStatus.OK and "<svg" in page, machine.name
+
+
+def test_route_renders_the_readme() -> None:
+    status, page = route("/docs/README.md")
+    assert status == HTTPStatus.OK
+    assert '<h1 id="arkos-core">arkos-core</h1>' in page
 
 
 def test_serve_answers_a_browser() -> None:
