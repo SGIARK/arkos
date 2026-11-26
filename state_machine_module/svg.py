@@ -128,3 +128,8 @@ def document(body: str, bounds: Box, title: str) -> str:
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view}" width="{number(bounds.width)}"'
         f' height="{number(bounds.height)}" aria-label="{html.escape(title)}">{MARKER}{body}</svg>'
     )
+
+
+def drawing_svg(drawing: Layout) -> str:
+    """One machine's drawing, for its own page."""
+    return document(machine_svg(drawing), drawing.bounds, f"The {drawing.machine.name} state machine")
