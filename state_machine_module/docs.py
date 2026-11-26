@@ -96,6 +96,20 @@ def cells(line: str) -> list[str]:
     return [cell.strip().replace("\\|", "|") for cell in re.split(r"(?<!\\)\|", row)]
 
 
+def table(lines: list[str], index: int, out: list[str], link: Linker) -> int:
+    """A pipe table: the row above the divider is its header, and each row below it a row."""
+    end = index + 2
+    while end < len(lines) and "|" in lines[end] and lines[end].strip():
+        end += 1
+    header = "".join(f"<th>{inline(cell, link)}</th>" for cell in cells(lines[index]))
+    body = "".join(
+        "<tr>" + "".join(f"<td>{inline(cell, link)}</td>" for cell in cells(row)) + "</tr>"
+        for row in lines[index + 2 : end]
+    )
+    out.append(f"<table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table>")
+    return end
+
+
 def paragraph(lines: list[str], index: int, out: list[str], link: Linker) -> int:
     """Lines up to a blank one, or to one that opens another block, as a single paragraph."""
     end = index + 1
