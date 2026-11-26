@@ -46,6 +46,7 @@ FRAME_PORT_INSET = 24  # how near a frame's corner an arrow may leave it
 SPREAD_WEIGHT = 2.0  # cost of each state between two states an arrow joins within a row
 CROSSING_WEIGHT = 3.0  # cost of two arrows crossing between rows
 ORDER_LIMIT = 40_000  # orderings few enough to try them all; a bigger machine keeps its declared order
+LABEL_STEPS = (0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8)  # where along its arrow a label may sit, best first
 LABEL_CLEARANCE = 4
 CURVE_SAMPLES = 16  # points per arrow that other arrows' labels keep off
 POINT_COST = 150.0  # how much covering one of those points counts against a spot, in square pixels
@@ -405,3 +406,18 @@ def free_spot(lines: tuple[str, ...], centres: list[Point], taken: list[Box], po
 def samples(curve: Curve) -> list[Point]:
     """Points spaced along a curve, standing in for its line."""
     return [point_on(curve, step / CURVE_SAMPLES) for step in range(CURVE_SAMPLES + 1)]
+
+
+def label_spots(drawn: Leg, curve: Curve, lines: tuple[str, ...]) -> list[Point]:
+    """Where an arrow's label may sit, best first: above a rightward run across a row or below a
+    leftward one; otherwise on the curve or beside it, from its middle outwards."""
+    half_width = label_box(lines, (0, 0)).width / 2 + LABEL_CLEARANCE
+    if drawn.leaves in ("left", "right") and drawn.bend is None:
+        x, y = point_on(curve, 0.5)
+        lift = label_box(lines, (x, y)).height / 2 + LABEL_CLEARANCE
+        return [(x, y - lift if drawn.leaves == "right" else y + lift)]
+    spots = []
+    for share in LABEL_STEPS:
+        x, y = point_on(curve, share)
+        spots += [(x, y), (x + half_width, y), (x - half_width, y)]
+    return spots
