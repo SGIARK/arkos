@@ -44,7 +44,11 @@ def hops_within_budget(world: World) -> bool:
 
 
 RULES = (
-    Rule("legal_moves", "Status and sandbox only move along their declared machines.", lambda w: not w.illegal_move),
+    Rule(
+        "legal_moves",
+        "Every part of a session moves only as its declared machine allows.",
+        lambda w: not w.illegal_move,
+    ),
     Rule(
         "one_question_while_waiting",
         "A waiting session has exactly one open question; other sessions have none.",
