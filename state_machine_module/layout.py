@@ -267,3 +267,12 @@ def place(order: list[tuple[str, ...]], tops: list[float], labelled: bool) -> di
             boxes[state] = Box(x, top, width[state], STATE_HEIGHT)
             x += width[state] + gap
     return boxes
+
+
+def frame_boxes(machine: Machine, boxes: dict[str, Box]) -> dict[str, Box]:
+    """A frame round each group of framed states, with room for the group's name at its top."""
+    found = {}
+    for name, states in frames(machine).items():
+        inner = enclosing(boxes[state] for state in states).grown(FRAME_PAD)
+        found[name] = Box(inner.x, inner.y - FRAME_TITLE, inner.width, inner.height + FRAME_TITLE)
+    return found
