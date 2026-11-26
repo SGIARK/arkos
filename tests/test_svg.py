@@ -3,7 +3,7 @@
 import xml.etree.ElementTree as ElementTree
 
 from state_machine_module.layout import layout
-from state_machine_module.machines import MACHINES
+from state_machine_module.machines import MACHINES, SESSION
 from state_machine_module.svg import drawing_svg
 
 SVG = "{http://www.w3.org/2000/svg}"
@@ -13,3 +13,10 @@ def test_drawing_svg_parses_for_every_machine() -> None:
     for machine in MACHINES:
         root = ElementTree.fromstring(drawing_svg(layout(machine, labelled=True)))
         assert root.tag == f"{SVG}svg", machine.name
+
+
+def test_drawing_svg_titles_every_arrow_with_its_trigger() -> None:
+    drawing = layout(SESSION, labelled=True)
+    root = ElementTree.fromstring(drawing_svg(drawing))
+    moves = [group for group in root.iter(f"{SVG}g") if group.get("class") == "move"]
+    assert [group.find(f"{SVG}title").text for group in moves] == [arrow.move.trigger for arrow in drawing.arrows]
