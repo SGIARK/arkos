@@ -233,3 +233,18 @@ def park(world: World) -> World:
     question = Question(kind=kind, tool=tool.name if kind in ("call", "plan") else "", call_open=turn.park_gated)
     world = replace(world, questions=(*kept, question), turn=None)
     return move(world, WAITING, tool.name)
+
+
+def next_hop(world: World) -> World:
+    """The top of run_turn's loop: end on the budget, park at a hop boundary, or call the model."""
+    turn = turn_of(world)
+    if turn.hops >= max_hops(world.mode):
+        return finish(world, "max_hops")
+    charged = not (turn.repair_pending or turn.reattempt_pending)
+    turn = replace(turn, repair_pending=False, reattempt_pending=False)
+    if charged and turn.park:
+        return park(replace(world, turn=turn))
+    if charged:
+        turn = replace(turn, hops=turn.hops + 1)
+    called_while_parked = world.model_called_while_parked or bool(turn.park)
+    return replace(world, turn=turn, hops_since_done=turn.hops, model_called_while_parked=called_while_parked)
