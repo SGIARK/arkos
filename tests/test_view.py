@@ -1,6 +1,9 @@
 """The pages draw every declared machine, and every box links to the right page."""
 
+import shutil
 from http import HTTPStatus
+
+import pytest
 
 from state_machine_module.machines import LEASE, MACHINES, SESSION, Move
 from state_machine_module.view import (
@@ -13,6 +16,8 @@ from state_machine_module.view import (
     quoted,
     route,
 )
+
+needs_dot = pytest.mark.skipif(shutil.which("dot") is None, reason="Graphviz's dot is not installed")
 
 
 def test_quoted_escapes_quotes_and_keeps_line_breaks() -> None:
@@ -56,3 +61,11 @@ def test_machine_page_lists_every_start_and_move() -> None:
 
 def test_route_an_unknown_path_is_not_found() -> None:
     assert route("/no-such-machine")[0] == HTTPStatus.NOT_FOUND
+
+
+@needs_dot
+def test_route_links_the_overview_to_every_machine() -> None:
+    status, page = route("/")
+    assert status == HTTPStatus.OK
+    for machine in MACHINES:
+        assert f'xlink:href="/{machine.name}"' in page, machine.name
