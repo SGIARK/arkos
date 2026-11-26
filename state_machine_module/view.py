@@ -137,6 +137,16 @@ def titled_docs() -> list[tuple[str, str]]:
     return [(doc, title_of((ROOT / doc).read_text(encoding="utf-8"), doc)) for doc in tracked_docs()]
 
 
+def docs_list(docs: list[tuple[str, str]]) -> str:
+    """Each doc's title, linked to its page, beside where it lives in the repo."""
+    items = "".join(
+        f'<li><a href="{html.escape(doc_path(doc))}">{html.escape(title)}</a>'
+        f' <span class="path">{html.escape(doc)}</span></li>'
+        for doc, title in docs
+    )
+    return f"<ul>{items}</ul>"
+
+
 def overview_page(svg: str) -> str:
     """The first page: every machine in one drawing, then a line on what each one tracks."""
     machines = "".join(
