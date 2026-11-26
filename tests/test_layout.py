@@ -1,7 +1,13 @@
 """Layouts keep states, frames and labels clear of each other, and every arrow meets its states."""
 
-from state_machine_module.layout import drawn_moves, frames, point_on
+from state_machine_module.layout import drawn_moves, frames, point_on, rows
 from state_machine_module.machines import MACHINES, SESSION, Move
+
+
+def test_rows_put_the_start_states_first_and_the_final_ones_last() -> None:
+    grouped = rows(SESSION)
+    assert set(grouped[0]) == {"pending", "idle"}
+    assert grouped[-1] == list(SESSION.final)
 
 
 def test_drawn_moves_draw_a_move_its_whole_frame_shares_once() -> None:
