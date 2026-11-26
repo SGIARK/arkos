@@ -40,6 +40,11 @@ def test_route_an_unknown_path_is_not_found() -> None:
     assert route("/no-such-machine")[0] == HTTPStatus.NOT_FOUND
 
 
+def test_route_serves_no_file_but_a_tracked_doc() -> None:
+    assert route("/docs/../harness_module/api.py")[0] == HTTPStatus.NOT_FOUND
+    assert route("/docs/state_machine_module/view.py")[0] == HTTPStatus.NOT_FOUND
+
+
 def test_route_links_the_first_page_to_every_machine() -> None:
     status, page = route("/")
     assert status == HTTPStatus.OK
