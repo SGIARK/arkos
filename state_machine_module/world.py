@@ -248,3 +248,13 @@ def next_hop(world: World) -> World:
         turn = replace(turn, hops=turn.hops + 1)
     called_while_parked = world.model_called_while_parked or bool(turn.park)
     return replace(world, turn=turn, hops_since_done=turn.hops, model_called_while_parked=called_while_parked)
+
+
+def take_box(world: World) -> World:
+    """_Sink._lease("sandbox"): a pool slot, the folder lease, the box materialized once a turn."""
+    turn = turn_of(world)
+    if turn.materialized:
+        return world
+    world = box_to(world, "live")
+    lease = world.lease or world.has_folder
+    return replace(world, slot=True, lease=lease, lease_orphaned=False, turn=replace(turn, materialized=True))
