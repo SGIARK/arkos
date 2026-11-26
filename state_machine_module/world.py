@@ -290,3 +290,10 @@ def drive(world: World) -> World:
     world = close_dangling(settle_approved_call(replace(world, turn=Turn())))
     turn = replace(turn_of(world), hops=world.hops_since_done)
     return next_hop(replace(world, turn=turn))
+
+
+def start(world: World, reason: str, mode: str = "") -> World:
+    """runner.start: move to running and drive a turn. A live turn makes it a no-op."""
+    if world.status == "running":
+        return world
+    return drive(move(world, "running", reason, mode))
