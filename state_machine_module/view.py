@@ -83,8 +83,8 @@ def doc_path(doc: str) -> str:
 
 
 def menu(current: str) -> str:
-    """Links to the first page and to every machine, the page you are on in bold."""
-    entries = [("arkos", "/"), *((machine.name, page_path(machine)) for machine in MACHINES)]
+    """Links to the first page, the docs and every machine, the page you are on in bold."""
+    entries = [("arkos", "/"), ("docs", DOCS), *((machine.name, page_path(machine)) for machine in MACHINES)]
     links = [
         f"<b>{html.escape(name)}</b>" if name == current else f'<a href="{path}">{html.escape(name)}</a>'
         for name, path in entries
