@@ -455,7 +455,9 @@ def cancel(world: World) -> World:
 def restart(world: World) -> World:
     """The process dies and comes back: sweep_interrupted, then sweep_slots."""
     if world.status == "running":
-        world = replace(close_dangling(world), turn=None, hops_since_done=0, lease_orphaned=world.lease)
+        world = replace(close_dangling(world), turn=None, hops_since_done=0)
+        if world.lease:
+            world = lease_to(world, "orphaned")
         world = move(world, "failed", "interrupted")
     if world.slot and world.status in FINAL:
         lost = world.lost_edits or world.unflushed
