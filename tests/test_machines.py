@@ -5,7 +5,7 @@ import pathlib
 import sys
 
 from harness_module import lifecycle
-from state_machine_module.machines import SANDBOX, SESSION, allows, pairs
+from state_machine_module.machines import MACHINES, SESSION, allows, pairs
 
 PACKAGE = pathlib.Path(__file__).resolve().parent.parent / "state_machine_module"
 
@@ -23,10 +23,11 @@ def test_allows_refuses_an_undeclared_move() -> None:
     assert not allows(SESSION, "completed", "idle")
 
 
-def test_moves_stay_within_their_machines_states() -> None:
-    for machine in (SESSION, SANDBOX):
-        for move in machine.moves:
-            assert {move.source, move.target} <= set(machine.states), (machine.name, move)
+def test_machines_use_only_their_own_states() -> None:
+    for machine in MACHINES:
+        named = {start.state for start in machine.starts} | set(machine.final)
+        named |= {state for move in machine.moves for state in (move.source, move.target)}
+        assert named <= set(machine.states), (machine.name, named - set(machine.states))
 
 
 def test_package_imports_only_the_standard_library() -> None:
