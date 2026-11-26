@@ -190,3 +190,11 @@ def has_open_call(world: World) -> bool:
     in_grant = world.grant is not None and world.grant.call_open
     in_turn = world.turn is not None and world.turn.park_gated
     return in_rows or in_grant or in_turn
+
+
+def close_dangling(world: World) -> World:
+    """session_log.close_dangling: close every open call with an interrupted result."""
+    questions = tuple(replace(question, call_open=False) for question in world.questions)
+    grant = replace(world.grant, call_open=False) if world.grant else None
+    turn = replace(world.turn, park_gated=False) if world.turn else None
+    return replace(world, questions=questions, grant=grant, turn=turn)
