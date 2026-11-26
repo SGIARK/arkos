@@ -4,6 +4,7 @@ from state_machine_module.machines import MACHINES, SESSION, Move
 from state_machine_module.view import (
     drawn_moves,
     frames,
+    machine_dot,
     quoted,
 )
 
@@ -25,3 +26,7 @@ def test_drawn_moves_cover_every_declared_move() -> None:
             sources = framed[frame] if frame else (move.source,)
             covered |= {Move(source, move.target, move.trigger) for source in sources}
         assert covered == set(machine.moves), machine.name
+
+
+def test_machine_dot_double_borders_only_final_states() -> None:
+    assert machine_dot(SESSION).count("peripheries=2") == len(SESSION.final)
