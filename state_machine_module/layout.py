@@ -52,6 +52,7 @@ LABEL_STEPS = (0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8)  # where along its arrow a lab
 LABEL_CLEARANCE = 4
 CURVE_SAMPLES = 16  # points per arrow that other arrows' labels keep off
 POINT_COST = 150.0  # how much covering one of those points counts against a spot, in square pixels
+MARGIN = 12
 
 
 @dataclass(frozen=True, slots=True)
@@ -464,3 +465,14 @@ def arrows_for(
             taken.append(label.box)
         arrows.append(Arrow(drawn.move, drawn.frame, curve, label))
     return tuple(arrows)
+
+
+def bounds_of(boxes: Iterable[Box], arrows: tuple[Arrow, ...], entries: tuple[Entry, ...]) -> Box:
+    """The box round everything drawn, with a margin."""
+    parts = list(boxes)
+    for drawn in (*arrows, *entries):
+        parts += [Box(x, y, 0, 0) for x, y in drawn.curve]
+        if drawn.label is not None:
+            parts.append(drawn.label.box)
+    parts += [Box(x - DOT_RADIUS, y - DOT_RADIUS, 2 * DOT_RADIUS, 2 * DOT_RADIUS) for x, y in (e.dot for e in entries)]
+    return enclosing(parts).grown(MARGIN)
