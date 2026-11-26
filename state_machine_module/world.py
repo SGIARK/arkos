@@ -122,3 +122,14 @@ NEW_SESSION = World(status="pending")
 HOME_CHAT = World(status="idle", has_folder=False)
 ROOTS = (NEW_SESSION, HOME_CHAT)
 ROOT_NAMES = {NEW_SESSION: "a new session (POST /sessions)", HOME_CHAT: "the home Chat"}
+
+
+@dataclass(frozen=True, slots=True)
+class Event:
+    """Something that happens to the session, and who does it."""
+
+    actor: str
+    action: str
+    tools: tuple[str, ...] = ()
+    row: int | None = None
+    verb: str = ""
