@@ -2,7 +2,13 @@
 
 from pathlib import Path
 
-from state_machine_module.docs import walked_docs
+from state_machine_module.docs import tracked_docs, walked_docs
+
+
+def test_tracked_docs_lists_the_readme() -> None:
+    docs = tracked_docs()
+    assert "README.md" in docs
+    assert all(doc.endswith(".md") for doc in docs)
 
 
 def test_walked_docs_skips_virtualenvs(tmp_path: Path) -> None:
