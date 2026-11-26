@@ -116,3 +116,9 @@ class World:
     model_called_while_parked: bool = False
     acted_after_question: bool = False
     lost_edits: bool = False
+
+
+NEW_SESSION = World(status="pending")
+HOME_CHAT = World(status="idle", has_folder=False)
+ROOTS = (NEW_SESSION, HOME_CHAT)
+ROOT_NAMES = {NEW_SESSION: "a new session (POST /sessions)", HOME_CHAT: "the home Chat"}
