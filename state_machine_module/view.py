@@ -23,7 +23,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
 
-from state_machine_module.docs import ROOT, title_of, tracked_docs
+from state_machine_module.docs import ROOT, render, title_of, tracked_docs
 from state_machine_module.layout import drawn_moves, layout
 from state_machine_module.machines import MACHINES, Machine
 from state_machine_module.svg import drawing_svg, overview_svg
@@ -176,6 +176,14 @@ def doc_link(doc: str, target: str, docs: set[str]) -> str | None:
     if resolved not in docs:
         return None
     return doc_path(resolved) + (f"#{heading_id}" if heading_id else "")
+
+
+def doc_page(doc: str, text: str, docs: set[str]) -> str:
+    """One doc as a page: where it lives in the repo, then its markdown rendered."""
+    body = render(text, lambda target: doc_link(doc, target, docs))
+    return page(
+        title_of(text, doc), "docs", f'<p class="path">{html.escape(doc)}</p><article class="doc">{body}</article>'
+    )
 
 
 def moves_table(machine: Machine) -> str:
