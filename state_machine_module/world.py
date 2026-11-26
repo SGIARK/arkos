@@ -442,3 +442,22 @@ def restart(world: World) -> World:
 def leases_expire(world: World) -> World:
     """leases.ttl_s passes with no live turn renewing the lease."""
     return replace(world, lease=False, lease_orphaned=False)
+
+
+def person_events(world: World) -> list[Event]:
+    """What you, or runner.start on your behalf, can do in this status."""
+    status = world.status
+    found = []
+    if status == "pending":
+        found.append(Event("arkos", "starts the session"))
+    if status in ("idle", WAITING) or status in FINAL:
+        found.append(Event("you", "send a message"))
+    if status == "idle":
+        found.append(Event("you", "resume"))
+    if status in ("pending", "idle") or status in FINAL:
+        found.append(Event("you", "press autopilot"))
+    if status in ("pending", "idle", "running", WAITING):
+        found.append(Event("you", "cancel"))
+    if status == "running":
+        found.append(Event("you", "stop"))
+    return found
