@@ -16,6 +16,7 @@ import textwrap
 from state_machine_module.machines import Machine, Move
 
 LABEL_WIDTH = 26  # characters on each line of a move's label
+FRAME_STYLE = 'style="rounded"; color="#cfcfcf"; fontname="Helvetica-Oblique"; fontsize=11; fontcolor="#6b6b6b";'
 START_STYLE = 'shape=point, width=0.12, style=filled, fillcolor="#3b3b3b"'
 
 
@@ -85,3 +86,15 @@ def state_line(machine: Machine, state: str, prefix: str, link: str) -> str:
     """A box for one state, with a double border if the machine can end there."""
     border = ", peripheries=2" if state in machine.final else ""
     return f"{quoted(prefix + state)} [label={quoted(state)}{border}{link}];"
+
+
+def state_lines(machine: Machine, prefix: str, link: str) -> list[str]:
+    """A box for each state, the framed ones inside their frames."""
+    framed = frames(machine)
+    lines = []
+    for name, states in framed.items():
+        lines.append(f"subgraph {frame_id(prefix, name)} {{ label={quoted(name)}; {FRAME_STYLE}")
+        lines += [state_line(machine, state, prefix, link) for state in states]
+        lines.append("}")
+    loose = [state for state in machine.states if not any(state in states for states in framed.values())]
+    return lines + [state_line(machine, state, prefix, link) for state in loose]
