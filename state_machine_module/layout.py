@@ -47,6 +47,7 @@ SPREAD_WEIGHT = 2.0  # cost of each state between two states an arrow joins with
 CROSSING_WEIGHT = 3.0  # cost of two arrows crossing between rows
 ORDER_LIMIT = 40_000  # orderings few enough to try them all; a bigger machine keeps its declared order
 LABEL_CLEARANCE = 4
+CURVE_SAMPLES = 16  # points per arrow that other arrows' labels keep off
 POINT_COST = 150.0  # how much covering one of those points counts against a spot, in square pixels
 
 
@@ -399,3 +400,8 @@ def free_spot(lines: tuple[str, ...], centres: list[Point], taken: list[Box], po
     """The label at whichever of `centres` covers least; of spots that cover as little, the earliest."""
     best = min(centres, key=lambda centre: crowding(label_box(lines, centre), taken, points))
     return Label(lines, label_box(lines, best))
+
+
+def samples(curve: Curve) -> list[Point]:
+    """Points spaced along a curve, standing in for its line."""
+    return [point_on(curve, step / CURVE_SAMPLES) for step in range(CURVE_SAMPLES + 1)]
