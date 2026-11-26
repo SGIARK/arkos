@@ -69,3 +69,10 @@ def test_route_links_the_overview_to_every_machine() -> None:
     assert status == HTTPStatus.OK
     for machine in MACHINES:
         assert f'xlink:href="/{machine.name}"' in page, machine.name
+
+
+@needs_dot
+def test_route_draws_a_page_for_every_machine() -> None:
+    for machine in MACHINES:
+        status, page = route(f"/{machine.name}?from=a-link")
+        assert status == HTTPStatus.OK and "<svg" in page, machine.name
