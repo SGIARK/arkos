@@ -27,3 +27,8 @@ class Machine:
     states: tuple[str, ...]
     final: tuple[str, ...]
     moves: tuple[Move, ...]
+
+
+def allows(machine: Machine, source: str, target: str) -> bool:
+    """Whether `machine` declares a move from `source` to `target`."""
+    return any(move.source == source and move.target == target for move in machine.moves)
