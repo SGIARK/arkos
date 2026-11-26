@@ -18,7 +18,7 @@ import itertools
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
-from state_machine_module.machines import LEASE, MODE, SANDBOX, SESSION, allows, follows
+from state_machine_module.machines import LEASE, MODE, QUESTION, SANDBOX, SESSION, allows, follows
 
 ATTENDED_MAX_HOPS = 2  # budgets.attended.max_hops is 6
 UNATTENDED_MAX_HOPS = 3  # budgets.unattended.max_hops is 15
@@ -223,6 +223,13 @@ def close_dangling(world: World) -> World:
     grant = replace(world.grant, call_open=False) if world.grant else None
     turn = replace(world.turn, park_gated=False) if world.turn else None
     return replace(world, questions=questions, grant=grant, turn=turn)
+
+
+def close_question(world: World, index: int, target: str) -> World:
+    """Close the open row at `index` as `target`, noting a close its machine does not declare."""
+    questions = world.questions[:index] + world.questions[index + 1 :]
+    strayed = not allows(QUESTION, "open", target)
+    return replace(world, questions=questions, illegal_move=world.illegal_move or strayed)
 
 
 def release(world: World, keep_box: bool) -> World:
