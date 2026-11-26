@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import html
+import posixpath
 import sys
 import webbrowser
 from http import HTTPStatus
@@ -29,6 +30,7 @@ from state_machine_module.svg import drawing_svg, overview_svg
 
 HOST = "127.0.0.1"
 DOCS = "/docs"
+WEB_LINKS = ("http://", "https://", "mailto:")
 
 BY_NAME = {machine.name: machine for machine in MACHINES}
 
@@ -162,6 +164,18 @@ def overview_page(svg: str) -> str:
 def docs_page(docs: list[tuple[str, str]]) -> str:
     """Every doc, listed."""
     return page("docs", "docs", heading("docs", DOCS_ABOUT) + docs_list(docs))
+
+
+def doc_link(doc: str, target: str, docs: set[str]) -> str | None:
+    """Where a link in `doc` should lead: another doc's page, a heading, or a web address. Anything
+    else stays plain text, so nothing a doc links to can run in the page."""
+    if target.startswith("#") or target.startswith(WEB_LINKS):
+        return target
+    path, _, heading_id = target.partition("#")
+    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(doc), path)) if path else ""
+    if resolved not in docs:
+        return None
+    return doc_path(resolved) + (f"#{heading_id}" if heading_id else "")
 
 
 def moves_table(machine: Machine) -> str:
