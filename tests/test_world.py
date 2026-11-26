@@ -10,3 +10,7 @@ RESTART = Event("server", "restarts")
 
 def calls(*tools: str) -> Event:
     return Event("model", "calls", tools=tools)
+
+
+def answer(verb: str, row: int = 0) -> Event:
+    return Event("you", "answer", row=row, verb=verb)
