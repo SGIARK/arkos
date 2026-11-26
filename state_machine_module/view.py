@@ -16,6 +16,7 @@ import html
 import subprocess
 import textwrap
 from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlsplit
 
 from state_machine_module.machines import MACHINES, Machine, Move
@@ -269,3 +270,19 @@ def route(path: str) -> tuple[HTTPStatus, str]:
     if machine is None:
         return HTTPStatus.NOT_FOUND, page("Not found", f"No machine is drawn at {path}.", "")
     return HTTPStatus.OK, machine_page(machine, drawn(machine_dot(machine)))
+
+
+class Handler(BaseHTTPRequestHandler):
+    """Answers each GET with its page, and keeps quiet about requests."""
+
+    def do_GET(self) -> None:
+        status, body = route(self.path)
+        data = body.encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, format: str, *args: object) -> None:
+        """A line per request would bury the address the server printed."""
