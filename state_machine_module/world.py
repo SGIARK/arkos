@@ -408,3 +408,13 @@ def respond(world: World, index: int, verb: str) -> World:
     if row.is_goal and verb == "dismiss":
         return dismiss_goal(world)
     return start(world, "plan_requested" if row.is_goal else "answered")
+
+
+def press_autopilot(world: World) -> World:
+    """POST /sessions/{id}/approve: park on the goal question without running anything."""
+    if world.mode == "unattended":
+        return world
+    world = move(world, WAITING, "goal_requested")
+    if any(question.is_goal for question in world.questions):
+        return move(world, "idle", "goal_failed")
+    return replace(world, questions=(*world.questions, Question(kind="ask", is_goal=True)))
