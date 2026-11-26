@@ -2,7 +2,7 @@
 
 import pytest
 
-from state_machine_module.check import Report, explore
+from state_machine_module.check import Report, explore, main
 from state_machine_module.rules import broken
 from state_machine_module.world import ROOTS, step
 
@@ -40,3 +40,8 @@ def test_explore_returns_the_shortest_path(report: Report) -> None:
     lengths = {finding.rule.name: len(finding.path) for finding in report.findings}
     assert lengths["one_question_while_waiting"] == 2
     assert lengths["ended_runs_are_attended"] == 4
+
+
+def test_main_exits_nonzero_when_a_rule_breaks(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["--depth", "3"]) == 1
+    assert "BROKEN  one_question_while_waiting" in capsys.readouterr().out
