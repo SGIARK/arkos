@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from state_machine_module.rules import Rule
+from state_machine_module.rules import Rule, broken
 from state_machine_module.world import Event, World
 
 DEFAULT_DEPTH = 6
@@ -45,3 +45,11 @@ def path_to(world: World, parents: Parents) -> tuple[World, tuple[Event, ...]]:
         path.append(event)
         link = parents[world]
     return world, tuple(reversed(path))
+
+
+def note(world: World, parents: Parents, findings: dict[str, Finding]) -> None:
+    """Record each rule `world` breaks that no shorter sequence has broken yet."""
+    for rule in broken(world):
+        if rule.name not in findings:
+            root, path = path_to(world, parents)
+            findings[rule.name] = Finding(rule, root, path)
