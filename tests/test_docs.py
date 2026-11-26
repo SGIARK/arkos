@@ -18,6 +18,10 @@ def test_render_keeps_code_exactly_as_written() -> None:
     assert html == '<pre><code class="language-bash">echo &lt;b&gt;*not emphasis*&lt;/b&gt;</code></pre>'
 
 
+def test_render_drops_comments_and_shows_other_html_as_text() -> None:
+    assert render("<!-- a note -->\n<script>x</script>", no_links) == "<p>&lt;script&gt;x&lt;/script&gt;</p>"
+
+
 def test_title_of_takes_the_first_heading() -> None:
     assert title_of("<!-- # a note -->\nintro\n# The `arkos` title\n## Next", "fallback") == "The arkos title"
 
