@@ -8,10 +8,12 @@ one. Run it with:
 
 from __future__ import annotations
 
+from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from state_machine_module.rules import Rule, broken
-from state_machine_module.world import Event, World
+from state_machine_module.world import Event, World, events, step
 
 DEFAULT_DEPTH = 6
 
@@ -53,3 +55,25 @@ def note(world: World, parents: Parents, findings: dict[str, Finding]) -> None:
         if rule.name not in findings:
             root, path = path_to(world, parents)
             findings[rule.name] = Finding(rule, root, path)
+
+
+def explore(roots: Iterable[World], depth: int) -> Report:
+    """Visit every world reachable from `roots` in at most `depth` events."""
+    parents: Parents = {}
+    findings: dict[str, Finding] = {}
+    frontier: deque[tuple[World, int]] = deque()
+    for root in roots:
+        parents[root] = None
+        note(root, parents, findings)
+        frontier.append((root, 0))
+    while frontier:
+        world, level = frontier.popleft()
+        if level == depth:
+            continue
+        for event in events(world):
+            after = step(world, event)
+            if after not in parents:
+                parents[after] = (world, event)
+                note(after, parents, findings)
+                frontier.append((after, level + 1))
+    return Report(states=len(parents), depth=depth, findings=tuple(findings.values()))
