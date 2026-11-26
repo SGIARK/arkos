@@ -65,3 +65,10 @@ def test_step_finish_task_completes_only_an_unattended_run() -> None:
     unattended = play(NEW_SESSION, START, calls("propose_plan"), answer("approve"), calls("finish_task"))
     assert attended.status == "running"
     assert (unattended.status, unattended.mode) == ("completed", "attended")
+
+
+def test_step_cancel_while_waiting_leaves_the_question_open() -> None:
+    """Today's behavior, which the rule one_question_while_waiting flags."""
+    world = play(NEW_SESSION, START, calls("ask"), CANCEL)
+    assert world.status == "cancelled"
+    assert len(world.questions) == 1
