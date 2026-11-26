@@ -15,6 +15,7 @@ happened, so that `rules.py` can judge it.
 from __future__ import annotations
 
 import itertools
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from state_machine_module.machines import SANDBOX, SESSION, allows
@@ -497,3 +498,19 @@ def events(world: World) -> list[Event]:
         found.append(Event("clock", "expires the lease"))
     found.append(Event("server", "restarts"))
     return found
+
+
+HANDLERS: dict[str, Callable[[World], World]] = {
+    "starts the session": lambda world: start(world, "woken"),
+    "send a message": send_message,
+    "resume": lambda world: start(world, "resumed"),
+    "press autopilot": press_autopilot,
+    "cancel": cancel,
+    "stop": lambda world: finish(world, "stopped"),
+    "replies with text": lambda world: model_replies(world, said_something=True),
+    "says nothing": lambda world: model_replies(world, said_something=False),
+    "fails": model_fails,
+    "runs out the wall clock": lambda world: finish(world, "wall_clock"),
+    "expires the lease": leases_expire,
+    "restarts": restart,
+}
