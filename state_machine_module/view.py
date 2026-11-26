@@ -11,10 +11,15 @@ It needs Graphviz's `dot` on the PATH: `sudo apt install graphviz`.
 
 from __future__ import annotations
 
+import argparse
+import contextlib
 import functools
 import html
+import shutil
 import subprocess
+import sys
 import textwrap
+import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
@@ -292,3 +297,23 @@ class Handler(BaseHTTPRequestHandler):
 def serve(port: int) -> ThreadingHTTPServer:
     """A server for the pages, reachable from this computer only. Port 0 picks a free one."""
     return ThreadingHTTPServer((HOST, port), Handler)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Serve the pages and open them in your browser, until Ctrl-C."""
+    parser = argparse.ArgumentParser(description="Click through arkos's state machines in a browser.")
+    parser.add_argument("--port", type=int, default=0, help="the port to serve on; a free one if left out")
+    parser.add_argument("--no-open", action="store_true", help="print the address without opening a browser")
+    args = parser.parse_args(argv)
+    if shutil.which("dot") is None:
+        print("Graphviz's dot is not on the PATH. Install it with: sudo apt install graphviz", file=sys.stderr)
+        return 1
+    server = serve(args.port)
+    url = f"http://{HOST}:{server.server_port}/"
+    print(f"arkos's state machines are at {url} (Ctrl-C stops the server)")
+    if not args.no_open:
+        webbrowser.open(url)
+    with contextlib.suppress(KeyboardInterrupt):
+        server.serve_forever()
+    server.server_close()
+    return 0
