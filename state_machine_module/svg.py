@@ -31,6 +31,7 @@ STATE_BASELINE = 0.35  # of the state font, below a box's middle, to centre its 
 FRAME_NAME_DROP = 13  # from a frame's top edge to the baseline of its name
 MACHINE_PAD = 16  # inside a machine's frame on the overview
 MACHINE_TITLE = 30  # room for a machine's name at the top of its frame
+MACHINE_GAP = 24
 
 MARKER = (
     '<defs><marker id="arrowhead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7"'
@@ -144,3 +145,16 @@ def machine_frame_svg(name: str, box: Box, link: str) -> str:
         f' x="{number(box.x + MACHINE_PAD)}" y="{number(box.y + MACHINE_TITLE - MACHINE_PAD / 2)}">'
         f"{html.escape(name)}</text></a></g>"
     )
+
+
+def overview_svg(drawings: list[Layout], links: list[str]) -> str:
+    """Every machine side by side, each in a dashed frame whose name and states link to its page."""
+    height = max(drawing.bounds.height for drawing in drawings) + MACHINE_TITLE + MACHINE_PAD
+    x, parts = 0.0, []
+    for drawing, link in zip(drawings, links, strict=True):
+        frame = Box(x, 0, drawing.bounds.width + 2 * MACHINE_PAD, height)
+        shift_x, shift_y = frame.x + MACHINE_PAD - drawing.bounds.x, MACHINE_TITLE - drawing.bounds.y
+        parts.append(machine_frame_svg(drawing.machine.name, frame, link))
+        parts.append(f'<g transform="translate({number(shift_x)},{number(shift_y)})">{machine_svg(drawing, link)}</g>')
+        x = frame.right + MACHINE_GAP
+    return document("".join(parts), Box(0, 0, x - MACHINE_GAP, height).grown(1), "arkos's state machines")
