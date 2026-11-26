@@ -10,12 +10,14 @@ from __future__ import annotations
 import html
 
 from state_machine_module.layout import (
+    DOT_RADIUS,
     LABEL_PAD,
     LINE_HEIGHT,
     STATE_FONT,
     Arrow,
     Box,
     Curve,
+    Entry,
     Label,
 )
 
@@ -84,4 +86,14 @@ def arrow_svg(arrow: Arrow) -> str:
     return (
         f'<g class="move"><title>{html.escape(arrow.move.trigger)}</title><path class="hit" d="{data}"/>'
         f'<path class="line" d="{data}" marker-end="url(#arrowhead)"/></g>'
+    )
+
+
+def entry_svg(entry: Entry) -> str:
+    """A start dot and its arrow into the state the machine begins in."""
+    x, y = entry.dot
+    return (
+        f'<g class="entry"><title>{html.escape(entry.trigger)}</title>'
+        f'<circle cx="{number(x)}" cy="{number(y)}" r="{DOT_RADIUS}"/>'
+        f'<path class="line" d="{path_data(entry.curve)}" marker-end="url(#arrowhead)"/></g>'
     )
