@@ -1,63 +1,64 @@
-"""Draw the declared machines as pages you click through, and serve them to a browser.
+"""Serve arkos's state machines to a browser, drawn in plain Python.
 
-Graphviz lays each machine out as an SVG in which every box is a plain link, so the
-pages need no JavaScript. The first page shows every machine at once, and clicking
-one opens it on its own, with what triggers each move. Run it with:
+The first page shows every state machine at once, and clicking a machine opens it
+with what triggers each move. From a clone, with nothing installed, run:
 
-    python -m state_machine_module.view [--port N] [--no-open]
+    python3 -m state_machine_module.view [--port N] [--no-open]
 
-It needs Graphviz's `dot` on the PATH: `sudo apt install graphviz`.
+`layout.py` places each machine and `svg.py` draws it, so the pages need no
+JavaScript and the server only the standard library.
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
-import functools
 import html
-import shutil
-import subprocess
 import sys
-import textwrap
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
-from state_machine_module.machines import MACHINES, Machine, Move
+from state_machine_module.layout import drawn_moves, layout
+from state_machine_module.machines import MACHINES, Machine
+from state_machine_module.svg import drawing_svg, overview_svg
 
 HOST = "127.0.0.1"
-LABEL_WIDTH = 26  # characters on each line of a move's label
-DOT_TIMEOUT_S = 10
 
 BY_NAME = {machine.name: machine for machine in MACHINES}
 
-GRAPH_STYLE = (
-    'graph [fontname="Helvetica", fontsize=12, bgcolor="transparent", nodesep=0.45, ranksep=0.5, compound=true];',
-    'node [fontname="Helvetica", fontsize=12, shape=box, style="rounded,filled", fillcolor="white",'
-    ' color="#3b3b3b", margin="0.18,0.08"];',
-    'edge [fontname="Helvetica", fontsize=10, color="#5c5c5c", fontcolor="#3b3b3b", arrowsize=0.7];',
-)
-CLUSTER_STYLE = 'style="rounded,dashed"; color="#8c8c8c"; fontname="Helvetica-Bold"; fontsize=13; margin=14;'
-FRAME_STYLE = 'style="rounded"; color="#cfcfcf"; fontname="Helvetica-Oblique"; fontsize=11; fontcolor="#6b6b6b";'
-START_STYLE = 'shape=point, width=0.12, style=filled, fillcolor="#3b3b3b"'
-
 PAGE_STYLE = """
-body { font: 15px/1.5 system-ui, sans-serif; color: #1f1f1f; background: #f7f7f7; margin: 0; }
+body { font: 15px/1.55 system-ui, sans-serif; color: #1f1f1f; background: #f7f7f7; margin: 0; }
 main { max-width: 80rem; margin: 0 auto; padding: 1.25rem 2rem 3rem; }
 a { color: #1a5fb4; }
 nav { font-size: 0.9rem; color: #6b6b6b; }
 h1 { font-size: 1.5rem; margin: 0.6rem 0 0.3rem; }
 .about { max-width: 46rem; margin: 0 0 1.25rem; color: #3b3b3b; }
-figure { margin: 0 0 2rem; padding: 1rem; background: #fff; border: 1px solid #e2e2e2; border-radius: 10px; }
+figure { margin: 0 0 2rem; padding: 1rem; background: #fff; border: 1px solid #e2e2e2; border-radius: 10px;
+  overflow-x: auto; }
 figure svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
 figcaption { font-size: 0.85rem; color: #6b6b6b; margin-top: 0.5rem; text-align: center; }
-svg a:hover path, svg a:hover polygon, svg a:hover ellipse { stroke: #1a5fb4; stroke-width: 2px; }
+svg text { font-family: system-ui, sans-serif; }
+svg .state rect { fill: #fff; stroke: #3b3b3b; stroke-width: 1.2; }
+svg .state text { font-size: 13px; fill: #1f1f1f; text-anchor: middle; }
+svg a:hover .state rect { stroke: #1a5fb4; stroke-width: 2; }
 svg a:hover text { fill: #1a5fb4; }
-table { border-collapse: collapse; font-size: 0.93rem; }
+svg .frame rect { fill: #fafafa; stroke: #d0d0d0; }
+svg .frame text { font-size: 11px; font-style: italic; fill: #6b6b6b; }
+svg .machine rect { fill: none; stroke: #9a9a9a; stroke-dasharray: 5 4; }
+svg .machine text { font-size: 14px; font-weight: 600; fill: #1f1f1f; }
+svg .line { fill: none; stroke: #5c5c5c; stroke-width: 1.2; }
+svg .hit { fill: none; stroke: transparent; stroke-width: 12; }
+svg .head { fill: #5c5c5c; }
+svg .move:hover .line { stroke: #1a5fb4; stroke-width: 2; }
+svg .entry circle { fill: #3b3b3b; }
+svg .label rect { fill: #fff; fill-opacity: 0.94; }
+svg .label text { font-size: 11px; fill: #3b3b3b; text-anchor: middle; }
+table { border-collapse: collapse; font-size: 0.93rem; margin: 0 0 1rem; }
 th, td { text-align: left; vertical-align: top; padding: 0.4rem 1.5rem 0.4rem 0; border-bottom: 1px solid #e2e2e2; }
-td:nth-child(-n+2) { white-space: nowrap; font-family: ui-monospace, monospace; font-size: 0.87rem; }
-ul { max-width: 46rem; padding-left: 1.1rem; }
+.moves td:nth-child(-n+2) { white-space: nowrap; font-family: ui-monospace, monospace; font-size: 0.87rem; }
+ul, ol { max-width: 46rem; padding-left: 1.4rem; }
 li { margin: 0.35rem 0; }
 """
 
@@ -68,137 +69,13 @@ OVERVIEW_ABOUT = (
 )
 
 
-def quoted(text: str) -> str:
-    """`text` as a DOT string, its line breaks kept."""
-    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
-    return '"' + escaped.replace("\n", "\\n") + '"'
-
-
-def wrapped(text: str) -> str:
-    """A trigger broken into short lines, so its label stays narrow."""
-    return "\n".join(textwrap.wrap(text, LABEL_WIDTH))
-
-
 def page_path(machine: Machine) -> str:
     """Where the page for `machine` is served."""
     return f"/{machine.name}"
 
 
-def start_lines(machine: Machine, prefix: str, labelled: bool) -> list[str]:
-    """A dot for each way the machine begins, with an arrow into the state it begins in."""
-    lines = []
-    for number, start in enumerate(machine.starts):
-        dot = quoted(f"{prefix}start {number}")
-        label = f"label={quoted(wrapped(start.trigger))}" if labelled else f"tooltip={quoted(start.trigger)}"
-        lines.append(f"{dot} [{START_STYLE}, tooltip={quoted(start.trigger)}];")
-        lines.append(f"{dot} -> {quoted(prefix + start.state)} [{label}];")
-    return lines
-
-
-def frames(machine: Machine) -> dict[str, tuple[str, ...]]:
-    """The states drawn framed together: those the machine ends in, and the rest, if two or more each."""
-    if not machine.final:
-        return {}
-    live = tuple(state for state in machine.states if state not in machine.final)
-    return {name: states for name, states in (("live", live), ("ended", machine.final)) if len(states) > 1}
-
-
-def shared_moves(machine: Machine, states: tuple[str, ...]) -> list[Move]:
-    """The moves every one of `states` makes alike, to a state outside them: one Move each, from the first."""
-    return [
-        move
-        for move in machine.moves
-        if move.source == states[0]
-        and move.target not in states
-        and all(Move(state, move.target, move.trigger) in machine.moves for state in states)
-    ]
-
-
-def drawn_moves(machine: Machine) -> list[tuple[Move, str]]:
-    """Each arrow to draw, with the frame it leaves from: a move a whole frame shares is drawn once."""
-    arrows: list[tuple[Move, str]] = []
-    covered: set[Move] = set()
-    for name, states in frames(machine).items():
-        for move in shared_moves(machine, states):
-            arrows.append((move, name))
-            covered |= {Move(state, move.target, move.trigger) for state in states}
-    return arrows + [(move, "") for move in machine.moves if move not in covered]
-
-
-def frame_id(prefix: str, name: str) -> str:
-    """The DOT name of a frame; Graphviz draws a subgraph as a frame only if its name starts with cluster."""
-    return quoted(f"cluster_{prefix}{name}")
-
-
-def state_line(machine: Machine, state: str, prefix: str, link: str) -> str:
-    """A box for one state, with a double border if the machine can end there."""
-    border = ", peripheries=2" if state in machine.final else ""
-    return f"{quoted(prefix + state)} [label={quoted(state)}{border}{link}];"
-
-
-def state_lines(machine: Machine, prefix: str, link: str) -> list[str]:
-    """A box for each state, the framed ones inside their frames."""
-    framed = frames(machine)
-    lines = []
-    for name, states in framed.items():
-        lines.append(f"subgraph {frame_id(prefix, name)} {{ label={quoted(name)}; {FRAME_STYLE}")
-        lines += [state_line(machine, state, prefix, link) for state in states]
-        lines.append("}")
-    loose = [state for state in machine.states if not any(state in states for states in framed.values())]
-    return lines + [state_line(machine, state, prefix, link) for state in loose]
-
-
-def move_lines(machine: Machine, prefix: str, labelled: bool) -> list[str]:
-    """An arrow for each move drawn: labelled with its trigger, or showing it on hover."""
-    lines = []
-    for move, frame in drawn_moves(machine):
-        label = f"label={quoted(wrapped(move.trigger))}" if labelled else f"tooltip={quoted(move.trigger)}"
-        tail = f", ltail={frame_id(prefix, frame)}" if frame else ""
-        lines.append(f"{quoted(prefix + move.source)} -> {quoted(prefix + move.target)} [{label}{tail}];")
-    return lines
-
-
-def digraph(name: str, body: list[str]) -> str:
-    """A whole DOT graph, in the view's style."""
-    return "\n".join([f"digraph {quoted(name)} {{", *GRAPH_STYLE, *body, "}"])
-
-
-def machine_dot(machine: Machine) -> str:
-    """One machine on its own, every move labelled with what triggers it."""
-    body = start_lines(machine, "", labelled=True) + state_lines(machine, "", link="")
-    return digraph(machine.name, body + move_lines(machine, "", labelled=True))
-
-
-def cluster_lines(machine: Machine) -> list[str]:
-    """One machine as a framed group on the overview, its frame and every state linking to its page."""
-    prefix = f"{machine.name}."
-    href, tooltip = quoted(page_path(machine)), quoted(machine.about)
-    return [
-        f"subgraph {quoted('cluster_' + machine.name)} {{",
-        f"label={quoted(machine.name)}; href={href}; tooltip={tooltip}; {CLUSTER_STYLE}",
-        *start_lines(machine, prefix, labelled=False),
-        *state_lines(machine, prefix, link=f", href={href}, tooltip={tooltip}"),
-        *move_lines(machine, prefix, labelled=False),
-        "}",
-    ]
-
-
-def overview_dot() -> str:
-    """Every machine side by side, each a framed group that links to its own page."""
-    return digraph("arkos", [line for machine in MACHINES for line in cluster_lines(machine)])
-
-
-@functools.cache
-def drawn(source: str) -> str:
-    """`source` laid out by Graphviz, as an SVG element to place in a page."""
-    result = subprocess.run(
-        ["dot", "-Tsvg"], input=source, capture_output=True, text=True, check=True, timeout=DOT_TIMEOUT_S
-    )
-    return result.stdout[result.stdout.index("<svg") :]
-
-
 def menu(current: str) -> str:
-    """Links to the overview and to every machine, the page you are on in bold."""
+    """Links to the first page and to every machine, the page you are on in bold."""
     entries = [("arkos", "/"), *((machine.name, page_path(machine)) for machine in MACHINES)]
     links = [
         f"<b>{html.escape(name)}</b>" if name == current else f'<a href="{path}">{html.escape(name)}</a>'
@@ -207,26 +84,29 @@ def menu(current: str) -> str:
     return " · ".join(links)
 
 
-def page(title: str, about: str, body: str) -> str:
-    """A whole HTML page. `title` and `about` are text; `body` is already HTML."""
+def page(title: str, current: str, body: str) -> str:
+    """A whole HTML page: the menu with `current` in bold, then `body`, which is already HTML."""
     return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{html.escape(title)} · arkos state machines</title>
+<title>{html.escape(title)} · arkos</title>
 <style>{PAGE_STYLE}</style>
 </head>
 <body>
 <main>
-<nav>{menu(title)}</nav>
-<h1>{html.escape(title)}</h1>
-<p class="about">{html.escape(about)}</p>
+<nav>{menu(current)}</nav>
 {body}
 </main>
 </body>
 </html>
 """
+
+
+def heading(title: str, about: str) -> str:
+    """A page's title, and the paragraph under it saying what the page is about."""
+    return f'<h1>{html.escape(title)}</h1><p class="about">{html.escape(about)}</p>'
 
 
 def figure(svg: str, caption: str) -> str:
@@ -236,12 +116,13 @@ def figure(svg: str, caption: str) -> str:
 
 def overview_page(svg: str) -> str:
     """The first page: every machine in one drawing, then a line on what each one tracks."""
-    items = "".join(
+    machines = "".join(
         f'<li><a href="{page_path(machine)}">{html.escape(machine.name)}</a>: {html.escape(machine.about)}</li>'
         for machine in MACHINES
     )
-    caption = "Click a box to open its machine. Hover over an arrow to see what triggers it."
-    return page("arkos", OVERVIEW_ABOUT, figure(svg, caption) + f"<ul>{items}</ul>")
+    caption = "Click a state or a machine's name to open it. Hover over an arrow to see what triggers it."
+    body = heading("arkos", OVERVIEW_ABOUT) + figure(svg, caption) + f"<ul>{machines}</ul>"
+    return page("arkos", "arkos", body)
 
 
 def moves_table(machine: Machine) -> str:
@@ -249,7 +130,7 @@ def moves_table(machine: Machine) -> str:
     rows = [("(start)", start.state, start.trigger) for start in machine.starts]
     rows += [(move.source, move.target, move.trigger) for move in machine.moves]
     cells = "".join("<tr>" + "".join(f"<td>{html.escape(cell)}</td>" for cell in row) + "</tr>" for row in rows)
-    return f"<table><tr><th>From</th><th>To</th><th>When</th></tr>{cells}</table>"
+    return f'<table class="moves"><tr><th>From</th><th>To</th><th>When</th></tr>{cells}</table>'
 
 
 def legend(machine: Machine) -> str:
@@ -264,18 +145,25 @@ def legend(machine: Machine) -> str:
 
 def machine_page(machine: Machine, svg: str) -> str:
     """One machine's page: its drawing with every trigger, then its moves as a table."""
-    return page(machine.name, machine.about, figure(svg, legend(machine)) + moves_table(machine))
+    body = heading(machine.name, machine.about) + figure(svg, legend(machine)) + moves_table(machine)
+    return page(machine.name, machine.name, body)
+
+
+def not_found(path: str) -> tuple[HTTPStatus, str]:
+    """The page for a path nothing is served at."""
+    return HTTPStatus.NOT_FOUND, page("Not found", "", heading("Not found", f"Nothing is served at {path}."))
 
 
 def route(path: str) -> tuple[HTTPStatus, str]:
     """The status and page for a requested path."""
-    path = urlsplit(path).path
+    path = unquote(urlsplit(path).path)
     if path == "/":
-        return HTTPStatus.OK, overview_page(drawn(overview_dot()))
+        drawings = [layout(machine, labelled=False) for machine in MACHINES]
+        return HTTPStatus.OK, overview_page(overview_svg(drawings, [page_path(machine) for machine in MACHINES]))
     machine = BY_NAME.get(path.removeprefix("/"))
     if machine is None:
-        return HTTPStatus.NOT_FOUND, page("Not found", f"No machine is drawn at {path}.", "")
-    return HTTPStatus.OK, machine_page(machine, drawn(machine_dot(machine)))
+        return not_found(path)
+    return HTTPStatus.OK, machine_page(machine, drawing_svg(layout(machine, labelled=True)))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -301,16 +189,13 @@ def serve(port: int) -> ThreadingHTTPServer:
 
 def main(argv: list[str] | None = None) -> int:
     """Serve the pages and open them in your browser, until Ctrl-C."""
-    parser = argparse.ArgumentParser(description="Click through arkos's state machines in a browser.")
+    parser = argparse.ArgumentParser(description="Read arkos's docs and click through its state machines.")
     parser.add_argument("--port", type=int, default=0, help="the port to serve on; a free one if left out")
     parser.add_argument("--no-open", action="store_true", help="print the address without opening a browser")
     args = parser.parse_args(argv)
-    if shutil.which("dot") is None:
-        print("Graphviz's dot is not on the PATH. Install it with: sudo apt install graphviz", file=sys.stderr)
-        return 1
     server = serve(args.port)
     url = f"http://{HOST}:{server.server_port}/"
-    print(f"arkos's state machines are at {url} (Ctrl-C stops the server)")
+    print(f"arkos's docs and state machines are at {url} (Ctrl-C stops the server)", flush=True)
     if not args.no_open:
         webbrowser.open(url)
     with contextlib.suppress(KeyboardInterrupt):
