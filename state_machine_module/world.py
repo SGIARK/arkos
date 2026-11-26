@@ -391,10 +391,10 @@ def answer_by_message(world: World) -> World:
     """_answer_by_message: the composer answers the OLDEST open row, and never one asking consent."""
     if not world.questions:
         return start(world, "answered")
-    oldest, rest = world.questions[0], world.questions[1:]
+    oldest = world.questions[0]
     if oldest.kind in CONSENT_KINDS:
         return world
-    world = replace(world, questions=rest)
+    world = close_question(world, 0, "answered")
     return start(world, "plan_requested" if oldest.is_goal else "answered")
 
 
