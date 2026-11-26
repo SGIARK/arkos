@@ -2,11 +2,15 @@
 
 from pathlib import Path
 
-from state_machine_module.docs import title_of, tracked_docs, walked_docs
+from state_machine_module.docs import render, title_of, tracked_docs, walked_docs
 
 
 def no_links(target: str) -> str | None:
     return None
+
+
+def test_render_gives_headings_anchors() -> None:
+    assert render("## Where things are", no_links) == '<h2 id="where-things-are">Where things are</h2>'
 
 
 def test_title_of_takes_the_first_heading() -> None:
