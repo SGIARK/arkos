@@ -314,3 +314,14 @@ def around(move: Move, boxes: dict[str, Box], row_of: dict[str, int], order: lis
     if sum(right - box.right for box in ends) <= sum(box.x - left for box in ends):
         return Leg(move, "", move.source, "right", move.target, "right", right)
     return Leg(move, "", move.source, "left", move.target, "left", left)
+
+
+def on_side(box: Box, side: str, share: float) -> Point:
+    """The point `share` of the way along one side of `box`, left to right or top to bottom."""
+    if side == "top":
+        return (box.x + box.width * share, box.y)
+    if side == "bottom":
+        return (box.x + box.width * share, box.bottom)
+    if side == "left":
+        return (box.x, box.y + box.height * share)
+    return (box.right, box.y + box.height * share)
