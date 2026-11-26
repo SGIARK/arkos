@@ -28,6 +28,12 @@ def test_render_keeps_code_blocks_inside_numbered_steps() -> None:
     assert html == f"<ol><li><p>Install:</p>\n{code}</li><li>Run it.</li></ol>"
 
 
+def test_render_draws_pipe_tables() -> None:
+    html = render("| Path | What |\n| --- | --- |\n| `db/` | the pool |", no_links)
+    row = "<tr><td><code>db/</code></td><td>the pool</td></tr>"
+    assert html == f"<table><thead><tr><th>Path</th><th>What</th></tr></thead><tbody>{row}</tbody></table>"
+
+
 def test_title_of_takes_the_first_heading() -> None:
     assert title_of("<!-- # a note -->\nintro\n# The `arkos` title\n## Next", "fallback") == "The arkos title"
 
