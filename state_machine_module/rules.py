@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from state_machine_module.world import World
+from state_machine_module.world import WAITING, World
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,3 +19,10 @@ class Rule:
     name: str
     says: str
     holds: Callable[[World], bool]
+
+
+def one_question_while_waiting(world: World) -> bool:
+    """A waiting session has exactly one open question, and no other session has any."""
+    if world.status == WAITING:
+        return len(world.questions) == 1
+    return not world.questions
