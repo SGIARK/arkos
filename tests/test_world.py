@@ -14,6 +14,7 @@ START = Event("arkos", "starts the session")
 TEXT = Event("model", "replies with text")
 CANCEL = Event("you", "cancel")
 RESTART = Event("server", "restarts")
+MESSAGE = Event("you", "send a message")
 
 
 def calls(*tools: str) -> Event:
@@ -88,6 +89,11 @@ def test_step_restart_fails_a_running_session() -> None:
 
 def test_step_a_restart_mid_turn_orphans_the_lease() -> None:
     assert lease_state(play(NEW_SESSION, START, calls("run_command"), RESTART)) == "orphaned"
+
+
+def test_step_a_later_turn_takes_its_orphaned_lease_back() -> None:
+    world = play(NEW_SESSION, START, calls("run_command"), RESTART, MESSAGE, calls("run_command"))
+    assert lease_state(world) == "held"
 
 
 def test_events_offer_the_model_nothing_outside_a_turn() -> None:
