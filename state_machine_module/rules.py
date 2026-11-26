@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from state_machine_module.world import WAITING, World
+from state_machine_module.world import FINAL, WAITING, World
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,3 +26,8 @@ def one_question_while_waiting(world: World) -> bool:
     if world.status == WAITING:
         return len(world.questions) == 1
     return not world.questions
+
+
+def ended_runs_are_attended(world: World) -> bool:
+    """An ended session holds no unattended run."""
+    return world.status not in FINAL or world.mode == "attended"
