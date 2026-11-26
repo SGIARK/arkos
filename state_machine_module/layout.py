@@ -393,3 +393,9 @@ def crowding(box: Box, taken: list[Box], points: list[Point]) -> float:
     points of other arrows' lines under it."""
     room = box.grown(LABEL_CLEARANCE)
     return sum(room.overlap(other) for other in taken) + POINT_COST * sum(room.holds(point) for point in points)
+
+
+def free_spot(lines: tuple[str, ...], centres: list[Point], taken: list[Box], points: list[Point]) -> Label:
+    """The label at whichever of `centres` covers least; of spots that cover as little, the earliest."""
+    best = min(centres, key=lambda centre: crowding(label_box(lines, centre), taken, points))
+    return Label(lines, label_box(lines, best))
