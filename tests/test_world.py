@@ -47,3 +47,8 @@ def test_step_an_approved_plan_starts_an_unattended_run() -> None:
 def test_step_the_home_chat_cannot_approve_a_plan() -> None:
     world = play(HOME_CHAT, Event("you", "send a message"), calls("propose_plan"))
     assert play(world, answer("approve")) == world
+
+
+def test_step_an_attended_reply_flushes_and_reaps_the_box() -> None:
+    world = play(NEW_SESSION, START, calls("run_command"), TEXT)
+    assert (world.status, world.box, world.slot, world.unflushed) == ("idle", "none", False, False)
