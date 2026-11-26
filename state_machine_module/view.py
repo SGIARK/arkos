@@ -63,3 +63,14 @@ def shared_moves(machine: Machine, states: tuple[str, ...]) -> list[Move]:
         and move.target not in states
         and all(Move(state, move.target, move.trigger) in machine.moves for state in states)
     ]
+
+
+def drawn_moves(machine: Machine) -> list[tuple[Move, str]]:
+    """Each arrow to draw, with the frame it leaves from: a move a whole frame shares is drawn once."""
+    arrows: list[tuple[Move, str]] = []
+    covered: set[Move] = set()
+    for name, states in frames(machine).items():
+        for move in shared_moves(machine, states):
+            arrows.append((move, name))
+            covered |= {Move(state, move.target, move.trigger) for state in states}
+    return arrows + [(move, "") for move in machine.moves if move not in covered]
