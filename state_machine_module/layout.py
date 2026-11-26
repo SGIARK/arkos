@@ -24,7 +24,12 @@ from state_machine_module.machines import Machine, Move
 Point = tuple[float, float]
 Curve = tuple[Point, Point, Point, Point]
 CHAR_WIDTH = 0.6  # of the font size: a generous average for a sans-serif face
+STATE_HEIGHT = 34
 LABEL_CHARS = 26  # characters on each line of a label
+ROW_GAP = 44
+LABELLED_ROW_GAP = 160
+FRAME_PAD = 14
+FRAME_TITLE = 16  # room for a frame's name above its states
 SPREAD_WEIGHT = 2.0  # cost of each state between two states an arrow joins within a row
 CROSSING_WEIGHT = 3.0  # cost of two arrows crossing between rows
 ORDER_LIMIT = 40_000  # orderings few enough to try them all; a bigger machine keeps its declared order
@@ -229,3 +234,14 @@ def ordered(machine: Machine, grouped: list[list[str]]) -> list[tuple[str, ...]]
     if math.prod(len(choices) for choices in options) > ORDER_LIMIT:
         return [tuple(row) for row in grouped]
     return list(min(itertools.product(*options), key=lambda order: tangle(list(order), pairs)))
+
+
+def row_tops(order: list[tuple[str, ...]], framed: dict[str, tuple[str, ...]], labelled: bool) -> list[float]:
+    """How far down each row starts. Where one frame ends and another begins, rows stand further apart."""
+    gap = LABELLED_ROW_GAP if labelled else ROW_GAP
+    frame_of = {state: name for name, states in framed.items() for state in states}
+    tops = [0.0]
+    for above, row in itertools.pairwise(order):
+        parted = frame_of.get(above[0]) != frame_of.get(row[0])
+        tops.append(tops[-1] + STATE_HEIGHT + gap + (2 * FRAME_PAD + FRAME_TITLE if parted else 0))
+    return tops
