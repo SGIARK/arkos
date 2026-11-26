@@ -22,6 +22,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
 
+from state_machine_module.docs import ROOT, title_of, tracked_docs
 from state_machine_module.layout import drawn_moves, layout
 from state_machine_module.machines import MACHINES, Machine
 from state_machine_module.svg import drawing_svg, overview_svg
@@ -129,6 +130,11 @@ def heading(title: str, about: str) -> str:
 def figure(svg: str, caption: str) -> str:
     """A drawing with a line under it saying how to read it."""
     return f"<figure>{svg}<figcaption>{html.escape(caption)}</figcaption></figure>"
+
+
+def titled_docs() -> list[tuple[str, str]]:
+    """Every doc the repo tracks, as (path, title)."""
+    return [(doc, title_of((ROOT / doc).read_text(encoding="utf-8"), doc)) for doc in tracked_docs()]
 
 
 def overview_page(svg: str) -> str:
