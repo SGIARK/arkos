@@ -14,7 +14,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from state_machine_module.machines import Move
+
 Point = tuple[float, float]
+Curve = tuple[Point, Point, Point, Point]
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,3 +66,13 @@ class Label:
 
     lines: tuple[str, ...]
     box: Box
+
+
+@dataclass(frozen=True, slots=True)
+class Arrow:
+    """One arrow as drawn: the move it stands for, the frame it speaks for if any, its curve and label."""
+
+    move: Move
+    frame: str
+    curve: Curve
+    label: Label | None
