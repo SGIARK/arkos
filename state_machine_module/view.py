@@ -15,11 +15,15 @@ import functools
 import html
 import subprocess
 import textwrap
+from http import HTTPStatus
+from urllib.parse import urlsplit
 
 from state_machine_module.machines import MACHINES, Machine, Move
 
 LABEL_WIDTH = 26  # characters on each line of a move's label
 DOT_TIMEOUT_S = 10
+
+BY_NAME = {machine.name: machine for machine in MACHINES}
 
 GRAPH_STYLE = (
     'graph [fontname="Helvetica", fontsize=12, bgcolor="transparent", nodesep=0.45, ranksep=0.5, compound=true];',
@@ -254,3 +258,14 @@ def legend(machine: Machine) -> str:
 def machine_page(machine: Machine, svg: str) -> str:
     """One machine's page: its drawing with every trigger, then its moves as a table."""
     return page(machine.name, machine.about, figure(svg, legend(machine)) + moves_table(machine))
+
+
+def route(path: str) -> tuple[HTTPStatus, str]:
+    """The status and page for a requested path."""
+    path = urlsplit(path).path
+    if path == "/":
+        return HTTPStatus.OK, overview_page(drawn(overview_dot()))
+    machine = BY_NAME.get(path.removeprefix("/"))
+    if machine is None:
+        return HTTPStatus.NOT_FOUND, page("Not found", f"No machine is drawn at {path}.", "")
+    return HTTPStatus.OK, machine_page(machine, drawn(machine_dot(machine)))
