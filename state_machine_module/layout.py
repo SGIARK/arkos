@@ -279,6 +279,21 @@ def frame_boxes(machine: Machine, boxes: dict[str, Box]) -> dict[str, Box]:
     return found
 
 
+def leg(move: Move, frame: str, boxes: dict[str, Box], row_of: dict[str, int], order: list[tuple[str, ...]]) -> Leg:
+    """How an arrow runs: down or up between rows, across its row, or round the rows it would cross."""
+    source = f"[{frame}]" if frame else move.source
+    if frame:
+        down = boxes[move.target].y > boxes[source].bottom
+    else:
+        rise = row_of[move.target] - row_of[move.source]
+        if rise == 0:
+            return across(move, boxes, order[row_of[move.source]])
+        if abs(rise) > 1:
+            return around(move, boxes, row_of, order)
+        down = rise > 0
+    return Leg(move, frame, source, "bottom" if down else "top", move.target, "top" if down else "bottom")
+
+
 def across(move: Move, boxes: dict[str, Box], row: tuple[str, ...]) -> Leg:
     """An arrow within a row: straight across to a neighbour, or arched over or under the states between."""
     rightward = boxes[move.target].x > boxes[move.source].x
