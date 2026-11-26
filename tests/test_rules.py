@@ -15,3 +15,7 @@ def test_broken_finds_nothing_in_a_new_session() -> None:
 def test_one_question_while_waiting_flags_an_ended_session_with_a_question() -> None:
     world = World(status="cancelled", questions=(Question(kind="ask"),))
     assert "one_question_while_waiting" in broken_names(world)
+
+
+def test_one_question_while_waiting_flags_a_wait_with_no_question() -> None:
+    assert "one_question_while_waiting" in broken_names(World(status="awaiting_approval"))
