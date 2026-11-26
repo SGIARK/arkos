@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from state_machine_module.layout import (
     Box,
+    Curve,
 )
 
 
@@ -23,3 +24,9 @@ def rect(box: Box, corner: float) -> str:
         f'<rect x="{number(box.x)}" y="{number(box.y)}" width="{number(box.width)}"'
         f' height="{number(box.height)}" rx="{corner}"/>'
     )
+
+
+def path_data(curve: Curve) -> str:
+    """A cubic curve as SVG path data."""
+    (x0, y0), (x1, y1), (x2, y2), (x3, y3) = curve
+    return f"M{number(x0)},{number(y0)} C{number(x1)},{number(y1)} {number(x2)},{number(y2)} {number(x3)},{number(y3)}"
