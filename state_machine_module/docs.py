@@ -98,3 +98,15 @@ def continues(lines: list[str], index: int) -> bool:
         if line.strip():
             return bool(ITEM.match(line)) or indent_of(line) > 0
     return False
+
+
+def belongs(lines: list[str], index: int, fenced: bool) -> bool:
+    """Whether line `index` belongs to the list item above it: it lies in a code block the item
+    opened, is indented under the item, is a blank line the list goes on past, or carries the item's
+    text on with no blank line between."""
+    line = lines[index]
+    if fenced or (line.strip() and indent_of(line) > 0):
+        return True
+    if not line.strip():
+        return continues(lines, index)
+    return bool(lines[index - 1].strip()) and not starts_block(line)
