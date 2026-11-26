@@ -23,9 +23,16 @@ from state_machine_module.machines import Machine, Move
 
 Point = tuple[float, float]
 Curve = tuple[Point, Point, Point, Point]
+
+STATE_FONT = 13
 CHAR_WIDTH = 0.6  # of the font size: a generous average for a sans-serif face
 STATE_HEIGHT = 34
+STATE_PAD = 16  # either side of a state's name
+MIN_STATE_WIDTH = 64
+LABELLED_MIN_STATE_WIDTH = 110  # wide enough for the arrows meeting a state to fan out
 LABEL_CHARS = 26  # characters on each line of a label
+COLUMN_GAP = 40
+LABELLED_COLUMN_GAP = 190  # room between neighbours for the labels of the arrows that join them
 ROW_GAP = 44
 LABELLED_ROW_GAP = 160
 FRAME_PAD = 14
@@ -245,3 +252,18 @@ def row_tops(order: list[tuple[str, ...]], framed: dict[str, tuple[str, ...]], l
         parted = frame_of.get(above[0]) != frame_of.get(row[0])
         tops.append(tops[-1] + STATE_HEIGHT + gap + (2 * FRAME_PAD + FRAME_TITLE if parted else 0))
     return tops
+
+
+def place(order: list[tuple[str, ...]], tops: list[float], labelled: bool) -> dict[str, Box]:
+    """A box for every state, sized to its name, each row centred under the widest."""
+    gap = LABELLED_COLUMN_GAP if labelled else COLUMN_GAP
+    least = LABELLED_MIN_STATE_WIDTH if labelled else MIN_STATE_WIDTH
+    width = {state: max(text_width(state, STATE_FONT) + 2 * STATE_PAD, least) for row in order for state in row}
+    spans = [sum(width[state] for state in row) + gap * (len(row) - 1) for row in order]
+    boxes = {}
+    for row, top, span in zip(order, tops, spans, strict=True):
+        x = (max(spans) - span) / 2
+        for state in row:
+            boxes[state] = Box(x, top, width[state], STATE_HEIGHT)
+            x += width[state] + gap
+    return boxes
