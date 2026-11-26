@@ -16,11 +16,12 @@ import html
 import subprocess
 import textwrap
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 from state_machine_module.machines import MACHINES, Machine, Move
 
+HOST = "127.0.0.1"
 LABEL_WIDTH = 26  # characters on each line of a move's label
 DOT_TIMEOUT_S = 10
 
@@ -286,3 +287,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: object) -> None:
         """A line per request would bury the address the server printed."""
+
+
+def serve(port: int) -> ThreadingHTTPServer:
+    """A server for the pages, reachable from this computer only. Port 0 picks a free one."""
+    return ThreadingHTTPServer((HOST, port), Handler)
