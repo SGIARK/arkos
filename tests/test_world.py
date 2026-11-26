@@ -72,3 +72,7 @@ def test_step_cancel_while_waiting_leaves_the_question_open() -> None:
     world = play(NEW_SESSION, START, calls("ask"), CANCEL)
     assert world.status == "cancelled"
     assert len(world.questions) == 1
+
+
+def test_step_restart_fails_a_running_session() -> None:
+    assert play(NEW_SESSION, START, RESTART).status == "failed"
