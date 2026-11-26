@@ -38,6 +38,7 @@ LABELLED_ROW_GAP = 160
 FRAME_PAD = 14
 FRAME_TITLE = 16  # room for a frame's name above its states
 SIDE_GAP = 36  # how far an arrow bending round other rows clears them
+FRAME_PORT_INSET = 24  # how near a frame's corner an arrow may leave it
 SPREAD_WEIGHT = 2.0  # cost of each state between two states an arrow joins within a row
 CROSSING_WEIGHT = 3.0  # cost of two arrows crossing between rows
 ORDER_LIMIT = 40_000  # orderings few enough to try them all; a bigger machine keeps its declared order
@@ -325,3 +326,12 @@ def on_side(box: Box, side: str, share: float) -> Point:
     if side == "left":
         return (box.x, box.y + box.height * share)
     return (box.right, box.y + box.height * share)
+
+
+def pin(box: Box, side: str, share: float, other: Box, framed: bool) -> Point:
+    """Where an arrow meets `box`: `share` of the way along the side, or for a frame, level with `other`."""
+    if framed and side in ("top", "bottom"):
+        inset = min(FRAME_PORT_INSET, box.width / 2)
+        x = min(max(other.middle[0], box.x + inset), box.right - inset)
+        return (x, box.y if side == "top" else box.bottom)
+    return on_side(box, side, share)
