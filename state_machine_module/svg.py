@@ -30,6 +30,11 @@ BASELINE = 0.75  # of a line's height: where its text sits on it
 STATE_BASELINE = 0.35  # of the state font, below a box's middle, to centre its name
 FRAME_NAME_DROP = 13  # from a frame's top edge to the baseline of its name
 
+MARKER = (
+    '<defs><marker id="arrowhead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7"'
+    ' orient="auto"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker></defs>'
+)
+
 
 def number(value: float) -> str:
     """A coordinate, to a tenth of a pixel."""
@@ -114,3 +119,12 @@ def machine_svg(drawing: Layout, link: str = "") -> str:
         for name, box in drawing.states.items()
     ]
     return "".join(parts)
+
+
+def document(body: str, bounds: Box, title: str) -> str:
+    """A whole <svg> element the size of `bounds`, holding the arrowhead every arrow uses."""
+    view = " ".join(number(value) for value in (bounds.x, bounds.y, bounds.width, bounds.height))
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view}" width="{number(bounds.width)}"'
+        f' height="{number(bounds.height)}" aria-label="{html.escape(title)}">{MARKER}{body}</svg>'
+    )
