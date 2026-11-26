@@ -258,3 +258,17 @@ def take_box(world: World) -> World:
     world = box_to(world, "live")
     lease = world.lease or world.has_folder
     return replace(world, slot=True, lease=lease, lease_orphaned=False, turn=replace(turn, materialized=True))
+
+
+def act(world: World, tool: Tool, approval: str) -> World:
+    """A tool that changes something runs. `approval` is "person", "auto", or "" for none."""
+    turn = turn_of(world)
+    if tool.needs_box:
+        world = take_box(world)
+    return replace(
+        world,
+        unflushed=world.unflushed or (tool.needs_box and world.has_folder),
+        gated_ran_unapproved=world.gated_ran_unapproved or (tool.gated and not approval),
+        destructive_ran_unapproved=world.destructive_ran_unapproved or (tool.destructive and approval != "person"),
+        acted_after_question=world.acted_after_question or bool(turn.park),
+    )
