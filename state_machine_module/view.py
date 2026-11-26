@@ -150,15 +150,15 @@ def docs_list(docs: list[tuple[str, str]]) -> str:
     return f"<ul>{items}</ul>"
 
 
-def overview_page(svg: str) -> str:
-    """The first page: every machine in one drawing, then a line on what each one tracks."""
+def overview_page(svg: str, docs: list[tuple[str, str]]) -> str:
+    """The first page: every machine in one drawing, a line on what each one tracks, then the docs."""
     machines = "".join(
         f'<li><a href="{page_path(machine)}">{html.escape(machine.name)}</a>: {html.escape(machine.about)}</li>'
         for machine in MACHINES
     )
     caption = "Click a state or a machine's name to open it. Hover over an arrow to see what triggers it."
     body = heading("arkos", OVERVIEW_ABOUT) + figure(svg, caption) + f"<ul>{machines}</ul>"
-    return page("arkos", "arkos", body)
+    return page("arkos", "arkos", body + f'<h2 id="docs">Docs</h2>{docs_list(docs)}')
 
 
 def docs_page(docs: list[tuple[str, str]]) -> str:
@@ -220,7 +220,15 @@ def route(path: str) -> tuple[HTTPStatus, str]:
     path = unquote(urlsplit(path).path)
     if path == "/":
         drawings = [layout(machine, labelled=False) for machine in MACHINES]
-        return HTTPStatus.OK, overview_page(overview_svg(drawings, [page_path(machine) for machine in MACHINES]))
+        svg = overview_svg(drawings, [page_path(machine) for machine in MACHINES])
+        return HTTPStatus.OK, overview_page(svg, titled_docs())
+    if path in (DOCS, f"{DOCS}/"):
+        return HTTPStatus.OK, docs_page(titled_docs())
+    if path.startswith(f"{DOCS}/"):
+        doc, docs = path.removeprefix(f"{DOCS}/"), set(tracked_docs())
+        if doc not in docs:
+            return not_found(path)
+        return HTTPStatus.OK, doc_page(doc, (ROOT / doc).read_text(encoding="utf-8"), docs)
     machine = BY_NAME.get(path.removeprefix("/"))
     if machine is None:
         return not_found(path)
