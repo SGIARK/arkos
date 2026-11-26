@@ -1,12 +1,22 @@
 """Layouts keep states, frames and labels clear of each other, and every arrow meets its states."""
 
-from state_machine_module.layout import drawn_moves, point_on
-from state_machine_module.machines import SESSION
+from state_machine_module.layout import drawn_moves, frames, point_on
+from state_machine_module.machines import MACHINES, SESSION, Move
 
 
 def test_drawn_moves_draw_a_move_its_whole_frame_shares_once() -> None:
     cancels = [move for move, _ in drawn_moves(SESSION) if move.trigger == "Cancel"]
     assert len(cancels) == 1
+
+
+def test_drawn_moves_cover_every_declared_move() -> None:
+    for machine in MACHINES:
+        framed = frames(machine)
+        covered = set()
+        for move, frame in drawn_moves(machine):
+            sources = framed[frame] if frame else (move.source,)
+            covered |= {Move(source, move.target, move.trigger) for source in sources}
+        assert covered == set(machine.moves), machine.name
 
 
 def test_point_on_runs_from_a_curve_start_to_its_end() -> None:
