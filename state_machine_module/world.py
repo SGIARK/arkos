@@ -317,3 +317,13 @@ def model_fails(world: World) -> World:
         return finish(world, "model_error")
     turn = replace(turn, reattempts=turn.reattempts + 1, reattempt_pending=True)
     return next_hop(replace(world, turn=turn))
+
+
+def call_gated(world: World, tool: Tool) -> World:
+    """_Sink._approve: autopilot answers safe calls, a waiting question refuses, else the call parks."""
+    turn = turn_of(world)
+    if world.mode == "unattended" and not tool.destructive:
+        return act(world, tool, approval="auto")
+    if turn.park:
+        return world
+    return replace(world, turn=replace(turn, park=tool.name, park_gated=True))
