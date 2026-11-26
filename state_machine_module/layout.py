@@ -86,3 +86,17 @@ class Entry:
     dot: Point
     curve: Curve
     label: Label | None
+
+
+@dataclass(frozen=True, slots=True)
+class Leg:
+    """An arrow before its ends are pinned: the box and side it leaves, the box and side it enters,
+    and for an arrow bent round other rows, the line it runs along."""
+
+    move: Move
+    frame: str
+    source: str  # a state, or a frame written [name]
+    leaves: str  # top, bottom, left or right
+    target: str
+    enters: str
+    bend: float | None = None
