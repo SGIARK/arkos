@@ -62,6 +62,12 @@ def test_route_draws_a_page_for_every_machine() -> None:
         assert status == HTTPStatus.OK and "<svg" in page, machine.name
 
 
+def test_route_renders_the_readme() -> None:
+    status, page = route("/docs/README.md")
+    assert status == HTTPStatus.OK
+    assert '<h1 id="arkos-core">arkos-core</h1>' in page
+
+
 def test_serve_answers_a_browser() -> None:
     server = serve(0)
     threading.Thread(target=server.serve_forever, daemon=True).start()
