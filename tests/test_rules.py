@@ -1,8 +1,12 @@
 """Each rule flags the world it describes, and passes a world that keeps it."""
 
 from state_machine_module.rules import broken
-from state_machine_module.world import World
+from state_machine_module.world import NEW_SESSION, World
 
 
 def broken_names(world: World) -> set[str]:
     return {rule.name for rule in broken(world)}
+
+
+def test_broken_finds_nothing_in_a_new_session() -> None:
+    assert broken(NEW_SESSION) == []
