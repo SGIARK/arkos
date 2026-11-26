@@ -51,3 +51,8 @@ def title_of(text: str, fallback: str) -> str:
         if match:
             return match.group(2).replace("`", "")
     return fallback
+
+
+def slug(text: str) -> str:
+    """The anchor GitHub gives a heading: lower case, punctuation dropped, spaces turned to hyphens."""
+    return re.sub(r"[^\w\- ]", "", text.lower()).strip().replace(" ", "-")
