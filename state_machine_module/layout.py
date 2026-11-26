@@ -55,3 +55,11 @@ class Box:
     def holds(self, point: Point) -> bool:
         """Whether `point` lies in this box or on its edge."""
         return self.x <= point[0] <= self.right and self.y <= point[1] <= self.bottom
+
+
+@dataclass(frozen=True, slots=True)
+class Label:
+    """A trigger broken into lines, and the box they are written in."""
+
+    lines: tuple[str, ...]
+    box: Box
