@@ -84,3 +84,8 @@ def cells(line: str) -> list[str]:
     """A table row split into cells, its outer pipes dropped; an escaped pipe stays in its cell."""
     row = line.strip().removeprefix("|").removesuffix("|")
     return [cell.strip().replace("\\|", "|") for cell in re.split(r"(?<!\\)\|", row)]
+
+
+def indent_of(line: str) -> int:
+    """How many spaces start `line`."""
+    return len(line) - len(line.lstrip(" "))
