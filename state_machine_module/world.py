@@ -283,3 +283,10 @@ def settle_approved_call(world: World) -> World:
         return replace(world, grant=replace(grant, call_open=False))
     world = replace(world, grant=replace(grant, consumed=True, call_open=False))
     return act(world, TOOL[grant.tool], approval="person")
+
+
+def drive(world: World) -> World:
+    """runner._drive: settle a parked call, close dangling ones, fold the log, take a hop."""
+    world = close_dangling(settle_approved_call(replace(world, turn=Turn())))
+    turn = replace(turn_of(world), hops=world.hops_since_done)
+    return next_hop(replace(world, turn=turn))
