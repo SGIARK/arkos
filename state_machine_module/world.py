@@ -394,3 +394,17 @@ def answer_plan(world: World, index: int, verb: str) -> World:
     if verb == "decline":
         return move(world, "idle", "plan_declined") if world.status == WAITING else world
     return start(world, "plan_reply")
+
+
+def respond(world: World, index: int, verb: str) -> World:
+    """POST /approvals/{id}/respond, for the open row at `index`."""
+    row = world.questions[index]
+    if row.kind == "plan":
+        return answer_plan(world, index, verb)
+    world = without(world, index)
+    if row.kind == "call":
+        grant = Grant(tool=row.tool, approved=verb == "approve", call_open=row.call_open)
+        return start(replace(world, grant=grant), "answered")
+    if row.is_goal and verb == "dismiss":
+        return dismiss_goal(world)
+    return start(world, "plan_requested" if row.is_goal else "answered")
