@@ -1,6 +1,14 @@
 """The world model behaves the way arkos does, one event at a time."""
 
-from state_machine_module.world import HOME_CHAT, NEW_SESSION, Event, World, events, step
+from state_machine_module.world import (
+    HOME_CHAT,
+    NEW_SESSION,
+    Event,
+    World,
+    events,
+    lease_state,
+    step,
+)
 
 START = Event("arkos", "starts the session")
 TEXT = Event("model", "replies with text")
@@ -76,6 +84,10 @@ def test_step_cancel_while_waiting_leaves_the_question_open() -> None:
 
 def test_step_restart_fails_a_running_session() -> None:
     assert play(NEW_SESSION, START, RESTART).status == "failed"
+
+
+def test_step_a_restart_mid_turn_orphans_the_lease() -> None:
+    assert lease_state(play(NEW_SESSION, START, calls("run_command"), RESTART)) == "orphaned"
 
 
 def test_events_offer_the_model_nothing_outside_a_turn() -> None:
