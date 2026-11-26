@@ -84,3 +84,13 @@ def test_layout_keeps_labels_off_states_and_each_other(machine: Machine) -> None
         assert not any(label.overlaps(state) for state in drawing.states.values())
     for first, second in itertools.combinations(placed, 2):
         assert not first.overlaps(second)
+
+
+@pytest.mark.parametrize(("machine", "labelled"), CASES, ids=IDS)
+def test_layout_bounds_hold_everything_drawn(machine: Machine, labelled: bool) -> None:
+    drawing = layout(machine, labelled)
+    bounds = drawing.bounds
+    for box in (*drawing.states.values(), *drawing.frames.values(), *labels(drawing)):
+        assert bounds.holds((box.x, box.y)) and bounds.holds((box.right, box.bottom))
+    for entry in drawing.entries:
+        assert bounds.holds(entry.dot)
