@@ -1,6 +1,8 @@
 """The pages draw every declared machine, and every box links to the right page."""
 
 import shutil
+import threading
+import urllib.request
 from http import HTTPStatus
 
 import pytest
@@ -15,9 +17,11 @@ from state_machine_module.view import (
     overview_dot,
     quoted,
     route,
+    serve,
 )
 
 needs_dot = pytest.mark.skipif(shutil.which("dot") is None, reason="Graphviz's dot is not installed")
+TIMEOUT_S = 10
 
 
 def test_quoted_escapes_quotes_and_keeps_line_breaks() -> None:
@@ -76,3 +80,16 @@ def test_route_draws_a_page_for_every_machine() -> None:
     for machine in MACHINES:
         status, page = route(f"/{machine.name}?from=a-link")
         assert status == HTTPStatus.OK and "<svg" in page, machine.name
+
+
+@needs_dot
+def test_serve_answers_a_browser() -> None:
+    server = serve(0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/lease", timeout=TIMEOUT_S) as response:
+            assert response.status == HTTPStatus.OK
+            assert "orphaned" in response.read().decode()
+    finally:
+        server.shutdown()
+        server.server_close()
