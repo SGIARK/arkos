@@ -134,3 +134,12 @@ def enclosing(boxes: Iterable[Box]) -> Box:
     left, top = min(box.x for box in every), min(box.y for box in every)
     right, bottom = max(box.right for box in every), max(box.bottom for box in every)
     return Box(left, top, right - left, bottom - top)
+
+
+def point_on(curve: Curve, share: float) -> Point:
+    """The point `share` of the way along a cubic curve: 0 at its start, 1 at its end."""
+    rest = 1 - share
+    weights = (rest**3, 3 * rest * rest * share, 3 * rest * share * share, share**3)
+    x = sum(weight * point[0] for weight, point in zip(weights, curve, strict=True))
+    y = sum(weight * point[1] for weight, point in zip(weights, curve, strict=True))
+    return (x, y)
