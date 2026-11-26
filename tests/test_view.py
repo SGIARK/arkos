@@ -1,9 +1,10 @@
 """The pages draw every declared machine, and every box links to the right page."""
 
-from state_machine_module.machines import MACHINES, SESSION, Move
+from state_machine_module.machines import LEASE, MACHINES, SESSION, Move
 from state_machine_module.view import (
     drawn_moves,
     frames,
+    legend,
     machine_dot,
     overview_dot,
     quoted,
@@ -37,3 +38,8 @@ def test_overview_dot_links_every_state_and_frame_to_its_page() -> None:
     source = overview_dot()
     for machine in MACHINES:
         assert source.count(f'href="/{machine.name}"') == len(machine.states) + 1, machine.name
+
+
+def test_legend_leaves_out_what_a_drawing_does_not_use() -> None:
+    assert "frame" in legend(SESSION)
+    assert "frame" not in legend(LEASE) and "double border" not in legend(LEASE)
