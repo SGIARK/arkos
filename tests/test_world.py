@@ -26,3 +26,9 @@ def test_step_a_park_tool_parks_at_the_hop_boundary() -> None:
     world = play(NEW_SESSION, START, calls("ask"))
     assert world.status == "awaiting_approval"
     assert [question.kind for question in world.questions] == ["ask"]
+
+
+def test_step_an_approved_call_runs_once_during_setup() -> None:
+    world = play(NEW_SESSION, START, calls("mcp_send_email"), answer("approve"))
+    assert world.status == "running"
+    assert world.grant is not None and world.grant.consumed and not world.grant.call_open
