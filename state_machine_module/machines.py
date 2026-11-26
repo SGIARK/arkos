@@ -37,3 +37,32 @@ def allows(machine: Machine, source: str, target: str) -> bool:
 def pairs(machine: Machine) -> frozenset[tuple[str, str]]:
     """Every (source, target) pair a move connects, triggers set aside."""
     return frozenset((move.source, move.target) for move in machine.moves)
+
+
+SESSION = Machine(
+    name="session",
+    states=("pending", "idle", "running", "awaiting_approval", "completed", "failed", "cancelled"),
+    final=("completed", "failed", "cancelled"),
+    moves=(
+        Move("pending", "running", "runner.start claims the new session"),
+        Move("pending", "cancelled", "Cancel"),
+        Move("pending", "awaiting_approval", "Autopilot asks for the goal"),
+        Move("idle", "running", "a message, or Resume"),
+        Move("idle", "cancelled", "Cancel"),
+        Move("idle", "awaiting_approval", "Autopilot asks for the goal"),
+        Move("running", "idle", "the turn ends, or Stop"),
+        Move("running", "awaiting_approval", "the turn parks on a question"),
+        Move("running", "completed", "finish_task ends an unattended run"),
+        Move("running", "failed", "a budget, model or harness failure, or a restart"),
+        Move("running", "cancelled", "Cancel"),
+        Move("awaiting_approval", "running", "an answer wakes the session"),
+        Move("awaiting_approval", "idle", "the plan is declined, or the goal question dismissed"),
+        Move("awaiting_approval", "cancelled", "Cancel"),
+        Move("completed", "running", "a message restarts it"),
+        Move("failed", "running", "a message restarts it"),
+        Move("cancelled", "running", "a message restarts it"),
+        Move("completed", "awaiting_approval", "Autopilot asks for the goal"),
+        Move("failed", "awaiting_approval", "Autopilot asks for the goal"),
+        Move("cancelled", "awaiting_approval", "Autopilot asks for the goal"),
+    ),
+)
