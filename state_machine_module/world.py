@@ -514,3 +514,12 @@ HANDLERS: dict[str, Callable[[World], World]] = {
     "expires the lease": leases_expire,
     "restarts": restart,
 }
+
+
+def step(world: World, event: Event) -> World:
+    """The world after arkos handles `event`."""
+    if event.action == "calls":
+        return model_calls(world, event.tools)
+    if event.row is not None:
+        return respond(world, event.row, event.verb)
+    return HANDLERS[event.action](world)
