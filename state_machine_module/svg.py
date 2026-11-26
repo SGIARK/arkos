@@ -12,13 +12,17 @@ import html
 from state_machine_module.layout import (
     LABEL_PAD,
     LINE_HEIGHT,
+    STATE_FONT,
     Box,
     Curve,
     Label,
 )
 
+CORNER = 9
 LABEL_CORNER = 4
+FINAL_INSET = 4  # the gap between a final state's two borders
 BASELINE = 0.75  # of a line's height: where its text sits on it
+STATE_BASELINE = 0.35  # of the state font, below a box's middle, to centre its name
 
 
 def number(value: float) -> str:
@@ -49,3 +53,15 @@ def label_svg(label: Label) -> str:
         for row, line in enumerate(label.lines)
     )
     return f'<g class="label">{rect(box, LABEL_CORNER)}<text>{lines}</text></g>'
+
+
+def state_svg(name: str, box: Box, final: bool, link: str, hint: str) -> str:
+    """A state: a rounded box with its name, a second border if the machine can end there, and a link
+    if one is given. `hint` shows on hover."""
+    inner = rect(box.grown(-FINAL_INSET), CORNER - FINAL_INSET) if final else ""
+    x, y = box.middle
+    body = (
+        f'<g class="state"><title>{html.escape(hint)}</title>{rect(box, CORNER)}{inner}'
+        f'<text x="{number(x)}" y="{number(y + STATE_FONT * STATE_BASELINE)}">{html.escape(name)}</text></g>'
+    )
+    return f'<a href="{html.escape(link)}">{body}</a>' if link else body
