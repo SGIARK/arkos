@@ -44,3 +44,11 @@ def start_lines(machine: Machine, prefix: str, labelled: bool) -> list[str]:
         lines.append(f"{dot} [{START_STYLE}, tooltip={quoted(start.trigger)}];")
         lines.append(f"{dot} -> {quoted(prefix + start.state)} [{label}];")
     return lines
+
+
+def frames(machine: Machine) -> dict[str, tuple[str, ...]]:
+    """The states drawn framed together: those the machine ends in, and the rest, if two or more each."""
+    if not machine.final:
+        return {}
+    live = tuple(state for state in machine.states if state not in machine.final)
+    return {name: states for name, states in (("live", live), ("ended", machine.final)) if len(states) > 1}
