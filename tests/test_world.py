@@ -1,6 +1,6 @@
 """The world model behaves the way arkos does, one event at a time."""
 
-from state_machine_module.world import NEW_SESSION, Event, World, step
+from state_machine_module.world import HOME_CHAT, NEW_SESSION, Event, World, step
 
 START = Event("arkos", "starts the session")
 TEXT = Event("model", "replies with text")
@@ -42,3 +42,8 @@ def test_step_a_declined_call_never_runs() -> None:
 def test_step_an_approved_plan_starts_an_unattended_run() -> None:
     world = play(NEW_SESSION, START, calls("propose_plan"), answer("approve"))
     assert (world.status, world.mode) == ("running", "unattended")
+
+
+def test_step_the_home_chat_cannot_approve_a_plan() -> None:
+    world = play(HOME_CHAT, Event("you", "send a message"), calls("propose_plan"))
+    assert play(world, answer("approve")) == world
