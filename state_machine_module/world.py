@@ -73,3 +73,19 @@ class Grant:
     approved: bool
     consumed: bool = False
     call_open: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class Turn:
+    """The turn in flight. Between events it rests while the model writes its current hop."""
+
+    hops: int = 0
+    repair_available: bool = True
+    repair_pending: bool = False
+    reattempts: int = 0
+    reattempt_pending: bool = False
+    stall: int = 0
+    finished: bool = False
+    park: str = ""  # the tool this turn parks on at its next hop boundary
+    park_gated: bool = False  # that tool's own call is still open, held by the gate
+    materialized: bool = False
