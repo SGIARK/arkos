@@ -26,6 +26,11 @@ def test_doc_link_leads_a_relative_link_to_the_doc_it_names() -> None:
     assert link == "/docs/README.md#running-it"
 
 
+def test_doc_link_keeps_web_addresses_and_headings() -> None:
+    assert doc_link("README.md", "https://example.com/a", DOCS) == "https://example.com/a"
+    assert doc_link("README.md", "#tests-and-ci", DOCS) == "#tests-and-ci"
+
+
 def test_route_an_unknown_path_is_not_found() -> None:
     assert route("/no-such-machine")[0] == HTTPStatus.NOT_FOUND
 
