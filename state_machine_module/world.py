@@ -426,3 +426,14 @@ def cancel(world: World) -> World:
         return finish(world, "cancelled")
     world = replace(close_dangling(world), hops_since_done=0)
     return move(world, "cancelled", "cancelled", "attended" if world.mode == "unattended" else "")
+
+
+def restart(world: World) -> World:
+    """The process dies and comes back: sweep_interrupted, then sweep_slots."""
+    if world.status == "running":
+        world = replace(close_dangling(world), turn=None, hops_since_done=0, lease_orphaned=world.lease)
+        world = move(world, "failed", "interrupted")
+    if world.slot and world.status in FINAL:
+        lost = world.lost_edits or world.unflushed
+        world = replace(box_to(world, "none"), slot=False, unflushed=False, lost_edits=lost)
+    return world
