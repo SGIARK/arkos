@@ -13,6 +13,7 @@ measured. Nothing here draws: `svg.py` turns a Layout into markup.
 from __future__ import annotations
 
 import textwrap
+from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -173,3 +174,22 @@ def drawn_moves(machine: Machine) -> list[tuple[Move, str]]:
             arrows.append((move, name))
             covered |= {Move(state, move.target, move.trigger) for state in states}
     return arrows + [(move, "") for move in machine.moves if move not in covered]
+
+
+def rows(machine: Machine) -> list[list[str]]:
+    """The states by row: where the machine starts, each live state one row below its nearest
+    predecessor, live states nothing reaches after those, and last the states it ends in."""
+    live = [state for state in machine.states if state not in machine.final]
+    depth = {start.state: 0 for start in machine.starts if start.state in live}
+    queue = deque(depth)
+    while queue:
+        state = queue.popleft()
+        for move in machine.moves:
+            if move.source == state and move.target in live and move.target not in depth:
+                depth[move.target] = depth[state] + 1
+                queue.append(move.target)
+    levels = [
+        [state for state in live if depth.get(state) == level] for level in range(max(depth.values(), default=-1) + 1)
+    ]
+    unreached = [state for state in live if state not in depth]
+    return [row for row in (*levels, unreached, list(machine.final)) if row]
