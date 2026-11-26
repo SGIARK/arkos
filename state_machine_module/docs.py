@@ -13,6 +13,7 @@ from __future__ import annotations
 import html
 import re
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -25,6 +26,8 @@ RULE = re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$")
 ITEM = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+(.*)$")
 QUOTE = re.compile(r"^\s*>\s?(.*)$")
 COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+
+Linker = Callable[[str], str | None]
 
 
 def tracked_docs(root: Path = ROOT) -> list[str]:
@@ -129,3 +132,9 @@ def list_items(lines: list[str], index: int) -> tuple[list[tuple[int, str, list[
             break
         end += 1
     return items, end
+
+
+def anchor(text: str, target: str, link: Linker) -> str:
+    """A link, if `link` resolves its target; just the text if not, so no doc can link to anything unsafe."""
+    href = link(html.unescape(target))
+    return f'<a href="{html.escape(href)}">{text}</a>' if href else text
