@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from state_machine_module.machines import Move
+from state_machine_module.machines import Machine, Move
 
 Point = tuple[float, float]
 Curve = tuple[Point, Point, Point, Point]
@@ -100,3 +100,15 @@ class Leg:
     target: str
     enters: str
     bend: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Layout:
+    """A machine measured for drawing: its states, frames, entries and arrows, and the box round them all."""
+
+    machine: Machine
+    states: dict[str, Box]
+    frames: dict[str, Box]
+    entries: tuple[Entry, ...]
+    arrows: tuple[Arrow, ...]
+    bounds: Box
