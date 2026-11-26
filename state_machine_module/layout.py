@@ -40,6 +40,8 @@ ROW_GAP = 44
 LABELLED_ROW_GAP = 160
 FRAME_PAD = 14
 FRAME_TITLE = 16  # room for a frame's name above its states
+START_RISE = 30  # how far above its state, or the frame round it, a start dot sits
+DOT_RADIUS = 5
 SIDE_GAP = 36  # how far an arrow bending round other rows clears them
 ARC_RISE = 40  # how far an arrow over or under its row bulges from it
 FRAME_PORT_INSET = 24  # how near a frame's corner an arrow may leave it
@@ -421,3 +423,26 @@ def label_spots(drawn: Leg, curve: Curve, lines: tuple[str, ...]) -> list[Point]
         x, y = point_on(curve, share)
         spots += [(x, y), (x + half_width, y), (x - half_width, y)]
     return spots
+
+
+def entries_for(
+    machine: Machine, framed: dict[str, Box], pinned: dict[tuple[int, str], Point], labelled: bool, taken: list[Box]
+) -> tuple[Entry, ...]:
+    """A dot above each state the machine starts in, clear of any frame round it, with an arrow down
+    into the state and, when labelled, what starts the machine there beside the dot."""
+    frame_of = {state: name for name, states in frames(machine).items() for state in states}
+    entries = []
+    for number, start in enumerate(machine.starts):
+        x, y = pinned[(-1 - number, "to")]
+        top = framed[frame_of[start.state]].y if start.state in frame_of else y
+        dot = (x, top - START_RISE)
+        curve = ((x, dot[1] + DOT_RADIUS), (x, dot[1] + DOT_RADIUS), (x, y), (x, y))
+        label = None
+        if labelled:
+            lines = wrapped(start.trigger)
+            reach = DOT_RADIUS + LABEL_CLEARANCE + label_box(lines, dot).width / 2
+            label = free_spot(lines, [(x + reach, dot[1]), (x - reach, dot[1])], taken, [])
+            taken.append(label.box)
+        taken.append(Box(x - DOT_RADIUS, dot[1] - DOT_RADIUS, 2 * DOT_RADIUS, 2 * DOT_RADIUS))
+        entries.append(Entry(start.trigger, dot, curve, label))
+    return tuple(entries)
