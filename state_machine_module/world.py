@@ -147,3 +147,12 @@ def describe(event: Event) -> str:
 def max_hops(mode: str) -> int:
     """The turn budget for a session mode."""
     return UNATTENDED_MAX_HOPS if mode == "unattended" else ATTENDED_MAX_HOPS
+
+
+def status_for(reason: str) -> str:
+    """lifecycle.status_for: where done{reason} moves a running session."""
+    if reason in ("turn_end", "stopped"):
+        return "idle"
+    if reason in ("completed", "cancelled"):
+        return reason
+    return "failed"
