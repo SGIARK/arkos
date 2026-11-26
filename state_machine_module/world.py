@@ -405,11 +405,6 @@ def send_message(world: World) -> World:
     return start(close_dangling(world), "woken")
 
 
-def without(world: World, index: int) -> World:
-    """The world with the row at `index` answered, so no longer open."""
-    return replace(world, questions=world.questions[:index] + world.questions[index + 1 :])
-
-
 def dismiss_goal(world: World) -> World:
     """Dismissing the goal question: back to idle, if the session is still waiting on it."""
     return move(world, "idle", "goal_cancelled") if world.status == WAITING else world
