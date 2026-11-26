@@ -76,3 +76,13 @@ class Arrow:
     frame: str
     curve: Curve
     label: Label | None
+
+
+@dataclass(frozen=True, slots=True)
+class Entry:
+    """Where a machine begins: a dot, its arrow into the state, and what puts the machine there."""
+
+    trigger: str
+    dot: Point
+    curve: Curve
+    label: Label | None
