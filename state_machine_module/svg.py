@@ -19,6 +19,7 @@ from state_machine_module.layout import (
     Curve,
     Entry,
     Label,
+    Layout,
 )
 
 CORNER = 9
@@ -97,3 +98,19 @@ def entry_svg(entry: Entry) -> str:
         f'<circle cx="{number(x)}" cy="{number(y)}" r="{DOT_RADIUS}"/>'
         f'<path class="line" d="{path_data(entry.curve)}" marker-end="url(#arrowhead)"/></g>'
     )
+
+
+def machine_svg(drawing: Layout, link: str = "") -> str:
+    """Every part of one machine, frames first and states last, so each draws over what it should.
+    With `link`, every state is a link to it, and hovering over one says what the machine tracks."""
+    machine = drawing.machine
+    labels = [drawn.label for drawn in (*drawing.arrows, *drawing.entries) if drawn.label is not None]
+    parts = [frame_svg(name, box) for name, box in drawing.frames.items()]
+    parts += [arrow_svg(arrow) for arrow in drawing.arrows]
+    parts += [entry_svg(entry) for entry in drawing.entries]
+    parts += [label_svg(label) for label in labels]
+    parts += [
+        state_svg(name, box, name in machine.final, link, machine.about if link else name)
+        for name, box in drawing.states.items()
+    ]
+    return "".join(parts)
