@@ -18,6 +18,7 @@ from state_machine_module.machines import Machine, Move
 
 Point = tuple[float, float]
 Curve = tuple[Point, Point, Point, Point]
+CHAR_WIDTH = 0.6  # of the font size: a generous average for a sans-serif face
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,3 +113,8 @@ class Layout:
     entries: tuple[Entry, ...]
     arrows: tuple[Arrow, ...]
     bounds: Box
+
+
+def text_width(text: str, font: float) -> float:
+    """About how wide `text` sets in a sans-serif face `font` pixels high."""
+    return len(text) * font * CHAR_WIDTH
