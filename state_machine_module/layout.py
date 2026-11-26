@@ -38,6 +38,7 @@ LABELLED_ROW_GAP = 160
 FRAME_PAD = 14
 FRAME_TITLE = 16  # room for a frame's name above its states
 SIDE_GAP = 36  # how far an arrow bending round other rows clears them
+ARC_RISE = 40  # how far an arrow over or under its row bulges from it
 FRAME_PORT_INSET = 24  # how near a frame's corner an arrow may leave it
 SPREAD_WEIGHT = 2.0  # cost of each state between two states an arrow joins within a row
 CROSSING_WEIGHT = 3.0  # cost of two arrows crossing between rows
@@ -357,3 +358,19 @@ def pins(legs: list[Leg], boxes: dict[str, Box], starts: list[str]) -> dict[tupl
             share = slot / (len(attached) + 1)
             pinned[end] = pin(boxes[key], side, share, boxes[other], key.startswith("["))
     return pinned
+
+
+def curve_of(drawn: Leg, start: Point, end: Point) -> Curve:
+    """An arrow's curve: bent round other rows, straight across a row, arched over or under it, or an
+    S between rows."""
+    (x0, y0), (x3, y3) = start, end
+    if drawn.bend is not None:
+        return (start, (drawn.bend, y0), (drawn.bend, y3), end)
+    if drawn.leaves in ("left", "right"):
+        third = (x3 - x0) / 3
+        return (start, (x0 + third, y0), (x3 - third, y3), end)
+    if drawn.leaves == drawn.enters:
+        rise = -ARC_RISE if drawn.leaves == "top" else ARC_RISE
+        return (start, (x0, y0 + rise), (x3, y3 + rise), end)
+    half = (y3 - y0) / 2
+    return (start, (x0, y0 + half), (x3, y3 - half), end)
