@@ -210,3 +210,8 @@ def page(title: str, about: str, body: str) -> str:
 </body>
 </html>
 """
+
+
+def figure(svg: str, caption: str) -> str:
+    """A drawing with a line under it saying how to read it."""
+    return f"<figure>{svg}<figcaption>{html.escape(caption)}</figcaption></figure>"
