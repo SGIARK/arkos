@@ -96,6 +96,15 @@ def cells(line: str) -> list[str]:
     return [cell.strip().replace("\\|", "|") for cell in re.split(r"(?<!\\)\|", row)]
 
 
+def paragraph(lines: list[str], index: int, out: list[str], link: Linker) -> int:
+    """Lines up to a blank one, or to one that opens another block, as a single paragraph."""
+    end = index + 1
+    while end < len(lines) and lines[end].strip() and not starts_block(lines[end]):
+        end += 1
+    out.append(f"<p>{inline(' '.join(line.strip() for line in lines[index:end]), link)}</p>")
+    return end
+
+
 def indent_of(line: str) -> int:
     """How many spaces start `line`."""
     return len(line) - len(line.lstrip(" "))
