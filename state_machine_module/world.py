@@ -18,7 +18,7 @@ import itertools
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
-from state_machine_module.machines import MODE, SANDBOX, SESSION, allows, follows
+from state_machine_module.machines import LEASE, MODE, SANDBOX, SESSION, allows, follows
 
 ATTENDED_MAX_HOPS = 2  # budgets.attended.max_hops is 6
 UNATTENDED_MAX_HOPS = 3  # budgets.unattended.max_hops is 15
@@ -193,6 +193,20 @@ def lease_state(world: World) -> str:
     if world.lease_orphaned:
         return "orphaned"
     return "held" if world.lease else "free"
+
+
+def lease_to(world: World, target: str) -> World:
+    """Move the folder lease, noting a move its machine does not declare."""
+    source = lease_state(world)
+    if source == target:
+        return world
+    strayed = not allows(LEASE, source, target)
+    return replace(
+        world,
+        lease=target != "free",
+        lease_orphaned=target == "orphaned",
+        illegal_move=world.illegal_move or strayed,
+    )
 
 
 def has_open_call(world: World) -> bool:
