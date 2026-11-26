@@ -8,8 +8,20 @@ one. Run it with:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+from state_machine_module.rules import Rule
 from state_machine_module.world import Event, World
 
 DEFAULT_DEPTH = 6
 
 Parents = dict[World, tuple[World, Event] | None]
+
+
+@dataclass(frozen=True, slots=True)
+class Finding:
+    """A broken rule, and the shortest sequence of events that breaks it."""
+
+    rule: Rule
+    root: World
+    path: tuple[Event, ...]
