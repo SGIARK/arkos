@@ -35,6 +35,10 @@ def test_machines_use_only_their_own_states() -> None:
         assert named <= set(machine.states), (machine.name, named - set(machine.states))
 
 
+def test_machines_each_begin_somewhere() -> None:
+    assert all(machine.starts for machine in MACHINES)
+
+
 def test_package_imports_only_the_standard_library() -> None:
     """The checker has to run anywhere, without arkos's database or model dependencies."""
     for path in PACKAGE.glob("*.py"):
