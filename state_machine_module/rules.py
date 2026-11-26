@@ -31,3 +31,8 @@ def one_question_while_waiting(world: World) -> bool:
 def ended_runs_are_attended(world: World) -> bool:
     """An ended session holds no unattended run."""
     return world.status not in FINAL or world.mode == "attended"
+
+
+def leases_only_while_running(world: World) -> bool:
+    """Only a running session holds a lease."""
+    return not world.lease or world.status == "running"
