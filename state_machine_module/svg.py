@@ -7,7 +7,19 @@ from the page's stylesheet.
 
 from __future__ import annotations
 
+from state_machine_module.layout import (
+    Box,
+)
+
 
 def number(value: float) -> str:
     """A coordinate, to a tenth of a pixel."""
     return f"{value:.1f}"
+
+
+def rect(box: Box, corner: float) -> str:
+    """A rounded rectangle filling `box`."""
+    return (
+        f'<rect x="{number(box.x)}" y="{number(box.y)}" width="{number(box.width)}"'
+        f' height="{number(box.height)}" rx="{corner}"/>'
+    )
