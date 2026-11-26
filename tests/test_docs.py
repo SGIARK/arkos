@@ -13,6 +13,11 @@ def test_render_gives_headings_anchors() -> None:
     assert render("## Where things are", no_links) == '<h2 id="where-things-are">Where things are</h2>'
 
 
+def test_render_keeps_code_exactly_as_written() -> None:
+    html = render("```bash\necho <b>*not emphasis*</b>\n```", no_links)
+    assert html == '<pre><code class="language-bash">echo &lt;b&gt;*not emphasis*&lt;/b&gt;</code></pre>'
+
+
 def test_title_of_takes_the_first_heading() -> None:
     assert title_of("<!-- # a note -->\nintro\n# The `arkos` title\n## Next", "fallback") == "The arkos title"
 
