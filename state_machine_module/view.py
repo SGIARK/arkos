@@ -74,3 +74,8 @@ def drawn_moves(machine: Machine) -> list[tuple[Move, str]]:
             arrows.append((move, name))
             covered |= {Move(state, move.target, move.trigger) for state in states}
     return arrows + [(move, "") for move in machine.moves if move not in covered]
+
+
+def frame_id(prefix: str, name: str) -> str:
+    """The DOT name of a frame; Graphviz draws a subgraph as a frame only if its name starts with cluster."""
+    return quoted(f"cluster_{prefix}{name}")
