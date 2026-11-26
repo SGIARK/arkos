@@ -4,7 +4,7 @@ import xml.etree.ElementTree as ElementTree
 
 from state_machine_module.layout import layout
 from state_machine_module.machines import MACHINES, SESSION
-from state_machine_module.svg import drawing_svg
+from state_machine_module.svg import drawing_svg, overview_svg
 
 SVG = "{http://www.w3.org/2000/svg}"
 
@@ -24,3 +24,11 @@ def test_drawing_svg_titles_every_arrow_with_its_trigger() -> None:
 
 def test_drawing_svg_links_nothing_on_a_machines_own_page() -> None:
     assert "<a " not in drawing_svg(layout(SESSION, labelled=True))
+
+
+def test_overview_svg_links_every_state_and_name_to_its_machine() -> None:
+    drawings = [layout(machine, labelled=False) for machine in MACHINES]
+    svg = overview_svg(drawings, [f"/{machine.name}" for machine in MACHINES])
+    ElementTree.fromstring(svg)
+    for machine in MACHINES:
+        assert svg.count(f'href="/{machine.name}"') == len(machine.states) + 1, machine.name
