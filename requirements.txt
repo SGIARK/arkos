@@ -1,7 +1,11 @@
 # Runtime dependencies. Dev/test extras live in requirements-dev.txt.
 
 # --- model ---
-openai>=1.61.0            # AsyncOpenAI against whatever llm.base_url points at
+openai>=1.61.0,<3         # AsyncOpenAI against whatever llm.base_url points at.
+                          # Below 3: openai 3 reads the request's headers when it
+                          # builds an API error, and tests/test_model_client.py
+                          # builds them with request=None. Lift the cap once the
+                          # client and that test are checked against 3.x.
 
 # --- config ---
 pyyaml>=6.0.2
