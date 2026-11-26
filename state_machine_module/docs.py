@@ -89,3 +89,12 @@ def cells(line: str) -> list[str]:
 def indent_of(line: str) -> int:
     """How many spaces start `line`."""
     return len(line) - len(line.lstrip(" "))
+
+
+def continues(lines: list[str], index: int) -> bool:
+    """Whether a list goes on past the blank line at `index`: the next line with text is an item,
+    or is indented under one."""
+    for line in lines[index + 1 :]:
+        if line.strip():
+            return bool(ITEM.match(line)) or indent_of(line) > 0
+    return False
