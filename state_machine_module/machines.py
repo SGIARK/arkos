@@ -104,3 +104,18 @@ SANDBOX = Machine(
         Move("paused", "none", "the next ending reaps it, or a later claim reclaims it"),
     ),
 )
+
+MODE = Machine(
+    name="mode",
+    about=(
+        "sessions.mode. Attended, a person approves each gated call. Unattended, Autopilot runs an approved"
+        " plan and approves the calls that are not destructive."
+    ),
+    states=("attended", "unattended"),
+    starts=(Start("attended", "every session is created attended"),),
+    final=(),
+    moves=(
+        Move("attended", "unattended", "a plan is approved"),
+        Move("unattended", "attended", "a turn ends the run as completed or failed, or Cancel"),
+    ),
+)
