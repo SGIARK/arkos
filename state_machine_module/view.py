@@ -239,3 +239,13 @@ def moves_table(machine: Machine) -> str:
     rows += [(move.source, move.target, move.trigger) for move in machine.moves]
     cells = "".join("<tr>" + "".join(f"<td>{html.escape(cell)}</td>" for cell in row) + "</tr>" for row in rows)
     return f"<table><tr><th>From</th><th>To</th><th>When</th></tr>{cells}</table>"
+
+
+def legend(machine: Machine) -> str:
+    """How to read one machine's drawing, naming only what it uses."""
+    parts = ["A dot marks where it begins."]
+    if machine.final:
+        parts.append("A double border marks a state it can end in.")
+    if any(frame for _, frame in drawn_moves(machine)):
+        parts.append("An arrow leaving a frame is the same move from every state in it; the table lists each.")
+    return " ".join(parts)
