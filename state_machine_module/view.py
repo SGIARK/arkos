@@ -11,8 +11,17 @@ It needs Graphviz's `dot` on the PATH: `sudo apt install graphviz`.
 
 from __future__ import annotations
 
+import textwrap
+
+LABEL_WIDTH = 26  # characters on each line of a move's label
+
 
 def quoted(text: str) -> str:
     """`text` as a DOT string, its line breaks kept."""
     escaped = text.replace("\\", "\\\\").replace('"', '\\"')
     return '"' + escaped.replace("\n", "\\n") + '"'
+
+
+def wrapped(text: str) -> str:
+    """A trigger broken into short lines, so its label stays narrow."""
+    return "\n".join(textwrap.wrap(text, LABEL_WIDTH))
