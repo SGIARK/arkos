@@ -1,13 +1,14 @@
-"""The viewer serves the first page and every machine, and nothing else."""
+"""The viewer serves the first page, every machine and every tracked doc, and nothing else."""
 
 import threading
 import urllib.request
 from http import HTTPStatus
 
 from state_machine_module.machines import LEASE, MACHINES, SESSION
-from state_machine_module.view import legend, machine_page, route, serve
+from state_machine_module.view import doc_link, legend, machine_page, route, serve
 
 TIMEOUT_S = 10
+DOCS = {"README.md", ".github/CLAUDE.md", "docs/specs/self-hosted-e2b.md"}
 
 
 def test_legend_leaves_out_what_a_drawing_does_not_use() -> None:
@@ -18,6 +19,11 @@ def test_legend_leaves_out_what_a_drawing_does_not_use() -> None:
 def test_machine_page_lists_every_start_and_move() -> None:
     page = machine_page(SESSION, svg="<svg></svg>")
     assert page.count("<tr>") == 1 + len(SESSION.starts) + len(SESSION.moves)
+
+
+def test_doc_link_leads_a_relative_link_to_the_doc_it_names() -> None:
+    link = doc_link("docs/specs/self-hosted-e2b.md", "../../README.md#running-it", DOCS)
+    assert link == "/docs/README.md#running-it"
 
 
 def test_route_an_unknown_path_is_not_found() -> None:
