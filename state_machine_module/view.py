@@ -231,3 +231,11 @@ def overview_page(svg: str) -> str:
     )
     caption = "Click a box to open its machine. Hover over an arrow to see what triggers it."
     return page("arkos", OVERVIEW_ABOUT, figure(svg, caption) + f"<ul>{items}</ul>")
+
+
+def moves_table(machine: Machine) -> str:
+    """Every way into and between the machine's states, as a table."""
+    rows = [("(start)", start.state, start.trigger) for start in machine.starts]
+    rows += [(move.source, move.target, move.trigger) for move in machine.moves]
+    cells = "".join("<tr>" + "".join(f"<td>{html.escape(cell)}</td>" for cell in row) + "</tr>" for row in rows)
+    return f"<table><tr><th>From</th><th>To</th><th>When</th></tr>{cells}</table>"
