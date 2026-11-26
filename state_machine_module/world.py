@@ -211,3 +211,13 @@ def release(world: World, keep_box: bool) -> World:
         lost = world.lost_edits or world.unflushed
         world = replace(box_to(world, "none"), slot=False, unflushed=False, lost_edits=lost)
     return replace(world, lease=False, lease_orphaned=False)
+
+
+def finish(world: World, reason: str) -> World:
+    """_Sink._finish: release, close dangling calls, write done{reason}, move the status."""
+    world = close_dangling(release(world, keep_box=reason == "stopped"))
+    target = status_for(reason)
+    mode = "attended" if target in FINAL and world.mode == "unattended" else ""
+    open_call = world.ended_with_open_call or has_open_call(world)
+    world = replace(world, turn=None, hops_since_done=0, ended_with_open_call=open_call)
+    return move(world, target, reason, mode)
