@@ -12,6 +12,7 @@ It needs Graphviz's `dot` on the PATH: `sudo apt install graphviz`.
 from __future__ import annotations
 
 import functools
+import html
 import subprocess
 import textwrap
 
@@ -158,3 +159,13 @@ def drawn(source: str) -> str:
         ["dot", "-Tsvg"], input=source, capture_output=True, text=True, check=True, timeout=DOT_TIMEOUT_S
     )
     return result.stdout[result.stdout.index("<svg") :]
+
+
+def menu(current: str) -> str:
+    """Links to the overview and to every machine, the page you are on in bold."""
+    entries = [("arkos", "/"), *((machine.name, page_path(machine)) for machine in MACHINES)]
+    links = [
+        f"<b>{html.escape(name)}</b>" if name == current else f'<a href="{path}">{html.escape(name)}</a>'
+        for name, path in entries
+    ]
+    return " · ".join(links)
