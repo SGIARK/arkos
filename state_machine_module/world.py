@@ -221,3 +221,15 @@ def finish(world: World, reason: str) -> World:
     open_call = world.ended_with_open_call or has_open_call(world)
     world = replace(world, turn=None, hops_since_done=0, ended_with_open_call=open_call)
     return move(world, target, reason, mode)
+
+
+def park(world: World) -> World:
+    """_Sink.park: release the lease keeping the box, open the question, wait. No done is written."""
+    turn = turn_of(world)
+    tool = TOOL[turn.park]
+    world = release(world, keep_box=True)
+    kind = tool.park or "call"
+    kept = tuple(question for question in world.questions if not (kind == "plan" and question.kind == "plan"))
+    question = Question(kind=kind, tool=tool.name if kind in ("call", "plan") else "", call_open=turn.park_gated)
+    world = replace(world, questions=(*kept, question), turn=None)
+    return move(world, WAITING, tool.name)
