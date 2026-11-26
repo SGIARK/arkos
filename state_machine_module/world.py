@@ -297,3 +297,14 @@ def start(world: World, reason: str, mode: str = "") -> World:
     if world.status == "running":
         return world
     return drive(move(world, "running", reason, mode))
+
+
+def model_replies(world: World, said_something: bool) -> World:
+    """A hop with no tool calls. It ends an attended turn; unattended, it is a stall."""
+    if world.mode == "attended":
+        return finish(world, "turn_end")
+    turn = turn_of(world)
+    stall = turn.stall + 1
+    if not said_something or stall >= STALL_STREAK:
+        return finish(world, "stalled_progress")
+    return next_hop(replace(world, turn=replace(turn, stall=stall, reattempts=0)))
