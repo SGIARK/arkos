@@ -43,3 +43,13 @@ def test_layout_keeps_states_apart(machine: Machine, labelled: bool) -> None:
     drawing = layout(machine, labelled)
     for first, second in itertools.combinations(drawing.states.values(), 2):
         assert not first.overlaps(second)
+
+
+@pytest.mark.parametrize(("machine", "labelled"), CASES, ids=IDS)
+def test_layout_frames_hold_their_states(machine: Machine, labelled: bool) -> None:
+    drawing = layout(machine, labelled)
+    for name, states in frames(machine).items():
+        for state in states:
+            assert drawing.frames[name].overlap(drawing.states[state]) == drawing.states[state].overlap(
+                drawing.states[state]
+            ), (name, state)
