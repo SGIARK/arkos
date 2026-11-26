@@ -182,3 +182,11 @@ def box_to(world: World, target: str) -> World:
     if world.box == target:
         return world
     return replace(world, box=target, illegal_move=world.illegal_move or not allows(SANDBOX, world.box, target))
+
+
+def has_open_call(world: World) -> bool:
+    """Whether any tool_call in the log still lacks a result."""
+    in_rows = any(question.call_open for question in world.questions)
+    in_grant = world.grant is not None and world.grant.call_open
+    in_turn = world.turn is not None and world.turn.park_gated
+    return in_rows or in_grant or in_turn
