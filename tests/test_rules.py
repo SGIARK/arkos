@@ -19,3 +19,7 @@ def test_one_question_while_waiting_flags_an_ended_session_with_a_question() -> 
 
 def test_one_question_while_waiting_flags_a_wait_with_no_question() -> None:
     assert "one_question_while_waiting" in broken_names(World(status="awaiting_approval"))
+
+
+def test_ended_runs_are_attended_flags_a_failed_unattended_session() -> None:
+    assert "ended_runs_are_attended" in broken_names(World(status="failed", mode="unattended"))
