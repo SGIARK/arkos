@@ -327,3 +327,18 @@ def call_gated(world: World, tool: Tool) -> World:
     if turn.park:
         return world
     return replace(world, turn=replace(turn, park=tool.name, park_gated=True))
+
+
+def call(world: World, tool: Tool) -> World:
+    """One tool call inside a hop, as loop._run_batch and envelope.execute handle it."""
+    turn = turn_of(world)
+    if tool.malformed:
+        repair = turn.repair_pending or turn.repair_available
+        return replace(world, turn=replace(turn, repair_available=False, repair_pending=repair))
+    if tool.gated:
+        return call_gated(world, tool)
+    if tool.park:
+        return replace(world, turn=replace(turn, park=tool.name, park_gated=False))
+    if tool.finishes:
+        return replace(world, turn=replace(turn, finished=True))
+    return act(world, tool, approval="")
