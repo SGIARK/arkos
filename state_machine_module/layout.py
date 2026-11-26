@@ -12,6 +12,7 @@ measured. Nothing here draws: `svg.py` turns a Layout into markup.
 
 from __future__ import annotations
 
+import itertools
 import textwrap
 from collections import deque
 from collections.abc import Iterable
@@ -23,6 +24,8 @@ Point = tuple[float, float]
 Curve = tuple[Point, Point, Point, Point]
 CHAR_WIDTH = 0.6  # of the font size: a generous average for a sans-serif face
 LABEL_CHARS = 26  # characters on each line of a label
+SPREAD_WEIGHT = 2.0  # cost of each state between two states an arrow joins within a row
+CROSSING_WEIGHT = 3.0  # cost of two arrows crossing between rows
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,3 +196,24 @@ def rows(machine: Machine) -> list[list[str]]:
     ]
     unreached = [state for state in live if state not in depth]
     return [row for row in (*levels, unreached, list(machine.final)) if row]
+
+
+def tangle(order: list[tuple[str, ...]], pairs: list[tuple[str, str]]) -> float:
+    """How tangled an ordering draws: arrows that cross between rows, how far each arrow leans, and
+    states standing between two that an arrow joins within a row."""
+    row_of = {state: number for number, row in enumerate(order) for state in row}
+    place_of = {state: index for row in order for index, state in enumerate(row)}
+    across = {state: (place_of[state] + 0.5) / len(order[row_of[state]]) for state in row_of}
+    cost, spans = 0.0, []
+    for first, second in pairs:
+        if row_of[first] == row_of[second]:
+            cost += SPREAD_WEIGHT * (abs(place_of[first] - place_of[second]) - 1)
+            continue
+        cost += abs(across[first] - across[second])
+        upper, lower = sorted((first, second), key=row_of.__getitem__)
+        if row_of[lower] - row_of[upper] == 1:
+            spans.append((row_of[upper], across[upper], across[lower]))
+    for (row, upper, lower), (other_row, other_upper, other_lower) in itertools.combinations(spans, 2):
+        if row == other_row and (upper - other_upper) * (lower - other_lower) < 0:
+            cost += CROSSING_WEIGHT
+    return cost
