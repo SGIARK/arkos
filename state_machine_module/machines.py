@@ -29,10 +29,12 @@ class Start:
 
 @dataclass(frozen=True, slots=True)
 class Machine:
-    """A state machine: its states, the ones it ends in, and its legal moves."""
+    """A state machine: what it tracks, its states, where it begins and ends, and its legal moves."""
 
     name: str
+    about: str
     states: tuple[str, ...]
+    starts: tuple[Start, ...]
     final: tuple[str, ...]
     moves: tuple[Move, ...]
 
@@ -49,7 +51,12 @@ def pairs(machine: Machine) -> frozenset[tuple[str, str]]:
 
 SESSION = Machine(
     name="session",
+    about=(
+        "sessions.status: where a session is in its life. lifecycle.transition is its one writer, and it"
+        " refuses any move not listed here."
+    ),
     states=("pending", "idle", "running", "awaiting_approval", "completed", "failed", "cancelled"),
+    starts=(Start("pending", "POST /sessions creates it"), Start("idle", "a first login creates the home Chat")),
     final=("completed", "failed", "cancelled"),
     moves=(
         Move("pending", "running", "runner.start claims the new session"),
@@ -77,7 +84,12 @@ SESSION = Machine(
 
 SANDBOX = Machine(
     name="sandbox",
+    about=(
+        "The session's e2b box. Its disk is a cache of the store: a turn's first sandbox call copies the"
+        " session's folders in, and the turn's ending flushes them back."
+    ),
     states=("none", "live", "paused"),
+    starts=(Start("none", "a session begins without a box"),),
     final=(),
     moves=(
         Move("none", "live", "the turn's first sandbox call boots a box"),
