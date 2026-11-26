@@ -89,3 +89,30 @@ class Turn:
     park: str = ""  # the tool this turn parks on at its next hop boundary
     park_gated: bool = False  # that tool's own call is still open, held by the gate
     materialized: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class World:
+    """One session and everything it holds."""
+
+    status: str
+    mode: str = "attended"
+    has_folder: bool = True
+    turn: Turn | None = None
+    hops_since_done: int = 0
+    questions: tuple[Question, ...] = ()
+    grant: Grant | None = None
+    box: str = "none"
+    slot: bool = False
+    unflushed: bool = False
+    lease: bool = False
+    lease_orphaned: bool = False
+    # Records: what happened, for the rules. Nothing in arkos reads these.
+    illegal_move: bool = False
+    unattended_without_plan: bool = False
+    ended_with_open_call: bool = False
+    gated_ran_unapproved: bool = False
+    destructive_ran_unapproved: bool = False
+    model_called_while_parked: bool = False
+    acted_after_question: bool = False
+    lost_edits: bool = False
