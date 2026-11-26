@@ -19,10 +19,12 @@ from state_machine_module.layout import (
 )
 
 CORNER = 9
+FRAME_CORNER = 12
 LABEL_CORNER = 4
 FINAL_INSET = 4  # the gap between a final state's two borders
 BASELINE = 0.75  # of a line's height: where its text sits on it
 STATE_BASELINE = 0.35  # of the state font, below a box's middle, to centre its name
+FRAME_NAME_DROP = 13  # from a frame's top edge to the baseline of its name
 
 
 def number(value: float) -> str:
@@ -65,3 +67,11 @@ def state_svg(name: str, box: Box, final: bool, link: str, hint: str) -> str:
         f'<text x="{number(x)}" y="{number(y + STATE_FONT * STATE_BASELINE)}">{html.escape(name)}</text></g>'
     )
     return f'<a href="{html.escape(link)}">{body}</a>' if link else body
+
+
+def frame_svg(name: str, box: Box) -> str:
+    """A frame round states that move alike, its name in its top corner."""
+    return (
+        f'<g class="frame">{rect(box, FRAME_CORNER)}<text x="{number(box.x + FRAME_CORNER)}"'
+        f' y="{number(box.y + FRAME_NAME_DROP)}">{html.escape(name)}</text></g>'
+    )
