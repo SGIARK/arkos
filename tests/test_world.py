@@ -58,3 +58,10 @@ def test_step_stop_pauses_the_box_and_keeps_the_mode() -> None:
     world = play(NEW_SESSION, START, calls("propose_plan"), answer("approve"), calls("run_command"))
     world = play(world, Event("you", "stop"))
     assert (world.status, world.mode, world.box, world.unflushed) == ("idle", "unattended", "paused", False)
+
+
+def test_step_finish_task_completes_only_an_unattended_run() -> None:
+    attended = play(NEW_SESSION, START, calls("finish_task"))
+    unattended = play(NEW_SESSION, START, calls("propose_plan"), answer("approve"), calls("finish_task"))
+    assert attended.status == "running"
+    assert (unattended.status, unattended.mode) == ("completed", "attended")
