@@ -34,3 +34,14 @@ class Report:
     states: int
     depth: int
     findings: tuple[Finding, ...]
+
+
+def path_to(world: World, parents: Parents) -> tuple[World, tuple[Event, ...]]:
+    """Follow parent links back to a root: the root, and the events from it in order."""
+    path: list[Event] = []
+    link = parents[world]
+    while link is not None:
+        world, event = link
+        path.append(event)
+        link = parents[world]
+    return world, tuple(reversed(path))
