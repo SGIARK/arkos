@@ -280,9 +280,8 @@ def take_box(world: World) -> World:
     turn = turn_of(world)
     if turn.materialized:
         return world
-    world = box_to(world, "live")
-    lease = world.lease or world.has_folder
-    return replace(world, slot=True, lease=lease, lease_orphaned=False, turn=replace(turn, materialized=True))
+    world = replace(box_to(world, "live"), slot=True, turn=replace(turn, materialized=True))
+    return lease_to(world, "held") if world.has_folder else world
 
 
 def act(world: World, tool: Tool, approval: str) -> World:
