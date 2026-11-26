@@ -467,7 +467,7 @@ def restart(world: World) -> World:
 
 def leases_expire(world: World) -> World:
     """leases.ttl_s passes with no live turn renewing the lease."""
-    return replace(world, lease=False, lease_orphaned=False)
+    return lease_to(world, "free")
 
 
 def person_events(world: World) -> list[Event]:
