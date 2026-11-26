@@ -198,3 +198,16 @@ def close_dangling(world: World) -> World:
     grant = replace(world.grant, call_open=False) if world.grant else None
     turn = replace(world.turn, park_gated=False) if world.turn else None
     return replace(world, questions=questions, grant=grant, turn=turn)
+
+
+def release(world: World, keep_box: bool) -> World:
+    """_Sink._release_leases: flush what this turn changed, pause or reap the box, drop the lease."""
+    turn = world.turn
+    if turn is not None and turn.materialized:
+        world = replace(world, unflushed=False, turn=replace(turn, materialized=False))
+    if keep_box and world.box == "live":
+        world = box_to(world, "paused")
+    elif not keep_box and world.slot:
+        lost = world.lost_edits or world.unflushed
+        world = replace(box_to(world, "none"), slot=False, unflushed=False, lost_edits=lost)
+    return replace(world, lease=False, lease_orphaned=False)
