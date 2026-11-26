@@ -110,3 +110,22 @@ def belongs(lines: list[str], index: int, fenced: bool) -> bool:
     if not line.strip():
         return continues(lines, index)
     return bool(lines[index - 1].strip()) and not starts_block(line)
+
+
+def list_items(lines: list[str], index: int) -> tuple[list[tuple[int, str, list[str]]], int]:
+    """A list's items from line `index`, each with its indent, marker and lines, and the line after
+    the list."""
+    items: list[tuple[int, str, list[str]]] = []
+    end, fenced = index, False
+    while end < len(lines):
+        line = lines[end]
+        match = None if fenced else ITEM.match(line)
+        if match:
+            items.append((len(match.group(1)), match.group(2), [match.group(3)]))
+        elif belongs(lines, end, fenced):
+            items[-1][2].append(line)
+            fenced = fenced != bool(FENCE.match(line))
+        else:
+            break
+        end += 1
+    return items, end
