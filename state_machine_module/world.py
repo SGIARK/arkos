@@ -486,3 +486,14 @@ def model_events() -> tuple[Event, ...]:
 
 
 MODEL_EVENTS = model_events()
+
+
+def events(world: World) -> list[Event]:
+    """Everything that can happen to the session next."""
+    found = person_events(world) + question_events(world)
+    if world.status == "running":
+        found += [*MODEL_EVENTS, Event("clock", "runs out the wall clock")]
+    if world.lease_orphaned:
+        found.append(Event("clock", "expires the lease"))
+    found.append(Event("server", "restarts"))
+    return found
