@@ -15,7 +15,7 @@ from __future__ import annotations
 import itertools
 import math
 import textwrap
-from collections import deque
+from collections import defaultdict, deque
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -335,3 +335,25 @@ def pin(box: Box, side: str, share: float, other: Box, framed: bool) -> Point:
         x = min(max(other.middle[0], box.x + inset), box.right - inset)
         return (x, box.y if side == "top" else box.bottom)
     return on_side(box, side, share)
+
+
+def pins(legs: list[Leg], boxes: dict[str, Box], starts: list[str]) -> dict[tuple[int, str], Point]:
+    """Where each arrow meets its boxes, keyed (arrow number, "from" or "to"); the arrow from the
+    nth start dot is keyed (-1 - n, "to"). Arrows meeting one side of a box spread along it in the
+    order of their other ends, so they do not cross where they meet."""
+    sides: dict[tuple[str, str], list[tuple[tuple[float, int], tuple[int, str], str]]] = defaultdict(list)
+    for number, drawn in enumerate(legs):
+        flag = 0 if drawn.leaves in ("bottom", "right") else 1
+        ends = ((drawn.source, drawn.leaves, drawn.target, "from"), (drawn.target, drawn.enters, drawn.source, "to"))
+        for key, side, other, end in ends:
+            along = boxes[other].middle[0 if side in ("top", "bottom") else 1]
+            sides[(key, side)].append(((along, flag), (number, end), other))
+    for number, state in enumerate(starts):
+        sides[(state, "top")].append(((boxes[state].middle[0], -1), (-1 - number, "to"), state))
+    pinned = {}
+    for (key, side), attached in sides.items():
+        attached.sort(key=lambda entry: entry[0])
+        for slot, (_, end, other) in enumerate(attached, 1):
+            share = slot / (len(attached) + 1)
+            pinned[end] = pin(boxes[key], side, share, boxes[other], key.startswith("["))
+    return pinned
