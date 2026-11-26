@@ -31,6 +31,25 @@ CLUSTER_STYLE = 'style="rounded,dashed"; color="#8c8c8c"; fontname="Helvetica-Bo
 FRAME_STYLE = 'style="rounded"; color="#cfcfcf"; fontname="Helvetica-Oblique"; fontsize=11; fontcolor="#6b6b6b";'
 START_STYLE = 'shape=point, width=0.12, style=filled, fillcolor="#3b3b3b"'
 
+PAGE_STYLE = """
+body { font: 15px/1.5 system-ui, sans-serif; color: #1f1f1f; background: #f7f7f7; margin: 0; }
+main { max-width: 80rem; margin: 0 auto; padding: 1.25rem 2rem 3rem; }
+a { color: #1a5fb4; }
+nav { font-size: 0.9rem; color: #6b6b6b; }
+h1 { font-size: 1.5rem; margin: 0.6rem 0 0.3rem; }
+.about { max-width: 46rem; margin: 0 0 1.25rem; color: #3b3b3b; }
+figure { margin: 0 0 2rem; padding: 1rem; background: #fff; border: 1px solid #e2e2e2; border-radius: 10px; }
+figure svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+figcaption { font-size: 0.85rem; color: #6b6b6b; margin-top: 0.5rem; text-align: center; }
+svg a:hover path, svg a:hover polygon, svg a:hover ellipse { stroke: #1a5fb4; stroke-width: 2px; }
+svg a:hover text { fill: #1a5fb4; }
+table { border-collapse: collapse; font-size: 0.93rem; }
+th, td { text-align: left; vertical-align: top; padding: 0.4rem 1.5rem 0.4rem 0; border-bottom: 1px solid #e2e2e2; }
+td:nth-child(-n+2) { white-space: nowrap; font-family: ui-monospace, monospace; font-size: 0.87rem; }
+ul { max-width: 46rem; padding-left: 1.1rem; }
+li { margin: 0.35rem 0; }
+"""
+
 
 def quoted(text: str) -> str:
     """`text` as a DOT string, its line breaks kept."""
@@ -169,3 +188,25 @@ def menu(current: str) -> str:
         for name, path in entries
     ]
     return " · ".join(links)
+
+
+def page(title: str, about: str, body: str) -> str:
+    """A whole HTML page. `title` and `about` are text; `body` is already HTML."""
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{html.escape(title)} · arkos state machines</title>
+<style>{PAGE_STYLE}</style>
+</head>
+<body>
+<main>
+<nav>{menu(title)}</nav>
+<h1>{html.escape(title)}</h1>
+<p class="about">{html.escape(about)}</p>
+{body}
+</main>
+</body>
+</html>
+"""
