@@ -432,7 +432,7 @@ def respond(world: World, index: int, verb: str) -> World:
     row = world.questions[index]
     if row.kind == "plan":
         return answer_plan(world, index, verb)
-    world = without(world, index)
+    world = close_question(world, index, "answered")
     if row.kind == "call":
         grant = Grant(tool=row.tool, approved=verb == "approve", call_open=row.call_open)
         return start(replace(world, grant=grant), "answered")
