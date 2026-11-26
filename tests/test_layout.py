@@ -4,7 +4,7 @@ import itertools
 
 import pytest
 
-from state_machine_module.layout import Box, Point, drawn_moves, frames, layout, point_on, rows
+from state_machine_module.layout import Box, Layout, Point, drawn_moves, frames, layout, point_on, rows
 from state_machine_module.machines import MACHINES, SESSION, Machine, Move
 
 CASES = [(machine, labelled) for machine in MACHINES for labelled in (True, False)]
@@ -15,6 +15,11 @@ EDGE_SLACK = 0.5  # how far off its box's edge an arrow's end may sit, for round
 def on_edge(point: Point, box: Box) -> bool:
     """Whether `point` lies on the edge of `box`."""
     return box.grown(EDGE_SLACK).holds(point) and not box.grown(-EDGE_SLACK).holds(point)
+
+
+def labels(drawing: Layout) -> list[Box]:
+    """Every label box in a drawing."""
+    return [drawn.label.box for drawn in (*drawing.arrows, *drawing.entries) if drawn.label is not None]
 
 
 def test_rows_put_the_start_states_first_and_the_final_ones_last() -> None:
@@ -68,3 +73,14 @@ def test_layout_runs_each_arrow_from_its_source_to_its_target(machine: Machine, 
         source = drawing.frames[arrow.frame] if arrow.frame else drawing.states[arrow.move.source]
         assert on_edge(arrow.curve[0], source), arrow.move
         assert on_edge(arrow.curve[-1], drawing.states[arrow.move.target]), arrow.move
+
+
+@pytest.mark.parametrize("machine", MACHINES, ids=[machine.name for machine in MACHINES])
+def test_layout_keeps_labels_off_states_and_each_other(machine: Machine) -> None:
+    drawing = layout(machine, labelled=True)
+    placed = labels(drawing)
+    assert len(placed) == len(drawing.arrows) + len(drawing.entries)
+    for label in placed:
+        assert not any(label.overlaps(state) for state in drawing.states.values())
+    for first, second in itertools.combinations(placed, 2):
+        assert not first.overlaps(second)
