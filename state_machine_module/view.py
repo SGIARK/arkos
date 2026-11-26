@@ -79,3 +79,9 @@ def drawn_moves(machine: Machine) -> list[tuple[Move, str]]:
 def frame_id(prefix: str, name: str) -> str:
     """The DOT name of a frame; Graphviz draws a subgraph as a frame only if its name starts with cluster."""
     return quoted(f"cluster_{prefix}{name}")
+
+
+def state_line(machine: Machine, state: str, prefix: str, link: str) -> str:
+    """A box for one state, with a double border if the machine can end there."""
+    border = ", peripheries=2" if state in machine.final else ""
+    return f"{quoted(prefix + state)} [label={quoted(state)}{border}{link}];"
