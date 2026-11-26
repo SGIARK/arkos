@@ -13,6 +13,7 @@ from state_machine_module.layout import (
     LABEL_PAD,
     LINE_HEIGHT,
     STATE_FONT,
+    Arrow,
     Box,
     Curve,
     Label,
@@ -74,4 +75,13 @@ def frame_svg(name: str, box: Box) -> str:
     return (
         f'<g class="frame">{rect(box, FRAME_CORNER)}<text x="{number(box.x + FRAME_CORNER)}"'
         f' y="{number(box.y + FRAME_NAME_DROP)}">{html.escape(name)}</text></g>'
+    )
+
+
+def arrow_svg(arrow: Arrow) -> str:
+    """An arrow, with a wide invisible stroke so that hovering near it shows its trigger."""
+    data = path_data(arrow.curve)
+    return (
+        f'<g class="move"><title>{html.escape(arrow.move.trigger)}</title><path class="hit" d="{data}"/>'
+        f'<path class="line" d="{data}" marker-end="url(#arrowhead)"/></g>'
     )
