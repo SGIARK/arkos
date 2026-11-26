@@ -23,6 +23,7 @@ GRAPH_STYLE = (
     ' color="#3b3b3b", margin="0.18,0.08"];',
     'edge [fontname="Helvetica", fontsize=10, color="#5c5c5c", fontcolor="#3b3b3b", arrowsize=0.7];',
 )
+CLUSTER_STYLE = 'style="rounded,dashed"; color="#8c8c8c"; fontname="Helvetica-Bold"; fontsize=13; margin=14;'
 FRAME_STYLE = 'style="rounded"; color="#cfcfcf"; fontname="Helvetica-Oblique"; fontsize=11; fontcolor="#6b6b6b";'
 START_STYLE = 'shape=point, width=0.12, style=filled, fillcolor="#3b3b3b"'
 
@@ -126,3 +127,17 @@ def machine_dot(machine: Machine) -> str:
     """One machine on its own, every move labelled with what triggers it."""
     body = start_lines(machine, "", labelled=True) + state_lines(machine, "", link="")
     return digraph(machine.name, body + move_lines(machine, "", labelled=True))
+
+
+def cluster_lines(machine: Machine) -> list[str]:
+    """One machine as a framed group on the overview, its frame and every state linking to its page."""
+    prefix = f"{machine.name}."
+    href, tooltip = quoted(page_path(machine)), quoted(machine.about)
+    return [
+        f"subgraph {quoted('cluster_' + machine.name)} {{",
+        f"label={quoted(machine.name)}; href={href}; tooltip={tooltip}; {CLUSTER_STYLE}",
+        *start_lines(machine, prefix, labelled=False),
+        *state_lines(machine, prefix, link=f", href={href}, tooltip={tooltip}"),
+        *move_lines(machine, prefix, labelled=False),
+        "}",
+    ]
