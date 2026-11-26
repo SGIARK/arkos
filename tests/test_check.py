@@ -34,3 +34,9 @@ def test_explore_paths_reproduce_their_rule(report: Report) -> None:
         for event in finding.path:
             world = step(world, event)
         assert finding.rule in broken(world)
+
+
+def test_explore_returns_the_shortest_path(report: Report) -> None:
+    lengths = {finding.rule.name: len(finding.path) for finding in report.findings}
+    assert lengths["one_question_while_waiting"] == 2
+    assert lengths["ended_runs_are_attended"] == 4
