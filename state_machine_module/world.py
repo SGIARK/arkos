@@ -308,3 +308,12 @@ def model_replies(world: World, said_something: bool) -> World:
     if not said_something or stall >= STALL_STREAK:
         return finish(world, "stalled_progress")
     return next_hop(replace(world, turn=replace(turn, stall=stall, reattempts=0)))
+
+
+def model_fails(world: World) -> World:
+    """A retryable model error: the loop re-attempts the hop uncharged, until the retries run out."""
+    turn = turn_of(world)
+    if turn.reattempts >= MODEL_RETRIES:
+        return finish(world, "model_error")
+    turn = replace(turn, reattempts=turn.reattempts + 1, reattempt_pending=True)
+    return next_hop(replace(world, turn=turn))
