@@ -17,3 +17,13 @@ class Move:
     source: str
     target: str
     trigger: str
+
+
+@dataclass(frozen=True, slots=True)
+class Machine:
+    """A state machine: its states, the ones it ends in, and its legal moves."""
+
+    name: str
+    states: tuple[str, ...]
+    final: tuple[str, ...]
+    moves: tuple[Move, ...]
