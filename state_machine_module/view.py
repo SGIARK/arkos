@@ -37,7 +37,9 @@ main { max-width: 80rem; margin: 0 auto; padding: 1.25rem 2rem 3rem; }
 a { color: #1a5fb4; }
 nav { font-size: 0.9rem; color: #6b6b6b; }
 h1 { font-size: 1.5rem; margin: 0.6rem 0 0.3rem; }
+h2 { font-size: 1.2rem; margin: 2rem 0 0.5rem; }
 .about { max-width: 46rem; margin: 0 0 1.25rem; color: #3b3b3b; }
+.path { font: 0.85rem ui-monospace, monospace; color: #6b6b6b; }
 figure { margin: 0 0 2rem; padding: 1rem; background: #fff; border: 1px solid #e2e2e2; border-radius: 10px;
   overflow-x: auto; }
 figure svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
@@ -63,6 +65,13 @@ th, td { text-align: left; vertical-align: top; padding: 0.4rem 1.5rem 0.4rem 0;
 .moves td:nth-child(-n+2) { white-space: nowrap; font-family: ui-monospace, monospace; font-size: 0.87rem; }
 ul, ol { max-width: 46rem; padding-left: 1.4rem; }
 li { margin: 0.35rem 0; }
+.doc { max-width: 50rem; }
+.doc h1 { font-size: 1.6rem; } .doc h2 { font-size: 1.25rem; } .doc h3 { font-size: 1.05rem; }
+.doc pre { background: #fff; border: 1px solid #e2e2e2; border-radius: 8px; padding: 0.75rem 1rem; overflow-x: auto; }
+.doc code { font: 0.88em ui-monospace, monospace; }
+.doc :not(pre) > code { background: #ececec; padding: 0.1em 0.3em; border-radius: 4px; }
+.doc blockquote { margin: 0 0 1rem; padding: 0 1rem; border-left: 3px solid #d0d0d0; color: #4a4a4a; }
+.doc hr { border: 0; border-top: 1px solid #e2e2e2; margin: 1.5rem 0; }
 """
 
 OVERVIEW_ABOUT = (
