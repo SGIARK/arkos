@@ -3,7 +3,8 @@
 import pytest
 
 from state_machine_module.check import Report, explore
-from state_machine_module.world import ROOTS
+from state_machine_module.rules import broken
+from state_machine_module.world import ROOTS, step
 
 # The longest of today's shortest counterexamples is four events.
 DEPTH = 5
@@ -25,3 +26,11 @@ def report() -> Report:
 
 def test_explore_finds_the_rules_today_breaks(report: Report) -> None:
     assert {finding.rule.name for finding in report.findings} == BROKEN_TODAY
+
+
+def test_explore_paths_reproduce_their_rule(report: Report) -> None:
+    for finding in report.findings:
+        world = finding.root
+        for event in finding.path:
+            world = step(world, event)
+        assert finding.rule in broken(world)
