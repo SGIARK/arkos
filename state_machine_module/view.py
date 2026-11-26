@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import textwrap
 
-from state_machine_module.machines import Machine, Move
+from state_machine_module.machines import MACHINES, Machine, Move
 
 LABEL_WIDTH = 26  # characters on each line of a move's label
 
@@ -141,3 +141,8 @@ def cluster_lines(machine: Machine) -> list[str]:
         *move_lines(machine, prefix, labelled=False),
         "}",
     ]
+
+
+def overview_dot() -> str:
+    """Every machine side by side, each a framed group that links to its own page."""
+    return digraph("arkos", [line for machine in MACHINES for line in cluster_lines(machine)])
