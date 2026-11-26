@@ -382,3 +382,15 @@ def without(world: World, index: int) -> World:
 def dismiss_goal(world: World) -> World:
     """Dismissing the goal question: back to idle, if the session is still waiting on it."""
     return move(world, "idle", "goal_cancelled") if world.status == WAITING else world
+
+
+def answer_plan(world: World, index: int, verb: str) -> World:
+    """_answer_plan: approve starts an unattended run, decline goes idle, a reply redrafts."""
+    if verb == "approve":
+        if not world.has_folder or world.status == "running":
+            return world
+        return start(without(world, index), "plan_approved", mode="unattended")
+    world = without(world, index)
+    if verb == "decline":
+        return move(world, "idle", "plan_declined") if world.status == WAITING else world
+    return start(world, "plan_reply")
