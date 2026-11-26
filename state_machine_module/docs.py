@@ -26,6 +26,13 @@ RULE = re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$")
 ITEM = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+(.*)$")
 QUOTE = re.compile(r"^\s*>\s?(.*)$")
 COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+CODE_SPAN = re.compile(r"(`+)(.+?)\1")
+IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
+LINK = re.compile(r'\[([^\]]+)\]\(\s*([^)\s]*)(?:\s+"[^"]*")?\s*\)')
+AUTOLINK = re.compile(r"&lt;((?:https?|mailto):(?:[^\s&]|&amp;)+)&gt;")
+STRONG = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*")
+EMPHASIS = re.compile(r"(?<![*\w])\*(?=\S)(.+?)(?<=\S)\*(?![*\w])")
+KEPT = re.compile(r"\x00(\d+)\x00")
 
 Linker = Callable[[str], str | None]
 
@@ -138,3 +145,19 @@ def anchor(text: str, target: str, link: Linker) -> str:
     """A link, if `link` resolves its target; just the text if not, so no doc can link to anything unsafe."""
     href = link(html.unescape(target))
     return f'<a href="{html.escape(href)}">{text}</a>' if href else text
+
+
+def inline(text: str, link: Linker) -> str:
+    """One run of text's inline markdown as HTML. Code spans come out first, so nothing in them changes."""
+    kept: list[str] = []
+
+    def keep(match: re.Match[str]) -> str:
+        kept.append(f"<code>{html.escape(match.group(2).strip())}</code>")
+        return f"\x00{len(kept) - 1}\x00"
+
+    text = html.escape(CODE_SPAN.sub(keep, text), quote=False)
+    text = IMAGE.sub(lambda match: f'<span class="image">{match.group(1)}</span>', text)
+    text = LINK.sub(lambda match: anchor(match.group(1), match.group(2), link), text)
+    text = AUTOLINK.sub(lambda match: anchor(match.group(1), match.group(1), link), text)
+    text = EMPHASIS.sub(r"<em>\1</em>", STRONG.sub(r"<strong>\1</strong>", text))
+    return KEPT.sub(lambda match: kept[int(match.group(1))], text)
