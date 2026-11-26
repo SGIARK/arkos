@@ -13,6 +13,7 @@ measured. Nothing here draws: `svg.py` turns a Layout into markup.
 from __future__ import annotations
 
 import textwrap
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from state_machine_module.machines import Machine, Move
@@ -125,3 +126,11 @@ def text_width(text: str, font: float) -> float:
 def wrapped(text: str) -> tuple[str, ...]:
     """A trigger broken into lines short enough for a label."""
     return tuple(textwrap.wrap(text, LABEL_CHARS)) or ("",)
+
+
+def enclosing(boxes: Iterable[Box]) -> Box:
+    """The smallest box round all of `boxes`."""
+    every = list(boxes)
+    left, top = min(box.x for box in every), min(box.y for box in every)
+    right, bottom = max(box.right for box in every), max(box.bottom for box in every)
+    return Box(left, top, right - left, bottom - top)
