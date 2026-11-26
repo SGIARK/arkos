@@ -272,3 +272,14 @@ def act(world: World, tool: Tool, approval: str) -> World:
         destructive_ran_unapproved=world.destructive_ran_unapproved or (tool.destructive and approval != "person"),
         acted_after_question=world.acted_after_question or bool(turn.park),
     )
+
+
+def settle_approved_call(world: World) -> World:
+    """_settle_gated_call: close the call the session parked on, running it once if approved."""
+    grant = world.grant
+    if grant is None or not grant.call_open:
+        return world
+    if grant.consumed or not grant.approved:
+        return replace(world, grant=replace(grant, call_open=False))
+    world = replace(world, grant=replace(grant, consumed=True, call_open=False))
+    return act(world, TOOL[grant.tool], approval="person")
