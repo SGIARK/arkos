@@ -25,9 +25,27 @@ from.
 | `db/` | migrations and the asyncpg pool |
 | `config_module/` | `config.yaml` and its loader |
 | `frontend/` | the UI |
+| `state_machine_module/` | a session's state machines as data, a checker for their rules, and a viewer for them and these docs |
 
 `.github/CONTRIBUTING.md` has the contribution rules, including the CLA every
 pull request needs.
+
+## Docs and state machines
+
+From a fresh clone, with nothing installed:
+
+```bash
+python3 -m state_machine_module.view
+```
+
+This opens your browser on these docs and on the state machines a session is
+made of: click a machine to see its states and what moves each one. To check
+the machines against their rules, and print the shortest way to break any rule
+that breaks:
+
+```bash
+python3 -m state_machine_module.check
+```
 
 ## Running it
 
