@@ -418,3 +418,11 @@ def press_autopilot(world: World) -> World:
     if any(question.is_goal for question in world.questions):
         return move(world, "idle", "goal_failed")
     return replace(world, questions=(*world.questions, Question(kind="ask", is_goal=True)))
+
+
+def cancel(world: World) -> World:
+    """runner.cancel: a live turn lands as done{cancelled}; otherwise the ending is written directly."""
+    if world.status == "running":
+        return finish(world, "cancelled")
+    world = replace(close_dangling(world), hops_since_done=0)
+    return move(world, "cancelled", "cancelled", "attended" if world.mode == "unattended" else "")
