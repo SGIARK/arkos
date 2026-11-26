@@ -20,6 +20,14 @@ class Move:
 
 
 @dataclass(frozen=True, slots=True)
+class Start:
+    """A state a machine can begin in, and what puts it there."""
+
+    state: str
+    trigger: str
+
+
+@dataclass(frozen=True, slots=True)
 class Machine:
     """A state machine: its states, the ones it ends in, and its legal moves."""
 
