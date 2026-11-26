@@ -188,6 +188,13 @@ def box_to(world: World, target: str) -> World:
     return replace(world, box=target, illegal_move=world.illegal_move or not allows(SANDBOX, world.box, target))
 
 
+def lease_state(world: World) -> str:
+    """Where the folder lease stands, in the states LEASE names."""
+    if world.lease_orphaned:
+        return "orphaned"
+    return "held" if world.lease else "free"
+
+
 def has_open_call(world: World) -> bool:
     """Whether any tool_call in the log still lacks a result."""
     in_rows = any(question.call_open for question in world.questions)
