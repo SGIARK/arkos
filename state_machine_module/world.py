@@ -342,3 +342,15 @@ def call(world: World, tool: Tool) -> World:
     if tool.finishes:
         return replace(world, turn=replace(turn, finished=True))
     return act(world, tool, approval="")
+
+
+def model_calls(world: World, names: tuple[str, ...]) -> World:
+    """A hop with tool calls: run them in order, then end the run or take the next hop."""
+    world = replace(world, turn=replace(turn_of(world), stall=0))
+    for name in names:
+        world = call(world, TOOL[name])
+    turn = replace(turn_of(world), reattempts=0)
+    world = replace(world, turn=turn)
+    if turn.finished and world.mode == "unattended":
+        return finish(world, "completed")
+    return next_hop(world)
