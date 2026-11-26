@@ -5,6 +5,7 @@ from state_machine_module.view import (
     drawn_moves,
     frames,
     machine_dot,
+    overview_dot,
     quoted,
 )
 
@@ -30,3 +31,9 @@ def test_drawn_moves_cover_every_declared_move() -> None:
 
 def test_machine_dot_double_borders_only_final_states() -> None:
     assert machine_dot(SESSION).count("peripheries=2") == len(SESSION.final)
+
+
+def test_overview_dot_links_every_state_and_frame_to_its_page() -> None:
+    source = overview_dot()
+    for machine in MACHINES:
+        assert source.count(f'href="/{machine.name}"') == len(machine.states) + 1, machine.name
