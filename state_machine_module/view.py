@@ -249,3 +249,8 @@ def legend(machine: Machine) -> str:
     if any(frame for _, frame in drawn_moves(machine)):
         parts.append("An arrow leaving a frame is the same move from every state in it; the table lists each.")
     return " ".join(parts)
+
+
+def machine_page(machine: Machine, svg: str) -> str:
+    """One machine's page: its drawing with every trigger, then its moves as a table."""
+    return page(machine.name, machine.about, figure(svg, legend(machine)) + moves_table(machine))
