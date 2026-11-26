@@ -365,3 +365,10 @@ def answer_by_message(world: World) -> World:
         return world
     world = replace(world, questions=rest)
     return start(world, "plan_requested" if oldest.is_goal else "answered")
+
+
+def send_message(world: World) -> World:
+    """POST /messages: a waiting session routes it to a question; otherwise it starts a turn."""
+    if world.status == WAITING:
+        return answer_by_message(world)
+    return start(close_dangling(world), "woken")
