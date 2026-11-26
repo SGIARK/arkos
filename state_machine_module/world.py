@@ -420,8 +420,8 @@ def answer_plan(world: World, index: int, verb: str) -> World:
     if verb == "approve":
         if not world.has_folder or world.status == "running":
             return world
-        return start(without(world, index), "plan_approved", mode="unattended")
-    world = without(world, index)
+        return start(close_question(world, index, "answered"), "plan_approved", mode="unattended")
+    world = close_question(world, index, "answered")
     if verb == "decline":
         return move(world, "idle", "plan_declined") if world.status == WAITING else world
     return start(world, "plan_reply")
