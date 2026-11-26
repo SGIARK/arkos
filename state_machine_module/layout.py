@@ -25,11 +25,14 @@ Point = tuple[float, float]
 Curve = tuple[Point, Point, Point, Point]
 
 STATE_FONT = 13
+LABEL_FONT = 11
 CHAR_WIDTH = 0.6  # of the font size: a generous average for a sans-serif face
 STATE_HEIGHT = 34
 STATE_PAD = 16  # either side of a state's name
 MIN_STATE_WIDTH = 64
 LABELLED_MIN_STATE_WIDTH = 110  # wide enough for the arrows meeting a state to fan out
+LINE_HEIGHT = 14
+LABEL_PAD = 4
 LABEL_CHARS = 26  # characters on each line of a label
 COLUMN_GAP = 40
 LABELLED_COLUMN_GAP = 190  # room between neighbours for the labels of the arrows that join them
@@ -374,3 +377,10 @@ def curve_of(drawn: Leg, start: Point, end: Point) -> Curve:
         return (start, (x0, y0 + rise), (x3, y3 + rise), end)
     half = (y3 - y0) / 2
     return (start, (x0, y0 + half), (x3, y3 - half), end)
+
+
+def label_box(lines: tuple[str, ...], centre: Point) -> Box:
+    """The box `lines` fill, centred on `centre`."""
+    width = max(text_width(line, LABEL_FONT) for line in lines) + 2 * LABEL_PAD
+    height = len(lines) * LINE_HEIGHT + 2 * LABEL_PAD
+    return Box(centre[0] - width / 2, centre[1] - height / 2, width, height)
