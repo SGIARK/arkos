@@ -17,7 +17,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 GIT_TIMEOUT_S = 10
 SKIPPED_DIRS = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__"})
+
+FENCE = re.compile(r"^\s*(`{3,}|~{3,})\s*([\w+.-]*)")
 HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+RULE = re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$")
+ITEM = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+(.*)$")
+QUOTE = re.compile(r"^\s*>\s?(.*)$")
 COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
@@ -51,6 +56,11 @@ def title_of(text: str, fallback: str) -> str:
         if match:
             return match.group(2).replace("`", "")
     return fallback
+
+
+def starts_block(line: str) -> bool:
+    """Whether `line` opens a block of its own, and so ends a paragraph above it."""
+    return any(pattern.match(line) for pattern in (FENCE, HEADING, RULE, QUOTE, ITEM))
 
 
 def slug(text: str) -> str:
