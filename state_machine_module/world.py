@@ -142,3 +142,8 @@ def describe(event: Event) -> str:
     if event.row is not None:
         return f"{event.actor}: {event.action} question {event.row + 1}: {event.verb}"
     return f"{event.actor}: {event.action}"
+
+
+def max_hops(mode: str) -> int:
+    """The turn budget for a session mode."""
+    return UNATTENDED_MAX_HOPS if mode == "unattended" else ATTENDED_MAX_HOPS
