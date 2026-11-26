@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import textwrap
 
-from state_machine_module.machines import Machine
+from state_machine_module.machines import Machine, Move
 
 LABEL_WIDTH = 26  # characters on each line of a move's label
 START_STYLE = 'shape=point, width=0.12, style=filled, fillcolor="#3b3b3b"'
@@ -52,3 +52,14 @@ def frames(machine: Machine) -> dict[str, tuple[str, ...]]:
         return {}
     live = tuple(state for state in machine.states if state not in machine.final)
     return {name: states for name, states in (("live", live), ("ended", machine.final)) if len(states) > 1}
+
+
+def shared_moves(machine: Machine, states: tuple[str, ...]) -> list[Move]:
+    """The moves every one of `states` makes alike, to a state outside them: one Move each, from the first."""
+    return [
+        move
+        for move in machine.moves
+        if move.source == states[0]
+        and move.target not in states
+        and all(Move(state, move.target, move.trigger) in machine.moves for state in states)
+    ]
