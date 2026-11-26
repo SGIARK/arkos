@@ -14,6 +14,7 @@ happened, so that `rules.py` can judge it.
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass, replace
 
 from state_machine_module.machines import SANDBOX, SESSION, allows
@@ -473,3 +474,15 @@ def question_events(world: World) -> list[Event]:
         kind = "goal" if question.is_goal else question.kind
         found += [Event("you", "answer", row=index, verb=verb) for verb in VERBS.get(kind, ("reply",))]
     return found
+
+
+def model_events() -> tuple[Event, ...]:
+    """What the model can produce for one hop: no calls, a failure, or up to MAX_CALLS_PER_HOP calls."""
+    replies = [Event("model", "replies with text"), Event("model", "says nothing"), Event("model", "fails")]
+    names = [tool.name for tool in TOOLS]
+    for count in range(1, MAX_CALLS_PER_HOP + 1):
+        replies += [Event("model", "calls", tools=combo) for combo in itertools.product(names, repeat=count)]
+    return tuple(replies)
+
+
+MODEL_EVENTS = model_events()
