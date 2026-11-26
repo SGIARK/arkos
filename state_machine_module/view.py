@@ -16,6 +16,7 @@ import textwrap
 from state_machine_module.machines import Machine
 
 LABEL_WIDTH = 26  # characters on each line of a move's label
+START_STYLE = 'shape=point, width=0.12, style=filled, fillcolor="#3b3b3b"'
 
 
 def quoted(text: str) -> str:
@@ -32,3 +33,14 @@ def wrapped(text: str) -> str:
 def page_path(machine: Machine) -> str:
     """Where the page for `machine` is served."""
     return f"/{machine.name}"
+
+
+def start_lines(machine: Machine, prefix: str, labelled: bool) -> list[str]:
+    """A dot for each way the machine begins, with an arrow into the state it begins in."""
+    lines = []
+    for number, start in enumerate(machine.starts):
+        dot = quoted(f"{prefix}start {number}")
+        label = f"label={quoted(wrapped(start.trigger))}" if labelled else f"tooltip={quoted(start.trigger)}"
+        lines.append(f"{dot} [{START_STYLE}, tooltip={quoted(start.trigger)}];")
+        lines.append(f"{dot} -> {quoted(prefix + start.state)} [{label}];")
+    return lines
