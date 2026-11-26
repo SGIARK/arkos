@@ -10,12 +10,15 @@ never as markup.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 GIT_TIMEOUT_S = 10
 SKIPPED_DIRS = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__"})
+HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
 def tracked_docs(root: Path = ROOT) -> list[str]:
@@ -39,3 +42,12 @@ def walked_docs(root: Path) -> list[str]:
     """Every markdown file under `root`, leaving out virtualenvs, caches and git's own files."""
     found = (path.relative_to(root) for path in root.rglob("*.md") if path.is_file())
     return sorted(path.as_posix() for path in found if not SKIPPED_DIRS & set(path.parts))
+
+
+def title_of(text: str, fallback: str) -> str:
+    """A doc's first heading, or `fallback` if it has none."""
+    for line in COMMENT.sub("", text).splitlines():
+        match = HEADING.match(line)
+        if match:
+            return match.group(2).replace("`", "")
+    return fallback
