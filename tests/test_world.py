@@ -32,3 +32,8 @@ def test_step_an_approved_call_runs_once_during_setup() -> None:
     world = play(NEW_SESSION, START, calls("mcp_send_email"), answer("approve"))
     assert world.status == "running"
     assert world.grant is not None and world.grant.consumed and not world.grant.call_open
+
+
+def test_step_a_declined_call_never_runs() -> None:
+    world = play(NEW_SESSION, START, calls("mcp_send_email"), answer("decline"))
+    assert world.grant is not None and not world.grant.consumed
