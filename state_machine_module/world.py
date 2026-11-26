@@ -354,3 +354,14 @@ def model_calls(world: World, names: tuple[str, ...]) -> World:
     if turn.finished and world.mode == "unattended":
         return finish(world, "completed")
     return next_hop(world)
+
+
+def answer_by_message(world: World) -> World:
+    """_answer_by_message: the composer answers the OLDEST open row, and never one asking consent."""
+    if not world.questions:
+        return start(world, "answered")
+    oldest, rest = world.questions[0], world.questions[1:]
+    if oldest.kind in CONSENT_KINDS:
+        return world
+    world = replace(world, questions=rest)
+    return start(world, "plan_requested" if oldest.is_goal else "answered")
