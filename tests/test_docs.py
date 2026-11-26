@@ -11,6 +11,11 @@ def test_tracked_docs_lists_the_readme() -> None:
     assert all(doc.endswith(".md") for doc in docs)
 
 
+def test_tracked_docs_walks_the_disk_without_git(tmp_path: Path) -> None:
+    (tmp_path / "notes.md").write_text("# Notes")
+    assert tracked_docs(tmp_path) == ["notes.md"]
+
+
 def test_walked_docs_skips_virtualenvs(tmp_path: Path) -> None:
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "guide.md").write_text("# Guide")
