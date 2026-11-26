@@ -476,3 +476,19 @@ def bounds_of(boxes: Iterable[Box], arrows: tuple[Arrow, ...], entries: tuple[En
             parts.append(drawn.label.box)
     parts += [Box(x - DOT_RADIUS, y - DOT_RADIUS, 2 * DOT_RADIUS, 2 * DOT_RADIUS) for x, y in (e.dot for e in entries)]
     return enclosing(parts).grown(MARGIN)
+
+
+def layout(machine: Machine, labelled: bool) -> Layout:
+    """`machine` measured for drawing: with every trigger written out, or bare for the overview."""
+    order = ordered(machine, rows(machine))
+    boxes = place(order, row_tops(order, frames(machine), labelled), labelled)
+    framed = frame_boxes(machine, boxes)
+    every = {**boxes, **{f"[{name}]": box for name, box in framed.items()}}
+    row_of = {state: number for number, row in enumerate(order) for state in row}
+    legs = [leg(move, frame, every, row_of, order) for move, frame in drawn_moves(machine)]
+    pinned = pins(legs, every, [start.state for start in machine.starts])
+    taken = [*boxes.values(), *(Box(box.x, box.y, box.width, FRAME_TITLE) for box in framed.values())]
+    entries = entries_for(machine, framed, pinned, labelled, taken)
+    arrows = arrows_for(legs, pinned, labelled, taken)
+    bounds = bounds_of([*boxes.values(), *framed.values()], arrows, entries)
+    return Layout(machine, boxes, framed, entries, arrows, bounds)
