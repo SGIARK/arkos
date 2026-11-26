@@ -1,5 +1,7 @@
 """The pages draw every declared machine, and every box links to the right page."""
 
+from http import HTTPStatus
+
 from state_machine_module.machines import LEASE, MACHINES, SESSION, Move
 from state_machine_module.view import (
     drawn_moves,
@@ -9,6 +11,7 @@ from state_machine_module.view import (
     machine_page,
     overview_dot,
     quoted,
+    route,
 )
 
 
@@ -49,3 +52,7 @@ def test_legend_leaves_out_what_a_drawing_does_not_use() -> None:
 def test_machine_page_lists_every_start_and_move() -> None:
     page = machine_page(SESSION, svg="<svg></svg>")
     assert page.count("<tr>") == 1 + len(SESSION.starts) + len(SESSION.moves)
+
+
+def test_route_an_unknown_path_is_not_found() -> None:
+    assert route("/no-such-machine")[0] == HTTPStatus.NOT_FOUND
