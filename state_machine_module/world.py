@@ -63,3 +63,13 @@ class Question:
     is_goal: bool = False  # Autopilot's opening ask, always bound to tool_call_id "autopilot-goal"
     tool: str = ""  # a call or plan row: the tool that raised it
     call_open: bool = False  # a call row: its tool_call is still open in the log
+
+
+@dataclass(frozen=True, slots=True)
+class Grant:
+    """The newest answered call row, which the next turn's setup settles."""
+
+    tool: str
+    approved: bool
+    consumed: bool = False
+    call_open: bool = False
