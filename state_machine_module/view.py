@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import textwrap
 
+from state_machine_module.machines import Machine
+
 LABEL_WIDTH = 26  # characters on each line of a move's label
 
 
@@ -25,3 +27,8 @@ def quoted(text: str) -> str:
 def wrapped(text: str) -> str:
     """A trigger broken into short lines, so its label stays narrow."""
     return "\n".join(textwrap.wrap(text, LABEL_WIDTH))
+
+
+def page_path(machine: Machine) -> str:
+    """Where the page for `machine` is served."""
+    return f"/{machine.name}"
