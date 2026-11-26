@@ -34,6 +34,14 @@ def test_render_draws_pipe_tables() -> None:
     assert html == f"<table><thead><tr><th>Path</th><th>What</th></tr></thead><tbody>{row}</tbody></table>"
 
 
+def test_render_links_only_what_the_linker_allows() -> None:
+    def docs_only(target: str) -> str | None:
+        return "/docs/x.md" if target == "x.md" else None
+
+    html = render("[ok](x.md) and [bad](javascript:alert)", docs_only)
+    assert html == '<p><a href="/docs/x.md">ok</a> and bad</p>'
+
+
 def test_title_of_takes_the_first_heading() -> None:
     assert title_of("<!-- # a note -->\nintro\n# The `arkos` title\n## Next", "fallback") == "The arkos title"
 
