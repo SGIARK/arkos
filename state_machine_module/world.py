@@ -133,3 +133,12 @@ class Event:
     tools: tuple[str, ...] = ()
     row: int | None = None
     verb: str = ""
+
+
+def describe(event: Event) -> str:
+    """The event in words, as a counterexample lists it."""
+    if event.tools:
+        return f"{event.actor}: {event.action} {', '.join(event.tools)}"
+    if event.row is not None:
+        return f"{event.actor}: {event.action} question {event.row + 1}: {event.verb}"
+    return f"{event.actor}: {event.action}"
