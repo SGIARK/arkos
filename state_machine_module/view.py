@@ -80,6 +80,7 @@ OVERVIEW_ABOUT = (
     " at once: a restart fails the session, kills its box and orphans its lease. Click a machine to see what"
     " moves it."
 )
+DOCS_ABOUT = "The markdown files this repo keeps, rendered here much as they read on GitHub."
 
 
 def page_path(machine: Machine) -> str:
@@ -156,6 +157,11 @@ def overview_page(svg: str) -> str:
     caption = "Click a state or a machine's name to open it. Hover over an arrow to see what triggers it."
     body = heading("arkos", OVERVIEW_ABOUT) + figure(svg, caption) + f"<ul>{machines}</ul>"
     return page("arkos", "arkos", body)
+
+
+def docs_page(docs: list[tuple[str, str]]) -> str:
+    """Every doc, listed."""
+    return page("docs", "docs", heading("docs", DOCS_ABOUT) + docs_list(docs))
 
 
 def moves_table(machine: Machine) -> str:
