@@ -42,6 +42,11 @@ def test_render_links_only_what_the_linker_allows() -> None:
     assert html == '<p><a href="/docs/x.md">ok</a> and bad</p>'
 
 
+def test_render_marks_strong_and_emphasis_but_leaves_snake_case() -> None:
+    html = render("**bold** and *this* but not snake_case_name", no_links)
+    assert html == "<p><strong>bold</strong> and <em>this</em> but not snake_case_name</p>"
+
+
 def test_title_of_takes_the_first_heading() -> None:
     assert title_of("<!-- # a note -->\nintro\n# The `arkos` title\n## Next", "fallback") == "The arkos title"
 
