@@ -1,7 +1,14 @@
 """Layouts keep states, frames and labels clear of each other, and every arrow meets its states."""
 
-from state_machine_module.layout import drawn_moves, frames, point_on, rows
-from state_machine_module.machines import MACHINES, SESSION, Move
+import itertools
+
+import pytest
+
+from state_machine_module.layout import drawn_moves, frames, layout, point_on, rows
+from state_machine_module.machines import MACHINES, SESSION, Machine, Move
+
+CASES = [(machine, labelled) for machine in MACHINES for labelled in (True, False)]
+IDS = [f"{machine.name}-{'labelled' if labelled else 'bare'}" for machine, labelled in CASES]
 
 
 def test_rows_put_the_start_states_first_and_the_final_ones_last() -> None:
@@ -29,3 +36,10 @@ def test_point_on_runs_from_a_curve_start_to_its_end() -> None:
     curve = ((0.0, 0.0), (10.0, 0.0), (20.0, 10.0), (30.0, 10.0))
     assert point_on(curve, 0) == (0.0, 0.0)
     assert point_on(curve, 1) == (30.0, 10.0)
+
+
+@pytest.mark.parametrize(("machine", "labelled"), CASES, ids=IDS)
+def test_layout_keeps_states_apart(machine: Machine, labelled: bool) -> None:
+    drawing = layout(machine, labelled)
+    for first, second in itertools.combinations(drawing.states.values(), 2):
+        assert not first.overlaps(second)
