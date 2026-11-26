@@ -1,11 +1,24 @@
 """The world model behaves the way arkos does, one event at a time."""
 
-from state_machine_module.world import HOME_CHAT, NEW_SESSION, Event, World, events, step
+from state_machine_module.world import (
+    HOME_CHAT,
+    NEW_SESSION,
+    WAITING,
+    Event,
+    Question,
+    World,
+    close_question,
+    events,
+    lease_state,
+    lease_to,
+    step,
+)
 
 START = Event("arkos", "starts the session")
 TEXT = Event("model", "replies with text")
 CANCEL = Event("you", "cancel")
 RESTART = Event("server", "restarts")
+MESSAGE = Event("you", "send a message")
 
 
 def calls(*tools: str) -> Event:
@@ -76,6 +89,30 @@ def test_step_cancel_while_waiting_leaves_the_question_open() -> None:
 
 def test_step_restart_fails_a_running_session() -> None:
     assert play(NEW_SESSION, START, RESTART).status == "failed"
+
+
+def test_step_a_restart_mid_turn_orphans_the_lease() -> None:
+    assert lease_state(play(NEW_SESSION, START, calls("run_command"), RESTART)) == "orphaned"
+
+
+def test_step_a_later_turn_takes_its_orphaned_lease_back() -> None:
+    world = play(NEW_SESSION, START, calls("run_command"), RESTART, MESSAGE, calls("run_command"))
+    assert lease_state(world) == "held"
+
+
+def test_step_a_newer_plan_supersedes_the_open_one() -> None:
+    world = play(NEW_SESSION, START, calls("propose_plan"), CANCEL, MESSAGE, calls("propose_plan"))
+    assert [question.kind for question in world.questions] == ["plan"]
+
+
+def test_lease_to_notes_a_move_its_machine_does_not_declare() -> None:
+    assert lease_to(World(status="idle"), "orphaned").illegal_move
+
+
+def test_close_question_notes_a_close_its_machine_does_not_declare() -> None:
+    """Withdrawing a question on Cancel would first need open -> withdrawn declared."""
+    world = World(status=WAITING, questions=(Question(kind="ask"),))
+    assert close_question(world, 0, "withdrawn").illegal_move
 
 
 def test_events_offer_the_model_nothing_outside_a_turn() -> None:

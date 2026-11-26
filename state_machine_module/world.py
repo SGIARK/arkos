@@ -18,7 +18,7 @@ import itertools
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
-from state_machine_module.machines import SANDBOX, SESSION, allows
+from state_machine_module.machines import LEASE, MODE, QUESTION, SANDBOX, SESSION, allows, follows
 
 ATTENDED_MAX_HOPS = 2  # budgets.attended.max_hops is 6
 UNATTENDED_MAX_HOPS = 3  # budgets.unattended.max_hops is 15
@@ -170,11 +170,13 @@ def turn_of(world: World) -> Turn:
 def move(world: World, target: str, reason: str, mode: str = "") -> World:
     """lifecycle.transition: move the status, and the mode in the same update."""
     sneaked = mode == "unattended" and reason != "plan_approved"
+    new_mode = mode or world.mode
+    strayed = not allows(SESSION, world.status, target) or not follows(MODE, world.mode, new_mode)
     return replace(
         world,
         status=target,
-        mode=mode or world.mode,
-        illegal_move=world.illegal_move or not allows(SESSION, world.status, target),
+        mode=new_mode,
+        illegal_move=world.illegal_move or strayed,
         unattended_without_plan=world.unattended_without_plan or sneaked,
     )
 
@@ -184,6 +186,27 @@ def box_to(world: World, target: str) -> World:
     if world.box == target:
         return world
     return replace(world, box=target, illegal_move=world.illegal_move or not allows(SANDBOX, world.box, target))
+
+
+def lease_state(world: World) -> str:
+    """Where the folder lease stands, in the states LEASE names."""
+    if world.lease_orphaned:
+        return "orphaned"
+    return "held" if world.lease else "free"
+
+
+def lease_to(world: World, target: str) -> World:
+    """Move the folder lease, noting a move its machine does not declare."""
+    source = lease_state(world)
+    if source == target:
+        return world
+    strayed = not allows(LEASE, source, target)
+    return replace(
+        world,
+        lease=target != "free",
+        lease_orphaned=target == "orphaned",
+        illegal_move=world.illegal_move or strayed,
+    )
 
 
 def has_open_call(world: World) -> bool:
@@ -202,6 +225,21 @@ def close_dangling(world: World) -> World:
     return replace(world, questions=questions, grant=grant, turn=turn)
 
 
+def close_question(world: World, index: int, target: str) -> World:
+    """Close the open row at `index` as `target`, noting a close its machine does not declare."""
+    questions = world.questions[:index] + world.questions[index + 1 :]
+    strayed = not allows(QUESTION, "open", target)
+    return replace(world, questions=questions, illegal_move=world.illegal_move or strayed)
+
+
+def supersede_plans(world: World) -> World:
+    """approvals.supersede_plans: a new proposal closes every open plan row as superseded."""
+    for index in reversed(range(len(world.questions))):
+        if world.questions[index].kind == "plan":
+            world = close_question(world, index, "superseded")
+    return world
+
+
 def release(world: World, keep_box: bool) -> World:
     """_Sink._release_leases: flush what this turn changed, pause or reap the box, drop the lease."""
     turn = world.turn
@@ -212,7 +250,7 @@ def release(world: World, keep_box: bool) -> World:
     elif not keep_box and world.slot:
         lost = world.lost_edits or world.unflushed
         world = replace(box_to(world, "none"), slot=False, unflushed=False, lost_edits=lost)
-    return replace(world, lease=False, lease_orphaned=False)
+    return lease_to(world, "free")
 
 
 def finish(world: World, reason: str) -> World:
@@ -231,9 +269,10 @@ def park(world: World) -> World:
     tool = TOOL[turn.park]
     world = release(world, keep_box=True)
     kind = tool.park or "call"
-    kept = tuple(question for question in world.questions if not (kind == "plan" and question.kind == "plan"))
+    if kind == "plan":
+        world = supersede_plans(world)
     question = Question(kind=kind, tool=tool.name if kind in ("call", "plan") else "", call_open=turn.park_gated)
-    world = replace(world, questions=(*kept, question), turn=None)
+    world = replace(world, questions=(*world.questions, question), turn=None)
     return move(world, WAITING, tool.name)
 
 
@@ -257,9 +296,8 @@ def take_box(world: World) -> World:
     turn = turn_of(world)
     if turn.materialized:
         return world
-    world = box_to(world, "live")
-    lease = world.lease or world.has_folder
-    return replace(world, slot=True, lease=lease, lease_orphaned=False, turn=replace(turn, materialized=True))
+    world = replace(box_to(world, "live"), slot=True, turn=replace(turn, materialized=True))
+    return lease_to(world, "held") if world.has_folder else world
 
 
 def act(world: World, tool: Tool, approval: str) -> World:
@@ -362,10 +400,10 @@ def answer_by_message(world: World) -> World:
     """_answer_by_message: the composer answers the OLDEST open row, and never one asking consent."""
     if not world.questions:
         return start(world, "answered")
-    oldest, rest = world.questions[0], world.questions[1:]
+    oldest = world.questions[0]
     if oldest.kind in CONSENT_KINDS:
         return world
-    world = replace(world, questions=rest)
+    world = close_question(world, 0, "answered")
     return start(world, "plan_requested" if oldest.is_goal else "answered")
 
 
@@ -374,11 +412,6 @@ def send_message(world: World) -> World:
     if world.status == WAITING:
         return answer_by_message(world)
     return start(close_dangling(world), "woken")
-
-
-def without(world: World, index: int) -> World:
-    """The world with the row at `index` answered, so no longer open."""
-    return replace(world, questions=world.questions[:index] + world.questions[index + 1 :])
 
 
 def dismiss_goal(world: World) -> World:
@@ -391,8 +424,8 @@ def answer_plan(world: World, index: int, verb: str) -> World:
     if verb == "approve":
         if not world.has_folder or world.status == "running":
             return world
-        return start(without(world, index), "plan_approved", mode="unattended")
-    world = without(world, index)
+        return start(close_question(world, index, "answered"), "plan_approved", mode="unattended")
+    world = close_question(world, index, "answered")
     if verb == "decline":
         return move(world, "idle", "plan_declined") if world.status == WAITING else world
     return start(world, "plan_reply")
@@ -403,7 +436,7 @@ def respond(world: World, index: int, verb: str) -> World:
     row = world.questions[index]
     if row.kind == "plan":
         return answer_plan(world, index, verb)
-    world = without(world, index)
+    world = close_question(world, index, "answered")
     if row.kind == "call":
         grant = Grant(tool=row.tool, approved=verb == "approve", call_open=row.call_open)
         return start(replace(world, grant=grant), "answered")
@@ -433,7 +466,9 @@ def cancel(world: World) -> World:
 def restart(world: World) -> World:
     """The process dies and comes back: sweep_interrupted, then sweep_slots."""
     if world.status == "running":
-        world = replace(close_dangling(world), turn=None, hops_since_done=0, lease_orphaned=world.lease)
+        world = replace(close_dangling(world), turn=None, hops_since_done=0)
+        if world.lease:
+            world = lease_to(world, "orphaned")
         world = move(world, "failed", "interrupted")
     if world.slot and world.status in FINAL:
         lost = world.lost_edits or world.unflushed
@@ -443,7 +478,7 @@ def restart(world: World) -> World:
 
 def leases_expire(world: World) -> World:
     """leases.ttl_s passes with no live turn renewing the lease."""
-    return replace(world, lease=False, lease_orphaned=False)
+    return lease_to(world, "free")
 
 
 def person_events(world: World) -> list[Event]:
