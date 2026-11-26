@@ -100,6 +100,11 @@ def test_step_a_later_turn_takes_its_orphaned_lease_back() -> None:
     assert lease_state(world) == "held"
 
 
+def test_step_a_newer_plan_supersedes_the_open_one() -> None:
+    world = play(NEW_SESSION, START, calls("propose_plan"), CANCEL, MESSAGE, calls("propose_plan"))
+    assert [question.kind for question in world.questions] == ["plan"]
+
+
 def test_lease_to_notes_a_move_its_machine_does_not_declare() -> None:
     assert lease_to(World(status="idle"), "orphaned").illegal_move
 
