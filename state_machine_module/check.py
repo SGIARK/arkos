@@ -25,3 +25,12 @@ class Finding:
     rule: Rule
     root: World
     path: tuple[Event, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class Report:
+    """What one search covered, and what it found."""
+
+    states: int
+    depth: int
+    findings: tuple[Finding, ...]
