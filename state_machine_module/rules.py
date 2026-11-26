@@ -87,3 +87,8 @@ RULES = (
     ),
     Rule("hops_within_budget", "A turn never takes more hops than its budget.", hops_within_budget),
 )
+
+
+def broken(world: World) -> list[Rule]:
+    """The rules `world` breaks."""
+    return [rule for rule in RULES if not rule.holds(world)]
