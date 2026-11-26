@@ -269,9 +269,10 @@ def park(world: World) -> World:
     tool = TOOL[turn.park]
     world = release(world, keep_box=True)
     kind = tool.park or "call"
-    kept = tuple(question for question in world.questions if not (kind == "plan" and question.kind == "plan"))
+    if kind == "plan":
+        world = supersede_plans(world)
     question = Question(kind=kind, tool=tool.name if kind in ("call", "plan") else "", call_open=turn.park_gated)
-    world = replace(world, questions=(*kept, question), turn=None)
+    world = replace(world, questions=(*world.questions, question), turn=None)
     return move(world, WAITING, tool.name)
 
 
