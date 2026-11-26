@@ -1,12 +1,14 @@
-"""Serve arkos's state machines to a browser, drawn in plain Python.
+"""Serve arkos's docs and state machines to a browser, drawn in plain Python.
 
-The first page shows every state machine at once, and clicking a machine opens it
-with what triggers each move. From a clone, with nothing installed, run:
+The first page shows every state machine at once and lists the docs. Clicking a
+machine opens it with what triggers each move, and each doc opens as a page.
+From a clone, with nothing installed, run:
 
     python3 -m state_machine_module.view [--port N] [--no-open]
 
-`layout.py` places each machine and `svg.py` draws it, so the pages need no
-JavaScript and the server only the standard library.
+`layout.py` places each machine, `svg.py` draws it, and `docs.py` renders the
+markdown, so the pages need no JavaScript and the server only the standard
+library.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from state_machine_module.machines import MACHINES, Machine
 from state_machine_module.svg import drawing_svg, overview_svg
 
 HOST = "127.0.0.1"
+DOCS = "/docs"
 
 BY_NAME = {machine.name: machine for machine in MACHINES}
 
@@ -72,6 +75,11 @@ OVERVIEW_ABOUT = (
 def page_path(machine: Machine) -> str:
     """Where the page for `machine` is served."""
     return f"/{machine.name}"
+
+
+def doc_path(doc: str) -> str:
+    """Where the page for the doc at `doc`, a path in the repo, is served."""
+    return f"{DOCS}/{doc}"
 
 
 def menu(current: str) -> str:
