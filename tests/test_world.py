@@ -7,6 +7,7 @@ from state_machine_module.world import (
     World,
     events,
     lease_state,
+    lease_to,
     step,
 )
 
@@ -94,6 +95,10 @@ def test_step_a_restart_mid_turn_orphans_the_lease() -> None:
 def test_step_a_later_turn_takes_its_orphaned_lease_back() -> None:
     world = play(NEW_SESSION, START, calls("run_command"), RESTART, MESSAGE, calls("run_command"))
     assert lease_state(world) == "held"
+
+
+def test_lease_to_notes_a_move_its_machine_does_not_declare() -> None:
+    assert lease_to(World(status="idle"), "orphaned").illegal_move
 
 
 def test_events_offer_the_model_nothing_outside_a_turn() -> None:
