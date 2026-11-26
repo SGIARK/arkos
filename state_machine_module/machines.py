@@ -66,3 +66,16 @@ SESSION = Machine(
         Move("cancelled", "awaiting_approval", "Autopilot asks for the goal"),
     ),
 )
+
+SANDBOX = Machine(
+    name="sandbox",
+    states=("none", "live", "paused"),
+    final=(),
+    moves=(
+        Move("none", "live", "the turn's first sandbox call boots a box"),
+        Move("paused", "live", "the turn's first sandbox call resumes the box"),
+        Move("live", "paused", "a park or Stop flushes the box, then pauses it"),
+        Move("live", "none", "the turn ends and flushes, then reaps it; or a restart kills it"),
+        Move("paused", "none", "the next ending reaps it, or a later claim reclaims it"),
+    ),
+)
