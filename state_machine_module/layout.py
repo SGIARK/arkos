@@ -276,3 +276,13 @@ def frame_boxes(machine: Machine, boxes: dict[str, Box]) -> dict[str, Box]:
         inner = enclosing(boxes[state] for state in states).grown(FRAME_PAD)
         found[name] = Box(inner.x, inner.y - FRAME_TITLE, inner.width, inner.height + FRAME_TITLE)
     return found
+
+
+def across(move: Move, boxes: dict[str, Box], row: tuple[str, ...]) -> Leg:
+    """An arrow within a row: straight across to a neighbour, or arched over or under the states between."""
+    rightward = boxes[move.target].x > boxes[move.source].x
+    if abs(row.index(move.target) - row.index(move.source)) > 1:
+        side = "top" if rightward else "bottom"
+        return Leg(move, "", move.source, side, move.target, side)
+    leaves, enters = ("right", "left") if rightward else ("left", "right")
+    return Leg(move, "", move.source, leaves, move.target, enters)
