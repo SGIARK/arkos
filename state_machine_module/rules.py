@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from state_machine_module.world import FINAL, WAITING, World
+from state_machine_module.world import FINAL, WAITING, World, max_hops
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,3 +36,8 @@ def ended_runs_are_attended(world: World) -> bool:
 def leases_only_while_running(world: World) -> bool:
     """Only a running session holds a lease."""
     return not world.lease or world.status == "running"
+
+
+def hops_within_budget(world: World) -> bool:
+    """A turn never takes more hops than its budget."""
+    return world.turn is None or world.turn.hops <= max_hops(world.mode)
