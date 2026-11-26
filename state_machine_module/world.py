@@ -53,3 +53,13 @@ TOOLS = (
     Tool("bad_args", malformed=True),
 )
 TOOL = {tool.name: tool for tool in TOOLS}
+
+
+@dataclass(frozen=True, slots=True)
+class Question:
+    """An open approvals row."""
+
+    kind: str  # ask, approval, call or plan
+    is_goal: bool = False  # Autopilot's opening ask, always bound to tool_call_id "autopilot-goal"
+    tool: str = ""  # a call or plan row: the tool that raised it
+    call_open: bool = False  # a call row: its tool_call is still open in the log
