@@ -44,6 +44,11 @@ def allows(machine: Machine, source: str, target: str) -> bool:
     return any(move.source == source and move.target == target for move in machine.moves)
 
 
+def follows(machine: Machine, source: str, target: str) -> bool:
+    """Whether going from `source` to `target` stays put or takes a move `machine` declares."""
+    return source == target or allows(machine, source, target)
+
+
 def pairs(machine: Machine) -> frozenset[tuple[str, str]]:
     """Every (source, target) pair a move connects, triggers set aside."""
     return frozenset((move.source, move.target) for move in machine.moves)
